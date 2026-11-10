@@ -28,7 +28,6 @@ class Participant:
     attention_state: str = "available"
     heartbeat_ttl_s: float = 90.0
     last_heartbeat_at: float | None = None
-    authority_role: str = ""
     room_ids: tuple[str, ...] = ()
     #: The session an agent from elsewhere lives in; delivery to it goes there.
     session_id: str = ""

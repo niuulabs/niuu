@@ -33,6 +33,7 @@ from skuld.websocket_auth import (
     _decode_jwt_claims,
     _extract_token_from_websocket,
     _is_loopback_ws_client,
+    _resolve_ws_author,
     _resolve_ws_principal,
 )
 
@@ -364,6 +365,11 @@ class WebSocketLifecycleMixin:
             history_protocol=2 if protocol2 else 0,
             history_bootstrap_max_frames=self._settings.history_bootstrap_max_frames,
             room_role=room_role,
+            author=_resolve_ws_author(
+                websocket,
+                user_id_header=self._settings.ws_auth.user_id_header,
+                display_name_header=self._settings.ws_auth.display_name_header,
+            ),
         )
         if not protocol2:
             self._channels.add(channel)
@@ -560,6 +566,12 @@ class WebSocketLifecycleMixin:
                 for ask_question in list(self._pending_ask_user_questions.values()):
                     if not await self._safe_browser_send_json(websocket, ask_question):
                         return
+
+            # A question put to a person may already be answered; its answer is not in
+            # the turns above, so tell the new browser or it shows the card as waiting.
+            for answered in self.answered_person_question_frames():
+                if not await self._safe_browser_send_json(websocket, answered):
+                    return
 
             # Persisted question text is evidence, not a usable RPC address after
             # the native process restarts. Show the retained card honestly and

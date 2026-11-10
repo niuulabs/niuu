@@ -22,32 +22,8 @@ ConnectionCheck = Callable[[str], bool]
 Clock = Callable[[], float]
 RecordedAt = Callable[[], datetime]
 
-ENVIRONMENT_ROLES: frozenset[str] = frozenset(
-    {"observer", "teacher", "approver", "debugger", "owner"}
-)
-
-ROLE_CAPABILITIES: dict[str, tuple[str, ...]] = {
-    "observer": ("view", "reply"),
-    "teacher": ("view", "reply", "teach", "correct"),
-    "approver": ("view", "reply", "approve", "authorize_action"),
-    "debugger": ("view", "reply", "debug", "teach", "correct"),
-    "owner": (
-        "view",
-        "reply",
-        "approve",
-        "teach",
-        "correct",
-        "debug",
-        "change_autonomy",
-        "authorize_action",
-    ),
-}
-
 ATTENTION_AVAILABLE = "available"
 ATTENTION_AWAY = "away"
-
-_APPROVAL_CAPABILITIES = frozenset({"approve", "authorize_action"})
-_REVIEWABLE_AUTHORITIES = frozenset({"human_review_required"})
 
 
 @dataclass(frozen=True)
@@ -69,19 +45,6 @@ def matches_subscription(event_type: str, subscriptions: Iterable[str]) -> bool:
         if pattern.endswith("*") and event_type.startswith(pattern[:-1]):
             return True
     return False
-
-
-def effective_role_capabilities(
-    role: str,
-    environment_action_authorities: Iterable[str] | None,
-) -> tuple[str, ...]:
-    """Intersect a participant's role with actions the environment can review."""
-    grants = ROLE_CAPABILITIES[role]
-    if environment_action_authorities is None:
-        return grants
-    if _REVIEWABLE_AUTHORITIES & set(environment_action_authorities):
-        return grants
-    return tuple(grant for grant in grants if grant not in _APPROVAL_CAPABILITIES)
 
 
 def _back_from_quiet(participant: Participant) -> str:
@@ -220,7 +183,6 @@ class CollaborationRoom:
         wakefulness: str = "unknown",
         attention_state: str = "available",
         heartbeat_ttl_s: float = 90.0,
-        authority_role: str = "",
         room_ids: Iterable[str] | None = None,
     ) -> Participant:
         """Register or reconnect an agent participant."""
@@ -251,7 +213,6 @@ class CollaborationRoom:
                 attention_state=attention_state,
                 heartbeat_ttl_s=heartbeat_ttl_s,
                 last_heartbeat_at=self._clock(),
-                authority_role=authority_role,
                 room_ids=memberships,
             )
         else:
@@ -270,7 +231,6 @@ class CollaborationRoom:
                 attention_state=attention_state or existing.attention_state,
                 heartbeat_ttl_s=heartbeat_ttl_s or existing.heartbeat_ttl_s,
                 last_heartbeat_at=self._clock(),
-                authority_role=authority_role or existing.authority_role,
                 room_ids=memberships or existing.room_ids,
             )
         return await self._store_joined(participant)
@@ -292,7 +252,6 @@ class CollaborationRoom:
         wakefulness: str = "watching",
         attention_state: str = "available",
         heartbeat_ttl_s: float = 90.0,
-        authority_role: str = "",
         room_ids: Iterable[str] | None = None,
     ) -> Participant:
         """Register a discovered participant without assuming its transport."""
@@ -316,7 +275,6 @@ class CollaborationRoom:
             attention_state=attention_state,
             heartbeat_ttl_s=heartbeat_ttl_s,
             last_heartbeat_at=self._clock(),
-            authority_role=authority_role,
             room_ids=tuple(room_ids or ()),
         )
         return await self._store_joined(participant)
@@ -333,39 +291,27 @@ class CollaborationRoom:
         *,
         display_name: str,
         environment_id: str,
-        role: str = "observer",
         room_id: str = "",
         capabilities: Iterable[str] | None = None,
         surfaces: Iterable[str] | None = None,
         heartbeat_ttl_s: float = 300.0,
-        environment_action_authorities: Iterable[str] | None = None,
         participant_type: str = "human",
         session_id: str = "",
         subscribes_to: Iterable[str] | None = None,
         notice_context: str = "",
     ) -> Participant:
-        """Register or update a participant that joins an environment by role.
+        """Register or update a participant that joins an environment.
 
         A person joins this way, and so does an agent from another session, whose
-        ``session_id`` says where it takes delivery.
+        ``session_id`` says where it takes delivery. Joining grants no authority: what
+        a person may do in a session (answer a gate, a permission prompt) is their
+        session room role, checked where the request arrives (``niuu.room_access``).
         """
         participant_id = participant_id.strip()
         if not participant_id:
             raise ValueError("participant_id is required")
         if not environment_id.strip():
             raise ValueError("environment_id is required")
-        normalized_role = role.strip() or "observer"
-        if normalized_role not in ENVIRONMENT_ROLES:
-            raise PermissionError(f"Unknown Environment role: {normalized_role}")
-
-        grants = effective_role_capabilities(normalized_role, environment_action_authorities)
-        requested = tuple(capabilities or grants)
-        disallowed = sorted(set(requested) - set(grants))
-        if disallowed:
-            raise PermissionError(
-                f"Role {normalized_role} cannot claim capabilities: {', '.join(disallowed)}"
-            )
-
         membership = tuple([room_id] if room_id else [])
         existing = self._participants.get(participant_id)
         color = existing.color if existing is not None else next(self._color_cycle)
@@ -385,13 +331,12 @@ class CollaborationRoom:
             emits=("room.message", "room.direct", "feedback.recorded"),
             environment_id=environment_id,
             participant_kind=participant_type,
-            capabilities=requested,
+            capabilities=tuple(capabilities or ()),
             surfaces=tuple(surfaces or ("skuld.room",)),
             wakefulness="wakeful",
             attention_state="available",
             heartbeat_ttl_s=heartbeat_ttl_s,
             last_heartbeat_at=self._clock(),
-            authority_role=normalized_role,
             room_ids=tuple(dict.fromkeys([*existing_rooms, *membership])),
             session_id=session_id,
             notice_context=notice_context,
@@ -440,14 +385,6 @@ class CollaborationRoom:
         self._participants[peer_id] = updated
         await self._announce_presence(updated)
         return updated
-
-    def require_participant_capability(self, participant_id: str, capability: str) -> None:
-        """Require a declared participant capability."""
-        participant = self._participants.get(participant_id)
-        if participant is None:
-            raise LookupError(f"Unknown room participant: {participant_id}")
-        if capability not in participant.capabilities:
-            raise PermissionError(f"Participant {participant_id} lacks capability: {capability}")
 
     async def update_activity(self, peer_id: str, status: str) -> Participant | None:
         """Update transient participant activity without interpreting its meaning."""

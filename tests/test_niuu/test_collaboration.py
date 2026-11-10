@@ -118,16 +118,13 @@ async def test_going_quiet_keeps_membership_and_respects_live_connections() -> N
 
 
 @pytest.mark.asyncio
-async def test_human_authority_is_bounded_by_environment_actions() -> None:
+async def test_joining_grants_no_authority() -> None:
     room = _room()
 
     participant = await room.join_environment(
         "human:jozef",
         display_name="Jozef",
         environment_id="cluster-a",
-        role="approver",
-        environment_action_authorities=("autonomous",),
     )
 
-    assert "approve" not in participant.capabilities
-    assert participant.capabilities == ("view", "reply")
+    assert participant.capabilities == ()

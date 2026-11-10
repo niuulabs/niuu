@@ -770,8 +770,10 @@ function toSessionState(session: VolundrSession): Session['state'] {
   }
 }
 
-function toSessionTemplateId(session: VolundrSession): string {
+function toSessionTemplateId(session: VolundrSession): string | undefined {
   if (session.taskType) return session.taskType;
+  // A shared session has no workspace: Forge withholds the source from a room participant.
+  if (!session.source) return undefined;
   if (session.source.type === 'git') {
     const repoName = session.source.repo.split('/').pop();
     return repoName && repoName.length > 0 ? repoName : 'git';
@@ -795,6 +797,7 @@ function toSessionRavnId(session: VolundrSession): string {
 }
 
 function toSessionPreview(session: VolundrSession): string | undefined {
+  if (!session.source) return undefined;
   if (session.source.type === 'git') {
     // Sessions with no repository still carry an empty git source.
     if (!session.source.repo) return undefined;
@@ -830,7 +833,9 @@ function toDomainSession(session: VolundrSession): Session {
     personaName: session.name,
     model: session.model,
     sessionDefinition: session.sessionDefinition,
-    source: session.source,
+    ...(session.source ? { source: session.source } : {}),
+    ...(session.room ? { room: session.room } : {}),
+    ...(session.ownerId ? { ownerId: session.ownerId } : {}),
     coordination: session.coordination,
     templateId: toSessionTemplateId(session),
     clusterId: toSessionClusterId(session),
@@ -891,6 +896,13 @@ function buildSplitVolundrService(
     getProjects: (options) => forge.getProjects(options),
     createProject: (name, options) => forge.createProject(name, options),
     updateProject: (project, changes) => forge.updateProject(project, changes),
+    getProjectMembers: (project) => forge.getProjectMembers(project),
+    getProjectMemberCandidates: (project, query) =>
+      forge.getProjectMemberCandidates(project, query),
+    addProjectMember: (project, member) => forge.addProjectMember(project, member),
+    updateProjectMember: (project, userId, change) =>
+      forge.updateProjectMember(project, userId, change),
+    removeProjectMember: (project, userId) => forge.removeProjectMember(project, userId),
     getSessionProject: (id, options) => forge.getSessionProject(id, options),
     assignSessionProject: (id, assignment, options) =>
       forge.assignSessionProject(id, assignment, options),

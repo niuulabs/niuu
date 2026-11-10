@@ -21,21 +21,44 @@ class GraphQLError(Exception):
     """Raised when a GraphQL response contains errors."""
 
 
+def linear_authorization(api_key: str | None, access_token: str | None) -> str:
+    """Return the ``Authorization`` header value for exactly one Linear credential.
+
+    A personal API key is sent raw; an OAuth access token (a team's Linear app
+    install) is sent as a Bearer token. The caller says which it holds, the
+    token's prefix is never inspected.
+    """
+    if api_key and access_token:
+        raise ValueError(
+            "Linear takes either api_key (a personal API key) or access_token "
+            "(an OAuth token), not both; remove one from the connection's credential"
+        )
+    if access_token:
+        return f"Bearer {access_token}"
+    if api_key:
+        return api_key
+    raise ValueError(
+        "Linear needs a credential: set api_key (a personal API key) or "
+        "access_token (an OAuth token) on the connection"
+    )
+
+
 class LinearGraphQLClient(GraphQLClientPort):
     """Linear GraphQL client with TTL caching and rate-limit retry."""
 
     def __init__(
         self,
-        api_key: str,
+        api_key: str | None = None,
         api_url: str = LINEAR_API_URL,
         cache_ttl: float = 30.0,
         max_retries: int = 3,
+        access_token: str | None = None,
     ) -> None:
         self._api_url = api_url
         self._client = httpx.AsyncClient(
             base_url=api_url,
             headers={
-                "Authorization": api_key,
+                "Authorization": linear_authorization(api_key, access_token),
                 "Content-Type": "application/json",
             },
             timeout=15.0,

@@ -1220,3 +1220,13 @@
   white-space: nowrap;
   color: var(--color-brand);
 }
+
+/* A session shared with the person, not owned by them: who shared it and what they may do. */
+.forge-session-row__shared {
+  flex: none;
+  max-width: 55%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--color-brand-300);
+}

@@ -1343,3 +1343,58 @@ class TestAskUserQuestionHandlers:
     def test_resolve_question_unknown_id_returns_false(self, tmp_path) -> None:
         transport = SDKTransport(workspace_dir=str(tmp_path))
         assert transport.resolve_question("missing", []) is False
+
+
+@pytest.mark.asyncio
+async def test_merged_steers_from_several_people_list_each_under_their_name(
+    monkeypatch, tmp_path
+) -> None:
+    factory = _ClientFactory([[_result_message()]])
+    monkeypatch.setattr("skuld.transports.sdk.ClaudeSDKClient", factory)
+    transport = SDKTransport(workspace_dir=str(tmp_path))
+    await transport.start()
+    transport._turn_active = True
+
+    await transport.send_control("steer", content="[Alice] focus on tests", author_name="Alice")
+    await transport.send_control("redirect", content="[Bob] then docs", author_name="Bob")
+
+    merged = transport._consume_pending_steers()
+
+    assert merged is not None
+    assert "The user sent multiple steering updates" not in merged
+    assert merged.splitlines()[0] == "Several people sent steering updates while you were working."
+    assert "- [Alice] focus on tests" in merged
+    assert "- [Bob] then docs" in merged
+    assert transport._pending_steer_authors == []
+
+
+def test_merged_steers_from_one_named_person_say_who_sent_them() -> None:
+    transport = SDKTransport("/tmp")
+    transport._queue_steer("[Alice] one", "Alice")
+    transport._queue_steer("[Alice] two", "Alice")
+
+    merged = transport._consume_pending_steers()
+
+    assert merged is not None
+    assert merged.splitlines()[0] == "Alice sent multiple steering updates while you were working."
+
+
+def test_merged_steers_without_authors_keep_the_original_wording() -> None:
+    transport = SDKTransport("/tmp")
+    transport._queue_steer("one", None)
+    transport._queue_steer("two", "")
+
+    merged = transport._consume_pending_steers()
+
+    assert merged is not None
+    assert (
+        merged.splitlines()[0] == "The user sent multiple steering updates while you were working."
+    )
+
+
+def test_a_single_named_steer_is_passed_through_and_forgets_its_author() -> None:
+    transport = SDKTransport("/tmp")
+    transport._queue_steer("[Bob] only one", "Bob")
+
+    assert transport._consume_pending_steers() == "[Bob] only one"
+    assert transport._pending_steer_authors == []

@@ -410,6 +410,17 @@ class WsAuthConfig(BaseModel):
     user_id_header: str = "x-auth-user-id"
     tenant_header: str = "x-auth-tenant"
     roles_header: str = "x-auth-roles"
+    display_name_header: str = Field(
+        default="x-auth-display-name",
+        description=(
+            "Header the session proxy (niuu.session_proxy) stamps with the "
+            "caller's display name (percent-encoded UTF-8), recorded with the "
+            "user id as the author of every human message sent over the "
+            "connection. Only the proxy-stamped value is read, like "
+            "room_role_header: a browser-supplied copy never reaches the "
+            "broker. Must match the proxy's own header name."
+        ),
+    )
     room_role_header: str = Field(
         default="x-niuu-room-role",
         description=(

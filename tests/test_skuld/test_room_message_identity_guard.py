@@ -23,10 +23,11 @@ from skuld.broker_api import (
 )
 
 
-def _request(room_role: str | None):
+def _request(room_role: str | None, **extra_headers: str):
     headers = {}
     if room_role is not None:
         headers["x-niuu-room-role"] = room_role
+    headers.update({name.replace("_", "-"): value for name, value in extra_headers.items()})
     return SimpleNamespace(headers=headers)
 
 
@@ -40,7 +41,13 @@ def _fake_broker(monkeypatch, **overrides):
         # process-backend/session-proxy topology these routes are reached
         # through in practice. K8s ("deployment") is covered separately in
         # test_enforce_room_role_middleware.py.
-        "_settings": SimpleNamespace(ws_auth=SimpleNamespace(room_role_source="proxy")),
+        "_settings": SimpleNamespace(
+            ws_auth=SimpleNamespace(
+                room_role_source="proxy",
+                user_id_header="x-auth-user-id",
+                display_name_header="x-auth-display-name",
+            )
+        ),
     }
     attrs.update(overrides)
     fake = SimpleNamespace(**attrs)
@@ -116,3 +123,40 @@ async def test_room_direct_denies_when_target_has_pending_reply_and_role_is_belo
         await send_directed_room_message(_request("viewer"), body)
     assert exc_info.value.status_code == 403
     fake.handle_directed_room_message.assert_not_awaited()
+
+
+@pytest.mark.parametrize("role", ["viewer", "approver", "owner"])
+async def test_room_message_author_is_the_stamped_identity_not_the_body(role, monkeypatch):
+    fake = _fake_broker(monkeypatch)
+    body = _RoomMessageRequest(
+        content="hello",
+        participant_id="some-ravn-peer",
+        metadata={"author": {"user_id": "someone-else", "display_name": "Someone Else"}},
+    )
+    request = _request(role, x_auth_user_id="u-alice", x_auth_display_name="Alice%20Liddell")
+
+    await send_room_message(request, body)
+
+    author = fake.handle_human_room_message.await_args.kwargs["author"]
+    assert (author.user_id, author.display_name) == ("u-alice", "Alice Liddell")
+
+
+async def test_directed_room_message_author_is_the_stamped_identity(monkeypatch):
+    fake = _fake_broker(monkeypatch)
+    body = _DirectedRoomMessageRequest(target_peer_id="peer-1", content="hello")
+
+    await send_directed_room_message(
+        _request("viewer", x_auth_user_id="u-bob", x_auth_display_name="Bob"), body
+    )
+
+    author = fake.handle_directed_room_message.await_args.kwargs["author"]
+    assert (author.user_id, author.display_name) == ("u-bob", "Bob")
+
+
+async def test_room_message_without_a_stamped_identity_has_no_author(monkeypatch):
+    fake = _fake_broker(monkeypatch)
+    body = _RoomMessageRequest(content="hello")
+
+    await send_room_message(_request("viewer"), body)
+
+    assert fake.handle_human_room_message.await_args.kwargs["author"] is None

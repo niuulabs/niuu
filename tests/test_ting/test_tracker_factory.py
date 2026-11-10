@@ -10,9 +10,11 @@ from datetime import UTC, datetime
 
 import pytest
 
-from niuu.domain.models import IntegrationConnection, IntegrationType
+from niuu.domain.models import IntegrationConnection, IntegrationType, IntegrationUsage
+from niuu.ports.integrations import IntegrationUsageLog
 from tests.test_ting.conftest import StubCredentialStore, StubIntegrationRepo
 from ting.adapters.native import NativeTrackerAdapter
+from ting.adapters.team_tracker import TeamTrackerRecorder
 from ting.adapters.tracker_factory import TrackerAdapterFactory
 from ting.ports.tracker import TrackerPort
 
@@ -460,3 +462,194 @@ async def test_unexpected_exception_logged_and_skipped(caplog) -> None:  # noqa:
 
     assert result == []
     assert "Unexpected error creating tracker adapter for connection conn-boom" in caplog.text
+
+
+def test_linear_access_token_stays_an_access_token() -> None:
+    from ting.adapters.tracker_factory import _normalize_tracker_credentials
+
+    normalized = _normalize_tracker_credentials(
+        "ting.adapters.linear.LinearTrackerAdapter",
+        {"access_token": "oauth-token", "token": "ignored"},
+    )
+
+    assert normalized == {"access_token": "oauth-token", "token": "ignored"}
+
+
+def test_linear_tracker_sends_an_access_token_as_bearer() -> None:
+    from ting.adapters.linear import LinearTrackerAdapter
+
+    adapter = LinearTrackerAdapter(access_token="oauth-token")
+
+    assert adapter._gql._client.headers["Authorization"] == "Bearer oauth-token"
+    with pytest.raises(ValueError):
+        LinearTrackerAdapter(api_key="k", access_token="t")
+    with pytest.raises(ValueError):
+        LinearTrackerAdapter()
+
+
+# ---------------------------------------------------------------------------
+# Team (project-owned) trackers
+# ---------------------------------------------------------------------------
+
+
+class _UsageLog(IntegrationUsageLog):
+    def __init__(self) -> None:
+        self.recorded: list[IntegrationUsage] = []
+
+    async def record(self, usage: IntegrationUsage) -> None:
+        self.recorded.append(usage)
+
+    async def list_for_project(self, project_id, *, limit, before=None):  # noqa: ANN001
+        raise NotImplementedError
+
+
+def _team_connection(
+    project_id: str = "proj-1", *, id: str = "team-conn-1", enabled: bool = True
+) -> IntegrationConnection:
+    return IntegrationConnection(
+        id=id,
+        owner_id=f"project:{project_id}",
+        integration_type=IntegrationType.ISSUE_TRACKER,
+        adapter="tests.test_ting.test_tracker_factory.FakeTracker",
+        credential_name="team-cred",
+        config={"team_id": "TEAM-BOT"},
+        enabled=enabled,
+        created_at=_NOW,
+        updated_at=_NOW,
+        slug="linear",
+        project_id=project_id,
+        connected_by="owner-2",
+    )
+
+
+def _team_factory(
+    connections: list[IntegrationConnection],
+    member_projects,  # noqa: ANN001
+    usage_log: IntegrationUsageLog | None,
+) -> TrackerAdapterFactory:
+    return TrackerAdapterFactory(
+        integration_repo=StubIntegrationRepo(connections=connections),
+        credential_store=StubCredentialStore(
+            values={
+                "user:owner-1:linear-cred": {"api_key": "tok-own"},
+                "project:proj-1:team-cred": {"access_token": "tok-team-1"},
+                "project:proj-2:team-cred": {"access_token": "tok-team-2"},
+            }
+        ),
+        member_projects=member_projects,
+        usage_log=usage_log,
+    )
+
+
+@pytest.mark.asyncio
+async def test_team_trackers_come_after_the_owners_own_and_record_their_writes() -> None:
+    log = _UsageLog()
+    asked: list[str] = []
+
+    async def member_projects(owner_id: str) -> list[str]:
+        asked.append(owner_id)
+        return ["proj-1", "proj-2"]
+
+    factory = _team_factory(
+        [
+            _make_connection(id="own-1", credential_name="linear-cred"),
+            _team_connection("proj-1", id="team-1"),
+            _team_connection("proj-2", id="team-2"),
+        ],
+        member_projects,
+        log,
+    )
+
+    resolution = await factory.for_owner_with_resolution("owner-1")
+
+    assert asked == ["owner-1"]
+    assert resolution.failures == ()
+    own, team_1, team_2 = resolution.adapters
+    assert isinstance(own, FakeTracker)
+    assert not isinstance(own, TeamTrackerRecorder)
+    assert isinstance(team_1, TeamTrackerRecorder)
+    assert isinstance(team_2, TeamTrackerRecorder)
+    assert [a.connection_id for a in resolution.adapters] == ["own-1", "team-1", "team-2"]
+    assert team_1._inner.kwargs["access_token"] == "tok-team-1"
+    assert team_2._inner.kwargs["access_token"] == "tok-team-2"
+
+    await team_2.close_run("run-9")
+
+    assert [
+        (u.connection_id, u.project_id, u.action, u.acting_for, u.actor, u.subject)
+        for u in log.recorded
+    ] == [("team-2", "proj-2", "close_run", "owner-1", "ting", "run-9")]
+
+
+@pytest.mark.asyncio
+async def test_a_team_connection_is_resolved_once() -> None:
+    async def member_projects(owner_id: str) -> list[str]:
+        return ["proj-1", "proj-1"]
+
+    factory = _team_factory([_team_connection("proj-1")], member_projects, _UsageLog())
+
+    resolution = await factory.for_owner_with_resolution("owner-1")
+
+    assert [a.connection_id for a in resolution.adapters] == ["team-conn-1"]
+
+
+@pytest.mark.asyncio
+async def test_disabled_team_connection_is_skipped() -> None:
+    async def member_projects(owner_id: str) -> list[str]:
+        return ["proj-1"]
+
+    factory = _team_factory(
+        [_team_connection("proj-1", enabled=False)], member_projects, _UsageLog()
+    )
+
+    resolution = await factory.for_owner_with_resolution("owner-1")
+
+    assert resolution.adapters == ()
+    assert resolution.failures == ()
+
+
+@pytest.mark.asyncio
+async def test_membership_failure_is_a_loud_failure_not_only_personal_trackers(caplog) -> None:  # noqa: ANN001
+    async def member_projects(owner_id: str) -> list[str]:
+        raise ConnectionError("forge down")
+
+    factory = _team_factory(
+        [_make_connection(id="own-1", credential_name="linear-cred")], member_projects, _UsageLog()
+    )
+
+    with caplog.at_level(logging.ERROR):
+        resolution = await factory.for_owner_with_resolution("owner-1")
+
+    assert [a.connection_id for a in resolution.adapters] == ["own-1"]
+    assert [f.code for f in resolution.failures] == ["teamTrackersUnavailable"]
+    assert "Could not list the projects of owner owner-1" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_team_tracker_without_a_usage_log_is_refused(caplog) -> None:  # noqa: ANN001
+    async def member_projects(owner_id: str) -> list[str]:
+        return ["proj-1"]
+
+    factory = _team_factory([_team_connection("proj-1")], member_projects, None)
+
+    with caplog.at_level(logging.ERROR):
+        resolution = await factory.for_owner_with_resolution("owner-1")
+
+    assert resolution.adapters == ()
+    assert [(f.connection_id, f.code) for f in resolution.failures] == [
+        ("team-conn-1", "teamUsageUnrecorded")
+    ]
+    assert "no integration usage log is wired" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_no_member_projects_lookup_means_no_team_trackers() -> None:
+    factory = _team_factory(
+        [_team_connection("proj-1"), _make_connection(id="own-1", credential_name="linear-cred")],
+        None,
+        _UsageLog(),
+    )
+
+    resolution = await factory.for_owner_with_resolution("owner-1")
+
+    assert [a.connection_id for a in resolution.adapters] == ["own-1"]

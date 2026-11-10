@@ -45,6 +45,9 @@ _EXPECTED_VIEWER = {
     "discover_slash_commands",
     "get_effort",
     "get_runtime_options",
+    # A person answering the question the agent put to them: the handler lets through the
+    # addressee, or an approver.
+    "person_answer",
 }
 _EXPECTED_APPROVER_ONLY = {"permission_response", "ask_user_answer"}
 _EXPECTED_OWNER_ONLY = {

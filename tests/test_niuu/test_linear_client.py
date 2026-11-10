@@ -204,3 +204,25 @@ class TestClose:
         await client.close()
 
         client._client.aclose.assert_called_once()
+
+
+class TestCredentialHeader:
+    def test_api_key_is_sent_raw(self):
+        client = LinearGraphQLClient(api_key="lin_api_key")
+        assert client._client.headers["Authorization"] == "lin_api_key"
+
+    def test_access_token_is_sent_as_bearer(self):
+        client = LinearGraphQLClient(access_token="oauth-token")
+        assert client._client.headers["Authorization"] == "Bearer oauth-token"
+
+    def test_a_token_prefix_is_never_sniffed(self):
+        client = LinearGraphQLClient(api_key="lin_oauth_looks_like_a_token")
+        assert client._client.headers["Authorization"] == "lin_oauth_looks_like_a_token"
+
+    def test_both_credentials_is_an_error(self):
+        with pytest.raises(ValueError, match="not both"):
+            LinearGraphQLClient(api_key="k", access_token="t")
+
+    def test_neither_credential_is_an_error(self):
+        with pytest.raises(ValueError, match="needs a credential"):
+            LinearGraphQLClient()

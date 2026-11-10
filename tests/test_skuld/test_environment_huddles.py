@@ -68,7 +68,6 @@ async def test_late_join_replay_orders_human_and_mesh_messages() -> None:
         "human:approver",
         display_name="Approver",
         environment_id="cluster-a",
-        role="approver",
         room_id="huddle-2",
     )
     await bridge.register_mesh_peer(

@@ -75,6 +75,9 @@ from volundr.adapters.inbound.conversation_voice import VOICE_DETAIL, voice_page
 from volundr.adapters.inbound.durable_transcripts import DurableTranscripts
 from volundr.adapters.inbound.forge_session_auth import require_bound_session
 from volundr.adapters.inbound.rest_guild import own_instance
+from volundr.adapters.inbound.rest_project_integrations import (
+    create_project_integrations_router,
+)
 from volundr.adapters.inbound.rest_projects import (
     create_projects_router,
     create_session_projects_router,
@@ -1848,21 +1851,38 @@ class SessionStatusResponse(BaseModel):
 class SessionRoomInfo(BaseModel):
     """The caller's own durable grant on a session they participate in."""
 
-    role: str = Field(description="observer/teacher/debugger/approver")
+    role: str = Field(description="viewer/approver")
     participant_status: str = Field(description="invited/active/revoked")
     expires_at: str | None = Field(default=None, description="ISO 8601 grant expiry, if any")
 
 
+class SessionRoomCoordination(BaseModel):
+    """The project a shared session belongs to: its id and the session's role only.
+
+    ``SessionCoordination`` also carries the parent reference, objective,
+    context revision and labels; a room participant gets none of them.
+    """
+
+    project_id: UUID = Field(description="Project the session belongs to")
+    role: str = Field(description="The session's role inside the project")
+
+
 class SessionRoomSummary(BaseModel):
     """Room-visibility shape for a session the caller participates in but does
-    not own. Deliberately excludes everything ``SessionResponse`` exposes
-    beyond identity/status: repo, branch, local_path, code_endpoint, pod_name,
-    error, activity_metadata, and external ids stay owner/admin-only — Cedar
-    authorizes this shape through ``read_room``, never ``read`` (see
-    ForgeService.list_participant_only_sessions). The web client uses
-    ``room.role`` to decide whether it can attach at all, and if so with what
-    proxied capability; the actual attach/message gating still runs
-    server-side (session proxy + Skuld broker), this is only for rendering.
+    not own. Carries what a participant needs to list the session under its
+    project, render it and attach to its room: identity, status, owner, the
+    project it belongs to (``coordination``: project id and role only), the
+    model, last activity, whether it needs a person, and ``chat_endpoint``.
+
+    ``chat_endpoint`` is the same proxied session URL the owner is given; the
+    session proxy and the Skuld broker enforce the caller's room role on it, so
+    holding the URL grants nothing. Deliberately excludes everything else
+    ``SessionResponse`` exposes: repo, branch, local_path, code_endpoint,
+    pod_name, error, activity_metadata, source, and external ids stay
+    owner/admin-only — Cedar authorizes this shape through ``read_room``, never
+    ``read`` (see ForgeService.list_participant_only_sessions). ``room.role``
+    only decides what the web client renders; the actual attach/message gating
+    still runs server-side (session proxy + Skuld broker).
     """
 
     kind: Literal["room_summary"] = "room_summary"
@@ -1871,6 +1891,30 @@ class SessionRoomSummary(BaseModel):
     status: SessionStatus = Field(description="Current lifecycle status")
     owner_id: str | None = Field(default=None, description="User ID of the session owner")
     room: SessionRoomInfo
+    coordination: SessionRoomCoordination | None = Field(
+        default=None,
+        description="Project the session belongs to (project id and role); null when it has none",
+    )
+    model: str = Field(description="LLM model identifier")
+    chat_endpoint: str | None = Field(
+        default=None,
+        description=(
+            "Skuld chat proxy URL (null when not running); the room role is enforced "
+            "by the proxy, not by holding this URL"
+        ),
+    )
+    last_active: str = Field(description="ISO 8601 last activity timestamp")
+    activity_state: str | None = Field(
+        default=None,
+        description=(
+            "Current activity state "
+            "(provisioning/active/idle/tool_executing/awaiting_input/stopped/error)"
+        ),
+    )
+    needs_attention: bool = Field(
+        default=False,
+        description="True when the session is blocked waiting on a person (awaiting_input)",
+    )
 
 
 class SessionEndpoints(BaseModel):
@@ -2367,6 +2411,7 @@ def create_router(
     preview_edge_limit: int = PREVIEW_EDGE_LIMIT,
     durable_transcripts: DurableTranscripts | None = None,
     project_service=None,
+    project_integration_service=None,
     runtime_build: dict | None = None,
     session_status_host: str | None = None,
     runtime_health_timeout: float = 3.0,
@@ -2545,6 +2590,10 @@ def create_router(
 
         router.include_router(create_projects_router(project_service, project_principal))
         router.include_router(create_session_projects_router(project_service, project_principal))
+        if project_integration_service is not None:
+            router.include_router(
+                create_project_integrations_router(project_integration_service, project_principal)
+            )
 
     @router.get("/session-runtimes", tags=["Sessions"], response_model=SessionRuntimesResponse)
     async def get_session_runtimes() -> SessionRuntimesResponse:
@@ -2673,17 +2722,35 @@ def create_router(
             ]
         return sessions
 
-    def _room_summary(session: Session, grant: SessionParticipant) -> SessionRoomSummary:
+    def _room_summary(session: Session, room: SessionRoomInfo) -> SessionRoomSummary:
+        coordination = session.coordination
         return SessionRoomSummary(
             id=session.id,
             name=session.name,
             status=session.status,
             owner_id=session.owner_id,
-            room=SessionRoomInfo(
-                role=grant.role.value,
-                participant_status=grant.status.value,
-                expires_at=grant.expires_at.isoformat() if grant.expires_at else None,
+            room=room,
+            coordination=(
+                SessionRoomCoordination(project_id=coordination.project_id, role=coordination.role)
+                if coordination is not None
+                else None
             ),
+            model=session.effective_model,
+            chat_endpoint=_public_session_endpoint(
+                session.chat_endpoint,
+                str(session.id),
+                public_host=server_public_host,
+            ),
+            last_active=(session.last_active or session.created_at).isoformat(),
+            activity_state=(session.activity_state.value if session.activity_state else None),
+            needs_attention=session.needs_attention,
+        )
+
+    def _grant_room(grant: SessionParticipant) -> SessionRoomInfo:
+        return SessionRoomInfo(
+            role=grant.role.value,
+            participant_status=grant.status.value,
+            expires_at=grant.expires_at.isoformat() if grant.expires_at else None,
         )
 
     @router.get(
@@ -2790,7 +2857,9 @@ def create_router(
             parent_instance_id=parent_instance_id,
         )
         room_session_ids = {s.id for s in room_sessions}
-        result.extend(_room_summary(s, g) for s, g in room_pairs if s.id in room_session_ids)
+        result.extend(
+            _room_summary(s, _grant_room(g)) for s, g in room_pairs if s.id in room_session_ids
+        )
         if limit is not None or fields == "summary":
             result.sort(key=_session_activity_key, reverse=True)
         if limit is not None:
@@ -2889,6 +2958,7 @@ def create_router(
                 tenant_id=viewer.tenant_id,
                 owner_id=event.data.get("owner_id"),
                 notification_tenant_id=event.data.get("tenant_id"),
+                recipient_copy=event.data.get("copy_of") is not None,
             )
 
         async def event_generator():
@@ -3253,17 +3323,11 @@ def create_router(
         if principal is not None:
             grant = await session_participant_service.get_own_grant(session_id, principal.user_id)
         if grant is not None and grant.is_active:
-            return _room_summary(session, grant)
+            return _room_summary(session, _grant_room(grant))
         # No active grant: read_room passed some other way (owner/admin),
         # which Cedar only ever grants that role without a room_* attribute
         # match.
-        return SessionRoomSummary(
-            id=session.id,
-            name=session.name,
-            status=session.status,
-            owner_id=session.owner_id,
-            room=SessionRoomInfo(role="owner", participant_status="active"),
-        )
+        return _room_summary(session, SessionRoomInfo(role="owner", participant_status="active"))
 
     @router.get("/sessions/{session_id}/runtime-version", tags=["Sessions"])
     async def get_runtime_version(request: Request, session_id: UUID) -> dict:

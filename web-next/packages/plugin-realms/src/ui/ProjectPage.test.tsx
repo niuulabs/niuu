@@ -95,6 +95,54 @@ describe('ProjectPage', () => {
     expect(screen.queryByText('elsewhere')).not.toBeInTheDocument();
   });
 
+  it("lists sessions shared with the viewer in the project's sessions, with role and owner", async () => {
+    const log = createCallLog();
+    const volundr = fakeVolundr(log);
+    volundr.getSessions = async () =>
+      [
+        {
+          id: 'mine',
+          name: 'mine',
+          status: 'running',
+          model: 'm',
+          source: { type: 'git', repo: 'r', branch: 'main' },
+          coordination: { projectId: 'project-yggdrasil', role: 'worker' },
+        },
+        {
+          id: 'shared-1',
+          name: 'alice-feature',
+          status: 'running',
+          model: 'claude-sonnet-4-6',
+          source: null,
+          ownerId: 'alice',
+          room: { role: 'approver', participantStatus: 'active', expiresAt: null },
+          coordination: { projectId: 'project-yggdrasil', role: 'worker' },
+        },
+      ] as never;
+    volundr.getProjectMembers = async () =>
+      [
+        {
+          project_id: 'project-yggdrasil',
+          user_id: 'alice',
+          role: 'owner',
+          expertise: '',
+          skills: [],
+          display_name: 'Alice Smith',
+          email: 'alice@example.test',
+        },
+      ] as never;
+    renderRealms('/realms/projects/project-yggdrasil', { volundr }, log);
+
+    expect(await screen.findByText('Sessions · 2')).toBeInTheDocument();
+    const badge = await screen.findByTestId('session-shared-shared-1');
+    await waitFor(() => expect(badge).toHaveTextContent('Shared · approver · Alice Smith'));
+    expect(screen.getByRole('link', { name: 'alice-feature' })).toHaveAttribute(
+      'href',
+      '/volundr/sessions/shared-1',
+    );
+    expect(screen.queryByTestId('session-shared-mine')).not.toBeInTheDocument();
+  });
+
   it('shows a ticket at a gate on a workspace that has no resident asking', async () => {
     const log = createCallLog();
     const volundr = fakeVolundr(log);

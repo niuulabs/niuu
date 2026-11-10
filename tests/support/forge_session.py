@@ -33,7 +33,9 @@ from volundr.adapters.inbound.rest import create_router
 from volundr.adapters.inbound.rest_forge_mcp import create_forge_mcp_router
 from volundr.adapters.inbound.rest_message_delivery import create_message_delivery_router
 from volundr.adapters.inbound.rest_notifications import create_notifications_router
+from volundr.adapters.inbound.rest_person_questions import create_person_questions_router
 from volundr.adapters.inbound.rest_session_log import create_session_log_router
+from volundr.adapters.inbound.rest_session_people import create_session_people_router
 from volundr.adapters.outbound.identity import AllowAllIdentityAdapter
 from volundr.config import ForgeMcpHttpConfig
 from volundr.domain.models import Session, SessionLogEntry, SessionStatus, User
@@ -127,6 +129,7 @@ class ForgeApp:
     pod_manager: DeliveringPodManager
     tokens: ForgeSessionTokenService
     log: InMemoryLog
+    participants: Any = None
 
     async def session(self, name: str = "self", owner: str = OWNER, **extra: Any) -> Session:
         session = Session(name=name, owner_id=owner, tenant_id=TENANT, **extra)
@@ -155,6 +158,8 @@ def build_forge_app(
     presented_file_store: Any = None,
     presented_file_quota: Any = None,
     projects: bool = False,
+    project_members: Any = None,
+    no_notifications: bool = False,
     **service_kwargs: Any,
 ):
     """The Forge app slice. ``tokens=None`` builds one; pass ``False`` for none."""
@@ -192,18 +197,27 @@ def build_forge_app(
     if projects:
         from unittest.mock import AsyncMock
 
-        from tests.test_projects.conftest import MemoryProjects
+        from tests.test_projects.conftest import MemoryProjectMembers, MemoryProjects
         from volundr.domain.project_ports import ProjectWorkspace
         from volundr.domain.services.projects import ProjectService
 
+        members = MemoryProjectMembers()
         project_service = ProjectService(
-            MemoryProjects(), AsyncMock(spec=ProjectWorkspace), session_service, instance_id="thor"
+            MemoryProjects(members),
+            AsyncMock(spec=ProjectWorkspace),
+            session_service,
+            instance_id="thor",
+            members=members,
+            users=InMemoryUsers(),
         )
+    participants = make_session_participant_service(
+        session_service, project_members=project_members
+    )
     app.include_router(
         create_router(
             session_service,
             prefix=PREFIX,
-            session_participant_service=make_session_participant_service(session_service),
+            session_participant_service=participants,
             presented_file_store=presented_file_store,
             project_service=project_service,
         )
@@ -237,6 +251,15 @@ def build_forge_app(
             log, session_service=session_service, prefix=PREFIX, notification_service=notifications
         )
     )
+    app.include_router(create_session_people_router(participants, session_service, prefix=PREFIX))
+    app.include_router(
+        create_person_questions_router(
+            participants,
+            session_service,
+            None if no_notifications else notifications,
+            prefix=PREFIX,
+        )
+    )
     app.include_router(create_message_delivery_router(InMemoryDeliveries(), session_service))
     app.include_router(create_forge_mcp_router(mcp_config or ForgeMcpHttpConfig(), prefix=PREFIX))
     return ForgeApp(
@@ -249,6 +272,7 @@ def build_forge_app(
         pod_manager=pod_manager,
         tokens=minted,
         log=log,
+        participants=participants,
     )
 
 

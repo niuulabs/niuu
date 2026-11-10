@@ -39,7 +39,18 @@ import type {
   ProjectRepoMapping,
   ForgeProject,
   ForgeProjectChanges,
+  ProjectMember,
+  ProjectMemberCandidate,
+  ProjectMemberChange,
+  ProjectRole,
   SessionProjectMembership,
+  TeamCatalogEntry,
+  TeamIntegration,
+  TeamIntegrationUsagePage,
+  TeamRoute,
+  TeamRouteChange,
+  TeamRouteEvent,
+  TeamServiceAccountConnect,
   VolundrIdentity,
   VolundrUser,
   VolundrTenant,
@@ -84,6 +95,8 @@ export interface VolundrConversationTurn {
   participant_meta?: Record<string, unknown>;
   thread_id?: string;
   visibility?: 'visible' | 'internal';
+  /** Who sent a user turn; absent on turns recorded before authorship existed. */
+  author?: { user_id?: string; display_name?: string } | null;
 }
 
 export interface VolundrConversationHistory {
@@ -245,6 +258,57 @@ export interface IVolundrService {
    * goes to the host that owns the project. Setting `workspace_path` connects a checkout.
    */
   updateProject(project: ForgeProject, changes: ForgeProjectChanges): Promise<ForgeProject>;
+  /** Everyone on the project, with their role, expertise and skills. */
+  getProjectMembers(project: ForgeProject): Promise<ProjectMember[]>;
+  /** People of the project's org who are not on it yet, for its owners. */
+  getProjectMemberCandidates(
+    project: ForgeProject,
+    query: string,
+  ): Promise<ProjectMemberCandidate[]>;
+  addProjectMember(
+    project: ForgeProject,
+    member: { userId: string; role: ProjectRole; expertise?: string },
+  ): Promise<ProjectMember>;
+  updateProjectMember(
+    project: ForgeProject,
+    userId: string,
+    change: ProjectMemberChange,
+  ): Promise<ProjectMember>;
+  removeProjectMember(project: ForgeProject, userId: string): Promise<void>;
+  /** What the project's owners can install for the team. */
+  getTeamIntegrationCatalog(project: ForgeProject): Promise<TeamCatalogEntry[]>;
+  /** The integrations the project owns, readable by every member. */
+  getTeamIntegrations(project: ForgeProject): Promise<TeamIntegration[]>;
+  /** Connect a provider service account (client credentials) for the team. Owners only. */
+  connectTeamServiceAccount(
+    project: ForgeProject,
+    connect: TeamServiceAccountConnect,
+  ): Promise<TeamIntegration>;
+  /** Start a provider app install for the team; the person approves at the returned url. */
+  startTeamOAuth(
+    project: ForgeProject,
+    slug: string,
+    config: Record<string, string>,
+  ): Promise<{ url: string }>;
+  updateTeamIntegration(
+    project: ForgeProject,
+    connectionId: string,
+    change: { config?: Record<string, unknown>; enabled?: boolean },
+  ): Promise<TeamIntegration>;
+  removeTeamIntegration(project: ForgeProject, connectionId: string): Promise<void>;
+  /** Where each kind of event goes. An event with no route goes nowhere. */
+  getTeamRoutes(project: ForgeProject): Promise<TeamRoute[]>;
+  setTeamRoute(
+    project: ForgeProject,
+    event: TeamRouteEvent,
+    route: TeamRouteChange,
+  ): Promise<TeamRoute>;
+  removeTeamRoute(project: ForgeProject, event: TeamRouteEvent): Promise<void>;
+  /** Uses of the team's connections, newest first; `before` pages to older ones. */
+  getTeamIntegrationUsage(
+    project: ForgeProject,
+    before?: string,
+  ): Promise<TeamIntegrationUsagePage>;
   getSessionProject(
     sessionId: string,
     options?: SessionReadOptions,

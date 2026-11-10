@@ -90,8 +90,8 @@ class PostgresIntegrationRepository(IntegrationRepository):
             """
             INSERT INTO integration_connections
                 (id, owner_id, integration_type, adapter, credential_name,
-                 config, enabled, slug, created_at, updated_at)
-            VALUES ($1::uuid, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, $10)
+                 config, enabled, slug, created_at, updated_at, project_id, connected_by)
+            VALUES ($1::uuid, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, $10, $11::uuid, $12)
             ON CONFLICT (id) DO UPDATE SET
                 owner_id = EXCLUDED.owner_id,
                 integration_type = EXCLUDED.integration_type,
@@ -100,7 +100,9 @@ class PostgresIntegrationRepository(IntegrationRepository):
                 config = EXCLUDED.config,
                 enabled = EXCLUDED.enabled,
                 slug = EXCLUDED.slug,
-                updated_at = EXCLUDED.updated_at
+                updated_at = EXCLUDED.updated_at,
+                project_id = EXCLUDED.project_id,
+                connected_by = EXCLUDED.connected_by
             """,
             connection.id,
             connection.owner_id,
@@ -112,6 +114,8 @@ class PostgresIntegrationRepository(IntegrationRepository):
             connection.slug,
             connection.created_at,
             connection.updated_at,
+            connection.project_id,
+            connection.connected_by,
         )
         return connection
 
@@ -142,4 +146,6 @@ class PostgresIntegrationRepository(IntegrationRepository):
             created_at=row["created_at"],
             updated_at=row["updated_at"],
             slug=row.get("slug", ""),
+            project_id=str(row["project_id"]) if row.get("project_id") else None,
+            connected_by=row.get("connected_by") or "",
         )

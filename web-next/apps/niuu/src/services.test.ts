@@ -1195,6 +1195,43 @@ describe('buildServices', () => {
     });
   });
 
+  it("carries a shared session's room and owner into the list without inventing a workspace", async () => {
+    const services = buildServices({
+      demoMode: true,
+      theme: 'ice',
+      plugins: {},
+      services: {
+        forge: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/forge' },
+        ting: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/ting' },
+      },
+    } as any);
+    const forgeVolundr = volundrMocks.buildVolundrHttpAdapter.mock.results[0]?.value;
+    const room = { role: 'viewer', participantStatus: 'active', expiresAt: null };
+    forgeVolundr.getSession.mockResolvedValue({
+      id: 'shared-1',
+      name: 'alice-feature',
+      status: 'running',
+      model: 'm',
+      source: null,
+      room,
+      ownerId: 'alice',
+      coordination: { projectId: 'p1', role: 'worker' },
+      lastActive: 0,
+    });
+
+    const session = await (services.sessionStore as any).getSession('shared-1');
+
+    expect(session).toMatchObject({
+      id: 'shared-1',
+      room,
+      ownerId: 'alice',
+      coordination: { projectId: 'p1', role: 'worker' },
+    });
+    expect(session.source).toBeUndefined();
+    expect(session.templateId).toBeUndefined();
+    expect(session.preview).toBeUndefined();
+  });
+
   it('prefers an explicit filesystem base over the derived Volundr route', () => {
     const services = buildServices({
       demoMode: true,

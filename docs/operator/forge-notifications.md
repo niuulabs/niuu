@@ -192,6 +192,40 @@ the live event; the user's answer is an ordinary message to the session. A syste
 (AskUserQuestion, confirmation, permission) the session is blocked on, answered in the
 session's question card. Field rules: `docs/forge/session-notifications-contract.md` §12.
 
+## Everyone who may answer is told
+
+A notification that asks someone to decide or act (kind `attention` or `decision`, or a
+producer-declared `question`: a workflow gate, a permission prompt, a question the session
+is blocked on) is not only the session owner's. It also goes to every **approver of the
+session**: project members with the `approver` or `owner` role, and people invited to the
+session's room as `approver`. Viewers, contributors and invitees who have not accepted are
+told nothing, and a session with no project and no invited approvers tells only its owner.
+Other kinds (milestone, info, error, reply_ready) stay with the owner.
+
+Each recipient gets **their own row**, with their own id, read state, feed position and
+delivery rules (their push and chat rules, not the owner's). A copy names its original in
+`copy_of` (null on the original, which stays the session owner's). The row exists, and is
+delivered and broadcast, in the same transaction as the original, so the whole group is
+recorded together or not at all. A retry of the producer's call adds no copies for someone
+who became an approver since: an item already settled is never raised again.
+
+**It settles for everyone.** Resolving any row of the group (by hand, `resolves`, a
+milestone with the same `correlation_id`, or Ting settling a gate) resolves all of them,
+and each is sent again on the live stream. When the session stops waiting for input, the
+"needs your input" items are marked read for every recipient. Resolving a notification
+does not decide the gate: the decision is still made, and checked, where it always was.
+
+**Who sees what.** A reader sees their own rows. A tenant admin sees the original, not
+one row per recipient. `GET /sessions/{id}/notifications` shows each person one row of the
+item: their own copy if they hold one, else the original.
+
+A question the agent puts to one named person (`ask_person`, see [Forge
+MCP](forge-mcp.md#asking-a-person-ask_person)) is not fanned out: it is one row owned by that
+person, open until the question is answered and then resolved with `Answered by <name>.`
+
+Storage: migration `000120_forge_notification_copies` adds a partial index on
+`metadata->>'copy_of'`; no column or table changes.
+
 ## Images
 
 An agent attaches an image with `notify`'s `image` input: `{"file_id": …}` from

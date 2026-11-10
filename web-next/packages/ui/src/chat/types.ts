@@ -74,6 +74,18 @@ export interface AgentEventTarget {
   eventType: string;
 }
 
+/**
+ * The person who sent a user message, as the broker recorded it from the verified
+ * connection. Absent on messages recorded before authorship existed and on messages that
+ * were not sent by a verified person.
+ */
+export interface MessageAuthor {
+  /** The identity provider's id for the person. */
+  userId: string;
+  /** The name to show; empty when the proxy knew neither a display name nor an email. */
+  displayName: string;
+}
+
 export interface ChatMessage {
   id: string;
   role: 'user' | 'assistant' | 'system';
@@ -93,6 +105,8 @@ export interface ChatMessage {
   threadId?: string;
   /** Where a user message sent over the session socket is in delivery (user messages only). */
   delivery?: UserMessageDelivery;
+  /** Who sent a user message, when the broker recorded it. */
+  author?: MessageAuthor;
 }
 
 /**

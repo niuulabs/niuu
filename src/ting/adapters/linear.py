@@ -420,12 +420,13 @@ class LinearTrackerAdapter(TrackerPort):
 
     def __init__(
         self,
-        api_key: str,
+        api_key: str | None = None,
         team_id: str | None = None,
         api_url: str = LINEAR_API_URL,
         cache_ttl: float = 30.0,
         max_retries: int = 3,
         pool: asyncpg.Pool | None = None,
+        access_token: str | None = None,
         **_extra: object,
     ) -> None:
         self._team_id = team_id
@@ -433,6 +434,7 @@ class LinearTrackerAdapter(TrackerPort):
         self._created_run_nodes: dict[str, dict] = {}
         self._gql = LinearGraphQLClient(
             api_key=api_key,
+            access_token=access_token,
             api_url=api_url,
             cache_ttl=cache_ttl,
             max_retries=max_retries,

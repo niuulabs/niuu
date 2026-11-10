@@ -94,6 +94,17 @@ class PostgresProjectRepository(ProjectRepository):
         )
         return [self._project(row) for row in rows]
 
+    async def list_member_projects(self, user_id: str, tenant_id: str) -> list[ForgeProject]:
+        rows = await self._pool.fetch(
+            "SELECT p.document FROM forge_projects p "
+            "JOIN project_members m ON m.project_id=p.id "
+            "WHERE m.user_id=$1 AND m.tenant_id=$2 AND p.tenant_id=$2 "
+            "ORDER BY p.updated_at DESC, p.id",
+            user_id,
+            tenant_id,
+        )
+        return [self._project(row) for row in rows]
+
     async def get(self, project_id: UUID) -> ForgeProject | None:
         row = await self._pool.fetchrow(
             "SELECT document FROM forge_projects WHERE id=$1", project_id
@@ -101,15 +112,29 @@ class PostgresProjectRepository(ProjectRepository):
         return self._project(row) if row else None
 
     async def register(self, project: ForgeProject) -> ForgeProject:
-        row = await self._pool.fetchrow(
-            "INSERT INTO forge_projects(id, owner_id, tenant_id, document, revision, updated_at) "
-            "VALUES($1,$2,$3,$4,1,$5) ON CONFLICT(id) DO NOTHING RETURNING document",
-            project.id,
-            project.owner_id,
-            project.tenant_id,
-            project.document_json(),
-            project.updated_at,
-        )
+        # The project and its creator's `owner` membership are one transaction: a project
+        # without an owner member could not be reached by anyone.
+        async with self._pool.acquire() as connection:
+            async with connection.transaction():
+                row = await connection.fetchrow(
+                    "INSERT INTO forge_projects(id, owner_id, tenant_id, document, revision, "
+                    "updated_at) VALUES($1,$2,$3,$4,1,$5) ON CONFLICT(id) DO NOTHING "
+                    "RETURNING document",
+                    project.id,
+                    project.owner_id,
+                    project.tenant_id,
+                    project.document_json(),
+                    project.updated_at,
+                )
+                if row and project.owner_id:
+                    await connection.execute(
+                        "INSERT INTO project_members(project_id, user_id, tenant_id, role, "
+                        "added_by) VALUES($1,$2,$3,'owner',$2) "
+                        "ON CONFLICT(project_id, user_id) DO NOTHING",
+                        project.id,
+                        project.owner_id,
+                        project.tenant_id,
+                    )
         if row:
             return self._project(row)
         existing = await self.get(project.id)

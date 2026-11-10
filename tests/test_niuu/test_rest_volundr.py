@@ -2561,6 +2561,134 @@ def test_native_history_import_preserves_conflict_response() -> None:
     assert "stopped" in response.json()["detail"]
 
 
+@respx.mock
+def test_a_participants_room_view_is_found_on_the_node_that_refuses_the_full_session() -> None:
+    session_id = "b2a2aee6-f8ca-41ea-ae3a-bd9fa392c8e1"
+    client = _client([_instance("alpha", base_url="http://alpha")])
+    full = respx.get(f"http://alpha/api/v1/forge/sessions/{session_id}").mock(
+        return_value=Response(403, json={"detail": "Access denied"})
+    )
+    summary = {
+        "kind": "room_summary",
+        "id": session_id,
+        "name": "shared",
+        "room": {"role": "approver", "participant_status": "active", "expires_at": None},
+        "chat_endpoint": "/s/session/ws",
+    }
+    room = respx.get(f"http://alpha/api/v1/forge/sessions/{session_id}/room").mock(
+        return_value=Response(200, json=summary)
+    )
+
+    response = client.get(f"/api/v1/forge/sessions/{session_id}/room", headers=_headers())
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["kind"] == "room_summary"
+    assert body["room"]["role"] == "approver"
+    assert body["instance_id"] == "alpha"
+    assert room.calls.last.request.headers["authorization"] == "Bearer test-token"
+    assert not full.called
+
+
+@respx.mock
+def test_a_room_view_no_node_grants_is_not_found() -> None:
+    session_id = "b2a2aee6-f8ca-41ea-ae3a-bd9fa392c8e1"
+    client = _client([_instance("alpha", base_url="http://alpha")])
+    respx.get(f"http://alpha/api/v1/forge/sessions/{session_id}/room").mock(
+        return_value=Response(403, json={"detail": "Access denied"})
+    )
+
+    response = client.get(f"/api/v1/forge/sessions/{session_id}/room", headers=_headers())
+
+    assert response.status_code == 404
+
+
+@respx.mock
+def test_session_people_come_from_the_owning_node() -> None:
+    session_id = "b2a2aee6-f8ca-41ea-ae3a-bd9fa392c8e1"
+    client = _client([_instance("alpha", base_url="http://alpha")])
+    respx.get(f"http://alpha/api/v1/forge/sessions/{session_id}").mock(
+        return_value=Response(200, json={"id": session_id})
+    )
+    people = [{"user_id": "alice", "role": "owner", "can_answer_gates": True}]
+    route = respx.get(f"http://alpha/api/v1/forge/sessions/{session_id}/people").mock(
+        return_value=Response(200, json=people)
+    )
+
+    response = client.get(f"/api/v1/forge/sessions/{session_id}/people", headers=_headers())
+
+    assert response.status_code == 200 and response.json() == people
+    assert route.calls.last.request.headers["authorization"] == "Bearer test-token"
+
+
+@respx.mock
+def test_a_session_without_a_project_is_the_nodes_409_not_an_empty_list() -> None:
+    session_id = "b2a2aee6-f8ca-41ea-ae3a-bd9fa392c8e1"
+    client = _client([_instance("alpha", base_url="http://alpha")])
+    respx.get(f"http://alpha/api/v1/forge/sessions/{session_id}").mock(
+        return_value=Response(200, json={"id": session_id})
+    )
+    respx.get(f"http://alpha/api/v1/forge/sessions/{session_id}/people").mock(
+        return_value=Response(409, json={"detail": "Session is not attached to a project"})
+    )
+
+    response = client.get(f"/api/v1/forge/sessions/{session_id}/people", headers=_headers())
+
+    assert response.status_code == 409
+    assert "not attached to a project" in response.json()["detail"]
+
+
+@respx.mock
+@pytest.mark.parametrize(
+    ("suffix", "status_code", "body"),
+    [
+        ("person-questions", 201, {"question_id": "q-1", "notification_id": "n-1"}),
+        ("person-questions", 200, {"question_id": "q-1", "notification_id": "n-1"}),
+        ("person-questions", 422, {"detail": "not a member of this session's project"}),
+        ("person-questions", 409, {"detail": "Session is not attached to a project"}),
+        ("person-questions/q-1/answer", 200, {"question_id": "q-1", "resolved": True}),
+        ("person-questions/q-1/answer", 404, {"detail": "No notification was recorded"}),
+    ],
+)
+def test_person_questions_reach_the_session_owner_with_forges_answer(
+    suffix, status_code, body
+) -> None:
+    session_id = "b2a2aee6-f8ca-41ea-ae3a-bd9fa392c8e1"
+    suffix = suffix.replace("q-1", "b2a2aee6-f8ca-41ea-ae3a-bd9fa392c8e2")
+    client = _client([_instance("alpha", base_url="http://alpha")])
+    respx.get(f"http://alpha/api/v1/forge/sessions/{session_id}").mock(
+        return_value=Response(200, json={"id": session_id})
+    )
+    route = respx.post(f"http://alpha/api/v1/forge/sessions/{session_id}/{suffix}").mock(
+        return_value=Response(status_code, json=body)
+    )
+    sent = {"user_id": "alice", "question": "Which key?", "request_id": "r"}
+
+    response = client.post(
+        f"/api/v1/forge/sessions/{session_id}/{suffix}", headers=_headers(), json=sent
+    )
+
+    assert response.status_code == status_code
+    assert response.json() == body
+    assert json.loads(route.calls.last.request.content) == sent
+
+
+@respx.mock
+def test_a_malformed_people_answer_is_a_bad_gateway() -> None:
+    session_id = "b2a2aee6-f8ca-41ea-ae3a-bd9fa392c8e1"
+    client = _client([_instance("alpha", base_url="http://alpha")])
+    respx.get(f"http://alpha/api/v1/forge/sessions/{session_id}").mock(
+        return_value=Response(200, json={"id": session_id})
+    )
+    respx.get(f"http://alpha/api/v1/forge/sessions/{session_id}/people").mock(
+        return_value=Response(200, json={"people": []})
+    )
+
+    response = client.get(f"/api/v1/forge/sessions/{session_id}/people", headers=_headers())
+
+    assert response.status_code == 502
+
+
 @pytest.mark.parametrize("method,status_code", [("GET", 200), ("PATCH", 200), ("PATCH", 409)])
 def test_read_state_is_forwarded_to_owning_instance(method, status_code):
     instance = _instance("local", base_url="https://forge.example.test", is_default=True)

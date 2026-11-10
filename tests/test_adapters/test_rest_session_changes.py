@@ -111,7 +111,7 @@ def test_room_summaries_ride_along_every_read(wired):
 
     async def share():
         await participants.invite(
-            shared, owner, user_id="invitee", role=ParticipantRole.OBSERVER, expires_at=None
+            shared, owner, user_id="invitee", role=ParticipantRole.VIEWER, expires_at=None
         )
         await participants.accept(shared, invitee)
 

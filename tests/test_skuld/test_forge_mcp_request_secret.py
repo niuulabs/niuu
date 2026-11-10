@@ -87,6 +87,17 @@ class FakeSecretClient(ForgeClient):
     async def get_session(self, session_id, *, instance_id):
         raise AssertionError("not exercised")
 
+    async def list_session_people(self, session_id):
+        raise AssertionError("not exercised")
+
+    async def create_person_question(self, session_id, *, user_id, question, request_id):
+        raise AssertionError("not exercised")
+
+    async def answer_person_question(
+        self, session_id, question_id, *, answered_by_user_id, answered_by_name
+    ):
+        raise AssertionError("not exercised")
+
     async def get_conversation(self, session_id, *, turns, instance_id):
         raise AssertionError("not exercised")
 

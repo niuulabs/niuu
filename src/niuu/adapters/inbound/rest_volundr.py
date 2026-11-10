@@ -181,6 +181,26 @@ _WS_FORBIDDEN = 4403
 _WS_REASON_CHARS = 120
 
 
+#: Read-only collections under a project's team integrations.
+_TEAM_INTEGRATION_LISTS = frozenset({"catalog", "routes", "usage"})
+
+
+def _team_integration_operation(method: str, pieces: list[str]) -> bool:
+    """Whether ``method`` on ``/projects/{id}/<pieces>`` is a team-integrations route."""
+    if not pieces or pieces[0] != "integrations":
+        return False
+    match pieces[1:]:
+        case []:
+            return method in ("GET", "POST")
+        case [name] if name in _TEAM_INTEGRATION_LISTS:
+            return method == "GET"
+        case [connection_id] if connection_id:
+            return method in ("PATCH", "DELETE")
+        case ["routes", event] if event:
+            return method in ("PUT", "DELETE")
+    return False
+
+
 def _is_session_principal(principal: Principal) -> bool:
     return principal.token_use == FORGE_SESSION_TOKEN_USE
 
@@ -421,6 +441,7 @@ def _event_visible(name: str, data: Any, principal: Principal) -> bool:
         tenant_id=principal.tenant_id,
         owner_id=data.get("owner_id"),
         notification_tenant_id=data.get("tenant_id"),
+        recipient_copy=data.get("copy_of") is not None,
     )
 
 
@@ -2057,6 +2078,9 @@ def create_volundr_router(
     @router.patch("/projects/{project_id}")
     @router.get("/projects/{project_id}/{operation:path}")
     @router.post("/projects/{project_id}/{operation:path}")
+    @router.put("/projects/{project_id}/{operation:path}")
+    @router.patch("/projects/{project_id}/{operation:path}")
+    @router.delete("/projects/{project_id}/{operation:path}")
     async def project_operation(
         request: Request,
         project_id: UUID,
@@ -2070,6 +2094,9 @@ def create_volundr_router(
             ("GET", "receipts"),
             ("POST", "receipts"),
             ("POST", "export"),
+            ("GET", "members"),
+            ("POST", "members"),
+            ("GET", "member-candidates"),
         }
         pieces = operation.split("/")
         is_ack = len(pieces) == 3 and pieces[0] == "receipts" and pieces[2] == "ack"
@@ -2078,7 +2105,15 @@ def create_volundr_router(
                 UUID(pieces[1])
             except ValueError as exc:
                 raise HTTPException(422, "Invalid receipt ID") from exc
-        if (request.method, operation) not in allowed and not (request.method == "POST" and is_ack):
+        # One member: change their role or profile, or remove them.
+        is_member = len(pieces) == 2 and pieces[0] == "members" and bool(pieces[1])
+        known = (
+            (request.method, operation) in allowed
+            or (request.method == "POST" and is_ack)
+            or (request.method in ("PATCH", "DELETE") and is_member)
+            or _team_integration_operation(request.method, pieces)
+        )
+        if not known:
             raise HTTPException(404, "Unknown project operation")
         instance = await _resolve_target_instance(
             service,
@@ -2102,6 +2137,8 @@ def create_volundr_router(
             embedded_app=embedded_forge_app,
         )
         _ensure_remote_success(response)
+        if response.status_code == status.HTTP_204_NO_CONTENT:
+            return Response(status_code=status.HTTP_204_NO_CONTENT)
         payload = response.json()
         return _with_instance(payload, instance) if not operation else payload
 
@@ -2391,6 +2428,30 @@ def create_volundr_router(
             request,
             session_id,
             embedded_app=embedded_forge_app,
+        )
+        return payload
+
+    @router.get("/sessions/{session_id}/room")
+    async def get_session_room(
+        request: Request,
+        session_id: str = Path(description="Volundr session identifier"),
+        principal: Principal = Depends(extract_principal),
+    ) -> dict[str, Any]:
+        """The room view of a session, for a person who shares it without owning it.
+
+        A project member or invitee is refused ``GET /sessions/{id}`` by the node that
+        holds the session, so the owner lookup behind it never finds the node. This
+        looks for the session through its room view, which the node grants to every
+        participant (and to the owner), and names the node that answers.
+        """
+        _, payload = await _find_runtime_owner(
+            service,
+            principal,
+            request,
+            f"/sessions/{session_id}/room",
+            f"Session not found: {session_id}",
+            embedded_app=embedded_forge_app,
+            local_scope=_local_session_scope(request),
         )
         return payload
 
@@ -2843,6 +2904,63 @@ def create_volundr_router(
         )
         _ensure_remote_success(response)
         return response.json()
+
+    async def _team_oauth_on_this_node(
+        request: Request, method: str, path: str, headers: dict[str, str]
+    ) -> Response:
+        """Forward a team app install to this node's own Forge, where its state lives.
+
+        The install starts and returns on the same Forge (the browser's callback carries
+        no identity to route by), so a node without an embedded Forge refuses it.
+        """
+        if embedded_forge_app is None:
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=(
+                    "Team installs run on the Forge that holds the project; this node has "
+                    "no Forge of its own, so install from the project's home node"
+                ),
+            )
+        transport = httpx.ASGITransport(app=embedded_forge_app)
+        # A fixed in-process address; the browser's scheme and Host travel along so Forge
+        # builds the provider's redirect back to the browser's origin, not to this hop.
+        base = (
+            "https://embedded.local" if request.url.scheme == "https" else "http://embedded.local"
+        )
+        async with httpx.AsyncClient(transport=transport, base_url=base) as c:
+            upstream = await c.request(
+                method,
+                f"/api/v1/forge{path}",
+                params=_query_params(request),
+                content=await request.body(),
+                headers={
+                    **headers,
+                    "host": request.headers.get("host", "embedded.local"),
+                    "content-type": request.headers.get("content-type", ""),
+                },
+            )
+        return Response(
+            content=upstream.content,
+            status_code=upstream.status_code,
+            media_type=upstream.headers.get("content-type"),
+        )
+
+    @router.post("/integrations/oauth/authorize-team")
+    async def authorize_team_install(
+        request: Request, principal: Principal = Depends(extract_principal)
+    ) -> Response:
+        """Start a project team's app install (project owners only, checked by Forge).
+
+        The integration travels in the body, so the forwarded path is a constant.
+        """
+        return await _team_oauth_on_this_node(
+            request, "POST", "/integrations/oauth/authorize-team", _forward_local_headers(request)
+        )
+
+    @router.get("/integrations/oauth/callback")
+    async def team_install_callback(request: Request) -> Response:
+        """The provider's redirect back from a team install; Forge checks the state."""
+        return await _team_oauth_on_this_node(request, "GET", "/integrations/oauth/callback", {})
 
     @router.get("/session-runtimes")
     async def get_session_runtimes(
@@ -4145,6 +4263,79 @@ def create_volundr_router(
         if not isinstance(payload, dict):
             raise HTTPException(502, "Unexpected Forge status response")
         return {**payload, "host": instance.id}
+
+    @router.get("/sessions/{session_id}/people")
+    async def list_session_people(
+        request: Request,
+        session_id: UUID,
+        principal: Principal = Depends(extract_principal),
+    ) -> list[dict[str, Any]]:
+        """The people on the session's project, from the node that owns the session.
+
+        A session with no project is the owner's 409, passed through with its reason."""
+        instance, _ = await _find_session_owner(
+            service, principal, request, str(session_id), embedded_app=embedded_forge_app
+        )
+        response = await _request_remote(
+            instance,
+            request,
+            method="GET",
+            path=f"/sessions/{session_id}/people",
+            embedded_app=embedded_forge_app,
+        )
+        _ensure_remote_success(response)
+        payload = _remote_json(response)
+        if not isinstance(payload, list):
+            raise HTTPException(502, "Unexpected Forge people response")
+        return payload
+
+    @router.post("/sessions/{session_id}/person-questions")
+    async def ask_session_person(
+        request: Request,
+        session_id: UUID,
+        body: dict[str, Any] = Body(default_factory=dict),
+        principal: Principal = Depends(extract_principal),
+    ) -> Response:
+        """A question to one person of the session's project, on the session's owning node.
+
+        Forge's answer comes back as is: 201 or 200, 409 for a session with no project and
+        422 for a person who is not on it."""
+        instance, _ = await _find_session_owner(
+            service, principal, request, str(session_id), embedded_app=embedded_forge_app
+        )
+        response = await _request_remote(
+            instance,
+            request,
+            method="POST",
+            path=f"/sessions/{session_id}/person-questions",
+            json_body=body,
+            embedded_app=embedded_forge_app,
+        )
+        _ensure_remote_success(response)
+        return JSONResponse(content=_remote_json(response), status_code=response.status_code)
+
+    @router.post("/sessions/{session_id}/person-questions/{question_id}/answer")
+    async def answer_session_person_question(
+        request: Request,
+        session_id: UUID,
+        question_id: str = Path(pattern=r"^[0-9a-f-]{36}$"),
+        body: dict[str, Any] = Body(default_factory=dict),
+        principal: Principal = Depends(extract_principal),
+    ) -> Response:
+        """Who answered a question put to a person, on the session's owning node."""
+        instance, _ = await _find_session_owner(
+            service, principal, request, str(session_id), embedded_app=embedded_forge_app
+        )
+        response = await _request_remote(
+            instance,
+            request,
+            method="POST",
+            path=f"/sessions/{session_id}/person-questions/{question_id}/answer",
+            json_body=body,
+            embedded_app=embedded_forge_app,
+        )
+        _ensure_remote_success(response)
+        return JSONResponse(content=_remote_json(response), status_code=response.status_code)
 
     @router.get("/sessions/{session_id}/runtime-version")
     async def get_session_runtime_version(

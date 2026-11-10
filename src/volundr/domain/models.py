@@ -1441,6 +1441,36 @@ class CredentialEnrollmentSpec:
     default_credential_name: str
 
 
+class TeamInstallMethod(StrEnum):
+    """How a provider is installed for a team, so it acts as a bot, never a person."""
+
+    #: The provider's app install (OAuth authorization code), e.g. a Slack bot or a
+    #: Linear app acting as itself (``authorize_params: {actor: app}``).
+    OAUTH = "oauth"
+    #: A provider service account's OAuth client credentials, minted into a
+    #: short-lived access token, e.g. an Atlassian service account.
+    CLIENT_CREDENTIALS = "client_credentials"
+
+
+@dataclass(frozen=True)
+class TeamInstallSpec:
+    """Whether and how a catalog integration can be installed for a project team."""
+
+    method: TeamInstallMethod
+    #: Authorize-URL parameters that make the install act as the app (``oauth``).
+    authorize_params: dict[str, str] = field(default_factory=dict)
+    #: Scopes of the team install when they differ from a person's (``oauth``).
+    scopes: tuple[str, ...] = ()
+    #: Token endpoint of a ``client_credentials`` install.
+    token_url: str = ""
+    #: Extra token-request fields of a ``client_credentials`` install (e.g. audience).
+    token_params: dict[str, str] = field(default_factory=dict)
+    #: Connection config keys a team install must carry (e.g. Jira's ``cloud_id``).
+    required_config: tuple[str, ...] = ()
+    #: Only a team can install it (a Slack bot): personal connections are refused.
+    team_only: bool = False
+
+
 class CredentialEnrollmentState(StrEnum):
     """Durable lifecycle for one interactive provider enrollment."""
 
@@ -1519,6 +1549,8 @@ class IntegrationDefinition:
     # How to check an API key works: {"url", "auth": "bearer" | "<header name>",
     # "headers": {...}}. Empty when the provider offers no cheap probe.
     key_probe: dict[str, Any] = ()  # type: ignore[assignment]
+    # Set when a project owner may install this integration for the project's team.
+    team_install: TeamInstallSpec | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.credential_schema, dict):

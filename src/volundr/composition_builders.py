@@ -55,6 +55,7 @@ from volundr.domain.ports import (
     SessionContributor,
 )
 from volundr.domain.presented_files import PresentedFileStore
+from volundr.domain.services.client_credentials import ClientCredentialsMinter
 from volundr.domain.services.integration_registry import IntegrationRegistry
 from volundr.domain.services.mesh_identity import ForgeMeshCertificateSource
 from volundr.domain.services.oauth_clients import (
@@ -62,7 +63,10 @@ from volundr.domain.services.oauth_clients import (
     OAuthClient,
     OAuthClientRegistry,
 )
-from volundr.domain.services.oauth_token_refresh import OAuthTokenRefreshService
+from volundr.domain.services.oauth_token_refresh import (
+    DEFAULT_REQUEST_TIMEOUT_SECONDS,
+    OAuthTokenRefreshService,
+)
 from volundr.domain.services.workflow_execution_credentials import (
     WorkflowExecutionCredentialService,
 )
@@ -500,6 +504,9 @@ def create_oauth_token_refresh_service(
         integration_registry=integration_registry,
         credential_store=credential_store,
         clients=oauth_clients,
+        client_credentials_minter=ClientCredentialsMinter(
+            request_timeout=DEFAULT_REQUEST_TIMEOUT_SECONDS
+        ),
     )
 
 

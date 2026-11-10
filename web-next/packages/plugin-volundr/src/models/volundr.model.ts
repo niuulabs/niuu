@@ -183,6 +183,108 @@ export interface ForgeProjectChanges {
   repo_url?: string;
   workspace_path?: string;
 }
+/** A project role. Roles are a ladder: each one can do everything the ones before it can. */
+export type ProjectRole = 'viewer' | 'contributor' | 'approver' | 'owner';
+export const PROJECT_ROLES: readonly ProjectRole[] = ['viewer', 'contributor', 'approver', 'owner'];
+/** A skill in the A2A `AgentSkill` shape, so people and agents are described alike. */
+export interface MemberSkill {
+  id: string;
+  name: string;
+  description?: string;
+  tags?: string[];
+}
+/** A person of the project's org and what they may do on the project. */
+export interface ProjectMember {
+  project_id: string;
+  user_id: string;
+  role: ProjectRole;
+  expertise: string;
+  skills: MemberSkill[];
+  display_name: string;
+  email: string;
+  added_by?: string;
+}
+/** An active member of the project's org who is not on the project yet. */
+export interface ProjectMemberCandidate {
+  user_id: string;
+  display_name: string;
+  email: string;
+}
+export interface ProjectMemberChange {
+  role?: ProjectRole;
+  expertise?: string;
+  skills?: MemberSkill[];
+}
+/** How a project owner installs a catalog entry for the whole team. */
+export type TeamInstallMethod = 'oauth' | 'client_credentials';
+
+/** One field a catalog entry's config asks for. */
+export interface TeamConfigField {
+  label?: string;
+  type?: string;
+  description?: string;
+}
+
+/** A catalog entry as the project's owners see it (snake_case, as the API sends it). */
+export interface TeamCatalogEntry {
+  slug: string;
+  name: string;
+  description?: string;
+  icon: string;
+  integration_type: string;
+  config_schema: { required?: string[]; properties?: Record<string, TeamConfigField> };
+  team_install: TeamInstallMethod;
+}
+
+/** An integration the project owns: the team's bot, never a person. */
+export interface TeamIntegration {
+  id: string;
+  slug: string;
+  integration_type: string;
+  config: Record<string, unknown>;
+  enabled: boolean;
+  connected_by: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export type TeamRouteEvent = 'needs_decision' | 'person_question' | 'progress' | 'errors';
+export type TeamDeliverTo = 'channel' | 'recipient';
+
+/** What one kind of event does with the team's messaging connection. */
+export interface TeamRoute {
+  event: TeamRouteEvent;
+  connection_id: string;
+  deliver_to: TeamDeliverTo;
+  channel: string;
+  enabled: boolean;
+}
+
+export type TeamRouteChange = Omit<TeamRoute, 'event'>;
+
+/** One use of a team connection. */
+export interface TeamIntegrationUse {
+  connection_id: string;
+  action: string;
+  acting_for: string;
+  actor: string;
+  subject: string;
+  session_id: string;
+  occurred_at: string | null;
+}
+
+/** A page of uses, newest first; `next_before` is set while older ones remain. */
+export interface TeamIntegrationUsagePage {
+  items: TeamIntegrationUse[];
+  next_before: string | null;
+}
+
+export interface TeamServiceAccountConnect {
+  slug: string;
+  credential: { client_id: string; client_secret: string };
+  config: Record<string, string>;
+}
+
 export interface SessionProjectMembership {
   sessionId: string;
   revision: number;
@@ -221,6 +323,16 @@ export interface SessionStartup {
   progressError: string | null;
 }
 
+/** What a person may do in a room (`niuu.room_access`): chat, also answer gates, everything. */
+export type SessionRoomRole = 'viewer' | 'approver' | 'owner';
+
+/** The caller's own standing in a session's room, as Forge reports it for a shared session. */
+export interface SessionRoom {
+  role: SessionRoomRole;
+  participantStatus: string;
+  expiresAt: string | null;
+}
+
 export interface VolundrSession {
   sessionDefinition?: string;
   /** The Ting workflow run this session works for (the slug of its `workflow:` tag). */
@@ -228,7 +340,17 @@ export interface VolundrSession {
   coordination?: SessionCoordination;
   id: string;
   name: string;
-  source: SessionSource;
+  /**
+   * The workspace the session was launched from. `null` when Forge withheld it: a person
+   * who shares a session without owning it gets a room summary, which never carries the
+   * repository, branch or paths. Check `room` first; there is no stand-in source.
+   */
+  source: SessionSource | null;
+  /**
+   * The caller's standing in the session's room. Present when Forge answered with a room
+   * summary (a shared session, or the owner's own room view); absent on a full session.
+   */
+  room?: SessionRoom;
   status: SessionStatus;
   model: string;
   personaName?: string;
@@ -273,6 +395,29 @@ export interface VolundrSession {
    * it, and only a host that records turn spans.
    */
   workedSeconds24h?: number;
+}
+
+/**
+ * True when the caller reaches the session through a room grant (a project membership or a
+ * per-session invite) and does not own it. Such a session has no source, code endpoint,
+ * files or settings to show; it has its room: chat at `chatEndpoint`, and gates for approvers.
+ */
+export function isSharedSession(session: Pick<VolundrSession, 'room'>): boolean {
+  return session.room !== undefined && session.room.role !== 'owner';
+}
+
+/** How a shared session reads in a list: "Shared · approver". */
+export function sharedSessionLabel(room: SessionRoom): string {
+  return `Shared · ${room.role}`;
+}
+
+/**
+ * Whether the caller may answer a session's gates and permission prompts: `approver` and up in
+ * its room, or anyone who reads the full session. The server enforces it; this decides only
+ * whether to offer the control.
+ */
+export function canAnswerGates(session: Pick<VolundrSession, 'room'>): boolean {
+  return session.room === undefined || session.room.role !== 'viewer';
 }
 
 /**

@@ -86,6 +86,17 @@ ROUTE_POLICIES: tuple[RoutePolicy, ...] = (
     RoutePolicy("GET", f"{FORGE_PREFIX}/sessions", _READ, Binding.NONE),
     RoutePolicy("GET", _S, _READ, Binding.OWNED),
     RoutePolicy("GET", f"{_S}/status", _READ, Binding.OWNED),
+    # The people on the session's own project (``find_people``): the session itself only.
+    RoutePolicy("GET", f"{_S}/people", _READ, Binding.OWN),
+    # A question to one of them (``ask_person``) and the report of who answered it: the
+    # session itself only, recorded as the agent's own notification.
+    RoutePolicy("POST", f"{_S}/person-questions", FORGE_NOTIFY_SCOPE, Binding.OWN),
+    RoutePolicy(
+        "POST",
+        f"{_S}/person-questions/{{question_id}}/answer",
+        FORGE_NOTIFY_SCOPE,
+        Binding.OWN,
+    ),
     RoutePolicy("GET", f"{_S}/conversation", _READ, Binding.OWNED),
     RoutePolicy("GET", f"{_S}/conversation/turns/{{turn_id}}", _READ, Binding.OWNED),
     RoutePolicy("GET", f"{_S}/log", _READ, Binding.OWNED),

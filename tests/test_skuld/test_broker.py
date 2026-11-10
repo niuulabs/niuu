@@ -4789,7 +4789,6 @@ class TestBrokerRoomAdapter:
             participant_id="human:jozef",
             display_name="Jozef",
             environment_id="cluster-a",
-            role="owner",
             room_id="huddle-1",
         )
         heartbeat = await b.heartbeat_environment(
@@ -4802,8 +4801,6 @@ class TestBrokerRoomAdapter:
         await bus.flush()
 
         assert joined["participant_type"] == "human"
-        assert joined["authority_role"] == "owner"
-        assert "change_autonomy" in joined["capabilities"]
         assert heartbeat["status"] == "busy"
         assert "human:jozef" not in b._room_bridge.participants
         assert [event.event_type for event in captured.events] == [
@@ -4814,51 +4811,31 @@ class TestBrokerRoomAdapter:
         await captured.stop()
 
     @pytest.mark.asyncio
-    async def test_join_environment_binds_capabilities_to_environment_authorities(
-        self,
-        room_settings,
-    ):
-        b = Broker(settings=room_settings)
-
-        joined = await b.join_environment(
-            participant_id="human:approver",
-            display_name="Approver",
-            environment_id="cluster-a",
-            role="approver",
-            environment_action_authorities=["autonomous"],
-        )
-
-        assert "approve" not in joined["capabilities"]
-        assert "authorize_action" not in joined["capabilities"]
-        assert joined["capabilities"] == ("view", "reply")
-
-    @pytest.mark.asyncio
     async def test_human_room_message_preserves_participant_thread_metadata(self, room_settings):
         b = Broker(settings=room_settings)
         b._transport = AsyncMock()
         broadcast = AsyncMock()
         b._channels.broadcast = broadcast
         await b.join_environment(
-            participant_id="human:teacher",
-            display_name="Teacher",
+            participant_id="human:observer",
+            display_name="Observer",
             environment_id="cluster-a",
-            role="teacher",
         )
 
         msg_id = await b.handle_human_room_message(
             "This was the wrong tier.",
             source="browser",
-            participant_id="human:teacher",
+            participant_id="human:observer",
             metadata={"thread_id": "thread-1", "root_correlation_id": "root-1"},
             deliver_to_transport=False,
         )
 
         assert b._conversation_turns[-1].id == msg_id
-        assert b._conversation_turns[-1].participant_id == "human:teacher"
+        assert b._conversation_turns[-1].participant_id == "human:observer"
         assert b._conversation_turns[-1].thread_id == "thread-1"
         assert b._conversation_turns[-1].metadata["root_correlation_id"] == "root-1"
         event = broadcast.await_args.args[0]
-        assert event["participantId"] == "human:teacher"
+        assert event["participantId"] == "human:observer"
         assert event["threadId"] == "thread-1"
         assert event["metadata"]["root_correlation_id"] == "root-1"
 
@@ -4870,7 +4847,6 @@ class TestBrokerRoomAdapter:
             participant_id="human:approver",
             display_name="Approver",
             environment_id="cluster-a",
-            role="approver",
         )
         ws = MagicMock()
         ws.send_text = AsyncMock()
@@ -4896,19 +4872,6 @@ class TestBrokerRoomAdapter:
         assert b._conversation_turns[-1].participant_id == "human:approver"
         assert b._conversation_turns[-1].thread_id == "thread-approve"
 
-    @pytest.mark.asyncio
-    async def test_room_capability_check_rejects_unauthorized_control(self, room_settings):
-        b = Broker(settings=room_settings)
-        await b.join_environment(
-            participant_id="human:observer",
-            display_name="Observer",
-            environment_id="cluster-a",
-            role="observer",
-        )
-
-        with pytest.raises(PermissionError):
-            b.require_room_capability("human:observer", "authorize_action")
-
     # -----------------------------------------------------------------------
     # directed_message dispatch
     # -----------------------------------------------------------------------
@@ -4929,6 +4892,7 @@ class TestBrokerRoomAdapter:
             source="browser",
             request_id=None,
             metadata=None,
+            author=None,
         )
 
     @pytest.mark.asyncio

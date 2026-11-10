@@ -8,6 +8,7 @@ import {
   messageTime,
 } from './ChatMessages';
 import type { ChatMessage } from '../../types';
+import { ChatAuthorshipProvider } from '../../authorship';
 
 // The per-message action bar (copy/regenerate/bookmark) is opt-in and hidden by
 // default (compactUxPrefs.showMessageActions). These tests assert that wiring,
@@ -78,6 +79,73 @@ describe('UserMessage', () => {
     render(<UserMessage message={msg} />);
     expect(screen.getByText('image.jpg')).toBeInTheDocument();
     expect(screen.getByText('1.0KB')).toBeInTheDocument();
+  });
+});
+
+describe('UserMessage author', () => {
+  const alice = { userId: 'u-alice', displayName: 'Alice Liddell' };
+  const bob = { userId: 'u-bob', displayName: 'Bob Stone' };
+
+  function renderIn(
+    message: ChatMessage,
+    authorship: { viewerId?: string; multipleAuthors: boolean },
+  ) {
+    return render(
+      <ChatAuthorshipProvider value={authorship}>
+        <UserMessage message={message} />
+      </ChatAuthorshipProvider>,
+    );
+  }
+
+  it('keeps the current look for a single-person session', () => {
+    renderIn({ ...userMsg, author: alice }, { viewerId: 'u-alice', multipleAuthors: false });
+    expect(screen.queryByTestId('user-author')).not.toBeInTheDocument();
+    expect(screen.getByText('Hello assistant')).toBeInTheDocument();
+  });
+
+  it('shows no author on a message that has none', () => {
+    renderIn(userMsg, { viewerId: 'u-alice', multipleAuthors: true });
+    expect(screen.queryByTestId('user-author')).not.toBeInTheDocument();
+  });
+
+  it('shows the avatar initials and name of someone other than the viewer', () => {
+    renderIn({ ...userMsg, author: bob }, { viewerId: 'u-alice', multipleAuthors: false });
+    const author = screen.getByTestId('user-author');
+    expect(author).toHaveTextContent('Bob Stone');
+    expect(author.querySelector('[data-initial]')).toHaveAttribute('data-initial', 'BS');
+    // The name sits above the bubble.
+    const wrapper = screen.getByTestId('user-message');
+    expect(wrapper.firstElementChild).toBe(author);
+  });
+
+  it('names the viewer too once several people have spoken', () => {
+    renderIn({ ...userMsg, author: alice }, { viewerId: 'u-alice', multipleAuthors: true });
+    expect(screen.getByTestId('user-author')).toHaveTextContent('Alice Liddell');
+  });
+
+  it('shows no author outside a conversation that provides authorship', () => {
+    render(<UserMessage message={{ ...userMsg, author: bob }} />);
+    expect(screen.queryByTestId('user-author')).not.toBeInTheDocument();
+  });
+
+  it('names who answered a question the agent put to a person, and says it is an answer', () => {
+    renderIn(
+      { ...userMsg, id: 'pa_q-1', content: 'Use main', author: alice },
+      { viewerId: 'u-alice', multipleAuthors: false },
+    );
+    const wrapper = screen.getByTestId('user-message');
+    expect(wrapper).toHaveAttribute('id', 'chat-message-pa_q-1');
+    expect(wrapper).toHaveAttribute('data-answers-question', 'q-1');
+    expect(screen.getByTestId('user-author')).toHaveTextContent('Alice Liddell');
+    expect(screen.getByTestId('person-answer-caption')).toHaveTextContent(
+      "Answer to the agent's question",
+    );
+  });
+
+  it('marks no other message as an answer', () => {
+    renderIn({ ...userMsg, author: alice }, { viewerId: 'u-alice', multipleAuthors: false });
+    expect(screen.queryByTestId('person-answer-caption')).not.toBeInTheDocument();
+    expect(screen.getByTestId('user-message')).not.toHaveAttribute('data-answers-question');
   });
 });
 

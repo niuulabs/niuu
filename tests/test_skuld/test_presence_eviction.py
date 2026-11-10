@@ -4,8 +4,6 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock
 
-import pytest
-
 from niuu.collaboration.room import ATTENTION_AVAILABLE, ATTENTION_AWAY
 from skuld.collaboration_adapter import SkuldCollaborationAdapter
 from skuld.config import RoomConfig
@@ -55,7 +53,6 @@ async def test_quiet_participant_stays_and_shows_as_away() -> None:
         "human:jozef",
         display_name="Jozef",
         environment_id="cluster-a",
-        role="observer",
         room_id="incident-1",
         heartbeat_ttl_s=60.0,
     )
@@ -191,70 +188,3 @@ async def test_sweep_lifecycle_start_stop() -> None:
     assert bridge._presence_sweep_task is not None
     await bridge.stop_presence_sweep()
     assert bridge._presence_sweep_task is None
-
-
-# ---------------------------------------------------------------------------
-# Environment-bound human capabilities
-# ---------------------------------------------------------------------------
-
-
-async def test_approver_keeps_powers_when_environment_has_reviewable_actions() -> None:
-    bridge, _registry, _clock = _make_bridge()
-    meta = await bridge.join_environment(
-        "human:jozef",
-        display_name="Jozef",
-        environment_id="cluster-a",
-        role="approver",
-        environment_action_authorities=["autonomous", "human_review_required"],
-    )
-    assert "approve" in meta.capabilities
-    assert "authorize_action" in meta.capabilities
-
-
-async def test_approver_loses_powers_in_observe_only_environment() -> None:
-    bridge, _registry, _clock = _make_bridge()
-    meta = await bridge.join_environment(
-        "human:jozef",
-        display_name="Jozef",
-        environment_id="printer-cell",
-        role="approver",
-        environment_action_authorities=["autonomous"],
-    )
-    assert "approve" not in meta.capabilities
-    assert "authorize_action" not in meta.capabilities
-    assert "view" in meta.capabilities
-
-    with pytest.raises(PermissionError, match="cannot claim capabilities"):
-        await bridge.join_environment(
-            "human:other",
-            display_name="Other",
-            environment_id="printer-cell",
-            role="approver",
-            capabilities=["view", "approve"],
-            environment_action_authorities=["autonomous"],
-        )
-
-
-async def test_owner_keeps_non_approval_powers_in_observe_only_environment() -> None:
-    bridge, _registry, _clock = _make_bridge()
-    meta = await bridge.join_environment(
-        "human:jozef",
-        display_name="Jozef",
-        environment_id="printer-cell",
-        role="owner",
-        environment_action_authorities=["autonomous"],
-    )
-    assert "approve" not in meta.capabilities
-    assert "change_autonomy" in meta.capabilities
-    assert "teach" in meta.capabilities
-
-
-async def test_legacy_callers_without_environment_info_keep_static_grants() -> None:
-    bridge, _registry, _clock = _make_bridge()
-    meta = await bridge.join_environment(
-        "human:jozef",
-        display_name="Jozef",
-        environment_id="cluster-a",
-        role="approver",
-    )
-    assert "approve" in meta.capabilities

@@ -945,6 +945,19 @@ class VolundrHTTPAdapter(VolundrPort):
                 instance_id=await self._project_host_id(client, headers),
             )
 
+    async def list_member_project_ids(
+        self,
+        *,
+        auth_token: str | None = None,
+        principal: Principal | None = None,
+    ) -> list[str]:
+        headers = self._headers(auth_token, principal)
+        client = await self._client(timeout=self._timeout)
+        async with client:
+            resp = await client.get(f"{self._base_url}{FORGE_PROJECTS_PATH}", headers=headers)
+            resp.raise_for_status()
+            return [str(project["id"]) for project in resp.json()]
+
     async def ensure_project(
         self,
         project_id: str,

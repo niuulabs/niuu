@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from urllib.parse import urlsplit
 
 from niuu.ports.credentials import OAuthApplicationStorePort
-from volundr.domain.models import SecretType
+from volundr.domain.models import SecretType, TeamInstallMethod
 from volundr.domain.ports import CredentialStorePort
 from volundr.domain.services.integration_registry import IntegrationRegistry
 
@@ -160,10 +160,16 @@ class OAuthClientRegistry:
     def supports(self, slug: str) -> bool:
         """Whether this integration signs in through an OAuth application at all."""
         definition = self._registry.get_definition(slug)
+        if definition is None or definition.oauth is None:
+            return False
+        if (
+            definition.team_install is not None
+            and definition.team_install.method is TeamInstallMethod.OAUTH
+        ):
+            # A team's app install (a Slack bot, a Linear app) needs the install's app.
+            return True
         return (
-            definition is not None
-            and definition.oauth is not None
-            and definition.credential_enrollment is not None
+            definition.credential_enrollment is not None
             and definition.credential_enrollment.method in OAUTH_APPLICATION_METHODS
         )
 

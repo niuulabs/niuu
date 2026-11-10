@@ -12,6 +12,7 @@ import type {
   TrackerIssue,
   SessionCoordination,
   SessionReadState,
+  SessionRoom,
   SessionSource,
   SessionStartup,
 } from '../models/volundr.model';
@@ -59,6 +60,10 @@ export interface Session {
   model?: string;
   sessionDefinition?: string;
   source?: SessionSource;
+  /** The caller's standing in the room of a session they share; absent on a full session. */
+  room?: SessionRoom;
+  /** Who owns the session; the person it is shared by when `room` says it is not the caller's. */
+  ownerId?: string;
   coordination?: SessionCoordination;
   id: string;
   ravnId: string;
@@ -67,7 +72,8 @@ export interface Session {
   personaName: string;
   sagaId?: string;
   runId?: string;
-  templateId: string;
+  /** The repository or folder the session works in; absent when Forge withholds the workspace. */
+  templateId?: string;
   clusterId: string;
   clusterName?: string;
   state: SessionState;

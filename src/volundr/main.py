@@ -77,6 +77,7 @@ from volundr.adapters.inbound.rest_oauth import create_canonical_oauth_router
 from volundr.adapters.inbound.rest_openshell_credentials import (
     create_openshell_credentials_router,
 )
+from volundr.adapters.inbound.rest_person_questions import create_person_questions_router
 from volundr.adapters.inbound.rest_presented_files import create_presented_files_router
 from volundr.adapters.inbound.rest_prompts import create_prompts_router
 from volundr.adapters.inbound.rest_push import create_push_router
@@ -92,6 +93,7 @@ from volundr.adapters.inbound.rest_session_log import create_session_log_router
 from volundr.adapters.inbound.rest_session_participants import (
     create_session_participants_router,
 )
+from volundr.adapters.inbound.rest_session_people import create_session_people_router
 from volundr.adapters.inbound.rest_trace import create_trace_router
 from volundr.adapters.inbound.rest_tracker import create_canonical_tracker_router
 from volundr.adapters.inbound.rest_user_storage import create_user_storage_router
@@ -225,6 +227,7 @@ from volundr.domain.services.resident_runtime import (
     ResidentRuntimeNotFoundError,
     ResidentRuntimeService,
 )
+from volundr.domain.services.room_grants import RoomGrantSource
 from volundr.domain.services.secret_requests import SecretRequestService
 from volundr.domain.services.session_events import SessionEventStream
 from volundr.domain.services.session_participants import SessionParticipantService
@@ -361,6 +364,7 @@ def _create_notification_service(
     integration_repository: PostgresIntegrationRepository,
     session_lookup: SessionLookup,
     broker_target: BrokerTargetLookup,
+    room_grants: RoomGrantSource,
     guild_instance: GuildInstance | None = None,
 ) -> tuple[NotificationService, NotificationImageWorker] | None:
     """Compose the notification feed, rules, outbox and image worker
@@ -410,6 +414,7 @@ def _create_notification_service(
         engine_resolver=engine_resolver_for(cli_types, settings.default_definition),
         integration_repository=integration_repository,
         guild_instance=guild_instance,
+        room_grants=room_grants,
     )
     return service, image_worker
 
@@ -422,6 +427,7 @@ def _create_notification_delivery(
     integration_repository: Any,
     credential_store: Any,
     device_repository: Any,
+    team: Any = None,
 ) -> NotificationDelivery | None:
     """Compose the outbox dispatcher (``notifications.dispatcher.enabled``).
 
@@ -441,6 +447,7 @@ def _create_notification_delivery(
         credential_store=credential_store,
         device_repository=device_repository,
         push_channel=push_channel,
+        team=team,
     )
 
 
@@ -1409,9 +1416,25 @@ def create_app(
             if moved:
                 logger.info("Push devices: moved %d stored tokens into the credential store", moved)
             mapping_repository = PostgresMappingRepository(pool)
+            # Who holds a role in a session's room: the participant grants and the people
+            # on projects. Session authorization and the notification feed (who is told that
+            # something needs an approver) read the roles from the same two stores.
+            session_participant_repository = PostgresSessionParticipantRepository(pool)
+            project_member_repository = None
+            if settings.projects.enabled:
+                from volundr.domain.project_ports import ProjectMemberRepository
+
+                project_member_repository = import_class(
+                    settings.projects.member_repository_adapter
+                )(pool=pool, **settings.projects.member_repository_kwargs)
+                if not isinstance(project_member_repository, ProjectMemberRepository):
+                    raise TypeError("Project member adapter must implement ProjectMemberRepository")
             notification_feed = _create_notification_service(
                 settings,
                 pool,
+                room_grants=RoomGrantSource(
+                    session_participant_repository, project_member_repository
+                ),
                 broadcaster=broadcaster,
                 integration_repository=integration_repo,
                 guild_instance=guild_membership.instance if guild_membership else None,
@@ -1421,6 +1444,13 @@ def create_app(
             notification_service, notification_image_worker = notification_feed or (None, None)
             app.state.notification_service = notification_service
             app.state.notification_image_worker = notification_image_worker
+            from niuu.adapters.postgres_integration_usage import PostgresIntegrationUsageLog
+            from volundr.domain.services.notification_dispatcher import TeamDelivery
+
+            async def _recipient_email(user_id: str) -> str | None:
+                user = await user_repository.get(user_id)
+                return user.email if user is not None else None
+
             notification_delivery = _create_notification_delivery(
                 settings,
                 pool,
@@ -1428,6 +1458,10 @@ def create_app(
                 integration_repository=integration_repo,
                 credential_store=credential_store,
                 device_repository=device_repository,
+                team=TeamDelivery(
+                    recipient_email=_recipient_email,
+                    usage=PostgresIntegrationUsageLog(integration_pool),
+                ),
             )
             # The Guild push gateway (push.gateway.enabled): this node pushes for
             # every Guild node's notifications. Configured-but-impossible (an
@@ -1743,7 +1777,7 @@ def create_app(
                     # session_participants grant (see
                     # SessionParticipantService.active_grants), unlike "start"
                     # which is owner/admin only.
-                    grants = await session_participant_service.active_grants(resource_id)
+                    grants = await session_participant_service.active_grants(session)
                     resource = SessionService.attributed_resource(
                         session_id,
                         owner_id=session.owner_id,
@@ -1796,6 +1830,16 @@ def create_app(
                 if hasattr(skuld_reg, "set_room_role_resolver"):
                     skuld_reg.set_room_role_resolver(_resolve_room_role)
 
+                if hasattr(skuld_reg, "set_display_name_resolver"):
+
+                    async def _resolve_display_name(user_id: str) -> str | None:
+                        """The provisioned user's display name, stamped on proxied sessions
+                        as the author name of the caller's messages."""
+                        user = await user_repository.get(user_id)
+                        return user.display_name if user is not None else None
+
+                    skuld_reg.set_display_name_resolver(_resolve_display_name)
+
             stats_service = StatsService(stats_repository, session_service)
             token_service = TokenService(
                 token_tracker, repository, pricing_provider, broadcaster=broadcaster
@@ -1817,11 +1861,11 @@ def create_app(
                 broadcaster=broadcaster,
                 timeline_repository=timeline_repository,
             )
-            session_participant_repository = PostgresSessionParticipantRepository(pool)
             session_participant_service = SessionParticipantService(
                 session_participant_repository,
                 session_service,
                 user_repository,
+                project_members=project_member_repository,
             )
             app.state.session_participant_service = session_participant_service
             if skuld_reg is not None and hasattr(skuld_reg, "close_connections"):
@@ -1882,6 +1926,7 @@ def create_app(
 
             # Projects add durable coordination metadata to ordinary Forge sessions.
             project_service = None
+            project_integration_service = None
             if settings.projects.enabled:
                 from volundr.domain.project_ports import ProjectRepository, ProjectWorkspace
                 from volundr.domain.services.projects import ProjectService
@@ -1908,8 +1953,31 @@ def create_app(
                     project_workspace,
                     session_service,
                     instance_id=project_config.instance_id or settings.server_public_host,
+                    members=project_member_repository,
+                    users=user_repository,
                 )
                 app.state.project_service = project_service
+                from niuu.adapters.postgres_integration_usage import PostgresIntegrationUsageLog
+                from volundr.domain.services.client_credentials import ClientCredentialsMinter
+                from volundr.domain.services.oauth_token_refresh import (
+                    DEFAULT_REQUEST_TIMEOUT_SECONDS,
+                )
+                from volundr.domain.services.project_integrations import (
+                    ProjectIntegrationService,
+                )
+
+                integration_usage_log = PostgresIntegrationUsageLog(integration_pool)
+                project_integration_service = ProjectIntegrationService(
+                    project_service,
+                    integrations=integration_repo,
+                    credentials=credential_store,
+                    registry=integration_registry,
+                    rules=PostgresNotificationRuleRepository(pool),
+                    usage=integration_usage_log,
+                    minter=ClientCredentialsMinter(DEFAULT_REQUEST_TIMEOUT_SECONDS),
+                    usage_page_size=project_config.team_usage_page_size,
+                )
+                app.state.project_integration_service = project_integration_service
 
             # Create and include routers
             forge_router = create_router(
@@ -1936,6 +2004,7 @@ def create_app(
                 preview_min_edge=settings.tool_result_preview.min_edge,
                 preview_edge_limit=settings.tool_result_preview.max_edge,
                 project_service=project_service,
+                project_integration_service=project_integration_service,
                 runtime_build=build_identity()
                 if pod_manager.runtime_backend == "process"
                 else None,
@@ -2057,6 +2126,19 @@ def create_app(
                     credential_lock=PostgresCredentialRefreshLock(pool),
                 )
             )
+            if project_integration_service is not None:
+                from volundr.adapters.inbound.rest_oauth import create_team_oauth_router
+
+                app.include_router(
+                    create_team_oauth_router(
+                        oauth_config=settings.oauth,
+                        integration_registry=integration_registry,
+                        credential_store=credential_store,
+                        integration_repo=integration_repo,
+                        team_integrations=project_integration_service,
+                        oauth_clients=oauth_clients,
+                    )
+                )
             app.include_router(create_canonical_tracker_router(tracker_service=tracker_service))
             app.include_router(create_canonical_issues_router(integration_repo, tracker_factory))
 
@@ -2321,6 +2403,14 @@ def create_app(
                     runtime_backend=runtime_backend,
                     room_role_source=settings.pod_manager.room_role_source,
                     identity_header_names=settings.identity.kwargs,
+                )
+            )
+            app.include_router(
+                create_session_people_router(session_participant_service, session_service)
+            )
+            app.include_router(
+                create_person_questions_router(
+                    session_participant_service, session_service, notification_service
                 )
             )
 
