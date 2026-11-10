@@ -169,6 +169,12 @@
   font-size: 9px;
 }
 
+/* An answer to a question the agent put to a person says so, under its author. */
+.niuu-chat-answer-caption {
+  font-size: var(--text-xs);
+  color: var(--color-text-muted);
+}
+
 .niuu-chat-header-sep {
   color: var(--color-text-faint);
 }

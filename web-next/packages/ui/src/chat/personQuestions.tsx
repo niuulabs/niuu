@@ -68,6 +68,24 @@ export function isPersonQuestionTurn(turn: {
 }
 
 /** What the question cards need from the conversation they are shown in. */
+/**
+ * The answer to a question put to a person is the answering person's own message in the
+ * conversation, with the id ``pa_<question id>`` (the broker's ``person_answer_turn_id``).
+ */
+export const PERSON_ANSWER_MESSAGE_PREFIX = 'pa_';
+
+/** The question a message answers, from its id, or null for any other message. */
+export function answeredQuestionId(messageId: string): string | null {
+  return messageId.startsWith(PERSON_ANSWER_MESSAGE_PREFIX)
+    ? messageId.slice(PERSON_ANSWER_MESSAGE_PREFIX.length) || null
+    : null;
+}
+
+/** The DOM id of a conversation message, so a card can bring its answer into view. */
+export function chatMessageDomId(messageId: string): string {
+  return `chat-message-${messageId}`;
+}
+
 export interface PersonQuestionsState {
   /** The signed-in person; the addressee of a question may always answer it. */
   viewerId?: string;

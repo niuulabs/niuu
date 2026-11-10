@@ -6,7 +6,9 @@ import { Textarea } from '../../../primitives/Textarea';
 import { authorInitials, authorName } from '../../authorship';
 import { resolveParticipantColor } from '../../utils/participantColor';
 import {
+  chatMessageDomId,
   mayAnswerPersonQuestion,
+  PERSON_ANSWER_MESSAGE_PREFIX,
   usePersonQuestions,
   type PersonQuestion,
 } from '../../personQuestions';
@@ -125,10 +127,23 @@ export function PersonQuestionCard({ question, className }: PersonQuestionCardPr
           data-testid="person-question-answer"
           className="niuu:flex niuu:flex-col niuu:gap-1 niuu:border-t niuu:border-solid niuu:border-border-subtle niuu:pt-2 niuu:text-sm"
         >
-          <span className="niuu:flex niuu:items-center niuu:gap-2 niuu:text-xs niuu:text-text-muted">
+          <span className="niuu:flex niuu:flex-wrap niuu:items-center niuu:gap-2 niuu:text-xs niuu:text-text-muted">
             Answered by <Person person={answer.answeredBy} />
+            <button
+              type="button"
+              data-testid="person-question-see-answer"
+              className="niuu:cursor-pointer niuu:border-0 niuu:bg-transparent niuu:p-0 niuu:text-xs niuu:text-brand niuu:underline"
+              onClick={() =>
+                document
+                  .getElementById(
+                    chatMessageDomId(`${PERSON_ANSWER_MESSAGE_PREFIX}${question.questionId}`),
+                  )
+                  ?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+              }
+            >
+              See the answer
+            </button>
           </span>
-          <p className="niuu:m-0 niuu:text-text-primary niuu:break-words">{answer.content}</p>
         </div>
       ) : (
         <>

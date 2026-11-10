@@ -59,7 +59,7 @@ describe('PersonQuestionCard', () => {
       );
     });
 
-    it('says who answered and what, once answered, and offers no answer box', () => {
+    it('says who answered, points at their message instead of repeating it, and offers no answer box', () => {
       renderCard({
         viewerId: 'alice',
         answers: new Map([
@@ -71,7 +71,15 @@ describe('PersonQuestionCard', () => {
       const answer = screen.getByTestId('person-question-answer');
       expect(answer).toHaveTextContent('Answered by');
       expect(answer).toHaveTextContent('Bob Jones');
-      expect(answer).toHaveTextContent('Use main');
+      // The answer is Bob's own message in the conversation; the card does not repeat it.
+      expect(answer).not.toHaveTextContent('Use main');
+      const target = document.createElement('div');
+      target.id = 'chat-message-pa_q-1';
+      target.scrollIntoView = vi.fn();
+      document.body.appendChild(target);
+      fireEvent.click(screen.getByTestId('person-question-see-answer'));
+      expect(target.scrollIntoView).toHaveBeenCalled();
+      target.remove();
       expect(screen.queryByTestId('person-question-waiting')).not.toBeInTheDocument();
       expect(answerBox()).not.toBeInTheDocument();
     });

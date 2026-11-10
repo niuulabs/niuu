@@ -50,7 +50,11 @@ import { classifyRelayedTurn } from './relayedTurn';
 import { NotificationCard } from '../NotificationCard';
 import { SecretRequestCard } from '../SecretRequestCard';
 import { PersonQuestionCard } from '../PersonQuestionCard';
-import { parsePersonQuestionInput } from '../../personQuestions';
+import {
+  answeredQuestionId,
+  chatMessageDomId,
+  parsePersonQuestionInput,
+} from '../../personQuestions';
 import {
   isForgeNotifyCall,
   modelLabel,
@@ -216,7 +220,9 @@ export function UserMessage({ message }: UserMessageProps) {
   const uxPrefs = useCompactUxChatPrefs();
   const links = useSessionLinks();
   const authorship = useChatAuthorship();
-  const author = showsAuthor(message, authorship) ? message.author : undefined;
+  // An answer to a question the agent put to a person always names who answered.
+  const answers = answeredQuestionId(message.id);
+  const author = answers || showsAuthor(message, authorship) ? message.author : undefined;
   const delivery = message.delivery;
   const queued = delivery?.state === 'queued';
   // A turn this client sent has a delivery state and is the operator's own, whatever it says.
@@ -240,11 +246,18 @@ export function UserMessage({ message }: UserMessageProps) {
   return (
     <div
       className="niuu-chat-user-wrapper"
+      id={chatMessageDomId(message.id)}
       data-testid="user-message"
       data-timestamp={uxPrefs.timestamp}
       data-delivery={delivery?.state}
+      data-answers-question={answers ?? undefined}
     >
       {author && <UserAuthor author={author} />}
+      {answers && (
+        <span className="niuu-chat-answer-caption" data-testid="person-answer-caption">
+          Answer to the agent&apos;s question
+        </span>
+      )}
       <div className={cn('niuu-chat-user-bubble', queued && 'niuu-chat-user-bubble--queued')}>
         <div className="niuu-chat-user-text">
           <MarkdownContent content={message.content} />

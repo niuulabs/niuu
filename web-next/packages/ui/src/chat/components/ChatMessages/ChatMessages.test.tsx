@@ -127,6 +127,26 @@ describe('UserMessage author', () => {
     render(<UserMessage message={{ ...userMsg, author: bob }} />);
     expect(screen.queryByTestId('user-author')).not.toBeInTheDocument();
   });
+
+  it('names who answered a question the agent put to a person, and says it is an answer', () => {
+    renderIn(
+      { ...userMsg, id: 'pa_q-1', content: 'Use main', author: alice },
+      { viewerId: 'u-alice', multipleAuthors: false },
+    );
+    const wrapper = screen.getByTestId('user-message');
+    expect(wrapper).toHaveAttribute('id', 'chat-message-pa_q-1');
+    expect(wrapper).toHaveAttribute('data-answers-question', 'q-1');
+    expect(screen.getByTestId('user-author')).toHaveTextContent('Alice Liddell');
+    expect(screen.getByTestId('person-answer-caption')).toHaveTextContent(
+      "Answer to the agent's question",
+    );
+  });
+
+  it('marks no other message as an answer', () => {
+    renderIn({ ...userMsg, author: alice }, { viewerId: 'u-alice', multipleAuthors: false });
+    expect(screen.queryByTestId('person-answer-caption')).not.toBeInTheDocument();
+    expect(screen.getByTestId('user-message')).not.toHaveAttribute('data-answers-question');
+  });
 });
 
 describe('AssistantMessage', () => {

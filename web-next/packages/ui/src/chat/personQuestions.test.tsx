@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
+  answeredQuestionId,
+  chatMessageDomId,
   isPersonQuestionTurn,
   mayAnswerPersonQuestion,
   parsePersonAnsweredFrame,
@@ -111,5 +113,14 @@ describe('mayAnswerPersonQuestion', () => {
 
   it('lets nobody answer where the conversation cannot be answered in', () => {
     expect(mayAnswerPersonQuestion({ viewerId: 'alice', approver: true }, question)).toBe(false);
+  });
+});
+
+describe('answer message ids', () => {
+  it('reads the question an answer message answers from its id', () => {
+    expect(answeredQuestionId('pa_q-1')).toBe('q-1');
+    expect(answeredQuestionId('pa_')).toBeNull();
+    expect(answeredQuestionId('msg-1')).toBeNull();
+    expect(chatMessageDomId('pa_q-1')).toBe('chat-message-pa_q-1');
   });
 });

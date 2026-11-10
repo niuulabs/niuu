@@ -135,7 +135,7 @@ describe('SessionChat questions put to a person', () => {
       }),
     );
     expect(screen.getByTestId('person-question-card')).toHaveAttribute('data-state', 'answered');
-    expect(screen.getByTestId('person-question-answer')).toHaveTextContent('Use main');
+    expect(screen.getByTestId('person-question-answer')).toHaveTextContent('Answered by');
   });
 
   it('shows a conversation with no person-question state as waiting and read-only', () => {
