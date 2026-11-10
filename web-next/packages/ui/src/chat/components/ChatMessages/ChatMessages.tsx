@@ -39,6 +39,7 @@ import { ToolImageCard } from '../ToolImages';
 import { PresentedFileCard } from '../ConversationResources';
 import {
   isNotificationCardTool,
+  isPersonQuestionTool,
   isPresentedFileTool,
   isForgeSessionTool,
   isSecretRequestTool,
@@ -48,6 +49,8 @@ import { RelayCard } from './RelayCard';
 import { classifyRelayedTurn } from './relayedTurn';
 import { NotificationCard } from '../NotificationCard';
 import { SecretRequestCard } from '../SecretRequestCard';
+import { PersonQuestionCard } from '../PersonQuestionCard';
+import { parsePersonQuestionInput } from '../../personQuestions';
 import {
   isForgeNotifyCall,
   modelLabel,
@@ -530,7 +533,9 @@ function AssistantContentWithTools({
   const hasNotificationCard = grouped.some(
     (item) =>
       item.kind === 'single' &&
-      (isNotificationCardTool(item.block.name) || isSecretRequestTool(item.block.name)),
+      (isNotificationCardTool(item.block.name) ||
+        isSecretRequestTool(item.block.name) ||
+        isPersonQuestionTool(item.block.name)),
   );
 
   if (grouped.length === 0)
@@ -603,11 +608,22 @@ function AssistantContentWithTools({
             return (
               <SecretRequestCard key={`secret-request:${item.block.id}`} request={secretRequest} />
             );
+          const personQuestion = isPersonQuestionTool(item.block.name)
+            ? parsePersonQuestionInput(item.block.input)
+            : null;
+          if (personQuestion)
+            return (
+              <PersonQuestionCard
+                key={`person-question:${personQuestion.questionId}`}
+                question={personQuestion}
+              />
+            );
           // The raw notify call stays a quiet, expandable line beside its notification card,
           // and a notification whose payload cannot be read stays visible as a raw call.
           if (
             isNotificationCardTool(item.block.name) ||
             isSecretRequestTool(item.block.name) ||
+            isPersonQuestionTool(item.block.name) ||
             isForgeNotifyCall(item.block.name, item.block.input)
           )
             return (

@@ -1,5 +1,6 @@
 import { FORGE_NOTIFICATION_TOOL_NAME, SECRET_REQUEST_TOOL_NAME } from '@niuulabs/domain';
 import { toolImages, type ToolImage } from '../../toolImages';
+import { PERSON_QUESTION_TOOL_NAME } from '../../personQuestions';
 import { isSubagentTool } from './toolFamilies';
 export interface ToolUseBlock {
   type: 'tool_use';
@@ -175,6 +176,11 @@ export function isSecretRequestTool(name: string): boolean {
   return name === SECRET_REQUEST_TOOL_NAME;
 }
 
+/** A question the agent put to one person: a card the addressee answers, never a tool call. */
+export function isPersonQuestionTool(name: string): boolean {
+  return name === PERSON_QUESTION_TOOL_NAME;
+}
+
 /** What a coordinator does to another session with the Forge MCP. */
 export type ForgeSessionAction =
   'create_session' | 'start_session' | 'stop_session' | 'send_message';
@@ -207,6 +213,7 @@ export function isStandaloneCardTool(name: string): boolean {
     isPresentedFileTool(name) ||
     isNotificationCardTool(name) ||
     isSecretRequestTool(name) ||
+    isPersonQuestionTool(name) ||
     isForgeSessionTool(name)
   );
 }

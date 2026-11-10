@@ -148,5 +148,19 @@ export {
   authorInitials,
 } from './authorship';
 export type { ChatAuthorship, ChatAuthorshipProviderProps } from './authorship';
+export {
+  PERSON_QUESTION_TOOL_NAME,
+  PERSON_ANSWER_MESSAGE,
+  PERSON_ANSWERED_FRAME,
+  PersonQuestionsProvider,
+  usePersonQuestions,
+  mayAnswerPersonQuestion,
+  parsePersonQuestionInput,
+  parsePersonAnsweredFrame,
+  isPersonQuestionTurn,
+} from './personQuestions';
+export type { PersonQuestion, PersonQuestionAnswer, PersonQuestionsState } from './personQuestions';
+export { PersonQuestionCard } from './components/PersonQuestionCard';
+export type { PersonQuestionCardProps } from './components/PersonQuestionCard';
 export { classifyRelayedTurn } from './components/ChatMessages/relayedTurn';
 export type { RelayedTurn, RelayKind } from './components/ChatMessages/relayedTurn';
