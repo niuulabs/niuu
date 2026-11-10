@@ -4186,6 +4186,54 @@ def create_volundr_router(
             raise HTTPException(502, "Unexpected Forge people response")
         return payload
 
+    @router.post("/sessions/{session_id}/person-questions")
+    async def ask_session_person(
+        request: Request,
+        session_id: UUID,
+        body: dict[str, Any] = Body(default_factory=dict),
+        principal: Principal = Depends(extract_principal),
+    ) -> Response:
+        """A question to one person of the session's project, on the session's owning node.
+
+        Forge's answer comes back as is: 201 or 200, 409 for a session with no project and
+        422 for a person who is not on it."""
+        instance, _ = await _find_session_owner(
+            service, principal, request, str(session_id), embedded_app=embedded_forge_app
+        )
+        response = await _request_remote(
+            instance,
+            request,
+            method="POST",
+            path=f"/sessions/{session_id}/person-questions",
+            json_body=body,
+            embedded_app=embedded_forge_app,
+        )
+        _ensure_remote_success(response)
+        return JSONResponse(content=_remote_json(response), status_code=response.status_code)
+
+    @router.post("/sessions/{session_id}/person-questions/{question_id}/answer")
+    async def answer_session_person_question(
+        request: Request,
+        session_id: UUID,
+        question_id: str = Path(pattern=r"^[0-9a-f-]{36}$"),
+        body: dict[str, Any] = Body(default_factory=dict),
+        principal: Principal = Depends(extract_principal),
+    ) -> Response:
+        """Who answered a question put to a person, on the session's owning node."""
+        instance, _ = await _find_session_owner(
+            service, principal, request, str(session_id), embedded_app=embedded_forge_app
+        )
+        response = await _request_remote(
+            instance,
+            request,
+            method="POST",
+            path=f"/sessions/{session_id}/person-questions/{question_id}/answer",
+            json_body=body,
+            embedded_app=embedded_forge_app,
+        )
+        _ensure_remote_success(response)
+        return JSONResponse(content=_remote_json(response), status_code=response.status_code)
+
     @router.get("/sessions/{session_id}/runtime-version")
     async def get_session_runtime_version(
         request: Request,

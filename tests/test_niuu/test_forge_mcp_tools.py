@@ -95,6 +95,20 @@ class FakeClient(ForgeClient):
         self._record("list_session_people", session_id)
         return self.people
 
+    async def create_person_question(self, session_id, *, user_id, question, request_id):
+        self._record("create_person_question", (session_id, user_id, question, request_id))
+        return {
+            "question_id": f"q-{request_id}",
+            "notification_id": "n-1",
+            "addressee": _person(user_id, "viewer"),
+        }
+
+    async def answer_person_question(
+        self, session_id, question_id, *, answered_by_user_id, answered_by_name
+    ):
+        self._record("answer_person_question", (session_id, question_id, answered_by_user_id))
+        return {"question_id": question_id, "resolved": True}
+
     async def get_conversation(self, session_id, *, turns, instance_id):
         self._record("get_conversation", (session_id, turns, instance_id))
         rows = [
@@ -189,9 +203,20 @@ class FakeHost(ForgeMcpHost):
         self.ask_max_s = 50.0
         self.asks: list[dict[str, Any]] = []
         self.ask_result: dict[str, Any] = {"outcome": "answered", "answer": "yes", "from": "bob"}
+        self.person_asks: list[dict[str, Any]] = []
+        self.person_result: dict[str, Any] = {
+            "outcome": "answered",
+            "answer": "Use the staging key",
+            "from": "Bob (person bob)",
+            "author": {"user_id": "bob", "display_name": "Bob"},
+        }
 
     def ask_wait_max_s(self) -> float:
         return self.ask_max_s
+
+    async def ask_person_answer(self, **kwargs):
+        self.person_asks.append(kwargs)
+        return self.person_result
 
     async def ask_for_answer(self, **kwargs):
         self.asks.append(kwargs)
@@ -318,6 +343,7 @@ class TestToolList:
             "workflow_step_close",
             "describe_session",
             "find_people",
+            "ask_person",
             "list_notifications",
             "list_sessions",
             "get_session",
@@ -841,6 +867,120 @@ def _person(user_id: str, role: str, **extra: Any) -> dict[str, Any]:
         "can_answer_gates": role in ("approver", "owner"),
         **extra,
     }
+
+
+class TestAskPerson:
+    ARGS = {"user_id": "bob", "question": "Which key do we use?"}
+
+    async def test_registers_the_question_with_forge_then_waits_for_the_answer(self) -> None:
+        toolbox, client, host = _toolbox()
+        result = await toolbox.call("ask_person", {**self.ARGS, "request_id": "r-1"})
+        assert not result.is_error
+        assert client.calls == [
+            ("create_person_question", (SELF, "bob", "Which key do we use?", "r-1"))
+        ]
+        [asked] = host.person_asks
+        assert asked["question_id"] == "q-r-1" and asked["request_id"] == "r-1"
+        assert asked["question"] == "Which key do we use?"
+        assert asked["addressee"]["user_id"] == "bob"
+        assert asked["deadline_s"] == host.ask_max_s  # the ceiling by default
+        structured = result.structured
+        assert structured["outcome"] == "answered"
+        assert structured["answer"] == "Use the staging key"
+        assert structured["author"] == {"user_id": "bob", "display_name": "Bob"}
+        assert structured["asked"]["user_id"] == "bob"
+        assert structured["request_id"] == "r-1" and structured["question_id"] == "q-r-1"
+
+    async def test_a_request_id_is_made_when_none_is_given_and_returned(self) -> None:
+        toolbox, client, _ = _toolbox()
+        result = await toolbox.call("ask_person", self.ARGS)
+        request_id = result.structured["request_id"]
+        assert request_id.startswith("fmcp-")
+        assert client.calls[0][1][3] == request_id
+
+    async def test_a_deadline_is_a_named_outcome_with_the_error_flag(self) -> None:
+        toolbox, _, host = _toolbox()
+        host.person_result = {"outcome": "deadline", "detail": "Bob had not answered"}
+        result = await toolbox.call("ask_person", {**self.ARGS, "deadline_s": 5})
+        assert result.is_error and result.structured["outcome"] == "deadline"
+        assert host.person_asks[0]["deadline_s"] == 5
+        assert result.structured["detail"] == "Bob had not answered"
+
+    async def test_a_deadline_above_the_ceiling_is_refused_before_anything_is_sent(self) -> None:
+        toolbox, client, host = _toolbox()
+        result = await toolbox.call("ask_person", {**self.ARGS, "deadline_s": host.ask_max_s + 1})
+        assert result.is_error
+        assert "ask.wait_max_s" in result.text and "ask_person again" in result.text
+        assert client.calls == [] and host.person_asks == []
+
+    async def test_a_person_who_is_not_on_the_project_is_refused_with_the_remedy(self) -> None:
+        toolbox, client, host = _toolbox()
+        client.fail = ForgeApiError(
+            "'mallory' is not a member of this session's project. Call find_people to see who is",
+            status=422,
+        )
+        result = await toolbox.call("ask_person", {**self.ARGS, "user_id": "mallory"})
+        assert result.is_error
+        assert "Forge answered 422" in result.text and "find_people" in result.text
+        assert host.person_asks == []
+
+    async def test_a_session_without_a_project_is_refused(self) -> None:
+        toolbox, client, host = _toolbox()
+        client.fail = ForgeApiError("Session is not attached to a project", status=409)
+        result = await toolbox.call("ask_person", self.ARGS)
+        assert result.is_error and "not attached to a project" in result.text
+        assert host.person_asks == []
+
+    async def test_an_unconfirmed_registration_says_how_to_retry(self) -> None:
+        toolbox, client, host = _toolbox()
+        client.fail = ForgeApiError("bad gateway", status=502)
+        result = await toolbox.call("ask_person", {**self.ARGS, "request_id": "r-9"})
+        assert result.is_error and "r-9" in result.text and "may have been" in result.text
+        assert host.person_asks == []
+
+    async def test_invalid_arguments_are_refused_before_anything_is_sent(self) -> None:
+        toolbox, client, host = _toolbox()
+        for bad in (
+            {"question": "x"},
+            {"user_id": "bob"},
+            {"user_id": "bob", "question": "  "},
+            {"user_id": "", "question": "x"},
+            {"user_id": "bob", "question": "x", "deadline_s": 0},
+            {"user_id": "bob", "question": "x", "extra": 1},
+        ):
+            assert (await toolbox.call("ask_person", bad)).is_error
+        assert client.calls == [] and host.person_asks == []
+
+    async def test_needs_no_grant_and_only_a_sessions_own_broker_serves_it(self) -> None:
+        toolbox, _, _ = _toolbox()
+        spec = next(t for t in toolbox.list_tools() if t["name"] == "ask_person")
+        assert "grant" not in spec["description"]
+        assert "find_people" in spec["description"] and "ask.wait_max_s" in spec["description"]
+        assert "ask_person" in TRANSCRIPT_ONLY_TOOLS
+        feed, _ = _feed_toolbox()
+        assert "ask_person" not in [t["name"] for t in feed.list_tools()]
+
+    async def test_outside_a_session_the_call_explains(self) -> None:
+        _, client = _feed_toolbox(_SessionlessHost())
+        # The broker's toolbox refuses a host that has no session.
+        full = ForgeMcpToolbox(client=client, host=_SessionlessHost(), grants=(), limits=LIMITS)
+        result = await full.call("ask_person", self.ARGS)
+        assert result.is_error and "own Forge session" in result.text
+        assert client.calls == []
+
+    async def test_a_host_that_cannot_ask_refuses_loudly(self) -> None:
+        class NoRoomHost(FakeHost):
+            ask_person_answer = ForgeMcpHost.ask_person_answer
+
+        client = FakeClient()
+        toolbox = ForgeMcpToolbox(client=client, host=NoRoomHost(), grants=(), limits=LIMITS)
+        result = await toolbox.call("ask_person", self.ARGS)
+        assert result.is_error and "501" in result.text and "own MCP" in result.text
+
+    async def test_find_people_points_at_ask_person(self) -> None:
+        toolbox, _, _ = _toolbox()
+        spec = next(t for t in toolbox.list_tools() if t["name"] == "find_people")
+        assert "`ask_person`" in spec["description"] and "user_id" in spec["description"]
 
 
 class TestFindPeople:

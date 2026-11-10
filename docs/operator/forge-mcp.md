@@ -121,7 +121,7 @@ key exists.
 
 | Grant | Adds scope | Tools |
 |---|---|---|
-| none | `forge:notify`, `forge:session:read`, `forge:session:secret` | `environment`, `notify`, `describe_session`, `find_people`, `list_notifications`, `list_sessions`, `get_session`, `session_transcript` |
+| none | `forge:notify`, `forge:session:read`, `forge:session:secret` | `environment`, `notify`, `describe_session`, `find_people`, `ask_person`, `list_notifications`, `list_sessions`, `get_session`, `session_transcript` |
 | `message` | `forge:session:message` | `send_message`, `ask`, `message_status`, `room_post`, and `reply` when the answer goes to a session or a room (see [agent messaging](agent-messaging.md)) |
 | `lifecycle` | `forge:session:lifecycle` | `create_session`, `start_session`, `stop_session` (never delete or archive) |
 
@@ -219,6 +219,55 @@ participants of its room (invited ones and project members), tenant admins, and 
 session's own `forge_session` credential with `forge:session:read` (a token bound to
 another session gets 403). Only members of the session's own org are listed. A session
 that is not attached to a project is a **409** saying so, not an empty list.
+
+## Asking a person (`ask_person`)
+
+`ask_person(user_id, question, request_id?, deadline_s?)` puts a question to ONE member of the
+session's project (the `user_id` comes from `find_people`) and waits for the answer. It needs no
+grant. It extends what `ask` already does for a question to another session, with a person as
+the addressee, instead of building a second question flow:
+
+- **Registered at Forge.** `POST /sessions/{id}/person-questions` checks the person is on the
+  session's project (422 naming `find_people` as the remedy otherwise; 409 for a session with no
+  project, like `/people`), and records **one** notification for them alone: kind `decision`,
+  `question: true`, source `agent`, open until answered. It is not fanned out to the project's
+  approvers (see [notifications](forge-notifications.md#everyone-who-may-answer-is-told)); the
+  room shows the question to everyone. It needs notifications enabled and the session's own
+  credential (503 and 403 say so).
+- **Shown in the room.** The session's broker appends a durable turn `Asked <name>: <question>`
+  (a `tool_use` part named `ask_person` carrying the person and the question) once per question,
+  so everyone in the room sees whom the agent asked.
+- **Answered by a person in the room.** A browser connection sends
+  `{"type": "person_answer", "question_id": "…", "content": "…"}`. The answerer is the verified
+  person behind the connection, never a name in the message. **Who may answer:** the person
+  asked, or anyone holding the `approver` room role or above (assignment is the agent's advisory
+  judgment, so a question is not stuck on someone who is away). Anyone else, a connection without
+  a verified identity, an unknown or already-answered question gets a rejection that says why.
+  Forge is told first (it settles the addressee's notification, `Answered by <name>.`) and the
+  answer is accepted only once that is recorded, so a failure at either step leaves the question
+  open and the person can send it again.
+- **Back to the exact question.** The answer is a peer message from the person (`kind: person`)
+  in reply to the question's id, so it goes through the broker's inbox: it is the result of the
+  waiting call (`outcome: answered`, `answer`, `from`, `author {user_id, display_name}`,
+  `answered_by_the_person_asked`) and is not also handed to the model; the broker also records a
+  durable `person_answered` frame with the answer and its `author`. An answer that arrives after the
+  call ended is delivered at the next turn boundary like any peer message.
+- **Wait bound.** `deadline_s` defaults to and may not exceed `ask.wait_max_s` (the same knob as
+  `ask`; above it is refused and counted before anything is sent). The wait ending first is the
+  named outcome `deadline` with `isError` set, counted in `skuld.ask.outcomes`, and the question stays
+  open. Call `ask_person` again with the same `request_id` (returned in every result) to keep
+  waiting: it is neither posted nor notified twice.
+
+Only the session's own broker serves it (the Forge-hosted HTTP endpoint does not list it: it has no
+room or inbox). It needs `peer_inbox.enabled` and the durable log, and refuses with a 503 naming
+the setting when it lacks either.
+
+### Who decided a permission or a question
+
+A permission prompt answered in the room records who decided it: the durable `permission_resolved`
+frame carries `decided_by {user_id, display_name}` (absent for an auto-approval and for a
+connection without a verified identity), and an answer to the agent's own question records an
+`ask_user_answered` frame with the same `decided_by`.
 
 ## Secret requests (Forge REST)
 
@@ -325,6 +374,7 @@ session of the same owner.
 | `POST /sessions/{id}/notifications` (direct submit, recorded as `source=agent`) | `forge:notify` | own |
 | `GET /sessions` | `forge:session:read` | owner's sessions only |
 | `GET /sessions/{id}/people` (`find_people`) | `forge:session:read` | own |
+| `POST /sessions/{id}/person-questions`, `POST /sessions/{id}/person-questions/{question}/answer` (`ask_person`; only the session's own credential, never a person) | `forge:notify` | own |
 | `GET /sessions/{id}`, `/conversation`, `/conversation/turns/{turn}`, `/log`, `/log/head`, `/transcript`, `/transcript/download`, `/message-deliveries/{request_id}` | `forge:session:read` | owned |
 | `POST /sessions/{id}/messages` | `forge:session:message` | peer |
 | `POST /sessions` | `forge:session:lifecycle` | acts as the owner |

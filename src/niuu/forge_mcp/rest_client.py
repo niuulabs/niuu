@@ -126,6 +126,24 @@ class RestForgeClient(ForgeClient):
             raise ForgeApiError(f"unexpected response shape from {path}")
         return body
 
+    async def create_person_question(
+        self, session_id: str, *, user_id: str, question: str, request_id: str
+    ) -> dict[str, Any]:
+        return await self._object(
+            "POST",
+            f"/sessions/{quote(session_id)}/person-questions",
+            json={"user_id": user_id, "question": question, "request_id": request_id},
+        )
+
+    async def answer_person_question(
+        self, session_id: str, question_id: str, *, answered_by_user_id: str, answered_by_name: str
+    ) -> dict[str, Any]:
+        return await self._object(
+            "POST",
+            f"/sessions/{quote(session_id)}/person-questions/{quote(question_id)}/answer",
+            json={"answered_by_user_id": answered_by_user_id, "answered_by_name": answered_by_name},
+        )
+
     async def get_conversation(
         self, session_id: str, *, turns: int, instance_id: str | None
     ) -> dict[str, Any]:

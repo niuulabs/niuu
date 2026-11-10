@@ -33,6 +33,7 @@ from volundr.adapters.inbound.rest import create_router
 from volundr.adapters.inbound.rest_forge_mcp import create_forge_mcp_router
 from volundr.adapters.inbound.rest_message_delivery import create_message_delivery_router
 from volundr.adapters.inbound.rest_notifications import create_notifications_router
+from volundr.adapters.inbound.rest_person_questions import create_person_questions_router
 from volundr.adapters.inbound.rest_session_log import create_session_log_router
 from volundr.adapters.inbound.rest_session_people import create_session_people_router
 from volundr.adapters.outbound.identity import AllowAllIdentityAdapter
@@ -158,6 +159,7 @@ def build_forge_app(
     presented_file_quota: Any = None,
     projects: bool = False,
     project_members: Any = None,
+    no_notifications: bool = False,
     **service_kwargs: Any,
 ):
     """The Forge app slice. ``tokens=None`` builds one; pass ``False`` for none."""
@@ -250,6 +252,14 @@ def build_forge_app(
         )
     )
     app.include_router(create_session_people_router(participants, session_service, prefix=PREFIX))
+    app.include_router(
+        create_person_questions_router(
+            participants,
+            session_service,
+            None if no_notifications else notifications,
+            prefix=PREFIX,
+        )
+    )
     app.include_router(create_message_delivery_router(InMemoryDeliveries(), session_service))
     app.include_router(create_forge_mcp_router(mcp_config or ForgeMcpHttpConfig(), prefix=PREFIX))
     return ForgeApp(

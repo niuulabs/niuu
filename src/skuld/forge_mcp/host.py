@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any
 from niuu.build_identity import build_identity
 from niuu.cap_telemetry import record_cap_hit
 from niuu.domain.artifact_reports import ArtifactReport, build_report_turn
+from niuu.domain.message_author import MessageAuthor
 from niuu.domain.notifications import NotificationDraft, build_notification_turn
 from niuu.domain.peer_envelope import derive_message_id
 from niuu.domain.peer_message import (
@@ -506,6 +507,96 @@ class BrokerForgeMcpHost(ForgeMcpHost):
             attributes={"outcome": outcome.value, "recipient": recipient_id},
             description="How this session's ask calls ended, by outcome and recipient.",
         )
+
+    async def ask_person_answer(
+        self,
+        *,
+        addressee: dict[str, Any],
+        question: str,
+        question_id: str,
+        request_id: str,
+        deadline_s: float,
+    ) -> dict[str, Any]:
+        """Show the question in the room addressed to ``addressee``, then wait for the answer.
+
+        The answer is a person's message in reply to ``question_id`` and arrives in this
+        session's own inbox, waking the wait at once; it is taken here and not handed to the
+        harness again. The wait ends with the answer or with ``deadline`` (named, counted, never
+        an empty answer), and an answer after that is delivered at the next turn boundary.
+        """
+        broker = self._broker
+        if not (broker._settings.event_log_enabled and broker.volundr_api_url):
+            raise ForgeApiError(
+                "this session has no durable Forge log (volundr_api_url unset or "
+                "event_log_enabled=false), so the question could not be shown in its room or "
+                "its answer survive a restart",
+                status=503,
+            )
+        if not broker._settings.peer_inbox.enabled:
+            raise ForgeApiError(
+                "this session does not take peer messages (peer_inbox.enabled is off), and a "
+                "person's answer reaches it as one; enable peer_inbox",
+                status=503,
+            )
+        await broker.post_person_question(
+            question_id=question_id, addressee=addressee, question=question
+        )
+        asked = str(addressee["user_id"])
+        deadline = time.monotonic() + deadline_s
+        async with broker.awaiting_person_answer(question_id) as wait:
+            while True:
+                wait.arrived.clear()
+                taken = await broker.take_peer_answer(wait)
+                if taken is not None:
+                    return self._person_answered(asked, taken)
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return self._person_deadline(addressee, request_id, deadline_s)
+                with contextlib.suppress(TimeoutError):
+                    await asyncio.wait_for(wait.arrived.wait(), timeout=remaining)
+
+    def _person_answered(self, asked: str, taken: TakenAnswer) -> dict[str, Any]:
+        envelope = taken.envelope
+        answerer = MessageAuthor(user_id=envelope.sender.id, display_name=envelope.sender.name)
+        result: dict[str, Any] = {
+            "outcome": AskOutcome.ANSWERED.value,
+            "answer": envelope.content,
+            "from": envelope.sender.label(),
+            "author": answerer.to_dict(),
+            "answered_by_the_person_asked": answerer.user_id == asked,
+            "answer_message_id": envelope.message_id,
+            "answered_at": envelope.sent_at.isoformat(),
+        }
+        if taken.already_delivered:
+            result["note"] = (
+                "this answer had already been delivered to you as a message at an earlier turn "
+                "boundary, so it is in your context twice"
+            )
+        self._count_ask(AskOutcome.ANSWERED, asked)
+        return result
+
+    def _person_deadline(
+        self, addressee: dict[str, Any], request_id: str, deadline_s: float
+    ) -> dict[str, Any]:
+        asked = str(addressee["user_id"])
+        name = str(addressee.get("display_name") or "") or asked
+        ceiling_s = self._broker._settings.ask.wait_max_s
+        detail = (
+            f"{name} had not answered within deadline_s={deadline_s:g} (ceiling "
+            f"ask.wait_max_s={ceiling_s:g}, the longest one MCP tool call may run). The "
+            "question stays open in the room and they stay notified. Call ask_person again "
+            f"with request_id {request_id!r} to keep waiting (the question is not posted or "
+            "notified twice); an answer that arrives after this call is delivered to you at "
+            "your next turn boundary."
+        )
+        if deadline_s >= ceiling_s:
+            # Only the ceiling is a cap; a shorter deadline the caller chose is its own
+            # decision, still named and counted in skuld.ask.outcomes.
+            record_cap_hit(
+                "ask.wait_max_s", f"ask_person {request_id} ended {AskOutcome.DEADLINE.value}"
+            )
+        self._count_ask(AskOutcome.DEADLINE, asked)
+        return {"outcome": AskOutcome.DEADLINE.value, "detail": detail}
 
     def workflow_step_host(self) -> bool:
         return self._broker._settings.workflow_steps.enabled

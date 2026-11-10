@@ -33,6 +33,7 @@ from niuu.domain.notifications import (
     summarize_reply,
     turn_dedupe_key,
 )
+from niuu.domain.person_question import ASKED_PERSON_KEY, PERSON_QUESTION_ID_KEY
 from volundr.domain.models import (
     ResidentRuntime,
     Session,
@@ -149,6 +150,11 @@ def attention_dedupe_key(session_id: UUID, state_since: datetime, request_id: st
 
 def submit_dedupe_key(session_id: UUID | None, principal_id: str, idempotency_key: str) -> str:
     return f"submit:{session_id or '-'}:{principal_id}:{idempotency_key}"
+
+
+def person_question_dedupe_key(session_id: UUID, question_id: str) -> str:
+    """Dedupe key of the notification for one question put to one person."""
+    return f"person-question:{session_id}:{question_id}"
 
 
 def _resident_anchor(resident_id: UUID, resident_session_id: UUID | None) -> str:
@@ -364,6 +370,74 @@ class NotificationService(NotificationRecorder):
             if len(page) < self._attention_retire_page_size:
                 return retired
             after = page[-1].seq
+
+    async def ask_person(
+        self,
+        session: Session,
+        *,
+        addressee_id: str,
+        question: str,
+        question_id: str,
+    ) -> tuple[Notification, bool]:
+        """Tell one person a session's agent put a question to them; ``(row, created)``.
+
+        One row, owned by the addressee and by nobody else: the question is theirs, not
+        the project approvers' (the room shows it to everyone). Idempotent per question id,
+        so asking again with the same ``request_id`` neither notifies nor posts twice. It
+        stays open until the question is answered (:meth:`settle_person_question`).
+        """
+        context = replace(self._context(session), owner_id=addressee_id)
+        draft = NotificationDraft(
+            kind=NotificationKind.DECISION,
+            severity=NotificationSeverity.WARNING,
+            title=_bounded(f"{context.session_name} asks you a question", MAX_TITLE_CHARS),
+            body=question,
+            question=True,
+        )
+        candidate = self._candidate(
+            context,
+            dedupe_key=person_question_dedupe_key(session.id, question_id),
+            draft=draft,
+            source=NotificationSource.AGENT,
+            session_seq=None,
+            metadata={PERSON_QUESTION_ID_KEY: question_id, ASKED_PERSON_KEY: addressee_id},
+        )
+        created = await self._record([candidate])
+        if created:
+            return created[0], True
+        existing = await self._repository.get(candidate.id)
+        if existing is None:
+            raise RuntimeError(f"Deduplicated notification {candidate.id} is not readable")
+        return existing, False
+
+    async def settle_person_question(
+        self, session: Session, *, question_id: str, answered_by: str
+    ) -> Notification:
+        """The question was answered: its notification settles (idempotent).
+
+        ``answered_by`` is the name of the person who answered, which may be a person
+        other than the addressee (an approver). Raises
+        :class:`NotificationNotFoundError` when no notification was recorded for the
+        question, which means it was never put to a person through Forge.
+        """
+        row_id = notification_id(person_question_dedupe_key(session.id, question_id))
+        notification = await self._repository.get(row_id)
+        if notification is None:
+            raise NotificationNotFoundError(
+                f"No notification was recorded for question {question_id} of session {session.id}"
+            )
+        if notification.resolved:
+            return notification
+        changed = await self._repository.resolve(
+            notification.owner_id,
+            [notification.id],
+            resolved_at=datetime.now(UTC),
+            resolved_by=None,
+            resolution=f"Answered by {answered_by}.",
+        )
+        for row in changed:
+            await self._broadcast(row)
+        return await self._repository.get(notification.id) or notification
 
     # -- Residents ---------------------------------------------------------
     #

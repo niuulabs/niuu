@@ -37,6 +37,7 @@ from niuu.domain.peer_message import (
     PeerMessage,
     PeerMessageError,
 )
+from niuu.domain.person_question import PERSON_ANSWER_MESSAGE
 from niuu.domain.presented_files import PRESENT_FILE_RPC_TYPE
 from niuu.domain.text_projection import projection_revision
 from niuu.domain.transcript_reducer import (
@@ -112,6 +113,7 @@ from skuld.history_hydration import fetch_durable_history, merge_history_turns
 from skuld.mesh_follows import MeshFollowMixin
 from skuld.mesh_topics import MeshTopics, mesh_topics
 from skuld.peer_inbox import PEER_STATE_RPC_TYPE, PeerInboxMixin, PeerMessageUnconfirmedError
+from skuld.person_questions import PersonQuestionMixin
 from skuld.preview import PreviewForwarder, PreviewPortWatcher
 from skuld.room_delivery import ROOM_MESSAGE_RPC_TYPE, RoomDelivery, RoomDeliveryError
 from skuld.service_manager import (  # noqa: F401
@@ -403,6 +405,10 @@ _VIEWER_MESSAGE_TYPES = frozenset(
         "discover_slash_commands",
         "get_effort",
         "get_runtime_options",
+        # A person answers a question the agent put to them. Any room member may send it;
+        # the handler lets through only the addressee, or an approver (see
+        # PersonQuestionMixin.handle_person_answer).
+        PERSON_ANSWER_MESSAGE,
     }
 )
 # Approver additionally resolves the tool-permission / operator-question wait.
@@ -493,6 +499,7 @@ class Broker(
     ChronicleMixin,
     WorkflowStepMixin,
     PeerInboxMixin,
+    PersonQuestionMixin,
     MeshFollowMixin,
 ):
     """WebSocket broker for Claude Code sessions.
@@ -2255,7 +2262,14 @@ class Broker(
         response: dict[str, Any],
         *,
         auto_approved: bool,
+        decided_by: MessageAuthor | None = None,
     ) -> None:
+        """Answer a pending permission request and record it as resolved.
+
+        ``decided_by`` is the verified person behind the connection that decided it. An
+        auto-approval and a decision from a connection without an identity carry none,
+        which is the true state: nobody is named who did not decide.
+        """
         if not self._transport:
             logger.warning("Cannot respond to permission request; transport is not initialized")
             return
@@ -2274,6 +2288,7 @@ class Broker(
                 "request_id": request_id,
                 "behavior": response.get("behavior", "deny"),
                 "auto_approved": auto_approved,
+                **({"decided_by": decided_by.to_dict()} if decided_by is not None else {}),
             }
         )
 
@@ -3108,6 +3123,7 @@ class Broker(
                     str(request_id),
                     response,
                     auto_approved=False,
+                    decided_by=self._author_for(sender_ws),
                 )
 
             # AskUserQuestion: a human answered a question the agent asked.
@@ -3130,6 +3146,23 @@ class Broker(
                 self._pending_ask_user_questions.pop(answered_request_id, None)
                 self._save_control_state()
                 await self._exit_attention(answered_request_id)
+                decided_by = self._author_for(sender_ws)
+                if decided_by is not None:
+                    await self._emit_broker_frame(
+                        {
+                            "type": "ask_user_answered",
+                            "request_id": answered_request_id,
+                            "decided_by": decided_by.to_dict(),
+                        }
+                    )
+
+            # A person answers the question the agent put to them (ask_person).
+            case "person_answer":
+                await self.handle_person_answer(
+                    data,
+                    sender_ws,
+                    approver=_ROOM_ROLE_RANK[actual_role] >= _ROOM_ROLE_RANK["approver"],
+                )
 
             # Phase 3: interrupt current turn
             case "get_effort" | "set_effort":

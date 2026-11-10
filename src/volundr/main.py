@@ -77,6 +77,7 @@ from volundr.adapters.inbound.rest_oauth import create_canonical_oauth_router
 from volundr.adapters.inbound.rest_openshell_credentials import (
     create_openshell_credentials_router,
 )
+from volundr.adapters.inbound.rest_person_questions import create_person_questions_router
 from volundr.adapters.inbound.rest_presented_files import create_presented_files_router
 from volundr.adapters.inbound.rest_prompts import create_prompts_router
 from volundr.adapters.inbound.rest_push import create_push_router
@@ -2357,6 +2358,11 @@ def create_app(
             )
             app.include_router(
                 create_session_people_router(session_participant_service, session_service)
+            )
+            app.include_router(
+                create_person_questions_router(
+                    session_participant_service, session_service, notification_service
+                )
             )
 
             # Replay-as-live: paced re-emit of recorded frames over a WebSocket,

@@ -219,6 +219,10 @@ does not decide the gate: the decision is still made, and checked, where it alwa
 one row per recipient. `GET /sessions/{id}/notifications` shows each person one row of the
 item: their own copy if they hold one, else the original.
 
+A question the agent puts to one named person (`ask_person`, see [Forge
+MCP](forge-mcp.md#asking-a-person-ask_person)) is not fanned out: it is one row owned by that
+person, open until the question is answered and then resolved with `Answered by <name>.`
+
 Storage: migration `000120_forge_notification_copies` adds a partial index on
 `metadata->>'copy_of'`; no column or table changes.
 

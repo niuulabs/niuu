@@ -234,6 +234,20 @@ class _AskArgs(_SendMessageArgs):
     deadline_s: float | None = Field(default=None, gt=0, allow_inf_nan=False)
 
 
+class _AskPersonArgs(_Args):
+    user_id: str = Field(min_length=1, max_length=200)
+    question: str = Field(min_length=1, max_length=MAX_BODY_CHARS)
+    request_id: str | None = Field(default=None, pattern=_REQUEST_ID_PATTERN)
+    deadline_s: float | None = Field(default=None, gt=0, allow_inf_nan=False)
+
+    @field_validator("question")
+    @classmethod
+    def _not_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("question must not be blank")
+        return value
+
+
 class _ReplyArgs(_Args):
     message_id: str = Field(min_length=1, max_length=200)
     content: str = Field(min_length=1)
@@ -767,9 +781,9 @@ _FIND_PEOPLE_DESCRIPTION = (
     "them and the list is not filtered: the order is the order they joined, and you decide "
     "who fits. `topic` is optional and only echoed back in the result so your own context "
     "keeps what you were looking for; it does not filter or rank anything. To ask one of "
-    "them a question, use `ask_person`. A session that is not attached to a project has no "
-    "members and the call returns an error saying so, which is not the same as nobody "
-    "knowing."
+    "them a question and wait for the answer, use `ask_person` with their `user_id`. A "
+    "session that is not attached to a project has no members and the call returns an error "
+    "saying so, which is not the same as nobody knowing."
 )
 
 _FIND_PEOPLE_SCHEMA = _object(
@@ -780,6 +794,53 @@ _FIND_PEOPLE_SCHEMA = _object(
             "description": "What you want a person for. Echoed back only; never filters.",
         }
     }
+)
+
+
+_ASK_PERSON_DESCRIPTION = (
+    "Ask ONE named member of this session's project a question and wait for their answer. "
+    "Get the `user_id` from `find_people`, which lists the members with their role, expertise "
+    "and skills; you judge who knows most. The question is shown in this session's room "
+    "addressed to that person, so everyone in the room sees it, and they are notified. Use it "
+    "only when you cannot go on without that person's answer. The person asked may answer, and "
+    "so may anyone with the approver room role or above, in case they are away: the answer "
+    "says who gave it (`from`, `author`). The answer is the result of this call and is "
+    "consumed by it, so it is not also delivered to you as a message later. A person who is "
+    "not on the session's project is refused, and so is a session with no project. If the "
+    "wait ends first the result names it in `outcome` (`deadline`) with isError set, never an "
+    "empty answer; the question stays open, and an answer that comes later is delivered to you "
+    "at your next turn boundary. To keep waiting, call ask_person again with the SAME "
+    "request_id (it is returned in every result): the question is not posted or notified "
+    "twice. `deadline_s` is how long to wait; it defaults to, and may not exceed, "
+    "ask.wait_max_s (the longest an MCP tool call may run here), and a larger one is refused "
+    "with that named."
+)
+
+_ASK_PERSON_SCHEMA = _object(
+    {
+        "user_id": {
+            "type": "string",
+            "minLength": 1,
+            "description": "The member's `user_id` from find_people.",
+        },
+        "question": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": MAX_BODY_CHARS,
+            "description": "What you need to know, self-contained: the person may not have "
+            "followed the session.",
+        },
+        "request_id": {
+            **_REQUEST_ID_SCHEMA,
+            "description": "Reuse it to keep waiting for the same question.",
+        },
+        "deadline_s": {
+            "type": "number",
+            "exclusiveMinimum": 0,
+            "description": "Seconds to wait for the answer (default and ceiling: ask.wait_max_s).",
+        },
+    },
+    required=("user_id", "question"),
 )
 
 
@@ -1028,6 +1089,12 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
         description=_FIND_PEOPLE_DESCRIPTION,
         input_schema=_FIND_PEOPLE_SCHEMA,
         args_model=_FindPeopleArgs,
+    ),
+    ToolSpec(
+        name="ask_person",
+        description=_ASK_PERSON_DESCRIPTION,
+        input_schema=_ASK_PERSON_SCHEMA,
+        args_model=_AskPersonArgs,
     ),
     ToolSpec(
         name="list_notifications",
@@ -1583,6 +1650,7 @@ TRANSCRIPT_ONLY_TOOLS = frozenset(
         "report_artifact",
         "request_secret",
         "ask",
+        "ask_person",
         WORKFLOW_STEP_CLOSE_TOOL,
         REPLY_TOOL,
         "room_post",
@@ -1817,6 +1885,7 @@ class ForgeMcpToolbox:
             "notify": notify,
             "describe_session": self._describe_session,
             "find_people": self._find_people,
+            "ask_person": self._ask_person,
             "report_artifact": self._report_artifact,
             "request_secret": self._request_secret,
             WORKFLOW_STEP_CLOSE_TOOL: self._workflow_step_close,
@@ -2364,20 +2433,31 @@ class ForgeMcpToolbox:
         )
         return self._ok({"request_id": request_id, **answer})
 
-    async def _ask(self, args: _AskArgs) -> ToolResult:
+    def _wait_deadline_s(self, tool: str, requested: float | None) -> float | ToolResult:
+        """How long a waiting tool may wait: the caller's ``deadline_s``, else the ceiling.
+
+        The ceiling is ``ask.wait_max_s``, the longest one MCP tool call may run; a request
+        above it is refused (and counted) before anything is sent, naming the knob.
+        """
         ceiling_s = self._host.ask_wait_max_s()
-        deadline_s = ceiling_s if args.deadline_s is None else args.deadline_s
-        if deadline_s > ceiling_s:
-            message = (
-                f"ask: deadline_s={deadline_s:g} is above ask.wait_max_s={ceiling_s:g}, "
-                "the longest one MCP tool call may run here (it must stay shorter than the "
-                "engine's tool timeout, or the engine would end the call before it could answer). "
-                "Nothing was "
-                f"sent. Pass deadline_s of at most {ceiling_s:g}; to keep waiting for a slow "
-                "recipient, call ask again with the same request_id."
-            )
-            record_cap_hit("ask.wait_max_s", message)
-            return ToolResult.error(message)
+        deadline_s = ceiling_s if requested is None else requested
+        if deadline_s <= ceiling_s:
+            return deadline_s
+        message = (
+            f"{tool}: deadline_s={deadline_s:g} is above ask.wait_max_s={ceiling_s:g}, "
+            "the longest one MCP tool call may run here (it must stay shorter than the "
+            "engine's tool timeout, or the engine would end the call before it could answer). "
+            "Nothing was "
+            f"sent. Pass deadline_s of at most {ceiling_s:g}; to keep waiting for a slow "
+            f"recipient, call {tool} again with the same request_id."
+        )
+        record_cap_hit("ask.wait_max_s", message)
+        return ToolResult.error(message)
+
+    async def _ask(self, args: _AskArgs) -> ToolResult:
+        deadline_s = self._wait_deadline_s("ask", args.deadline_s)
+        if isinstance(deadline_s, ToolResult):
+            return deadline_s
         peer = await self._mesh_peer(args)
         if peer is not None:
             return await self._ask_over_mesh(args, peer, deadline_s)
@@ -2421,6 +2501,51 @@ class ForgeMcpToolbox:
                 "session_id": session_id,
                 "request_id": request_id,
                 "message_id": message_id,
+                **ended,
+            }
+        )
+
+    async def _ask_person(self, args: _AskPersonArgs) -> ToolResult:
+        session_id = self._host.session_id
+        if not session_id:
+            return ToolResult.error(
+                "ask_person asks a member of your own Forge session's project, and this agent "
+                "is not running in a Forge session."
+            )
+        deadline_s = self._wait_deadline_s("ask_person", args.deadline_s)
+        if isinstance(deadline_s, ToolResult):
+            return deadline_s
+        request_id = args.request_id or f"{_MCP_REQUEST_ID_PREFIX}{uuid.uuid4().hex}"
+        try:
+            registered = await self._client.create_person_question(
+                session_id, user_id=args.user_id, question=args.question, request_id=request_id
+            )
+        except ForgeApiError as exc:
+            unconfirmed = _unconfirmed_send("ask_person", request_id, exc)
+            if unconfirmed is None:
+                raise
+            return unconfirmed
+        question_id = registered.get("question_id")
+        addressee = registered.get("addressee")
+        if not isinstance(question_id, str) or not isinstance(addressee, dict):
+            raise ForgeApiError("Forge's person question answer has no question_id/addressee")
+        ended = await self._host.ask_person_answer(
+            addressee=addressee,
+            question=args.question,
+            question_id=question_id,
+            request_id=request_id,
+            deadline_s=deadline_s,
+        )
+        return self._ask_result(
+            {
+                "session_id": session_id,
+                "request_id": request_id,
+                "question_id": question_id,
+                "asked": {
+                    "user_id": addressee.get("user_id"),
+                    "display_name": addressee.get("display_name"),
+                    "role": addressee.get("role"),
+                },
                 **ended,
             }
         )
