@@ -2292,26 +2292,34 @@ export function GraphView({
     [displayNodes, edges, measurements, nodes.length, fitOnLoad],
   );
 
-  // A viewer fits the graph once, when the canvas first has a size: it is not edited, so
-  // nothing else frames it. Later frames are the person's (zoom, pan, Fit).
-  const fittedRef = useRef(false);
+  // A viewer frames the graph whenever its canvas changes size (it opens, a panel beside it
+  // comes or goes, the dock is resized): it is not edited, so nothing else frames it. Zoom and
+  // pan stay the person's until the canvas changes again.
+  // The size last framed, kept across refreshes of the graph so a refresh keeps the frame.
+  const framedSizeRef = useRef('');
   useEffect(() => {
-    if (!fitOnLoad || fittedRef.current || nodes.length === 0) return;
+    if (!fitOnLoad || nodes.length === 0) return;
     const svg = svgRef.current;
     if (!svg) return;
+    let frame = 0;
     const fitWhenSized = () => {
       const rect = svg.getBoundingClientRect();
-      if (fittedRef.current || rect.width === 0 || rect.height === 0) return;
-      fittedRef.current = true;
+      const size = `${Math.round(rect.width)}x${Math.round(rect.height)}`;
+      if (rect.width === 0 || rect.height === 0 || size === framedSizeRef.current) return;
+      framedSizeRef.current = size;
       fitToNodes(1);
       // A run's labels grow as the fit zooms out; frame again once they have.
-      requestAnimationFrame(() => fitToNodes(1));
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => fitToNodes(1));
     };
     fitWhenSized();
-    if (fittedRef.current || typeof ResizeObserver === 'undefined') return;
+    if (typeof ResizeObserver === 'undefined') return () => cancelAnimationFrame(frame);
     const observer = new ResizeObserver(fitWhenSized);
     observer.observe(svg);
-    return () => observer.disconnect();
+    return () => {
+      observer.disconnect();
+      cancelAnimationFrame(frame);
+    };
   }, [fitOnLoad, fitToNodes, nodes.length]);
 
   const resetOneToOne = useCallback(() => {
