@@ -1755,6 +1755,54 @@ describe('SessionChat', () => {
     expect(screen.getByText('Reviewer work')).toBeInTheDocument();
   });
 
+  it("keeps a speaker's notification card out of its folded work in a room", () => {
+    localStorage.setItem('niuu.compactUx.conversationFold', 'compact');
+    render(
+      <SessionChat
+        {...defaultProps}
+        connected
+        participants={
+          new Map([
+            [participant.peerId, participant],
+            [participant2.peerId, participant2],
+          ])
+        }
+        messages={[
+          userMessage,
+          {
+            ...roomAssistantMessage,
+            id: 'n1',
+            content: 'Migration applied',
+            parts: [
+              {
+                type: 'tool_use',
+                id: 'nt_1',
+                name: 'forge_notification',
+                input: {
+                  notification_id: 'n-1',
+                  kind: 'milestone',
+                  severity: 'success',
+                  title: 'Migration applied',
+                  body: 'All tables exist.',
+                  links: [],
+                },
+              },
+            ],
+          },
+          { ...roomAssistantMessage, id: 'a1', content: 'Reviewer work' },
+          { ...roomAssistantMessage, id: 'a2', content: 'Reviewer answer' },
+        ]}
+      />,
+    );
+
+    expect(screen.getByTestId('notification-card')).toHaveTextContent('Migration applied');
+    expect(screen.getByRole('button', { name: /^Reviewer: Worked/ })).toHaveAttribute(
+      'aria-expanded',
+      'false',
+    );
+    expect(screen.queryByText('Reviewer work')).not.toBeInTheDocument();
+  });
+
   it('keeps failed room work visible in compact view', () => {
     localStorage.setItem('niuu.compactUx.conversationFold', 'compact');
     render(
