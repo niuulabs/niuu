@@ -26,33 +26,10 @@
   outline: none;
 }
 
-.workflow-canvas__socket {
-  background: var(--color-bg-primary);
-  border: 1.5px solid var(--color-brand);
-  border-radius: 999px;
-  cursor: crosshair;
-  height: 10px;
-  padding: 0;
-  width: 10px;
-}
-
-.workflow-canvas__socket:hover,
-.workflow-canvas__socket:focus-visible,
-.workflow-canvas__socket[data-active='true'] {
-  background: var(--color-brand);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-brand) 22%, transparent);
-  outline: none;
-}
-
 .workflow-canvas__picker {
   background: color-mix(in srgb, var(--color-bg-secondary) 96%, transparent);
   border: 1px solid var(--color-border);
   box-shadow: var(--shadow-lg);
-}
-
-.workflow-canvas__edge--feedback {
-  stroke: var(--status-amber);
-  stroke-dasharray: 5 4;
 }
 
 /* A run drawn on its workflow: each node's state over it, members as chips under it. */
@@ -127,4 +104,259 @@
 .workflow-run-member__text {
   fill: var(--color-text-secondary);
   font-size: 10.5px;
+}
+
+/* ── A step's card: one recipe for every kind ─────────────────────────────────────────
+   An icon tile in the step's tone, its name, and who runs it; its ports sit on its edges. */
+.workflow-card {
+  --card-tone: var(--color-brand);
+  box-sizing: border-box;
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
+  border: 1px solid var(--color-border);
+  border-radius: 14px;
+  background: var(--color-bg-secondary);
+  box-shadow: 0 1px 2px rgb(0 0 0 / 0.18), 0 8px 22px rgb(0 0 0 / 0.16);
+  color: var(--color-text-primary);
+  font-family: var(--font-sans);
+  user-select: none;
+  transition:
+    border-color 0.15s,
+    box-shadow 0.15s;
+}
+.workflow-card[data-tone='gate'] {
+  --card-tone: var(--color-gate);
+}
+.workflow-card[data-tone='trigger'],
+.workflow-card[data-tone='resource'] {
+  --card-tone: var(--color-text-secondary);
+}
+.workflow-card[data-tone='wait'] {
+  --card-tone: var(--status-amber);
+}
+.workflow-card[data-tone='cond'] {
+  --card-tone: var(--color-accent-teal);
+}
+.workflow-card[data-tone='end'] {
+  --card-tone: var(--status-emerald);
+  border-radius: 999px;
+  border-style: dashed;
+}
+g[role='button']:hover > foreignObject > .workflow-card {
+  border-color: var(--color-text-faint);
+}
+.workflow-card[data-selected='true'] {
+  border-color: var(--color-brand);
+  box-shadow:
+    0 0 0 3px color-mix(in srgb, var(--color-brand) 24%, transparent),
+    0 8px 22px rgb(0 0 0 / 0.16);
+}
+.workflow-card[data-issue='error'] {
+  border-color: var(--color-critical);
+}
+.workflow-card[data-issue='warning'] {
+  border-color: var(--status-amber);
+}
+.workflow-card__head {
+  align-items: center;
+  box-sizing: border-box;
+  display: flex;
+  gap: 10px;
+  height: 58px;
+  padding: 0 12px 0 11px;
+}
+.workflow-card__tile {
+  align-items: center;
+  background: color-mix(in srgb, var(--card-tone) 16%, transparent);
+  border-radius: 10px;
+  color: var(--card-tone);
+  display: grid;
+  flex: none;
+  height: 32px;
+  place-items: center;
+  width: 32px;
+}
+.workflow-card__text {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+.workflow-card__title {
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.25;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.workflow-card__sub {
+  color: var(--color-text-secondary);
+  font-size: 11.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.workflow-card__ports {
+  border-top: 1px solid var(--color-border-subtle);
+}
+.workflow-card__end {
+  align-items: center;
+  color: var(--card-tone);
+  display: flex;
+  font-size: 12.5px;
+  font-weight: 500;
+  gap: 6px;
+  height: 100%;
+  justify-content: center;
+  padding: 0 12px;
+}
+.workflow-card__end-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.workflow-card__badge circle {
+  fill: var(--color-critical);
+  stroke: var(--color-bg-primary);
+  stroke-width: 3;
+}
+.workflow-card__badge[data-issue='warning'] circle {
+  fill: var(--status-amber);
+}
+.workflow-card__badge text {
+  fill: #fff;
+  font-family: var(--font-sans);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+/* ── Ports: outcomes on a card's right edge, incoming events on its left ──────────────── */
+.workflow-socket {
+  fill: var(--color-bg-secondary);
+  stroke: var(--color-text-faint);
+  stroke-width: 2;
+  transition: r 0.1s;
+}
+.workflow-socket[data-direction='input'] {
+  stroke: var(--color-text-secondary);
+}
+.workflow-socket[data-wiring='forward'] {
+  fill: var(--status-emerald);
+  stroke: var(--status-emerald);
+}
+.workflow-socket[data-wiring='rework'] {
+  fill: var(--status-amber);
+  stroke: var(--status-amber);
+}
+.workflow-socket[data-resolved='false'] {
+  stroke: var(--color-critical);
+}
+.workflow-socket[role='button']:hover,
+.workflow-socket[role='button']:focus-visible,
+.workflow-socket[data-active='true'] {
+  fill: var(--color-brand);
+  outline: none;
+  stroke: var(--color-brand);
+}
+.workflow-socket__label {
+  fill: var(--color-text-secondary);
+  font-family: var(--font-sans);
+  font-size: 11px;
+}
+.workflow-socket__label[data-direction='input'] {
+  fill: var(--color-text-faint);
+}
+
+/* ── Wires: what a step says, written on the way to the step that starts on it ───────── */
+.workflow-edge-line {
+  stroke: var(--color-text-faint);
+  stroke-linecap: round;
+  stroke-width: 2;
+}
+.workflow-wire[data-feedback='true'] .workflow-edge-line {
+  stroke: var(--status-amber);
+  stroke-dasharray: 6 6;
+}
+.workflow-wire[data-resolved='false'] .workflow-edge-line {
+  stroke: var(--color-critical);
+  stroke-dasharray: 5 5;
+}
+.workflow-wire[data-selected='true'] .workflow-edge-line {
+  stroke: var(--color-brand);
+  stroke-width: 2.5;
+}
+.workflow-arrow {
+  fill: var(--color-text-faint);
+}
+.workflow-arrow[data-tone='rework'] {
+  fill: var(--status-amber);
+}
+.workflow-wire-pill rect {
+  fill: var(--color-bg-primary);
+  stroke: var(--color-border);
+}
+.workflow-wire-pill text {
+  fill: var(--color-text-secondary);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  font-weight: 500;
+}
+.workflow-wire-pill[data-tone='rework'] rect {
+  fill: var(--color-bg-secondary);
+  stroke: var(--status-amber);
+}
+.workflow-wire-pill[data-tone='rework'] text {
+  fill: var(--status-amber);
+}
+
+/* ── The selected step's toolbar, floating above its card ──────────────────────────── */
+.workflow-step-toolbar {
+  align-items: center;
+  background: var(--color-bg-elevated);
+  border: 1px solid var(--color-border);
+  border-radius: 11px;
+  box-shadow: var(--shadow-lg);
+  display: flex;
+  gap: 2px;
+  padding: 3px;
+  position: absolute;
+  transform: translateX(-50%);
+  z-index: 25;
+}
+.workflow-step-toolbar button {
+  align-items: center;
+  background: none;
+  border: 0;
+  border-radius: 8px;
+  color: var(--color-text-primary);
+  cursor: pointer;
+  display: inline-flex;
+  font-family: var(--font-sans);
+  font-size: 12.5px;
+  font-weight: 500;
+  gap: 6px;
+  height: 28px;
+  padding: 0 10px;
+  white-space: nowrap;
+}
+.workflow-step-toolbar button:hover,
+.workflow-step-toolbar button:focus-visible {
+  background: color-mix(in srgb, var(--color-brand) 16%, transparent);
+  color: var(--color-brand);
+  outline: none;
+}
+.workflow-step-toolbar .workflow-step-toolbar__danger:hover,
+.workflow-step-toolbar .workflow-step-toolbar__danger:focus-visible {
+  background: color-mix(in srgb, var(--color-critical) 16%, transparent);
+  color: var(--color-critical);
+}
+.workflow-step-toolbar__sep {
+  background: var(--color-border);
+  height: 16px;
+  width: 1px;
+}
+.workflow-canvas__control[aria-pressed='true'] {
+  color: var(--color-brand);
 }

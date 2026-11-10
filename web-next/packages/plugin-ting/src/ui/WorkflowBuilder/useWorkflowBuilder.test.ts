@@ -784,76 +784,6 @@ describe('useWorkflowBuilder — deleteNode', () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// moveNode
-// ---------------------------------------------------------------------------
-
-describe('useWorkflowBuilder — moveNode', () => {
-  it('updates node position', () => {
-    const { result } = renderHook(() => useWorkflowBuilder(makeWorkflow()));
-    act(() => result.current.moveNode('stage-1', { x: 999, y: 888 }));
-    const node = result.current.workflow.nodes.find((n) => n.id === 'stage-1')!;
-    expect(node.position.x).toBe(999);
-    expect(node.position.y).toBe(888);
-  });
-});
-
-describe('useWorkflowBuilder — autoLayout', () => {
-  it('spaces tall cards by their contracts and restores the whole layout with one undo', () => {
-    const stage = makeWorkflow().nodes[0]!;
-    const workflow: Workflow = {
-      ...makeWorkflow(),
-      nodes: [
-        { ...stage, kind: 'stage', id: 'a', personaIds: ['lead', 'critic', 'writer'], runId: null },
-        { ...stage, kind: 'stage', id: 'b', personaIds: ['lead'], runId: null },
-      ],
-      edges: [],
-    };
-    const personas = ['lead', 'critic', 'writer'].map((id) => ({
-      id,
-      label: id,
-      role: 'build',
-      consumes: ['request'],
-      produces: ['done'],
-    }));
-    const { result } = renderHook(() => useWorkflowBuilder(workflow, personas));
-    const before = result.current.workflow.nodes.map((node) => node.position);
-    act(() => result.current.autoLayout());
-    const [first, second] = result.current.workflow.nodes;
-    expect(second!.position.y - first!.position.y).toBe(172 + 36);
-    act(() => result.current.undo());
-    expect(result.current.workflow.nodes.map((node) => node.position)).toEqual(before);
-  });
-
-  it('repositions every node via layoutWorkflow, in one state update', () => {
-    const wf: Workflow = {
-      ...makeWorkflow(),
-      nodes: [
-        { ...makeWorkflow().nodes[0]!, position: { x: 5, y: 5 } },
-        { ...makeWorkflow().nodes[1]!, position: { x: 9, y: 9 } },
-      ],
-    };
-    const { result } = renderHook(() => useWorkflowBuilder(wf));
-
-    act(() => result.current.autoLayout());
-
-    const stage = result.current.workflow.nodes.find((n) => n.id === 'stage-1')!;
-    const gate = result.current.workflow.nodes.find((n) => n.id === 'gate-1')!;
-    // stage-1 -> gate-1 is a structural edge, so gate-1 lands in the next
-    // column, strictly to the right, at layoutWorkflow's default spacing —
-    // not just "different from the hand-set (5,5)/(9,9) fixture positions".
-    expect(stage.position).toEqual({ x: 40, y: 40 });
-    expect(gate.position).toEqual({ x: 360, y: 40 });
-  });
-
-  it('is a no-op on an empty workflow', () => {
-    const empty: Workflow = { ...makeWorkflow(), nodes: [], edges: [] };
-    const { result } = renderHook(() => useWorkflowBuilder(empty));
-    act(() => result.current.autoLayout());
-    expect(result.current.workflow.nodes).toEqual([]);
-  });
-});
-
 describe('useWorkflowBuilder — deleteEdge', () => {
   it('removes only the requested edge', () => {
     const wf: Workflow = {
@@ -1418,7 +1348,7 @@ describe('useWorkflowBuilder — document lifecycle', () => {
     const { result } = renderHook(() => useWorkflowBuilder(makeWorkflow()));
     act(() => result.current.deleteNode('missing'));
     act(() => result.current.deleteEdge('missing'));
-    act(() => result.current.moveNode('missing', { x: 1, y: 1 }));
+    act(() => result.current.updateNodeLabel('missing', 'Nobody'));
     act(() => result.current.undo());
     expect(result.current.canUndo).toBe(false);
     expect(result.current.canRedo).toBe(false);
@@ -1996,25 +1926,22 @@ describe('useWorkflowBuilder — undo/redo', () => {
     expect(result.current.canRedo).toBe(false);
   });
 
+  const labelOf = (workflow: Workflow) => workflow.nodes.find((n) => n.id === 'stage-1')!.label;
+
   it('undo reverts the last mutation and redo reapplies it', () => {
     const { result } = renderHook(() => useWorkflowBuilder(makeWorkflow()));
-    act(() => result.current.moveNode('stage-1', { x: 999, y: 888 }));
+    const original = labelOf(result.current.workflow);
+    act(() => result.current.updateNodeLabel('stage-1', 'Renamed'));
     expect(result.current.canUndo).toBe(true);
     expect(result.current.canRedo).toBe(false);
 
     act(() => result.current.undo());
-    expect(result.current.workflow.nodes.find((n) => n.id === 'stage-1')!.position).toEqual({
-      x: 100,
-      y: 100,
-    });
+    expect(labelOf(result.current.workflow)).toBe(original);
     expect(result.current.canUndo).toBe(false);
     expect(result.current.canRedo).toBe(true);
 
     act(() => result.current.redo());
-    expect(result.current.workflow.nodes.find((n) => n.id === 'stage-1')!.position).toEqual({
-      x: 999,
-      y: 888,
-    });
+    expect(labelOf(result.current.workflow)).toBe('Renamed');
     expect(result.current.canUndo).toBe(true);
     expect(result.current.canRedo).toBe(false);
   });
@@ -2026,42 +1953,42 @@ describe('useWorkflowBuilder — undo/redo', () => {
     act(() => result.current.undo());
     expect(result.current.workflow).toBe(initial);
 
-    act(() => result.current.moveNode('stage-1', { x: 5, y: 5 }));
-    const moved = result.current.workflow;
+    act(() => result.current.updateNodeLabel('stage-1', 'Renamed'));
+    const renamed = result.current.workflow;
     act(() => result.current.redo());
-    expect(result.current.workflow).toBe(moved);
+    expect(result.current.workflow).toBe(renamed);
   });
 
   it('walks back through several mutations in order', () => {
     const { result } = renderHook(() => useWorkflowBuilder(makeWorkflow()));
-    act(() => result.current.moveNode('stage-1', { x: 1, y: 1 }));
-    act(() => result.current.moveNode('stage-1', { x: 2, y: 2 }));
-    act(() => result.current.moveNode('stage-1', { x: 3, y: 3 }));
+    const original = labelOf(result.current.workflow);
+    act(() => result.current.updateNodeLabel('stage-1', 'One'));
+    act(() => result.current.updateNodeLabel('stage-1', 'Two'));
+    act(() => result.current.updateNodeLabel('stage-1', 'Three'));
 
-    const posAt = () => result.current.workflow.nodes.find((n) => n.id === 'stage-1')!.position;
-    expect(posAt()).toEqual({ x: 3, y: 3 });
+    expect(labelOf(result.current.workflow)).toBe('Three');
     act(() => result.current.undo());
-    expect(posAt()).toEqual({ x: 2, y: 2 });
+    expect(labelOf(result.current.workflow)).toBe('Two');
     act(() => result.current.undo());
-    expect(posAt()).toEqual({ x: 1, y: 1 });
+    expect(labelOf(result.current.workflow)).toBe('One');
     act(() => result.current.undo());
-    expect(posAt()).toEqual({ x: 100, y: 100 });
+    expect(labelOf(result.current.workflow)).toBe(original);
     expect(result.current.canUndo).toBe(false);
   });
 
   it('discards the redo tail once a new mutation is made after undoing', () => {
     const { result } = renderHook(() => useWorkflowBuilder(makeWorkflow()));
-    act(() => result.current.moveNode('stage-1', { x: 1, y: 1 }));
+    const original = labelOf(result.current.workflow);
+    act(() => result.current.updateNodeLabel('stage-1', 'Discarded'));
     act(() => result.current.undo());
     expect(result.current.canRedo).toBe(true);
 
-    act(() => result.current.moveNode('stage-1', { x: 9, y: 9 }));
+    act(() => result.current.updateNodeLabel('stage-1', 'Kept'));
     expect(result.current.canRedo).toBe(false);
 
-    const posAt = () => result.current.workflow.nodes.find((n) => n.id === 'stage-1')!.position;
-    expect(posAt()).toEqual({ x: 9, y: 9 });
+    expect(labelOf(result.current.workflow)).toBe('Kept');
     act(() => result.current.undo());
-    // Back to the pre-undo baseline (100,100), not the discarded (1,1) branch.
-    expect(posAt()).toEqual({ x: 100, y: 100 });
+    // Back to the pre-undo baseline, not the discarded branch.
+    expect(labelOf(result.current.workflow)).toBe(original);
   });
 });

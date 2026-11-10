@@ -1,10 +1,17 @@
 import { describe, expect, it } from 'vitest';
 import type { WorkflowEdge, WorkflowNode } from './workflow';
 import {
+  CARD_HEADER_HEIGHT,
+  CARD_PORT_PAD,
+  CARD_PORT_ROW,
+  CARD_WIDTH,
+  END_CARD_HEIGHT,
+  END_CARD_WIDTH,
   estimateWorkflowNodeSize,
   feedbackLaneAssignments,
   nodeBounds,
   portAnchor,
+  workflowCardSize,
 } from './workflowGeometry';
 import { nodePortCatalog } from './workflowPorts';
 
@@ -46,7 +53,7 @@ describe('workflow geometry', () => {
     ]);
   });
 
-  it('estimates tall stage cards from members and connected typed ports', () => {
+  it('sizes a stage card by its port rows, not by how many members it has', () => {
     const node: WorkflowNode = {
       id: 'research',
       kind: 'stage',
@@ -77,10 +84,12 @@ describe('workflow geometry', () => {
         cp2: { x: 0, y: 0 },
       },
     ];
+    // One row: research.requested in, research.completed out.
     expect(estimateWorkflowNodeSize(node, { edges })).toEqual({
-      width: 224,
-      height: 172,
-      portTop: 158,
+      width: CARD_WIDTH,
+      height: CARD_HEADER_HEIGHT + CARD_PORT_PAD * 2 + CARD_PORT_ROW,
+      portTop: CARD_HEADER_HEIGHT + CARD_PORT_PAD,
+      portBottom: CARD_PORT_PAD,
     });
   });
 
@@ -93,7 +102,10 @@ describe('workflow geometry', () => {
       nodes: { 'planning-analysis': 'delivery-plan-author' },
       position: { x: 0, y: 0 },
     };
-    expect(estimateWorkflowNodeSize(node)).toEqual({ width: 200, height: 66, portTop: undefined });
+    expect(estimateWorkflowNodeSize(node)).toEqual({
+      width: CARD_WIDTH,
+      height: CARD_HEADER_HEIGHT,
+    });
   });
 
   it('grows an include card to fit ports derived from its provided ids', () => {
@@ -116,9 +128,17 @@ describe('workflow geometry', () => {
       },
     ];
     expect(estimateWorkflowNodeSize(node, { edges })).toEqual({
-      width: 200,
-      height: 96,
-      portTop: 82,
+      width: CARD_WIDTH,
+      height: CARD_HEADER_HEIGHT + CARD_PORT_PAD * 2 + CARD_PORT_ROW,
+      portTop: CARD_HEADER_HEIGHT + CARD_PORT_PAD,
+      portBottom: CARD_PORT_PAD,
+    });
+  });
+
+  it('draws the end of a workflow as a pill whatever its ports', () => {
+    expect(workflowCardSize('end', 3)).toEqual({
+      width: END_CARD_WIDTH,
+      height: END_CARD_HEIGHT,
     });
   });
 });

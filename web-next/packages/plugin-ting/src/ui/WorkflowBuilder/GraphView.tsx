@@ -17,20 +17,12 @@
 
 import { useRef, useState, useEffect, useMemo, useCallback } from 'react';
 import { cn } from '@niuulabs/ui';
-import './nodeAccent.css';
 import './workflowCanvas.css';
 import type {
   WorkflowNode,
   WorkflowEdge,
   WorkflowStageNode,
-  WorkflowGateNode,
-  WorkflowCondNode,
-  WorkflowTriggerNode,
-  WorkflowSubworkflowNode,
-  WorkflowEndNode,
-  WorkflowResourceNode,
   WorkflowWaitNode,
-  WorkflowIncludeNode,
 } from '../../domain/workflow';
 import { providedNodeIds } from '../../domain/workflow';
 import type { WorkflowIssue } from '../../domain/workflowValidation';
@@ -45,15 +37,16 @@ import {
   type WorkflowNodePortCatalog,
 } from '../../domain/workflowPorts';
 import {
+  CARD_WIDTH,
   feedbackLaneAssignments,
   nodeBounds,
   portAnchor,
+  workflowCardSize,
   type WorkflowSize,
 } from '../../domain/workflowGeometry';
+import { layoutWorkflow } from '../../domain/workflowLayout';
 import {
-  exceedsDragThreshold,
   includeCardSubtitle,
-  resolveNodeCardVisuals,
   resolveNodeMouseDownAction,
   resourceModeVisuals,
   triggerCardSubtitle,
@@ -67,22 +60,7 @@ import {
   parseWorkflowRegistryMount,
   type WorkflowRegistryMount,
 } from './mimirRegistry';
-import {
-  STAGE_WIDTH,
-  GATE_SIZE,
-  COND_RADIUS,
-  TRIGGER_WIDTH,
-  TRIGGER_HEIGHT,
-  WAIT_WIDTH,
-  WAIT_HEIGHT,
-  END_RADIUS,
-  RESOURCE_WIDTH,
-  RESOURCE_HEIGHT,
-  INCLUDE_WIDTH,
-  INCLUDE_HEIGHT,
-  stageNodeHeight,
-  normalizedStageMembers,
-} from './graphUtils';
+import { normalizedStageMembers } from './graphUtils';
 
 // ---------------------------------------------------------------------------
 // Zoom / pan constants
@@ -93,648 +71,222 @@ const MAX_ZOOM = 3.0;
 /** A viewer framing a whole workflow in a short or narrow panel may go below the editor's floor. */
 const VIEWER_MIN_ZOOM = 0.1;
 
+
 // ---------------------------------------------------------------------------
-// Colour palette (CSS variables)
+// Node cards — one recipe for every kind: an icon tile, the step's name and who runs it.
+// The canvas lays every card out itself (left to right), so a card is selected, never
+// dragged; its ports are drawn on its edges by NodeSocketLayer.
 // ---------------------------------------------------------------------------
 
-const C = {
-  bg: 'var(--color-bg-primary)',
-  nodeStroke: 'var(--color-border)',
-  nodeStrokeSelected: 'var(--color-brand)',
-  nodeFill: 'var(--color-bg-secondary)',
-  nodeFillConnecting: 'var(--color-bg-elevated)',
-  text: 'var(--color-text-primary)',
-  textMuted: 'var(--color-text-secondary)',
-  edgeStroke: 'var(--color-border)',
-  edgeStrokeHover: 'var(--color-text-secondary)',
-  gate: 'color-mix(in srgb, var(--color-gate) 20%, var(--color-bg-secondary))',
-  gateStroke: 'var(--color-gate)',
-  cond: 'color-mix(in srgb, var(--color-accent-teal) 20%, var(--color-bg-secondary))',
-  condStroke: 'var(--color-accent-teal)',
-  warnStroke: 'var(--status-amber)',
-  errorStroke: 'var(--color-critical)',
-  warnFill: 'color-mix(in srgb, var(--status-amber) 12%, var(--color-bg-secondary))',
-  errorFill: 'color-mix(in srgb, var(--color-critical) 12%, var(--color-bg-secondary))',
+const CARD_ICON_PATHS = {
+  code: 'M8 8l-4 4 4 4M16 8l4 4-4 4M13.5 5l-3 14',
+  review:
+    'M7 4h10a2 2 0 012 2v13a2 2 0 01-2 2H7a2 2 0 01-2-2V6a2 2 0 012-2zM9 4h6v3H9zM9 14l2 2 4-4',
+  shield: 'M12 3l7 3v5c0 5-3 8-7 10-4-2-7-5-7-10V6zM9 12l2 2 4-4',
+  flask: 'M9 3h6M10 3v6l-5 9a2 2 0 002 3h10a2 2 0 002-3l-5-9V3',
+  list: 'M5 6h14M5 12h14M5 18h9',
+  pen: 'M4 20l4-1 11-11-3-3L5 16z',
+  person: 'M12 4.5a3.5 3.5 0 110 7 3.5 3.5 0 010-7zM5 20c1-4 4-6 7-6s6 2 7 6',
+  bot: 'M8 8h8a3 3 0 013 3v5a3 3 0 01-3 3H8a3 3 0 01-3-3v-5a3 3 0 013-3zM12 4v4M9 13.5h.01M15 13.5h.01',
+  bolt: 'M13 3L5 14h6l-1 7 8-11h-6z',
+  clock: 'M12 4a8 8 0 110 16 8 8 0 010-16zM12 8v4l3 2',
+  stack:
+    'M10 8h7a2 2 0 012 2v7a2 2 0 01-2 2h-7a2 2 0 01-2-2v-7a2 2 0 012-2zM5 15V6a1 1 0 011-1h9',
+  branch: 'M4 12h6l4-6h6M10 12l4 6h6',
+  database:
+    'M12 4c4 0 7 1.3 7 3s-3 3-7 3-7-1.3-7-3 3-3 7-3zM5 7v10c0 1.7 3 3 7 3s7-1.3 7-3V7M5 12c0 1.7 3 3 7 3s7-1.3 7-3',
+  layers: 'M12 3l9 5-9 5-9-5zM3 13l9 5 9-5',
+  flag: 'M6 21V4M6 5h11l-2 4 2 4H6',
+} as const;
+type CardIconName = keyof typeof CARD_ICON_PATHS;
+
+function CardIcon({ name, size = 17 }: { name: CardIconName; size?: number }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      width={size}
+      height={size}
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.8}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d={CARD_ICON_PATHS[name]} />
+    </svg>
+  );
+}
+
+/** A persona's icon, read from what it is called: its role is in its name. */
+function personaIcon(personaId: string | undefined): CardIconName {
+  const id = (personaId ?? '').toLowerCase();
+  if (id.includes('secur') || id.includes('audit')) return 'shield';
+  if (id.includes('review')) return 'review';
+  if (id.includes('test') || id.includes('qa')) return 'flask';
+  if (id.includes('plan')) return 'list';
+  if (id.includes('doc') || id.includes('writ')) return 'pen';
+  if (id.includes('code') || id.includes('merge') || id.includes('build')) return 'code';
+  return 'bot';
+}
+
+/** How a card is drawn: its tone (the tile's colour), icon and the line under its name. */
+export type WorkflowCardTone =
+  | 'agent'
+  | 'gate'
+  | 'trigger'
+  | 'wait'
+  | 'cond'
+  | 'end'
+  | 'resource'
+  | 'include';
+
+export interface WorkflowCardContent {
+  tone: WorkflowCardTone;
+  icon: CardIconName;
+  subtitle: string;
+  /** How a screen reader names the kind, e.g. "Stage step". */
+  kindLabel: string;
+}
+
+const GATE_DECIDER: Record<string, string> = {
+  human_approval: 'You decide',
+  human_review: 'You review',
+  automated_approval: 'An agent decides',
+  evidence: 'Evidence decides',
 };
 
-// ---------------------------------------------------------------------------
-// useDragNode — shared drag-to-reposition logic for node components
-// ---------------------------------------------------------------------------
-
-function useDragNode({
-  x,
-  y,
-  isConnectingMode,
-  onSelect,
-  onCompleteConnect,
-  onDragPreview,
-  onDragEnd,
-  canvasScale,
-  readOnly,
-}: {
-  x: number;
-  y: number;
-  isConnectingMode: boolean;
-  onSelect: () => void;
-  onCompleteConnect: () => void;
-  onDragPreview: (pos: { x: number; y: number }) => void;
-  onDragEnd: (pos: { x: number; y: number }) => void;
-  canvasScale: number;
-  readOnly: boolean;
-}) {
-  const dragRef = useRef<{
-    startX: number;
-    startY: number;
-    nx: number;
-    ny: number;
-    dx: number;
-    dy: number;
-  } | null>(null);
-
-  function handleMouseDown(e: React.MouseEvent) {
-    e.stopPropagation();
-    const action = resolveNodeMouseDownAction(e.button, e.ctrlKey, isConnectingMode, readOnly);
-    if (action === 'ignore') return;
-    if (action === 'complete-connect') {
-      onCompleteConnect();
-      return;
+/** What a card shows for a node, beside its name. */
+export function workflowCardContent(
+  node: WorkflowNode,
+  personas: readonly PersonaEntry[],
+): WorkflowCardContent {
+  switch (node.kind) {
+    case 'stage': {
+      const members = normalizedStageMembers(node);
+      const name = (personaId: string) =>
+        personas.find((persona) => persona.id === personaId)?.label ?? personaId;
+      let subtitle = 'No persona yet';
+      if (members.length === 1) {
+        const [member] = members;
+        subtitle = `${name(member!.personaId)} · ${member!.model || 'default model'}`;
+      } else if (members.length > 1) {
+        const together = (node.executionMode ?? 'parallel') === 'parallel';
+        subtitle = `${members.map((member) => name(member.personaId)).join(' + ')} · ${
+          together ? 'together' : 'in turn'
+        }`;
+      }
+      return {
+        tone: 'agent',
+        icon: personaIcon(members[0]?.personaId),
+        subtitle,
+        kindLabel: 'Stage step',
+      };
     }
-    if (action === 'select-only') {
-      onSelect();
-      return;
+    case 'gate': {
+      const mode = node.mode ?? 'human_approval';
+      return {
+        tone: 'gate',
+        icon: mode === 'automated_approval' ? 'bot' : mode === 'human_approval' ? 'person' : 'review',
+        subtitle: GATE_DECIDER[mode] ?? mode,
+        kindLabel: 'Gate step',
+      };
     }
-    dragRef.current = {
-      startX: e.clientX,
-      startY: e.clientY,
-      nx: x,
-      ny: y,
-      dx: 0,
-      dy: 0,
-    };
-    onSelect();
+    case 'trigger':
+      return {
+        tone: 'trigger',
+        icon: 'bolt',
+        subtitle: `When ${node.source || 'started'}`,
+        kindLabel: 'Trigger step',
+      };
+    case 'subworkflow':
+      return {
+        tone: 'include',
+        icon: 'stack',
+        subtitle: `For each · ${triggerCardSubtitle(node, triggerOutputEvent(node))}`,
+        kindLabel: 'Subworkflow step',
+      };
+    case 'wait':
+      return {
+        tone: 'wait',
+        icon: 'clock',
+        subtitle: node.conditions?.length
+          ? `Waits for ${node.conditions.join(', ')}`
+          : 'Waits for an outside event',
+        kindLabel: 'Wait step',
+      };
+    case 'cond':
+      return {
+        tone: 'cond',
+        icon: 'branch',
+        subtitle: node.predicate || 'No condition yet',
+        kindLabel: 'Condition step',
+      };
+    case 'end':
+      return { tone: 'end', icon: 'flag', subtitle: '', kindLabel: 'End step' };
+    case 'resource':
+      return {
+        tone: 'resource',
+        icon: 'database',
+        subtitle: resourceModeVisuals(node.bindingMode).modeLabel.toLowerCase(),
+        kindLabel: 'Resource',
+      };
+    case 'include':
+      return {
+        tone: 'include',
+        icon: 'layers',
+        subtitle: includeCardSubtitle(node.workflow, Object.keys(node.nodes ?? {}).length),
+        kindLabel: 'Include step',
+      };
   }
-
-  function handleMouseMove(e: React.MouseEvent) {
-    if (!dragRef.current) return;
-    const dx = (e.clientX - dragRef.current.startX) / canvasScale;
-    const dy = (e.clientY - dragRef.current.startY) / canvasScale;
-    if (!exceedsDragThreshold(dx, dy)) return;
-    dragRef.current.dx = dx;
-    dragRef.current.dy = dy;
-    onDragPreview({ x: dragRef.current.nx + dx, y: dragRef.current.ny + dy });
-  }
-
-  function handleMouseUp() {
-    const drag = dragRef.current;
-    dragRef.current = null;
-    if (!drag) return;
-    if (!exceedsDragThreshold(drag.dx, drag.dy)) return;
-    onDragEnd({ x: drag.nx + drag.dx, y: drag.ny + drag.dy });
-  }
-
-  return { handleMouseDown, handleMouseMove, handleMouseUp };
 }
 
-// ---------------------------------------------------------------------------
-// DeleteButton — shared SVG button primitive
-// ---------------------------------------------------------------------------
-
-function DeleteButton({
-  nodeId,
-  cx,
-  cy,
-  onClick,
-}: {
-  nodeId: string;
-  cx: number;
-  cy: number;
-  onClick: () => void;
-}) {
-  return (
-    <g
-      data-testid={`delete-btn-${nodeId}`}
-      onClick={(e) => {
-        e.stopPropagation();
-        onClick();
-      }}
-      className="niuu:cursor-pointer"
-    >
-      <circle cx={cx} cy={cy} r={7} fill="var(--color-critical)" />
-      <text
-        x={cx}
-        y={cy}
-        textAnchor="middle"
-        dominantBaseline="middle"
-        fill="var(--color-bg-primary)"
-        fontSize={10}
-        className="niuu:pointer-events-none"
-      >
-        ×
-      </text>
-    </g>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Sub-components
-// ---------------------------------------------------------------------------
-
-interface BaseNodeProps<TNode extends WorkflowNode> {
-  node: TNode;
+interface WorkflowNodeCardProps {
+  node: WorkflowNode;
+  bounds: { x: number; y: number; width: number; height: number };
+  content: WorkflowCardContent;
+  hasPorts: boolean;
   selected: boolean;
   issueLevel: 'error' | 'warning' | null;
+  isConnectingMode: boolean;
   onSelect: () => void;
   onInspect: () => void;
-  onStartConnect: (label?: string) => void;
-  onCompleteConnect: (inputLabel?: string) => void;
-  onDelete: () => void;
-  onDragPreview: (position: { x: number; y: number }) => void;
-  onDragEnd: (position: { x: number; y: number }) => void;
-  isConnectingMode: boolean;
-  canvasScale: number;
-  readOnly: boolean;
+  /** A click on the card's body while connecting: the card picks its own input. */
+  onBodyConnect: () => void;
 }
 
-/**
- * StageNode — the redesigned card.
- *
- * Renders as real HTML (rounded corners, shadow, flex layout) inside a
- * `<foreignObject>` rather than hand-placed SVG `<rect>`/`<text>` shapes —
- * SVG can't do the rounded-card-with-shadow-and-flex look the redesign
- * calls for. `useDragNode`, the outer `<g>` (testid/data-kind/mouse
- * handlers), `DeleteButton`, and every other node kind are untouched; this
- * is the first of the seven kinds converted, ported from the
- * `docs/mockups/workflow-builder` node-card treatment.
- *
- * The one thing that must stay in lockstep with `graphUtils.ts` is size:
- * `stageNodeHeight`/`renderedStageHeight`'s formulas are unchanged on
- * purpose, so `edgeAnchor`'s stage-port math (and hit-testing) still lines
- * up with what's actually drawn here — the port footer is bottom-anchored
- * inside the card at exactly `portRows * 14` px, same as before.
- */
-function StageNode({
+function WorkflowNodeCard({
   node,
-  portCatalog,
-  connectingFromLabel,
+  bounds,
+  content,
+  hasPorts,
   selected,
   issueLevel,
+  isConnectingMode,
   onSelect,
   onInspect,
-  onStartConnect,
-  onCompleteConnect,
-  onDelete,
-  onDragPreview,
-  onDragEnd,
-  isConnectingMode,
-  canvasScale,
-  readOnly,
-}: BaseNodeProps<WorkflowStageNode> & {
-  portCatalog: WorkflowNodePortCatalog;
-  connectingFromLabel?: string | null;
-}) {
-  const { x, y } = node.position;
-  const stageMembers = normalizedStageMembers(node);
-  const knownInputs = portCatalog.inputs.map((port) => port.eventType);
-  const knownOutputs = portCatalog.outputs.map((port) => port.eventType);
-  const portRows = Math.max(knownInputs.length, knownOutputs.length, 0);
-  const headerHeight = stageNodeHeight(node);
-  const stageHeight = headerHeight + (portRows > 0 ? 22 + portRows * 14 : 0);
-  const { handleMouseDown, handleMouseMove, handleMouseUp } = useDragNode({
-    x,
-    y,
-    isConnectingMode,
-    onSelect,
-    onCompleteConnect: () => {},
-    onDragPreview,
-    onDragEnd,
-    canvasScale,
-    readOnly,
-  });
-  const { background, borderColor, borderWidth } = resolveNodeCardVisuals(selected, issueLevel, {
-    defaultBackground: C.nodeFill,
-    defaultBorder: C.nodeStroke,
-    errorBackground: C.errorFill,
-    errorBorder: C.errorStroke,
-    warningBackground: C.warnFill,
-    warningBorder: C.warnStroke,
-    selectedBorder: C.nodeStrokeSelected,
-  });
-  const title = truncateLabel(node.label, 18, 16);
-
-  return (
-    <g
-      data-testid={`workflow-node-${node.id}`}
-      data-kind="stage"
-      data-selected={selected ? 'true' : undefined}
-      role="button"
-      tabIndex={0}
-      aria-label={`Stage step: ${node.label}`}
-      onKeyDown={(event) => {
-        if (event.key === 'Enter') onInspect();
-        if (event.key === ' ') {
-          event.preventDefault();
-          onSelect();
-        }
-      }}
-      onMouseDown={handleMouseDown}
-      onMouseMove={handleMouseMove}
-      onMouseUp={handleMouseUp}
-      onContextMenu={(e) => {
-        e.preventDefault();
-        onInspect();
-      }}
-      style={{ cursor: isConnectingMode ? 'crosshair' : 'grab' }}
-    >
-      <foreignObject x={x} y={y} width={STAGE_WIDTH} height={stageHeight}>
-        <div
-          className="workflow-stage-card niuu:h-full niuu:w-full niuu:overflow-hidden niuu:rounded-lg niuu:border niuu:font-sans niuu:shadow-md"
-          style={{
-            background,
-            borderColor,
-            borderWidth,
-            borderLeftColor: 'var(--node-accent)',
-            borderLeftWidth: 3,
-          }}
-        >
-          {/* header + members */}
-          <div
-            className="niuu:flex niuu:select-none niuu:flex-col niuu:overflow-hidden niuu:pb-1 niuu:pl-[11px] niuu:pr-[9px] niuu:pt-[7px]"
-            style={{ height: headerHeight }}
-          >
-            <div className="niuu:mb-[3px] niuu:flex niuu:items-center niuu:gap-[6px]">
-              <span
-                className="niuu:font-mono niuu:text-[9px] niuu:font-semibold niuu:uppercase niuu:tracking-[0.16em]"
-                style={{ color: 'var(--node-accent)' }}
-              >
-                Stage
-              </span>
-              <span className="niuu:flex-1" />
-              <span className="niuu:whitespace-nowrap niuu:font-mono niuu:text-[8.5px] niuu:text-text-secondary">
-                {node.executionMode ?? 'parallel'} · {stageMembers.length}
-              </span>
-              {issueLevel && (
-                <span
-                  className="niuu:whitespace-nowrap niuu:font-mono niuu:text-[8.5px] niuu:font-semibold"
-                  style={{ color: issueLevel === 'error' ? C.errorStroke : C.warnStroke }}
-                >
-                  {issueLevel === 'error' ? 'ERR' : 'WARN'}
-                </span>
-              )}
-            </div>
-            <div
-              className="niuu:mb-[5px] niuu:truncate niuu:text-[13px] niuu:font-semibold niuu:leading-tight"
-              style={{ color: C.text }}
-              title={node.label}
-            >
-              {title}
-            </div>
-            <div className="niuu:flex niuu:min-h-0 niuu:flex-col niuu:gap-[3px] niuu:overflow-hidden">
-              {stageMembers.map((member, index) => (
-                <div
-                  key={`${member.personaId}-${index}`}
-                  className="niuu:flex niuu:items-center niuu:gap-[5px] niuu:text-[10px]"
-                >
-                  <span className="niuu:truncate niuu:font-medium" style={{ color: C.text }}>
-                    {member.personaId}
-                  </span>
-                  <span
-                    className="niuu:ml-auto niuu:whitespace-nowrap niuu:font-mono niuu:text-[9px]"
-                    style={{ color: C.textMuted }}
-                  >
-                    {member.model ? member.model : `budget ${member.budget}`}
-                  </span>
-                </div>
-              ))}
-            </div>
-          </div>
-
-          {/* typed port footer — bottom-anchored at portRows * 14px, matching edgeAnchor */}
-          {portRows > 0 && (
-            <div
-              hidden
-              aria-hidden="true"
-              className="niuu:absolute niuu:inset-x-0 niuu:bottom-0 niuu:border-t"
-              style={{ height: portRows * 14, borderColor: 'var(--color-border-subtle)' }}
-            >
-              {knownInputs.map((input, index) => (
-                <div
-                  key={`in-${input}-${index}`}
-                  className="niuu:absolute niuu:left-0 niuu:flex niuu:items-center niuu:gap-[4px] niuu:pl-[6px]"
-                  style={{ top: index * 14, height: 14 }}
-                >
-                  {isConnectingMode && (
-                    <button
-                      type="button"
-                      data-testid={`stage-port-in-${node.id}-${input}`}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        onCompleteConnect(input);
-                      }}
-                      className="niuu:h-[8px] niuu:w-[8px] niuu:shrink-0 niuu:cursor-pointer niuu:rounded-full niuu:border niuu:p-0"
-                      style={{
-                        borderColor: 'var(--color-brand)',
-                        background: 'var(--color-bg-primary)',
-                      }}
-                      aria-label={`Connect input ${input}`}
-                    />
-                  )}
-                  <span
-                    className="niuu:select-none niuu:truncate niuu:font-mono niuu:text-[6.5px]"
-                    style={{ color: C.textMuted, maxWidth: STAGE_WIDTH / 2 - 20 }}
-                  >
-                    {truncateLabel(input, 14, 13)}
-                  </span>
-                </div>
-              ))}
-              {knownOutputs.map((output, index) => (
-                <div
-                  key={`out-${output}-${index}`}
-                  className="niuu:absolute niuu:right-0 niuu:flex niuu:items-center niuu:gap-[4px] niuu:pr-[6px]"
-                  style={{ top: index * 14, height: 14 }}
-                >
-                  <span
-                    className="niuu:select-none niuu:truncate niuu:text-right niuu:font-mono niuu:text-[6.5px]"
-                    style={{ color: C.text, maxWidth: STAGE_WIDTH / 2 - 20 }}
-                  >
-                    {truncateLabel(output, 14, 13)}
-                  </span>
-                  <button
-                    type="button"
-                    data-testid={`stage-port-out-${node.id}-${output}`}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onStartConnect(output);
-                    }}
-                    className="niuu:h-[8px] niuu:w-[8px] niuu:shrink-0 niuu:cursor-pointer niuu:rounded-full niuu:border niuu:p-0"
-                    style={{
-                      borderColor: 'var(--color-brand)',
-                      background:
-                        connectingFromLabel === output
-                          ? 'var(--color-brand)'
-                          : 'var(--color-bg-primary)',
-                    }}
-                    aria-label={`Connect output ${output}`}
-                  />
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      </foreignObject>
-      {selected && !isConnectingMode && !readOnly && (
-        <DeleteButton nodeId={node.id} cx={x + STAGE_WIDTH / 2} cy={y - 10} onClick={onDelete} />
-      )}
-    </g>
-  );
-}
-
-/** GateNode — same card recipe as StageNode, same GATE_SIZE bounding box (no
- *  ports on gates today, so no port-footer needed). */
-function GateNode({
-  node,
-  selected,
-  issueLevel,
-  onSelect,
-  onInspect,
-  onStartConnect: _onStartConnect,
-  onCompleteConnect,
-  onDelete,
-  onDragPreview,
-  onDragEnd,
-  isConnectingMode,
-  canvasScale,
-  readOnly,
-}: BaseNodeProps<WorkflowGateNode>) {
-  const { x, y } = node.position;
-  const { handleMouseDown, handleMouseMove, handleMouseUp } = useDragNode({
-    x,
-    y,
-    isConnectingMode,
-    onSelect,
-    onCompleteConnect,
-    onDragPreview,
-    onDragEnd,
-    canvasScale,
-    readOnly,
-  });
-  const { background, borderColor, borderWidth } = resolveNodeCardVisuals(selected, issueLevel, {
-    defaultBackground: C.gate,
-    defaultBorder: C.gateStroke,
-    errorBackground: C.errorFill,
-    errorBorder: C.errorStroke,
-    warningBackground: C.warnFill,
-    warningBorder: C.warnStroke,
-    selectedBorder: C.nodeStrokeSelected,
-  });
-  const title = truncateLabel(node.label, 8, 7);
-
-  return (
-    <g
-      data-testid={`workflow-node-${node.id}`}
-      data-kind="gate"
-      data-selected={selected ? 'true' : undefined}
-      role="button"
-      tabIndex={0}
-      aria-label={`Gate step: ${node.label}`}
-      onKeyDown={(event) => {
-        if (event.key === 'Enter') onInspect();
-        if (event.key === ' ') {
-          event.preventDefault();
-          onSelect();
-        }
-      }}
-      onMouseDown={handleMouseDown}
-      onMouseMove={handleMouseMove}
-      onMouseUp={handleMouseUp}
-      onContextMenu={(e) => {
-        e.preventDefault();
-        onInspect();
-      }}
-      style={{ cursor: isConnectingMode ? 'crosshair' : 'grab' }}
-    >
-      <foreignObject x={x} y={y} width={GATE_SIZE} height={GATE_SIZE}>
-        <div
-          className="workflow-gate-card niuu:flex niuu:h-full niuu:w-full niuu:select-none niuu:flex-col niuu:items-center niuu:justify-center niuu:overflow-hidden niuu:rounded-lg niuu:border niuu:p-1 niuu:text-center niuu:font-sans niuu:shadow-md"
-          style={{
-            background,
-            borderColor,
-            borderWidth,
-            borderTopColor: 'var(--node-accent)',
-            borderTopWidth: 3,
-          }}
-        >
-          <span
-            className="niuu:mb-1 niuu:font-mono niuu:text-[9px] niuu:font-semibold niuu:uppercase niuu:tracking-[0.16em]"
-            style={{ color: 'var(--node-accent)' }}
-          >
-            Gate
-          </span>
-          <span
-            className="niuu:text-[12px] niuu:font-semibold niuu:leading-tight"
-            style={{ color: C.text }}
-            title={node.label}
-          >
-            {title}
-          </span>
-        </div>
-      </foreignObject>
-      {selected && !isConnectingMode && !readOnly && (
-        <DeleteButton nodeId={node.id} cx={x + GATE_SIZE / 2} cy={y - 10} onClick={onDelete} />
-      )}
-    </g>
-  );
-}
-
-/** CondNode — same recipe, bounding box now a rounded card instead of a
- *  circle (matches the mockup's shape language: kind is read from the accent
- *  hue + eyebrow label, not from the outline shape). */
-function CondNode({
-  node,
-  selected,
-  issueLevel,
-  onSelect,
-  onInspect,
-  onStartConnect: _onStartConnect,
-  onCompleteConnect,
-  onDelete,
-  onDragPreview,
-  onDragEnd,
-  isConnectingMode,
-  canvasScale,
-  readOnly,
-}: BaseNodeProps<WorkflowCondNode>) {
-  const { x, y } = node.position;
-  const { handleMouseDown, handleMouseMove, handleMouseUp } = useDragNode({
-    x,
-    y,
-    isConnectingMode,
-    onSelect,
-    onCompleteConnect,
-    onDragPreview,
-    onDragEnd,
-    canvasScale,
-    readOnly,
-  });
-  const size = COND_RADIUS * 2;
-  const { background, borderColor, borderWidth } = resolveNodeCardVisuals(selected, issueLevel, {
-    defaultBackground: C.cond,
-    defaultBorder: C.condStroke,
-    errorBackground: C.errorFill,
-    errorBorder: C.errorStroke,
-    warningBackground: C.warnFill,
-    warningBorder: C.warnStroke,
-    selectedBorder: C.nodeStrokeSelected,
-  });
-  const title = truncateLabel(node.label, 6, 5);
-
-  return (
-    <g
-      data-testid={`workflow-node-${node.id}`}
-      data-kind="cond"
-      data-selected={selected ? 'true' : undefined}
-      role="button"
-      tabIndex={0}
-      aria-label={`Condition step: ${node.label}`}
-      onKeyDown={(event) => {
-        if (event.key === 'Enter') onInspect();
-        if (event.key === ' ') {
-          event.preventDefault();
-          onSelect();
-        }
-      }}
-      onMouseDown={handleMouseDown}
-      onMouseMove={handleMouseMove}
-      onMouseUp={handleMouseUp}
-      onContextMenu={(e) => {
-        e.preventDefault();
-        onInspect();
-      }}
-      style={{ cursor: isConnectingMode ? 'crosshair' : 'grab' }}
-    >
-      <foreignObject x={x} y={y} width={size} height={size}>
-        <div
-          className="workflow-cond-card niuu:flex niuu:h-full niuu:w-full niuu:select-none niuu:flex-col niuu:items-center niuu:justify-center niuu:overflow-hidden niuu:rounded-lg niuu:border niuu:p-1 niuu:text-center niuu:font-sans niuu:shadow-md"
-          style={{
-            background,
-            borderColor,
-            borderWidth,
-            borderTopColor: 'var(--node-accent)',
-            borderTopWidth: 3,
-          }}
-        >
-          <span
-            className="niuu:mb-1 niuu:font-mono niuu:text-[9px] niuu:font-semibold niuu:uppercase niuu:tracking-[0.16em]"
-            style={{ color: 'var(--node-accent)' }}
-          >
-            ?
-          </span>
-          <span
-            className="niuu:text-[12px] niuu:font-semibold niuu:leading-tight"
-            style={{ color: C.text }}
-            title={node.label}
-          >
-            {title}
-          </span>
-        </div>
-      </foreignObject>
-      {selected && !isConnectingMode && !readOnly && (
-        <DeleteButton nodeId={node.id} cx={x + COND_RADIUS} cy={y - 10} onClick={onDelete} />
-      )}
-    </g>
-  );
-}
-
-/** TriggerNode — handles both `trigger` and `subworkflow` kinds. Same
- *  recipe; one output port (no input — a trigger/subworkflow root has
- *  nothing feeding it). */
-function TriggerNode({
-  node,
-  selected,
-  issueLevel,
-  onSelect,
-  onInspect,
-  onCompleteConnect,
-  onDelete,
-  onDragPreview,
-  onDragEnd,
-  isConnectingMode,
-  canvasScale,
-  readOnly,
-}: BaseNodeProps<WorkflowTriggerNode | WorkflowSubworkflowNode>) {
-  const outputEvent = triggerOutputEvent(node);
-  const { x, y } = node.position;
-  const { handleMouseDown, handleMouseMove, handleMouseUp } = useDragNode({
-    x,
-    y,
-    isConnectingMode,
-    onSelect,
-    onCompleteConnect,
-    onDragPreview,
-    onDragEnd,
-    canvasScale,
-    readOnly,
-  });
-  const { background, borderColor, borderWidth } = resolveNodeCardVisuals(selected, issueLevel, {
-    defaultBackground: 'color-mix(in srgb, var(--color-brand) 14%, var(--color-bg-secondary))',
-    defaultBorder: 'var(--color-brand)',
-    errorBackground: C.errorFill,
-    errorBorder: C.errorStroke,
-    warningBackground: C.warnFill,
-    warningBorder: C.warnStroke,
-    selectedBorder: C.nodeStrokeSelected,
-    selectedBackground: 'var(--color-bg-elevated)',
-  });
-  const title = truncateLabel(node.label, 20, 18);
-  const subtitle = triggerCardSubtitle(node, outputEvent);
+  onBodyConnect,
+}: WorkflowNodeCardProps) {
+  function handleMouseDown(event: React.MouseEvent) {
+    event.stopPropagation();
+    const action = resolveNodeMouseDownAction(event.button, event.ctrlKey, isConnectingMode);
+    if (action === 'ignore') return;
+    if (action === 'complete-connect') {
+      onBodyConnect();
+      return;
+    }
+    onSelect();
+  }
 
   return (
     <g
       data-testid={`workflow-node-${node.id}`}
       data-kind={node.kind}
       data-selected={selected ? 'true' : undefined}
+      data-issue={issueLevel ?? undefined}
       role="button"
       tabIndex={0}
-      aria-label={`${node.kind === 'trigger' ? 'Trigger' : 'Subworkflow'} step: ${node.label}`}
+      aria-label={`${content.kindLabel}: ${node.label}`}
       onKeyDown={(event) => {
         if (event.key === 'Enter') onInspect();
         if (event.key === ' ') {
@@ -743,44 +295,56 @@ function TriggerNode({
         }
       }}
       onMouseDown={handleMouseDown}
-      onMouseMove={handleMouseMove}
-      onMouseUp={handleMouseUp}
-      onContextMenu={(e) => {
-        e.preventDefault();
+      onContextMenu={(event) => {
+        event.preventDefault();
         onInspect();
       }}
-      style={{ cursor: isConnectingMode ? 'crosshair' : 'grab' }}
+      style={{ cursor: isConnectingMode ? 'crosshair' : 'pointer' }}
     >
-      <foreignObject x={x} y={y} width={TRIGGER_WIDTH} height={TRIGGER_HEIGHT}>
+      <foreignObject x={bounds.x} y={bounds.y} width={bounds.width} height={bounds.height}>
         <div
-          className="workflow-trigger-card niuu:h-full niuu:w-full niuu:select-none niuu:overflow-hidden niuu:rounded-lg niuu:border niuu:font-sans niuu:shadow-md"
-          style={{
-            background,
-            borderColor,
-            borderWidth,
-            borderLeftColor: 'var(--node-accent)',
-            borderLeftWidth: 3,
-          }}
+          className="workflow-card"
+          data-tone={content.tone}
+          data-selected={selected ? 'true' : undefined}
+          data-issue={issueLevel ?? undefined}
         >
-          <div className="niuu:flex niuu:h-full niuu:flex-col niuu:justify-center niuu:overflow-hidden niuu:pl-[13px] niuu:pr-[10px]">
-            <div
-              className="niuu:truncate niuu:text-[13px] niuu:font-semibold niuu:leading-tight"
-              style={{ color: C.text }}
-              title={node.label}
-            >
-              {title}
+          {node.kind === 'end' ? (
+            <div className="workflow-card__end">
+              <CardIcon name="flag" size={14} />
+              <span className="workflow-card__end-label" title={node.label}>
+                {node.label}
+              </span>
             </div>
-            <div
-              className="niuu:truncate niuu:font-mono niuu:text-[10px]"
-              style={{ color: C.textMuted }}
-            >
-              {subtitle}
+          ) : (
+            <div className="workflow-card__head">
+              <span className="workflow-card__tile">
+                <CardIcon name={content.icon} />
+              </span>
+              <span className="workflow-card__text">
+                <span className="workflow-card__title" title={node.label}>
+                  {node.label}
+                </span>
+                <span className="workflow-card__sub" title={content.subtitle}>
+                  {content.subtitle}
+                </span>
+              </span>
             </div>
-          </div>
+          )}
+          {hasPorts && <div className="workflow-card__ports" />}
         </div>
       </foreignObject>
-      {selected && !isConnectingMode && !readOnly && (
-        <DeleteButton nodeId={node.id} cx={x + TRIGGER_WIDTH / 2} cy={y - 10} onClick={onDelete} />
+      {issueLevel && (
+        <g
+          className="workflow-card__badge"
+          data-issue={issueLevel}
+          transform={`translate(${bounds.x + bounds.width - 2},${bounds.y + 2})`}
+          pointerEvents="none"
+        >
+          <circle r={9} />
+          <text textAnchor="middle" y={4}>
+            !
+          </text>
+        </g>
       )}
     </g>
   );
@@ -813,6 +377,85 @@ function requestWaitEventType(direction: 'incoming' | 'continuation', suggested 
 }
 
 /**
+ * A wait with no events yet has no ports to connect to: its card offers one socket on each
+ * side that asks which event the wait takes in or passes on.
+ */
+function WaitUnconfiguredSockets({
+  node,
+  bounds,
+  incomingEvents,
+  outgoingEvents,
+  isConnectingMode,
+  readOnly,
+  connectingFromLabel,
+  onStartConnect,
+  onCompleteConnect,
+}: {
+  node: WorkflowWaitNode;
+  bounds: { x: number; y: number; width: number; height: number };
+  incomingEvents: string[];
+  outgoingEvents: string[];
+  isConnectingMode: boolean;
+  readOnly: boolean;
+  connectingFromLabel?: string | null;
+  onStartConnect: (eventType: string) => void;
+  onCompleteConnect: (eventType: string) => void;
+}) {
+  const completeIncoming = () => {
+    const selectedEvent = requestWaitEventType('incoming', connectingFromLabel ?? undefined);
+    if (selectedEvent) onCompleteConnect(selectedEvent);
+  };
+  const startOutgoing = () => {
+    const selectedEvent = requestWaitEventType('continuation');
+    if (selectedEvent) onStartConnect(selectedEvent);
+  };
+  const socket = (
+    testId: string,
+    cx: number,
+    label: string,
+    activate: () => void,
+  ) => (
+    <circle
+      data-testid={testId}
+      className="workflow-socket"
+      data-direction={testId.includes('input') ? 'input' : 'output'}
+      cx={cx}
+      cy={bounds.y + bounds.height / 2}
+      r={6}
+      role="button"
+      tabIndex={0}
+      aria-label={label}
+      onMouseDown={(event) => event.stopPropagation()}
+      onClick={(event) => {
+        event.stopPropagation();
+        activate();
+      }}
+      onKeyDown={(event) => {
+        if (event.key !== 'Enter' && event.key !== ' ') return;
+        event.preventDefault();
+        event.stopPropagation();
+        activate();
+      }}
+    />
+  );
+  return (
+    <g>
+      {isConnectingMode &&
+        incomingEvents.length === 0 &&
+        socket(`wait-input-${node.id}`, bounds.x, 'Connect incoming event', completeIncoming)}
+      {outgoingEvents.length === 0 &&
+        !readOnly &&
+        socket(
+          `wait-output-${node.id}`,
+          bounds.x + bounds.width,
+          'Connect outgoing event',
+          startOutgoing,
+        )}
+    </g>
+  );
+}
+
+/**
  * An `include` card has no single id an edge can use — real edges name one
  * of its provided local ids instead (see `providedNodeIds`). Resolve which
  * one a connect gesture on the card means: reuse the provided id that
@@ -834,568 +477,6 @@ function resolveIncludeConnectionId(
   );
 }
 
-/** WaitNode — same recipe as StageNode's port footer (bottom-anchored,
- *  index * 14px rows) but ports run the full card height since a wait node
- *  has no members block above them. Every testid, `data-event-type`, and the
- *  stopPropagation-on-mousedown-before-click contract (so clicking a port
- *  doesn't also start a node drag) are preserved exactly. */
-function WaitNode({
-  node,
-  selected,
-  issueLevel,
-  onSelect,
-  onInspect,
-  onStartConnect,
-  onCompleteConnect,
-  onDelete,
-  onDragPreview,
-  onDragEnd,
-  isConnectingMode,
-  canvasScale,
-  readOnly,
-  incomingEvents,
-  outgoingEvents,
-  connectingFromLabel,
-}: BaseNodeProps<WorkflowWaitNode> & {
-  incomingEvents: string[];
-  outgoingEvents: string[];
-  connectingFromLabel?: string | null;
-}) {
-  const { x, y } = node.position;
-  const portRows = Math.max(incomingEvents.length, outgoingEvents.length);
-  const waitHeight = WAIT_HEIGHT + (portRows > 0 ? 16 + portRows * 14 : 0);
-  const completeUnconfiguredConnection = () => {
-    if (incomingEvents.length > 0) return;
-    const selectedEvent = requestWaitEventType('incoming', connectingFromLabel ?? undefined);
-    if (selectedEvent) onCompleteConnect(selectedEvent);
-  };
-  const { handleMouseDown, handleMouseMove, handleMouseUp } = useDragNode({
-    x,
-    y,
-    isConnectingMode,
-    onSelect,
-    onCompleteConnect: completeUnconfiguredConnection,
-    onDragPreview,
-    onDragEnd,
-    canvasScale,
-    readOnly,
-  });
-  const { background, borderColor, borderWidth } = resolveNodeCardVisuals(selected, issueLevel, {
-    defaultBackground:
-      'color-mix(in srgb, var(--color-accent-amber) 12%, var(--color-bg-secondary))',
-    defaultBorder: 'var(--color-accent-amber)',
-    errorBackground: C.errorFill,
-    errorBorder: C.errorStroke,
-    warningBackground: C.warnFill,
-    warningBorder: C.warnStroke,
-    selectedBorder: C.nodeStrokeSelected,
-    selectedBackground: 'var(--color-bg-elevated)',
-  });
-  const title = truncateLabel(node.label, 20, 18);
-
-  return (
-    <g
-      data-testid={`workflow-node-${node.id}`}
-      data-kind="wait"
-      data-selected={selected ? 'true' : undefined}
-      role="button"
-      tabIndex={0}
-      aria-label={`Wait step: ${node.label}`}
-      onKeyDown={(event) => {
-        if (event.key === 'Enter') onInspect();
-        if (event.key === ' ') {
-          event.preventDefault();
-          onSelect();
-        }
-      }}
-      onMouseDown={handleMouseDown}
-      onMouseMove={handleMouseMove}
-      onMouseUp={handleMouseUp}
-      onContextMenu={(e) => {
-        e.preventDefault();
-        onInspect();
-      }}
-      style={{ cursor: isConnectingMode ? 'crosshair' : 'grab' }}
-    >
-      <foreignObject x={x} y={y} width={WAIT_WIDTH} height={waitHeight}>
-        <div
-          className="workflow-wait-card niuu:h-full niuu:w-full niuu:select-none niuu:overflow-hidden niuu:rounded-lg niuu:border niuu:border-dashed niuu:font-sans niuu:shadow-md"
-          style={{
-            background,
-            borderColor,
-            borderWidth,
-            borderLeftColor: 'var(--node-accent)',
-            borderLeftWidth: 3,
-          }}
-        >
-          <div
-            className="niuu:overflow-hidden niuu:pl-[13px] niuu:pr-[10px] niuu:pt-[7px]"
-            style={{ height: WAIT_HEIGHT }}
-          >
-            <div
-              className="niuu:truncate niuu:text-[13px] niuu:font-semibold niuu:leading-tight"
-              style={{ color: C.text }}
-              title={node.label}
-            >
-              {title}
-            </div>
-            <div
-              className="niuu:truncate niuu:font-mono niuu:text-[10px]"
-              style={{ color: C.textMuted }}
-            >
-              {portRows > 0
-                ? `PASSIVE · ${incomingEvents.length} IN · ${outgoingEvents.length} OUT`
-                : 'PASSIVE · CONFIGURE EVENTS'}
-            </div>
-          </div>
-
-          {portRows > 0 && (
-            <div
-              hidden
-              aria-hidden="true"
-              className="niuu:absolute niuu:inset-x-0 niuu:bottom-0 niuu:border-t niuu:border-dashed"
-              style={{ height: portRows * 14, borderColor: 'var(--color-border-subtle)' }}
-            >
-              {incomingEvents.map((eventType, index) => (
-                <div
-                  key={`in-${eventType}`}
-                  className="niuu:absolute niuu:left-0 niuu:flex niuu:items-center niuu:gap-[4px] niuu:pl-[6px]"
-                  style={{ top: index * 14, height: 14 }}
-                >
-                  {isConnectingMode && (
-                    <button
-                      type="button"
-                      data-testid={`wait-input-${node.id}${index === 0 ? '' : `-${index}`}`}
-                      data-event-type={eventType}
-                      onMouseDown={(e) => e.stopPropagation()}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        onCompleteConnect(eventType);
-                      }}
-                      className="niuu:h-[8px] niuu:w-[8px] niuu:shrink-0 niuu:cursor-pointer niuu:rounded-full niuu:border niuu:p-0"
-                      style={{
-                        borderColor: 'var(--color-brand)',
-                        background: 'var(--color-bg-primary)',
-                      }}
-                      aria-label={`Connect input ${eventType}`}
-                    />
-                  )}
-                  <span
-                    className="niuu:select-none niuu:truncate niuu:font-mono niuu:text-[6.5px]"
-                    style={{ color: C.textMuted, maxWidth: WAIT_WIDTH / 2 - 20 }}
-                  >
-                    {truncateLabel(eventType, 14, 13)}
-                  </span>
-                </div>
-              ))}
-              {outgoingEvents.map((eventType, index) => (
-                <div
-                  key={`out-${eventType}`}
-                  className="niuu:absolute niuu:right-0 niuu:flex niuu:items-center niuu:gap-[4px] niuu:pr-[6px]"
-                  style={{ top: index * 14, height: 14 }}
-                >
-                  <span
-                    className="niuu:select-none niuu:truncate niuu:text-right niuu:font-mono niuu:text-[6.5px]"
-                    style={{ color: C.text, maxWidth: WAIT_WIDTH / 2 - 20 }}
-                  >
-                    {truncateLabel(eventType, 14, 13)}
-                  </span>
-                  <button
-                    type="button"
-                    data-testid={`wait-output-${node.id}${index === 0 ? '' : `-${index}`}`}
-                    data-event-type={eventType}
-                    onMouseDown={(e) => e.stopPropagation()}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onStartConnect(eventType);
-                    }}
-                    className="niuu:h-[8px] niuu:w-[8px] niuu:shrink-0 niuu:cursor-pointer niuu:rounded-full niuu:border niuu:p-0"
-                    style={{
-                      borderColor: 'var(--color-brand)',
-                      background:
-                        connectingFromLabel === eventType
-                          ? 'var(--color-brand)'
-                          : 'var(--color-bg-primary)',
-                    }}
-                    aria-label={`Connect output ${eventType}`}
-                  />
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      </foreignObject>
-      {isConnectingMode && incomingEvents.length === 0 && (
-        <circle
-          data-testid={`wait-input-${node.id}`}
-          cx={x}
-          cy={y + WAIT_HEIGHT / 2}
-          r={5}
-          fill={C.bg}
-          stroke={C.nodeStrokeSelected}
-          strokeWidth={1.5}
-          role="button"
-          tabIndex={0}
-          className="niuu:cursor-crosshair"
-          aria-label="Connect incoming event"
-          onMouseDown={(event) => event.stopPropagation()}
-          onClick={(event) => {
-            event.stopPropagation();
-            completeUnconfiguredConnection();
-          }}
-          onKeyDown={(event) => {
-            if (event.key !== 'Enter' && event.key !== ' ') return;
-            event.preventDefault();
-            event.stopPropagation();
-            completeUnconfiguredConnection();
-          }}
-        />
-      )}
-      {outgoingEvents.length === 0 && !readOnly && (
-        <circle
-          data-testid={`wait-output-${node.id}`}
-          cx={x + WAIT_WIDTH}
-          cy={y + WAIT_HEIGHT / 2}
-          r={5}
-          fill={C.bg}
-          stroke={C.nodeStrokeSelected}
-          strokeWidth={1.5}
-          role="button"
-          tabIndex={0}
-          className="niuu:cursor-crosshair"
-          aria-label="Connect outgoing event"
-          onMouseDown={(event) => event.stopPropagation()}
-          onClick={(event) => {
-            event.stopPropagation();
-            const selectedEvent = requestWaitEventType('continuation');
-            if (selectedEvent) onStartConnect(selectedEvent);
-          }}
-          onKeyDown={(event) => {
-            if (event.key !== 'Enter' && event.key !== ' ') return;
-            event.preventDefault();
-            event.stopPropagation();
-            const selectedEvent = requestWaitEventType('continuation');
-            if (selectedEvent) onStartConnect(selectedEvent);
-          }}
-        />
-      )}
-      {selected && !isConnectingMode && !readOnly && (
-        <DeleteButton nodeId={node.id} cx={x + WAIT_WIDTH / 2} cy={y - 10} onClick={onDelete} />
-      )}
-    </g>
-  );
-}
-
-/** EndNode — same recipe; keeps its existing emerald "complete" semantic
- *  (distinct from the other accent hues, since green-for-done is its own
- *  well-established convention, not a kind-identity color). */
-function EndNode({
-  node,
-  selected,
-  issueLevel,
-  onSelect,
-  onInspect,
-  onStartConnect: _onStartConnect,
-  onCompleteConnect,
-  onDelete,
-  onDragPreview,
-  onDragEnd,
-  isConnectingMode,
-  canvasScale,
-  readOnly,
-}: BaseNodeProps<WorkflowEndNode>) {
-  const { x, y } = node.position;
-  const { handleMouseDown, handleMouseMove, handleMouseUp } = useDragNode({
-    x,
-    y,
-    isConnectingMode,
-    onSelect,
-    onCompleteConnect,
-    onDragPreview,
-    onDragEnd,
-    canvasScale,
-    readOnly,
-  });
-  const { background, borderColor, borderWidth } = resolveNodeCardVisuals(selected, issueLevel, {
-    defaultBackground: 'color-mix(in srgb, var(--status-emerald) 14%, var(--color-bg-secondary))',
-    defaultBorder: 'var(--status-emerald)',
-    errorBackground: C.errorFill,
-    errorBorder: C.errorStroke,
-    warningBackground: C.warnFill,
-    warningBorder: C.warnStroke,
-    selectedBorder: C.nodeStrokeSelected,
-    selectedBackground: 'var(--color-bg-elevated)',
-  });
-  const title = truncateLabel(node.label, 10, 8);
-
-  return (
-    <g
-      data-testid={`workflow-node-${node.id}`}
-      data-kind="end"
-      data-selected={selected ? 'true' : undefined}
-      role="button"
-      tabIndex={0}
-      aria-label={`End step: ${node.label}`}
-      onKeyDown={(event) => {
-        if (event.key === 'Enter') onInspect();
-        if (event.key === ' ') {
-          event.preventDefault();
-          onSelect();
-        }
-      }}
-      onMouseDown={handleMouseDown}
-      onMouseMove={handleMouseMove}
-      onMouseUp={handleMouseUp}
-      onContextMenu={(e) => {
-        e.preventDefault();
-        onInspect();
-      }}
-      style={{ cursor: isConnectingMode ? 'crosshair' : 'grab' }}
-    >
-      <foreignObject x={x} y={y} width={END_RADIUS * 2} height={END_RADIUS * 2}>
-        <div
-          className="workflow-end-card niuu:flex niuu:h-full niuu:w-full niuu:select-none niuu:flex-col niuu:items-center niuu:justify-center niuu:overflow-hidden niuu:rounded-full niuu:border niuu:text-center niuu:font-sans niuu:shadow-md"
-          style={{ background, borderColor, borderWidth }}
-        >
-          <span className="niuu:leading-none" style={{ color: C.text, fontSize: 16 }}>
-            ●
-          </span>
-          <span
-            className="niuu:mt-0.5 niuu:font-mono niuu:text-[9.5px]"
-            style={{ color: C.textMuted }}
-            title={node.label}
-          >
-            {title}
-          </span>
-        </div>
-      </foreignObject>
-      {selected && !isConnectingMode && !readOnly && (
-        <DeleteButton nodeId={node.id} cx={x + END_RADIUS} cy={y - 10} onClick={onDelete} />
-      )}
-    </g>
-  );
-}
-
-/** ResourceNode — was a cylinder (ellipse/rect/ellipse); same recipe as
- *  every other kind now: a rounded card, no shape-language special case. */
-function ResourceNode({
-  node,
-  selected,
-  issueLevel,
-  onSelect,
-  onInspect,
-  onStartConnect: _onStartConnect,
-  onCompleteConnect,
-  onDelete,
-  onDragPreview,
-  onDragEnd,
-  isConnectingMode,
-  canvasScale,
-  readOnly,
-}: BaseNodeProps<WorkflowResourceNode>) {
-  const { x, y } = node.position;
-  const { handleMouseDown, handleMouseMove, handleMouseUp } = useDragNode({
-    x,
-    y,
-    isConnectingMode,
-    onSelect,
-    onCompleteConnect,
-    onDragPreview,
-    onDragEnd,
-    canvasScale,
-    readOnly,
-  });
-  const { background, borderColor, borderWidth } = resolveNodeCardVisuals(selected, issueLevel, {
-    defaultBackground: 'color-mix(in srgb, var(--color-brand) 16%, var(--color-bg-secondary))',
-    defaultBorder: 'var(--color-brand)',
-    errorBackground: C.errorFill,
-    errorBorder: C.errorStroke,
-    warningBackground: C.warnFill,
-    warningBorder: C.warnStroke,
-    selectedBorder: C.nodeStrokeSelected,
-    selectedBackground: 'var(--color-bg-elevated)',
-  });
-  const { modeLabel, modeStroke, modeFill } = resourceModeVisuals(node.bindingMode);
-  const title = truncateLabel(node.label, 20, 18);
-
-  return (
-    <g
-      data-testid={`workflow-node-${node.id}`}
-      data-kind="resource"
-      data-selected={selected ? 'true' : undefined}
-      role="button"
-      tabIndex={0}
-      aria-label={`Resource: ${node.label}`}
-      onKeyDown={(event) => {
-        if (event.key === 'Enter') onInspect();
-        if (event.key === ' ') {
-          event.preventDefault();
-          onSelect();
-        }
-      }}
-      onMouseDown={handleMouseDown}
-      onMouseMove={handleMouseMove}
-      onMouseUp={handleMouseUp}
-      onContextMenu={(e) => {
-        e.preventDefault();
-        onInspect();
-      }}
-      style={{ cursor: isConnectingMode ? 'crosshair' : 'grab' }}
-    >
-      <foreignObject x={x} y={y} width={RESOURCE_WIDTH} height={RESOURCE_HEIGHT}>
-        <div
-          className="workflow-resource-card niuu:h-full niuu:w-full niuu:select-none niuu:overflow-hidden niuu:rounded-lg niuu:border niuu:border-dashed niuu:font-sans niuu:shadow-md"
-          style={{
-            background,
-            borderColor,
-            borderWidth,
-            borderLeftColor: 'var(--node-accent)',
-            borderLeftWidth: 3,
-          }}
-        >
-          <div className="niuu:flex niuu:h-full niuu:flex-col niuu:justify-center niuu:gap-[3px] niuu:overflow-hidden niuu:pl-[13px] niuu:pr-[10px]">
-            <div
-              className="niuu:truncate niuu:text-[13px] niuu:font-semibold niuu:leading-tight"
-              style={{ color: C.text }}
-              title={node.label}
-            >
-              {title}
-            </div>
-            <div
-              className="niuu:truncate niuu:font-mono niuu:text-[10px]"
-              style={{ color: C.textMuted }}
-            >
-              RESOURCE · MEMORY
-            </div>
-            <span
-              className="niuu:w-fit niuu:rounded-full niuu:border niuu:px-[8px] niuu:py-[1px] niuu:font-mono niuu:text-[7.5px] niuu:font-semibold"
-              style={{ background: modeFill, borderColor: modeStroke, color: C.text }}
-            >
-              {modeLabel}
-            </span>
-          </div>
-        </div>
-      </foreignObject>
-      {selected && !isConnectingMode && !readOnly && (
-        <DeleteButton nodeId={node.id} cx={x + RESOURCE_WIDTH / 2} cy={y - 10} onClick={onDelete} />
-      )}
-    </g>
-  );
-}
-
-/** IncludeNode — same card recipe as ResourceNode; shows the pinned
- *  workflow alias and how many of its nodes this one inlines. Like
- *  Gate/Cond/Subworkflow, the card carries no inline port markup of its
- *  own — every socket is edge-derived (see `workflowPorts.ts`) and drawn
- *  generically by `NodeSocketLayer`, which grows the card's measured height
- *  with `portRows` the same way a Wait card does. */
-function IncludeNode({
-  node,
-  selected,
-  issueLevel,
-  onSelect,
-  onInspect,
-  onStartConnect: _onStartConnect,
-  onCompleteConnect,
-  onDelete,
-  onDragPreview,
-  onDragEnd,
-  isConnectingMode,
-  canvasScale,
-  readOnly,
-  portRows,
-}: BaseNodeProps<WorkflowIncludeNode> & { portRows: number }) {
-  const { x, y } = node.position;
-  const height = INCLUDE_HEIGHT + (portRows > 0 ? 16 + portRows * 14 : 0);
-  const { handleMouseDown, handleMouseMove, handleMouseUp } = useDragNode({
-    x,
-    y,
-    isConnectingMode,
-    onSelect,
-    onCompleteConnect,
-    onDragPreview,
-    onDragEnd,
-    canvasScale,
-    readOnly,
-  });
-  const { background, borderColor, borderWidth } = resolveNodeCardVisuals(selected, issueLevel, {
-    defaultBackground:
-      'color-mix(in srgb, var(--color-accent-violet) 16%, var(--color-bg-secondary))',
-    defaultBorder: 'var(--color-accent-violet)',
-    errorBackground: C.errorFill,
-    errorBorder: C.errorStroke,
-    warningBackground: C.warnFill,
-    warningBorder: C.warnStroke,
-    selectedBorder: C.nodeStrokeSelected,
-    selectedBackground: 'var(--color-bg-elevated)',
-  });
-  const title = truncateLabel(node.label, 20, 18);
-  const nodeCount = Object.keys(node.nodes ?? {}).length;
-  const subtitle = includeCardSubtitle(node.workflow, nodeCount);
-
-  return (
-    <g
-      data-testid={`workflow-node-${node.id}`}
-      data-kind="include"
-      data-selected={selected ? 'true' : undefined}
-      role="button"
-      tabIndex={0}
-      aria-label={`Include step: ${node.label}`}
-      onKeyDown={(event) => {
-        if (event.key === 'Enter') onInspect();
-        if (event.key === ' ') {
-          event.preventDefault();
-          onSelect();
-        }
-      }}
-      onMouseDown={handleMouseDown}
-      onMouseMove={handleMouseMove}
-      onMouseUp={handleMouseUp}
-      onContextMenu={(e) => {
-        e.preventDefault();
-        onInspect();
-      }}
-      style={{ cursor: isConnectingMode ? 'crosshair' : 'grab' }}
-    >
-      <foreignObject x={x} y={y} width={INCLUDE_WIDTH} height={height}>
-        <div
-          className="workflow-include-card niuu:h-full niuu:w-full niuu:select-none niuu:overflow-hidden niuu:rounded-lg niuu:border niuu:font-sans niuu:shadow-md"
-          style={{
-            background,
-            borderColor,
-            borderWidth,
-            borderLeftColor: 'var(--node-accent)',
-            borderLeftWidth: 3,
-          }}
-        >
-          <div
-            className="niuu:flex niuu:flex-col niuu:justify-center niuu:gap-[3px] niuu:overflow-hidden niuu:pl-[13px] niuu:pr-[10px]"
-            style={{ height: INCLUDE_HEIGHT }}
-          >
-            <div
-              className="niuu:truncate niuu:text-[13px] niuu:font-semibold niuu:leading-tight"
-              style={{ color: C.text }}
-              title={node.label}
-            >
-              {title}
-            </div>
-            <div
-              className="niuu:truncate niuu:font-mono niuu:text-[10px]"
-              style={{ color: C.textMuted }}
-              title={subtitle}
-            >
-              {subtitle}
-            </div>
-          </div>
-        </div>
-      </foreignObject>
-      {selected && !isConnectingMode && !readOnly && (
-        <DeleteButton nodeId={node.id} cx={x + INCLUDE_WIDTH / 2} cy={y - 10} onClick={onDelete} />
-      )}
-    </g>
-  );
-}
-
 export function stagePortLists(node: WorkflowStageNode, personas: PersonaEntry[]) {
   const stageMembers = normalizedStageMembers(node);
   const personaMap = new Map(personas.map((persona) => [persona.id, persona]));
@@ -1414,9 +495,9 @@ export function stagePortLists(node: WorkflowStageNode, personas: PersonaEntry[]
 }
 
 export function renderedStageHeight(node: WorkflowStageNode, personas: PersonaEntry[]) {
-  const { knownInputs, knownOutputs } = stagePortLists(node, personas);
-  const portRows = Math.max(knownInputs.length, knownOutputs.length, 0);
-  return stageNodeHeight(node) + (portRows > 0 ? 22 + portRows * 14 : 0);
+  const catalog = nodePortCatalog(node, { personas });
+  return workflowCardSize('stage', Math.max(catalog.inputs.length, catalog.outputs.length))
+    .height;
 }
 
 export function splitEdgePorts(label?: string) {
@@ -1438,6 +519,11 @@ export function splitEdgePorts(label?: string) {
   return { sourcePort: label, targetPort: label };
 }
 
+/**
+ * The ports a card shows. Every outcome is a dot on its right edge, wired or not, so what a
+ * step can say is always in view; its incoming events show on the left only where a wire
+ * arrives, or all of them while the card is selected (`expanded`) or a wire is being drawn.
+ */
 export function visibleNodePortCatalog(
   node: WorkflowNode,
   personas: PersonaEntry[],
@@ -1447,25 +533,16 @@ export function visibleNodePortCatalog(
   const catalog = nodePortCatalog(node, { personas, edges });
   if (expanded) return catalog;
   const connectedInputs = new Set<string>();
-  const connectedOutputs = new Set<string>();
   const matchIds = nodeMatchIds(node);
   for (const edge of edges) {
-    const isSource = matchIds.has(edge.source);
-    const isTarget = matchIds.has(edge.target);
-    if (!isSource && !isTarget) continue;
+    if (!matchIds.has(edge.target)) continue;
     const parsed = parseWorkflowEdgeLabel(edge.label);
-    if (isSource) {
-      connectedOutputs.add(parsed?.sourceEventType ?? `unresolved-edge:${edge.id}`);
-    }
-    if (isTarget) {
-      connectedInputs.add(parsed?.targetEventType ?? `unresolved-edge:${edge.id}`);
-    }
+    connectedInputs.add(parsed?.targetEventType ?? `unresolved-edge:${edge.id}`);
   }
   const inputs = catalog.inputs.filter((port) => connectedInputs.has(port.eventType));
-  const outputs = catalog.outputs.filter((port) => connectedOutputs.has(port.eventType));
   return {
     inputs: inputs.map((port, index) => ({ ...port, index, count: inputs.length })),
-    outputs: outputs.map((port, index) => ({ ...port, index, count: outputs.length })),
+    outputs: catalog.outputs,
   };
 }
 
@@ -1495,6 +572,7 @@ export function isGraphNodeKind(nodeKind: string): nodeKind is WorkflowNode['kin
   );
 }
 
+/** Where a wire meets a node's port, on a card with every one of its ports shown. */
 export function edgeAnchor(
   node: WorkflowNode,
   direction: 'source' | 'target',
@@ -1507,23 +585,59 @@ export function edgeAnchor(
   const ports = direction === 'source' ? catalog.outputs : catalog.inputs;
   const port = ports.find((candidate) => candidate.eventType === portLabel);
   if (!port) return null;
-  const measurements = new Map<string, WorkflowSize>();
-  if (node.kind === 'stage') {
-    measurements.set(node.id, {
-      width: STAGE_WIDTH,
-      height: renderedStageHeight(node, personas),
-      portTop: stageNodeHeight(node) + 22,
-    });
-  }
-  if (node.kind === 'wait') {
-    const rows = Math.max(catalog.inputs.length, catalog.outputs.length);
-    measurements.set(node.id, {
-      width: WAIT_WIDTH,
-      height: WAIT_HEIGHT + (rows > 0 ? 16 + rows * 14 : 0),
-      portTop: rows > 0 ? WAIT_HEIGHT + 16 : 0,
-    });
-  }
+  const measurements = new Map<string, WorkflowSize>([
+    [node.id, workflowCardSize(node.kind, Math.max(catalog.inputs.length, catalog.outputs.length))],
+  ]);
   return portAnchor(node, port, { measurements });
+}
+
+/** The point halfway along a cubic bezier. */
+function bezierMidpoint(
+  p0: { x: number; y: number },
+  p1: { x: number; y: number },
+  p2: { x: number; y: number },
+  p3: { x: number; y: number },
+) {
+  return {
+    x: (p0.x + 3 * p1.x + 3 * p2.x + p3.x) / 8,
+    y: (p0.y + 3 * p1.y + 3 * p2.y + p3.y) / 8,
+  };
+}
+
+/** A label on a wire: the event it carries, or a rework wire's limit. */
+function WirePill({
+  x,
+  y,
+  text,
+  tone,
+  testId,
+}: {
+  x: number;
+  y: number;
+  text: string;
+  tone: 'event' | 'rework';
+  testId: string;
+}) {
+  const width = text.length * 6.2 + 16;
+  return (
+    <g
+      className="workflow-wire-pill"
+      data-tone={tone}
+      data-testid={testId}
+      transform={`translate(${x - width / 2},${y - 9})`}
+      pointerEvents="none"
+    >
+      <rect width={width} height={18} rx={9} />
+      <text x={width / 2} y={12.5} textAnchor="middle">
+        {text}
+      </text>
+    </g>
+  );
+}
+
+/** What a rework wire's chip says: how often a run may go back this way. */
+export function reworkLimitLabel(edge: Pick<WorkflowEdge, 'maxIterations'>): string {
+  return edge.maxIterations ? `↩ up to ${edge.maxIterations}×` : '↩ no limit';
 }
 
 function WorkflowEdgePath({
@@ -1536,6 +650,7 @@ function WorkflowEdgePath({
   feedbackLane,
   selected,
   onSelect,
+  showEvents,
   runPassed = false,
 }: {
   edge: WorkflowEdge;
@@ -1547,6 +662,8 @@ function WorkflowEdgePath({
   feedbackLane: number;
   selected: boolean;
   onSelect: () => void;
+  /** Write the event each wire carries on it. */
+  showEvents: boolean;
   /** A run went this way: its source closed and its target was reached. */
   runPassed?: boolean;
 }) {
@@ -1571,14 +688,37 @@ function WorkflowEdgePath({
       return bounds.y + bounds.height;
     }),
   );
-  const laneY = maxBottom + 44 + feedbackLane * 18;
+  // Work sent back runs under every card, one lane per rework wire, so it never crosses one.
+  const laneY = maxBottom + 48 + feedbackLane * 30;
   const forwardDirection = tgtC.x >= srcC.x ? 1 : -1;
-  const forwardBend = Math.max(24, Math.min(80, Math.abs(tgtC.x - srcC.x) * 0.4));
+  const forwardBend = Math.max(32, Math.min(110, Math.abs(tgtC.x - srcC.x) * 0.5));
+  const c1 = { x: srcC.x + forwardDirection * forwardBend, y: srcC.y };
+  const c2 = { x: tgtC.x - forwardDirection * forwardBend, y: tgtC.y };
+  const r = 12;
   const d = feedback
-    ? `M ${srcC.x} ${srcC.y} L ${srcC.x + 20} ${srcC.y} L ${srcC.x + 20} ${laneY} L ${tgtC.x - 20} ${laneY} L ${tgtC.x - 20} ${tgtC.y} L ${tgtC.x} ${tgtC.y}`
-    : `M ${srcC.x} ${srcC.y} C ${srcC.x + forwardDirection * forwardBend} ${srcC.y}, ${tgtC.x - forwardDirection * forwardBend} ${tgtC.y}, ${tgtC.x} ${tgtC.y}`;
+    ? [
+        `M ${srcC.x} ${srcC.y}`,
+        `L ${srcC.x + 22 - r} ${srcC.y}`,
+        `Q ${srcC.x + 22} ${srcC.y} ${srcC.x + 22} ${srcC.y + r}`,
+        `L ${srcC.x + 22} ${laneY - r}`,
+        `Q ${srcC.x + 22} ${laneY} ${srcC.x + 22 - r} ${laneY}`,
+        `L ${tgtC.x - 22 + r} ${laneY}`,
+        `Q ${tgtC.x - 22} ${laneY} ${tgtC.x - 22} ${laneY - r}`,
+        `L ${tgtC.x - 22} ${tgtC.y + r}`,
+        `Q ${tgtC.x - 22} ${tgtC.y} ${tgtC.x - 22 + r} ${tgtC.y}`,
+        `L ${tgtC.x} ${tgtC.y}`,
+      ].join(' ')
+    : `M ${srcC.x} ${srcC.y} C ${c1.x} ${c1.y}, ${c2.x} ${c2.y}, ${tgtC.x} ${tgtC.y}`;
+  const eventText =
+    sourcePort.eventType === targetPort.eventType
+      ? sourcePort.eventType
+      : `${sourcePort.eventType} → ${targetPort.eventType}`;
+  const middle = feedback
+    ? { x: (srcC.x + tgtC.x) / 2, y: laneY }
+    : bezierMidpoint(srcC, c1, c2, tgtC);
   return (
     <g
+      className="workflow-wire"
       data-testid={`workflow-edge-${edge.id}`}
       data-source-node={edge.source}
       data-target-node={edge.target}
@@ -1586,13 +726,14 @@ function WorkflowEdgePath({
       data-target-event={targetPort.eventType}
       data-resolved={resolution.resolved ? 'true' : 'false'}
       data-feedback={feedback ? 'true' : 'false'}
+      data-selected={selected ? 'true' : undefined}
       data-run-passed={runPassed ? 'true' : undefined}
     >
       <path
         d={d}
         fill="none"
         stroke="transparent"
-        strokeWidth={10}
+        strokeWidth={12}
         onClick={(e) => {
           e.stopPropagation();
           onSelect();
@@ -1602,62 +743,76 @@ function WorkflowEdgePath({
       <path
         d={d}
         fill="none"
-        stroke={selected ? C.nodeStrokeSelected : feedback ? C.warnStroke : C.edgeStroke}
-        strokeWidth={selected ? 2.25 : 1.5}
-        strokeDasharray={feedback ? '5 4' : undefined}
-        markerEnd="url(#arrowhead)"
+        markerEnd={feedback ? 'url(#arrowhead-rework)' : 'url(#arrowhead)'}
         className="workflow-edge-line niuu:cursor-pointer"
         onClick={(e) => {
           e.stopPropagation();
           onSelect();
         }}
       />
-      {selected &&
-        edge.label &&
-        (() => {
-          return (
-            <text
-              x={(srcC.x + tgtC.x) / 2}
-              y={(srcC.y + tgtC.y) / 2 - 8}
-              textAnchor="middle"
-              fill={C.textMuted}
-              fontSize={10}
-              fontFamily="var(--font-sans)"
-            >
-              {edge.label}
-            </text>
-          );
-        })()}
+      {feedback ? (
+        <WirePill
+          x={middle.x}
+          y={middle.y}
+          text={`${reworkLimitLabel(edge)}${showEvents ? ` · ${sourcePort.eventType}` : ''}`}
+          tone="rework"
+          testId={`workflow-edge-limit-${edge.id}`}
+        />
+      ) : (
+        (showEvents || selected) && (
+          <WirePill
+            x={middle.x}
+            y={middle.y}
+            text={eventText}
+            tone="event"
+            testId={`workflow-edge-event-${edge.id}`}
+          />
+        )
+      )}
     </g>
   );
 }
+
+/** How an outcome is wired: on to a later step, back to an earlier one, or not yet. */
+type OutcomeWiring = 'forward' | 'rework' | 'open';
 
 function NodeSocketLayer({
   node,
   portCatalog,
   measurements,
   selected,
-  hiddenOutcomeCount,
+  wiring,
   connecting,
   readOnly,
   connectingFromLabel,
   onStartConnect,
   onCompleteConnect,
-  onReveal,
 }: {
   node: WorkflowNode;
   portCatalog: WorkflowNodePortCatalog;
   measurements: ReadonlyMap<string, WorkflowSize>;
   selected: boolean;
-  hiddenOutcomeCount: number;
+  /** Each outcome's wiring, by event type. */
+  wiring: ReadonlyMap<string, OutcomeWiring>;
   connecting: boolean;
   readOnly: boolean;
   connectingFromLabel?: string | null;
   onStartConnect: (eventType: string) => void;
   onCompleteConnect: (eventType: string) => void;
-  onReveal: () => void;
 }) {
   const ports = [...portCatalog.inputs, ...portCatalog.outputs];
+  // An end pill has room for no labels; every other card writes its ports inside its edges.
+  const labelled = node.kind !== 'end';
+  // Members of one stage can name outcomes alike ("pass"); such a name is written as its event.
+  const shared = new Set<string>();
+  for (const side of [portCatalog.inputs, portCatalog.outputs]) {
+    const seen = new Set<string>();
+    for (const port of side) {
+      const key = `${port.direction}:${port.label}`;
+      if (seen.has(key)) shared.add(key);
+      seen.add(key);
+    }
+  }
 
   function activate(port: WorkflowNodePort) {
     if (readOnly) return;
@@ -1668,7 +823,6 @@ function NodeSocketLayer({
     if (connecting) onCompleteConnect(port.eventType);
   }
 
-  const bounds = nodeBounds(node, { measurements });
   return (
     <g data-testid={`workflow-sockets-${node.id}`}>
       {ports.map((port) => {
@@ -1676,28 +830,44 @@ function NodeSocketLayer({
         const active =
           port.direction === 'output' && connectingFromLabel === port.eventType && connecting;
         const interactive = !readOnly && (port.direction === 'output' || connecting);
-        const showsTypedRows =
-          node.kind === 'stage' || node.kind === 'wait' || node.kind === 'include';
+        const outcome =
+          port.direction === 'output' ? (wiring.get(port.eventType) ?? 'open') : undefined;
+        const showLabel = labelled && (port.direction === 'output' || selected || connecting);
         return (
           <g key={port.id}>
+            {showLabel && (
+              <text
+                className="workflow-socket__label"
+                data-direction={port.direction}
+                x={anchor.x + (port.direction === 'input' ? 13 : -13)}
+                y={anchor.y + 4}
+                textAnchor={port.direction === 'input' ? 'start' : 'end'}
+                pointerEvents="none"
+              >
+                {truncateLabel(
+                  shared.has(`${port.direction}:${port.label}`) ? port.eventType : port.label,
+                  26,
+                  24,
+                )}
+              </text>
+            )}
             <circle
               data-workflow-socket="true"
               data-testid={`workflow-socket-${node.id}-${port.direction}-${port.index}`}
               data-node-id={node.id}
               data-direction={port.direction}
               data-event-type={port.eventType}
+              data-wiring={outcome}
               data-resolved={port.resolved ? 'true' : 'false'}
               data-active={active ? 'true' : 'false'}
               cx={anchor.x}
               cy={anchor.y}
-              r={5}
-              fill={active ? C.nodeStrokeSelected : C.bg}
-              stroke={port.resolved ? C.nodeStrokeSelected : C.errorStroke}
-              strokeWidth={1.5}
+              r={port.direction === 'output' ? 6 : 5}
               role={interactive ? 'button' : undefined}
               tabIndex={interactive ? 0 : -1}
               aria-label={`${node.label}: ${port.label} ${port.direction}`}
-              className={interactive ? 'niuu:cursor-crosshair' : undefined}
+              className={cn('workflow-socket', interactive && 'niuu:cursor-crosshair')}
+              onMouseDown={(event) => event.stopPropagation()}
               onClick={(event) => {
                 event.stopPropagation();
                 activate(port);
@@ -1711,63 +881,34 @@ function NodeSocketLayer({
             >
               <title>{`${port.label} · ${port.eventType}${port.resolved ? '' : ' · unresolved'}`}</title>
             </circle>
-            {showsTypedRows && (
-              <text
-                x={anchor.x + (port.direction === 'input' ? 10 : -10)}
-                y={anchor.y - 7}
-                textAnchor={port.direction === 'input' ? 'start' : 'end'}
-                fill={port.resolved ? C.textMuted : C.errorStroke}
-                fontSize={selected ? 10.5 : 10}
-                fontFamily="var(--font-mono)"
-                className="niuu:pointer-events-none"
-              >
-                {port.label}
-              </text>
-            )}
           </g>
         );
       })}
-      {hiddenOutcomeCount > 0 && (
-        <g
-          data-testid={`hidden-outcomes-${node.id}`}
-          role="button"
-          tabIndex={0}
-          aria-label={`Show ${hiddenOutcomeCount} more outcomes for ${node.label}`}
-          className="niuu:cursor-pointer"
-          onClick={(event) => {
-            event.stopPropagation();
-            onReveal();
-          }}
-          onKeyDown={(event) => {
-            if (event.key !== 'Enter' && event.key !== ' ') return;
-            event.preventDefault();
-            onReveal();
-          }}
-        >
-          <rect
-            x={bounds.x + bounds.width - 76}
-            y={bounds.y - 20}
-            width={68}
-            height={16}
-            rx={8}
-            fill={C.nodeFillConnecting}
-            stroke={C.nodeStroke}
-          />
-          <text
-            x={bounds.x + bounds.width - 42}
-            y={bounds.y - 9}
-            textAnchor="middle"
-            fill={C.textMuted}
-            fontSize={9}
-            fontFamily="var(--font-mono)"
-            className="niuu:pointer-events-none"
-          >
-            +{hiddenOutcomeCount} outcomes
-          </text>
-        </g>
-      )}
     </g>
   );
+}
+
+/** Each outcome of each node, by how it is wired: a rework wire wins over a forward one. */
+function outcomeWiring(
+  nodes: readonly WorkflowNode[],
+  edges: readonly WorkflowEdge[],
+): Map<string, Map<string, OutcomeWiring>> {
+  const owner = new Map<string, string>();
+  for (const node of nodes) {
+    for (const id of nodeMatchIds(node)) owner.set(id, node.id);
+  }
+  const wiring = new Map<string, Map<string, OutcomeWiring>>();
+  for (const edge of edges) {
+    const nodeId = owner.get(edge.source);
+    const event = parseWorkflowEdgeLabel(edge.label)?.sourceEventType;
+    if (!nodeId || !event) continue;
+    const byEvent = wiring.get(nodeId) ?? new Map<string, OutcomeWiring>();
+    if (byEvent.get(event) !== 'rework') {
+      byEvent.set(event, isReentryEdge(edge) ? 'rework' : 'forward');
+    }
+    wiring.set(nodeId, byEvent);
+  }
+  return wiring;
 }
 
 // ---------------------------------------------------------------------------
@@ -1949,7 +1090,7 @@ function RunStateOverlay({
         y={bounds.y}
         width={bounds.width}
         height={bounds.height}
-        rx={8}
+        rx={14}
         pointerEvents="none"
       />
       <rect
@@ -1958,7 +1099,7 @@ function RunStateOverlay({
         y={bounds.y - 3}
         width={bounds.width + 6}
         height={bounds.height + 6}
-        rx={10}
+        rx={17}
         fill="none"
         vectorEffect="non-scaling-stroke"
         pointerEvents="none"
@@ -2044,7 +1185,6 @@ export interface GraphViewProps {
   onAddMimirResource?: WorkflowBuilderActions['addMimirResource'];
   onDeleteNode: WorkflowBuilderActions['deleteNode'];
   onDeleteEdge: WorkflowBuilderActions['deleteEdge'];
-  onMoveNode: WorkflowBuilderActions['moveNode'];
   onStartConnect: WorkflowBuilderActions['startConnect'];
   onCancelConnect: WorkflowBuilderActions['cancelConnect'];
   onCompleteConnect: WorkflowBuilderActions['completeConnect'];
@@ -2055,8 +1195,6 @@ export interface GraphViewProps {
    *  alone (onAddStageWithPersona) are enough to show the menu; this just
    *  adds the gate/cond/wait/end section to it. */
   onAddNodeFromPort?: WorkflowBuilderActions['addNodeFromPort'];
-  /** Reposition every node via `layoutWorkflow`. Omit to hide the button. */
-  onAutoLayout?: WorkflowBuilderActions['autoLayout'];
   /** System templates and other immutable workflows retain navigation and inspection. */
   readOnly?: boolean;
   /** A run drawn on its workflow: where the run is at each node, shown over the node. */
@@ -2070,12 +1208,17 @@ export interface GraphViewProps {
   readOnlyMessage?: string;
 }
 
+// Stable defaults: a fresh [] per render would lay the workflow out again on every render.
+const NO_PERSONAS: PersonaEntry[] = [];
+const NO_MOUNTS: WorkflowRegistryMount[] = [];
+const NO_ISSUES: WorkflowIssue[] = [];
+
 export function GraphView({
   nodes,
   edges,
-  personas = [],
-  registryMounts = [],
-  issues = [],
+  personas = NO_PERSONAS,
+  registryMounts = NO_MOUNTS,
+  issues = NO_ISSUES,
   selectedNodeId,
   connectingFromId,
   connectingFromLabel,
@@ -2085,7 +1228,6 @@ export function GraphView({
   onAddMimirResource,
   onDeleteNode,
   onDeleteEdge,
-  onMoveNode,
   onStartConnect,
   onCancelConnect,
   onCompleteConnect,
@@ -2093,7 +1235,6 @@ export function GraphView({
   onAddStageWithPersona,
   onAddStageFromPort,
   onAddNodeFromPort,
-  onAutoLayout,
   readOnly = false,
   onEdit,
   readOnlyMessage,
@@ -2125,23 +1266,61 @@ export function GraphView({
     position: { x: number; y: number };
   } | null>(null);
   const [isPanning, setIsPanning] = useState(false);
-  const [dragPreview, setDragPreview] = useState<{
-    nodeId: string;
-    position: { x: number; y: number };
-  } | null>(null);
   const panRef = useRef<{ startX: number; startY: number; tx: number; ty: number } | null>(null);
+  const [showEvents, setShowEvents] = useState(true);
 
-  const displayNodes = useMemo(
+  const visiblePortCatalogs = useMemo(
     () =>
-      nodes.map((node) =>
-        dragPreview?.nodeId === node.id ? { ...node, position: dragPreview.position } : node,
+      new Map(
+        nodes.map((node) => [
+          node.id,
+          visibleNodePortCatalog(
+            node,
+            personas,
+            edges,
+            node.id === selectedNodeId || connectingFromId !== null,
+          ),
+        ]),
       ),
-    [dragPreview, nodes],
+    [connectingFromId, edges, nodes, personas, selectedNodeId],
   );
-  // Provided ids (an include node's inlined local ids) aliased to their
-  // owning include node — an edge whose source/target is such an id resolves
-  // through this map to the include card itself, so edge rendering and
-  // connect-completion both anchor on the one card that represents it.
+  // Every card is one recipe: a head, then a row per port on its busier side.
+  const measurements = useMemo(() => {
+    const sizes = new Map<string, WorkflowSize>();
+    for (const node of nodes) {
+      const ports = visiblePortCatalogs.get(node.id) ?? { inputs: [], outputs: [] };
+      sizes.set(
+        node.id,
+        workflowCardSize(node.kind, Math.max(ports.inputs.length, ports.outputs.length)),
+      );
+    }
+    return sizes;
+  }, [nodes, visiblePortCatalogs]);
+  // The canvas lays the workflow out itself, left to right: what follows a step stands to
+  // its right, steps that run together stand above one another, and work sent back runs
+  // underneath. Positions saved in the document are not used.
+  const displayNodes = useMemo(() => {
+    const owner = new Map<string, string>();
+    for (const node of nodes) owner.set(node.id, node.id);
+    for (const [localId, includeNode] of providedNodeIds({ nodes })) {
+      if (!owner.has(localId)) owner.set(localId, includeNode.id);
+    }
+    const layoutEdges = edges
+      .map((edge) => ({
+        ...edge,
+        source: owner.get(edge.source) ?? edge.source,
+        target: owner.get(edge.target) ?? edge.target,
+      }))
+      .filter((edge) => edge.source !== edge.target);
+    const { positions } = layoutWorkflow(
+      nodes.map((node) => node.id),
+      layoutEdges,
+      { nodeSizes: measurements, originX: 40, originY: 40, columnGap: 120, rowGap: 56 },
+    );
+    return nodes.map((node) => ({ ...node, position: positions.get(node.id) ?? node.position }));
+  }, [edges, measurements, nodes]);
+  const wiring = useMemo(() => outcomeWiring(nodes, edges), [edges, nodes]);
+
   const nodeMap = useMemo(() => {
     const map = new Map<string, WorkflowNode>(displayNodes.map((n) => [n.id, n]));
     for (const [localId, includeNode] of providedNodeIds({ nodes: displayNodes })) {
@@ -2149,78 +1328,6 @@ export function GraphView({
     }
     return map;
   }, [displayNodes]);
-  const fullPortCatalogs = useMemo(
-    () =>
-      new Map(displayNodes.map((node) => [node.id, nodePortCatalog(node, { personas, edges })])),
-    [displayNodes, edges, personas],
-  );
-  const visiblePortCatalogs = useMemo(
-    () =>
-      new Map(
-        displayNodes.map((node) => [
-          node.id,
-          visibleNodePortCatalog(node, personas, edges, node.id === selectedNodeId),
-        ]),
-      ),
-    [displayNodes, edges, personas, selectedNodeId],
-  );
-  const measurements = useMemo(() => {
-    const sizes = new Map<string, WorkflowSize>();
-    for (const node of displayNodes) {
-      switch (node.kind) {
-        case 'stage': {
-          const stagePorts = visiblePortCatalogs.get(node.id);
-          const stageRows = Math.max(
-            stagePorts?.inputs.length ?? 0,
-            stagePorts?.outputs.length ?? 0,
-          );
-          sizes.set(node.id, {
-            width: STAGE_WIDTH,
-            height: stageNodeHeight(node) + (stageRows > 0 ? 22 + stageRows * 14 : 0),
-            portTop: stageNodeHeight(node) + 22,
-          });
-          break;
-        }
-        case 'gate':
-          sizes.set(node.id, { width: GATE_SIZE, height: GATE_SIZE });
-          break;
-        case 'cond':
-          sizes.set(node.id, { width: COND_RADIUS * 2, height: COND_RADIUS * 2 });
-          break;
-        case 'trigger':
-        case 'subworkflow':
-          sizes.set(node.id, { width: TRIGGER_WIDTH, height: TRIGGER_HEIGHT });
-          break;
-        case 'wait': {
-          const ports = visiblePortCatalogs.get(node.id) ?? { inputs: [], outputs: [] };
-          const rows = Math.max(ports.inputs.length, ports.outputs.length);
-          sizes.set(node.id, {
-            width: WAIT_WIDTH,
-            height: WAIT_HEIGHT + (rows > 0 ? 16 + rows * 14 : 0),
-            portTop: rows > 0 ? WAIT_HEIGHT + 16 : 0,
-          });
-          break;
-        }
-        case 'include': {
-          const ports = visiblePortCatalogs.get(node.id) ?? { inputs: [], outputs: [] };
-          const rows = Math.max(ports.inputs.length, ports.outputs.length);
-          sizes.set(node.id, {
-            width: INCLUDE_WIDTH,
-            height: INCLUDE_HEIGHT + (rows > 0 ? 16 + rows * 14 : 0),
-            portTop: rows > 0 ? INCLUDE_HEIGHT + 16 : 0,
-          });
-          break;
-        }
-        case 'end':
-          sizes.set(node.id, { width: END_RADIUS * 2, height: END_RADIUS * 2 });
-          break;
-        case 'resource':
-          sizes.set(node.id, { width: RESOURCE_WIDTH, height: RESOURCE_HEIGHT });
-          break;
-      }
-    }
-    return sizes;
-  }, [displayNodes, visiblePortCatalogs]);
   const issueMap = useMemo(() => buildIssueLevelMap(issues), [issues]);
   const feedbackLanes = useMemo(() => feedbackLaneAssignments(edges), [edges]);
   const isConnectingMode = !readOnly && connectingFromId !== null;
@@ -2251,14 +1358,14 @@ export function GraphView({
         return;
       }
       const rect = svg.getBoundingClientRect();
-      const drawn = fitOnLoad ? drawnContentBox(contentRef.current) : null;
+      const drawn = drawnContentBox(contentRef.current);
       if (drawn) {
-        // A viewer frames what is drawn (feedback lanes, a run's chips) and centres it.
-        const margin = 24;
+        // Frame what is drawn (rework lanes, wire labels, a run's chips) and centre it.
+        const margin = 32;
         const scale = Math.min(
           scaleLimit,
           Math.max(
-            VIEWER_MIN_ZOOM,
+            fitOnLoad ? VIEWER_MIN_ZOOM : MIN_ZOOM,
             Math.min(
               rect.width / (drawn.width + margin * 2),
               rect.height / (drawn.height + margin * 2),
@@ -2288,20 +1395,20 @@ export function GraphView({
       );
       setTransform({
         x: (rect.width - width * scale) / 2 - minX * scale,
-        y: 52 - minY * scale,
+        y: (rect.height - height * scale) / 2 - minY * scale,
         scale,
       });
     },
     [displayNodes, edges, measurements, nodes.length, fitOnLoad],
   );
 
-  // A viewer frames the graph whenever its canvas changes size (it opens, a panel beside it
-  // comes or goes, the dock is resized): it is not edited, so nothing else frames it. Zoom and
-  // pan stay the person's until the canvas changes again.
+  // The canvas frames the workflow once it first has a size. A viewer frames it again whenever
+  // its canvas changes size (it opens, a panel beside it comes or goes, the dock is resized):
+  // it is not edited, so nothing else frames it. Zoom and pan stay the person's otherwise.
   // The size last framed, kept across refreshes of the graph so a refresh keeps the frame.
   const framedSizeRef = useRef('');
   useEffect(() => {
-    if (!fitOnLoad || nodes.length === 0) return;
+    if (nodes.length === 0) return;
     const svg = svgRef.current;
     if (!svg) return;
     let frame = 0;
@@ -2309,6 +1416,7 @@ export function GraphView({
       const rect = svg.getBoundingClientRect();
       const size = `${Math.round(rect.width)}x${Math.round(rect.height)}`;
       if (rect.width === 0 || rect.height === 0 || size === framedSizeRef.current) return;
+      if (!fitOnLoad && framedSizeRef.current) return;
       framedSizeRef.current = size;
       fitToNodes(1);
       // A run's labels grow as the fit zooms out; frame again once they have.
@@ -2414,6 +1522,47 @@ export function GraphView({
     };
   }, [canvasPicker]);
 
+  // "Next" adds a step after the selected one, on the outcome that goes nowhere yet (else its
+  // first): the insert menu offers the steps that start on that outcome's event.
+  const addNext = useCallback(
+    (nodeId: string) => {
+      const node = nodeMap.get(nodeId);
+      const outputs = visiblePortCatalogs.get(nodeId)?.outputs ?? [];
+      const byEvent = wiring.get(nodeId);
+      const port =
+        outputs.find((candidate) => !byEvent?.has(candidate.eventType)) ??
+        outputs.find((candidate) => byEvent?.get(candidate.eventType) === 'forward') ??
+        outputs[0];
+      if (!node || !port) {
+        openCanvasPicker();
+        return;
+      }
+      const sourceId = resolveIncludeConnectionId(node, port.eventType, 'source', edges);
+      if (sourceId) onStartConnect(sourceId, port.eventType);
+    },
+    [edges, nodeMap, onStartConnect, openCanvasPicker, visiblePortCatalogs, wiring],
+  );
+  // "Alongside" adds a step that starts on what the selected one starts on, from the same
+  // step, so the two run at the same time.
+  const alongsideOf = useCallback(
+    (nodeId: string) => {
+      const node = nodeMap.get(nodeId);
+      if (!node) return null;
+      const ids = nodeMatchIds(node);
+      const incoming = edges.find((edge) => ids.has(edge.target) && !isReentryEdge(edge));
+      const eventType = incoming ? parseWorkflowEdgeLabel(incoming.label)?.sourceEventType : null;
+      return incoming && eventType ? { sourceId: incoming.source, eventType } : null;
+    },
+    [edges, nodeMap],
+  );
+  const addAlongside = useCallback(
+    (nodeId: string) => {
+      const from = alongsideOf(nodeId);
+      if (from) onStartConnect(from.sourceId, from.eventType);
+    },
+    [alongsideOf, onStartConnect],
+  );
+
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
       const target = e.target as HTMLElement | null;
@@ -2424,6 +1573,25 @@ export function GraphView({
         target?.tagName === 'SELECT';
       if (editable || !rootRef.current?.contains(document.activeElement)) return;
       if (e.key === 'Escape') onCancelConnect();
+      const onCanvas =
+        target === rootRef.current ||
+        (target instanceof SVGElement && svgRef.current?.contains(target));
+      if (
+        !readOnly &&
+        e.key === 'Tab' &&
+        !e.ctrlKey &&
+        !e.metaKey &&
+        !e.altKey &&
+        !canvasPicker &&
+        !connectingFromId &&
+        selectedNodeId &&
+        onCanvas
+      ) {
+        e.preventDefault();
+        if (e.shiftKey) addAlongside(selectedNodeId);
+        else addNext(selectedNodeId);
+        return;
+      }
       if (
         !readOnly &&
         e.key === 'Tab' &&
@@ -2459,6 +1627,9 @@ export function GraphView({
     selectedNodeId,
     canvasPicker,
     openCanvasPicker,
+    addAlongside,
+    addNext,
+    connectingFromId,
   ]);
 
   function handleSvgMouseDown(e: React.MouseEvent<SVGSVGElement>) {
@@ -2522,14 +1693,16 @@ export function GraphView({
   }
 
   function findStageAtPoint(x: number, y: number) {
-    return nodes.find(
-      (node) =>
-        node.kind === 'stage' &&
-        x >= node.position.x &&
-        x <= node.position.x + STAGE_WIDTH &&
-        y >= node.position.y &&
-        y <= node.position.y + (measurements.get(node.id)?.height ?? stageNodeHeight(node)),
-    );
+    return displayNodes.find((node) => {
+      if (node.kind !== 'stage') return false;
+      const bounds = nodeBounds(node, { measurements });
+      return (
+        x >= bounds.x &&
+        x <= bounds.x + bounds.width &&
+        y >= bounds.y &&
+        y <= bounds.y + bounds.height
+      );
+    });
   }
 
   function handleDrop(e: React.DragEvent<SVGSVGElement>) {
@@ -2562,45 +1735,22 @@ export function GraphView({
     }
   }
 
-  const nodeProps = (node: WorkflowNode) => ({
-    selected: node.id === selectedNodeId,
-    issueLevel: issueMap.get(node.id) ?? null,
-    isConnectingMode,
-    onSelect: () => onSelectNode(node.id),
-    onInspect: () => onInspectNode(node.id),
-    onStartConnect: (label?: string) => {
-      if (readOnly) return;
-      if (label === undefined) {
-        // A plain body-click continuation has nothing to disambiguate an
-        // include's provided ids with — require an explicit port instead.
-        if (node.kind !== 'include') onStartConnect(node.id);
-        return;
+  // A click on a card's body while a wire is drawn wires it to the card's own input: the
+  // event itself where the step starts on it, else the card's one input. A stage that does
+  // not start on the event, and an include (whose inlined steps need an explicit port), need
+  // a click on the port instead.
+  function bodyConnect(node: WorkflowNode) {
+    if (readOnly) return;
+    if (node.kind === 'include') return;
+    if (node.kind === 'stage') {
+      const inputs = nodePortCatalog(node, { personas, edges }).inputs;
+      if (connectingFromLabel && inputs.some((port) => port.eventType === connectingFromLabel)) {
+        onCompleteConnect(node.id, connectingFromLabel);
       }
-      const sourceId = resolveIncludeConnectionId(node, label, 'source', edges);
-      if (sourceId) onStartConnect(sourceId, label);
-    },
-    onCompleteConnect: (inputLabel?: string) => {
-      if (readOnly) return;
-      if (inputLabel === undefined) {
-        if (node.kind !== 'include') onCompleteConnect(node.id);
-        return;
-      }
-      const targetId = resolveIncludeConnectionId(node, inputLabel, 'target', edges);
-      if (targetId) onCompleteConnect(targetId, inputLabel);
-    },
-    onDelete: () => {
-      if (!readOnly) onDeleteNode(node.id);
-    },
-    onDragPreview: (position: { x: number; y: number }) => {
-      if (!readOnly) setDragPreview({ nodeId: node.id, position });
-    },
-    onDragEnd: (pos: { x: number; y: number }) => {
-      setDragPreview(null);
-      if (!readOnly) onMoveNode(node.id, pos);
-    },
-    canvasScale: transform.scale,
-    readOnly,
-  });
+      return;
+    }
+    onCompleteConnect(node.id);
+  }
 
   const toolbarBtnClass =
     'niuu:bg-bg-elevated niuu:text-text-primary niuu:border niuu:border-border niuu:rounded niuu:px-2.5 niuu:py-1 niuu:text-xs niuu:cursor-pointer niuu:font-sans';
@@ -2731,17 +1881,65 @@ export function GraphView({
         </div>
       )}
 
-      {!readOnly && (selectedNodeId || selectedEdgeId || isConnectingMode) && (
-        <div className="niuu:absolute niuu:bottom-4 niuu:left-1/2 niuu:z-20 niuu:flex niuu:-translate-x-1/2 niuu:items-center niuu:gap-2 niuu:rounded-md niuu:border niuu:border-border niuu:bg-bg-secondary niuu:p-1.5">
-          {selectedNodeId && (
-            <button
-              data-testid="delete-selected"
-              onClick={() => onDeleteNode(selectedNodeId)}
-              className={cn(toolbarBtnClass, 'niuu:text-critical')}
+      {/* The selected step's toolbar, above its card: add a step after it or beside it, or
+          remove it. */}
+      {!readOnly &&
+        selectedNodeId &&
+        !isConnectingMode &&
+        (() => {
+          const node = displayNodes.find((candidate) => candidate.id === selectedNodeId);
+          if (!node) return null;
+          const bounds = nodeBounds(node, { measurements });
+          const hasOutputs = (visiblePortCatalogs.get(node.id)?.outputs.length ?? 0) > 0;
+          const besideFrom = alongsideOf(node.id);
+          return (
+            <div
+              className="workflow-step-toolbar"
+              data-testid="step-toolbar"
+              role="toolbar"
+              aria-label={`${node.label} actions`}
+              style={{
+                left: transform.x + (bounds.x + bounds.width / 2) * transform.scale,
+                top: transform.y + bounds.y * transform.scale - 46,
+              }}
             >
-              Delete step
-            </button>
-          )}
+              {hasOutputs && (
+                <button
+                  type="button"
+                  data-testid="step-toolbar-next"
+                  title="Add a step after this one (Tab)"
+                  onClick={() => addNext(node.id)}
+                >
+                  <span aria-hidden="true">＋</span> Next
+                </button>
+              )}
+              {besideFrom && (
+                <button
+                  type="button"
+                  data-testid="step-toolbar-alongside"
+                  title="Add a step that runs at the same time as this one (Shift+Tab)"
+                  onClick={() => addAlongside(node.id)}
+                >
+                  <span aria-hidden="true">⇉</span> Alongside
+                </button>
+              )}
+              {(hasOutputs || besideFrom) && <span className="workflow-step-toolbar__sep" />}
+              <button
+                type="button"
+                data-testid="delete-selected"
+                className="workflow-step-toolbar__danger"
+                title="Remove this step (Delete)"
+                aria-label={`Remove ${node.label}`}
+                onClick={() => onDeleteNode(node.id)}
+              >
+                Remove
+              </button>
+            </div>
+          );
+        })()}
+
+      {!readOnly && (selectedEdgeId || isConnectingMode) && (
+        <div className="niuu:absolute niuu:bottom-4 niuu:left-1/2 niuu:z-20 niuu:flex niuu:-translate-x-1/2 niuu:items-center niuu:gap-2 niuu:rounded-md niuu:border niuu:border-border niuu:bg-bg-secondary niuu:p-1.5">
           {selectedEdgeId && (
             <button
               data-testid="delete-selected-edge"
@@ -2756,7 +1954,7 @@ export function GraphView({
           )}
           {isConnectingMode && (
             <span className="niuu:px-2 niuu:text-xs niuu:text-text-secondary">
-              Choose a compatible input…
+              Pick the step it goes to, or one below to add
             </span>
           )}
         </div>
@@ -2766,16 +1964,16 @@ export function GraphView({
         className="niuu:absolute niuu:right-4 niuu:bottom-4 niuu:z-20 niuu:flex niuu:overflow-hidden niuu:rounded-md niuu:shadow-lg"
         aria-label="Canvas zoom controls"
       >
-        {!readOnly && onAutoLayout && (
-          <button
-            type="button"
-            data-testid="auto-layout"
-            className="workflow-canvas__control"
-            onClick={onAutoLayout}
-          >
-            Auto layout
-          </button>
-        )}
+        <button
+          type="button"
+          data-testid="toggle-events"
+          className="workflow-canvas__control"
+          aria-pressed={showEvents}
+          title="Write the event each wire carries on it"
+          onClick={() => setShowEvents((shown) => !shown)}
+        >
+          Events
+        </button>
         <button
           type="button"
           data-testid="zoom-out"
@@ -2837,7 +2035,7 @@ export function GraphView({
           onInsertPersona={(personaId) => {
             const sourceNode = connectingFromId ? nodeMap.get(connectingFromId) : undefined;
             const position = sourceNode
-              ? { x: sourceNode.position.x + STAGE_WIDTH + 96, y: sourceNode.position.y }
+              ? { x: sourceNode.position.x + CARD_WIDTH + 120, y: sourceNode.position.y }
               : undefined;
             if (onAddStageFromPort && connectingFromId) {
               onAddStageFromPort(connectingFromId, connectingFromLabel, personaId, position);
@@ -2851,7 +2049,7 @@ export function GraphView({
               ? (kind) => {
                   const sourceNode = nodeMap.get(connectingFromId);
                   const position = sourceNode
-                    ? { x: sourceNode.position.x + STAGE_WIDTH + 96, y: sourceNode.position.y }
+                    ? { x: sourceNode.position.x + CARD_WIDTH + 120, y: sourceNode.position.y }
                     : undefined;
                   onAddNodeFromPort(kind, connectingFromId, connectingFromLabel, position);
                   onCancelConnect();
@@ -2877,7 +2075,17 @@ export function GraphView({
       >
         <defs>
           <marker id="arrowhead" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
-            <polygon points="0 0, 8 3, 0 6" fill={C.edgeStroke} />
+            <polygon className="workflow-arrow" points="0 0, 8 3, 0 6" />
+          </marker>
+          <marker
+            id="arrowhead-rework"
+            markerWidth="8"
+            markerHeight="6"
+            refX="8"
+            refY="3"
+            orient="auto"
+          >
+            <polygon className="workflow-arrow" data-tone="rework" points="0 0, 8 3, 0 6" />
           </marker>
         </defs>
         <g
@@ -2896,6 +2104,7 @@ export function GraphView({
               measurements={measurements}
               feedbackLane={feedbackLanes.get(edge.id) ?? 0}
               runPassed={runPassed(edge)}
+              showEvents={showEvents}
               selected={edge.id === selectedEdgeId}
               onSelect={() => {
                 setSelectedEdgeId(edge.id);
@@ -2905,54 +2114,41 @@ export function GraphView({
           ))}
           {/* Nodes */}
           {displayNodes.map((node) => {
-            const props = nodeProps(node);
-            switch (node.kind) {
-              case 'trigger':
-              case 'subworkflow':
-                return <TriggerNode key={node.id} node={node} {...props} />;
-              case 'stage':
-                return (
-                  <StageNode
-                    key={node.id}
+            const bounds = nodeBounds(node, { measurements });
+            const ports = visiblePortCatalogs.get(node.id) ?? { inputs: [], outputs: [] };
+            const waitPorts = node.kind === 'wait' ? waitPortLists(node.id, edges) : null;
+            return (
+              <g key={node.id}>
+                <WorkflowNodeCard
+                  node={node}
+                  bounds={bounds}
+                  content={workflowCardContent(node, personas)}
+                  hasPorts={ports.inputs.length + ports.outputs.length > 0}
+                  selected={node.id === selectedNodeId}
+                  issueLevel={issueMap.get(node.id) ?? null}
+                  isConnectingMode={isConnectingMode}
+                  onSelect={() => {
+                    setSelectedEdgeId(null);
+                    onSelectNode(node.id);
+                  }}
+                  onInspect={() => onInspectNode(node.id)}
+                  onBodyConnect={() => bodyConnect(node)}
+                />
+                {node.kind === 'wait' && waitPorts && (
+                  <WaitUnconfiguredSockets
                     node={node}
-                    portCatalog={visiblePortCatalogs.get(node.id) ?? { inputs: [], outputs: [] }}
+                    bounds={bounds}
+                    incomingEvents={waitPorts.incomingEvents}
+                    outgoingEvents={waitPorts.outgoingEvents}
+                    isConnectingMode={isConnectingMode}
+                    readOnly={readOnly}
                     connectingFromLabel={connectingFromLabel}
-                    {...props}
+                    onStartConnect={(eventType) => onStartConnect(node.id, eventType)}
+                    onCompleteConnect={(eventType) => onCompleteConnect(node.id, eventType)}
                   />
-                );
-              case 'gate':
-                return <GateNode key={node.id} node={node} {...props} />;
-              case 'cond':
-                return <CondNode key={node.id} node={node} {...props} />;
-              case 'wait':
-                return (
-                  <WaitNode
-                    key={node.id}
-                    node={node}
-                    {...waitPortLists(node.id, edges)}
-                    connectingFromLabel={connectingFromLabel}
-                    {...props}
-                  />
-                );
-              case 'end':
-                return <EndNode key={node.id} node={node} {...props} />;
-              case 'resource':
-                return <ResourceNode key={node.id} node={node} {...props} />;
-              case 'include': {
-                const includePorts = visiblePortCatalogs.get(node.id) ?? {
-                  inputs: [],
-                  outputs: [],
-                };
-                return (
-                  <IncludeNode
-                    key={node.id}
-                    node={node}
-                    portRows={Math.max(includePorts.inputs.length, includePorts.outputs.length)}
-                    {...props}
-                  />
-                );
-              }
-            }
+                )}
+              </g>
+            );
           })}
           {displayNodes.map((node) => (
             <NodeSocketLayer
@@ -2961,11 +2157,7 @@ export function GraphView({
               portCatalog={visiblePortCatalogs.get(node.id) ?? { inputs: [], outputs: [] }}
               measurements={measurements}
               selected={node.id === selectedNodeId}
-              hiddenOutcomeCount={Math.max(
-                0,
-                (fullPortCatalogs.get(node.id)?.outputs.length ?? 0) -
-                  (visiblePortCatalogs.get(node.id)?.outputs.length ?? 0),
-              )}
+              wiring={wiring.get(node.id) ?? new Map()}
               connecting={isConnectingMode}
               readOnly={readOnly}
               connectingFromLabel={connectingFromLabel}
@@ -2977,7 +2169,6 @@ export function GraphView({
                 const targetId = resolveIncludeConnectionId(node, eventType, 'target', edges);
                 if (targetId) onCompleteConnect(targetId, eventType);
               }}
-              onReveal={() => onSelectNode(node.id)}
             />
           ))}
           {runStates &&

@@ -64,7 +64,6 @@ export function RunWorkflowGraph({ runId, onOpenSession }: RunWorkflowGraphProps
         onAddNode={noop}
         onDeleteNode={noop}
         onDeleteEdge={noop}
-        onMoveNode={noop}
         onStartConnect={noop}
         onCancelConnect={noop}
         onCompleteConnect={noop}

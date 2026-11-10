@@ -300,7 +300,7 @@ test('zoomed HTML cards stay painted and clickable at their SVG positions', asyn
   await expect(page.getByTestId('child-workflow-select')).toBeVisible();
 });
 
-test('right-click searches all node types and inserts at the clicked canvas point', async ({
+test('right-click searches all node types and adds the step to the laid-out workflow', async ({
   page,
 }) => {
   await configure(page);
@@ -310,11 +310,6 @@ test('right-click searches all node types and inserts at the clicked canvas poin
   const canvas = page.getByTestId('graph-canvas');
   const bounds = (await canvas.boundingBox())!;
   const point = { x: bounds.x + bounds.width - 30, y: bounds.y + bounds.height - 90 };
-  const position = await canvas.evaluate((element, point) => {
-    const layer = element.querySelector(':scope > g') as SVGGElement;
-    const world = new DOMPoint(point.x, point.y).matrixTransform(layer.getScreenCTM()!.inverse());
-    return { x: world.x, y: world.y };
-  }, point);
   await page.mouse.click(point.x, point.y, { button: 'right' });
   const picker = page.getByRole('dialog', { name: 'Add workflow node' });
   await expect(picker).toBeVisible();
@@ -325,9 +320,9 @@ test('right-click searches all node types and inserts at the clicked canvas poin
   await picker.getByRole('textbox').fill('child');
   await picker.getByTestId('library-add-subworkflow').click();
   await expect(picker).toHaveCount(0);
-  const added = page.locator('[data-testid^="workflow-node-node-"] foreignObject').first();
-  expect(Number(await added.getAttribute('x'))).toBeCloseTo(position.x, 3);
-  expect(Number(await added.getAttribute('y'))).toBeCloseTo(position.y, 3);
+  // The canvas lays every step out itself: the new one joins the workflow's layout.
+  await expect(page.locator('[data-testid^="workflow-node-node-"]')).toHaveCount(1);
+  await expect(page.locator('[data-testid^="workflow-node-"]')).toHaveCount(nodes.length + 1);
   await page.getByTestId('btn-undo').click();
   await expect(page.locator('[data-testid^="workflow-node-"]')).toHaveCount(nodes.length);
 });

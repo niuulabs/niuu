@@ -43,9 +43,7 @@ const KIND_BADGE_CLASS: Record<WorkflowNode['kind'], string> = {
   end: 'niuu:text-status-emerald',
   resource: 'niuu:text-text-secondary',
   wait: 'niuu:text-status-cyan',
-  // No Tailwind utility maps to the violet accent nodeAccent.css uses for
-  // this kind's canvas card (see that file's header comment) — reuse the
-  // brand color already used for the other pinned-workflow kind here.
+  // An included workflow reads as the steps it brings in: the brand colour, as stages.
   include: 'niuu:text-brand',
 };
 

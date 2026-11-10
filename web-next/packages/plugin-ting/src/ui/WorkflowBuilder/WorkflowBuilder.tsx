@@ -141,8 +141,6 @@ export function WorkflowBuilder({
     addNodeFromPort,
     deleteNode,
     deleteEdge,
-    moveNode,
-    autoLayout,
     undo,
     redo,
     canUndo,
@@ -723,7 +721,6 @@ export function WorkflowBuilder({
               registryMounts={registryMounts}
               onDeleteNode={deleteNode}
               onDeleteEdge={deleteEdge}
-              onMoveNode={moveNode}
               onStartConnect={startConnect}
               onCancelConnect={cancelConnect}
               onCompleteConnect={completeConnect}
@@ -731,7 +728,6 @@ export function WorkflowBuilder({
               onAddStageWithPersona={addStageWithPersona}
               onAddStageFromPort={addStageFromPort}
               onAddNodeFromPort={addNodeFromPort}
-              onAutoLayout={autoLayout}
               personas={personas ?? DEFAULT_PERSONAS}
               issues={issues}
             />

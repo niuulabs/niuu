@@ -22,8 +22,6 @@ import type { PersonaEntry } from './LibraryPanel';
 import { makeNodeId, makeEdgeId, defaultBezierCPs } from './graphUtils';
 import { EPHEMERAL_LOCAL_MOUNT_ID, type WorkflowRegistryMount } from './mimirRegistry';
 import { normalizeWorkflowGraph } from '../../domain/workflowSemantics';
-import { layoutWorkflow } from '../../domain/workflowLayout';
-import { estimateWorkflowNodeSize } from '../../domain/workflowGeometry';
 import {
   addSubworkflowTemplate as addSubworkflowTemplateToWorkflow,
   bindIncludeWorkflow,
@@ -80,9 +78,6 @@ export interface WorkflowBuilderActions {
   ): void;
   deleteNode(id: string): void;
   deleteEdge(id: string): void;
-  moveNode(id: string, position: { x: number; y: number }): void;
-  /** Reposition every node via `layoutWorkflow`, as one undo step. */
-  autoLayout(): void;
   /** Step back to the previous committed workflow state. No-op at the start of history. */
   undo(): void;
   /** Step forward again after an undo. No-op with nothing to redo. */
@@ -881,56 +876,6 @@ export function useWorkflowBuilder(
     [commit, defaultStageModelId],
   );
 
-  const moveNode = useCallback(
-    (id: string, position: { x: number; y: number }) => {
-      commit((prev) => {
-        const current = prev.nodes.find((node) => node.id === id);
-        if (!current) return prev;
-        if (current.position.x === position.x && current.position.y === position.y) return prev;
-        return normalizeWorkflowWithStageDefaults(
-          {
-            ...prev,
-            nodes: prev.nodes.map((n) => (n.id === id ? { ...n, position } : n)),
-          },
-          defaultStageModelId,
-        );
-      });
-    },
-    [commit, defaultStageModelId],
-  );
-
-  /**
-   * Reposition every node with `layoutWorkflow` — a single state update
-   * (not N `moveNode` calls) so it's one undo step. Positions currently
-   * outside the canvas viewport (a node dragged off-screen, or one restored
-   * from a YAML document that never carried a `position:` at all) are the
-   * main case this fixes.
-   */
-  const autoLayout = useCallback(() => {
-    commit((prev) => {
-      const { positions } = layoutWorkflow(
-        prev.nodes.map((n) => n.id),
-        prev.edges,
-        {
-          nodeSizes: new Map(
-            prev.nodes.map((node) => [
-              node.id,
-              estimateWorkflowNodeSize(node, { personas, edges: prev.edges }),
-            ]),
-          ),
-          feedbackLaneSpacing: 0,
-        },
-      );
-      return normalizeWorkflowWithStageDefaults(
-        {
-          ...prev,
-          nodes: prev.nodes.map((n) => ({ ...n, position: positions.get(n.id) ?? n.position })),
-        },
-        defaultStageModelId,
-      );
-    });
-  }, [commit, defaultStageModelId, personas]);
-
   const startConnect = useCallback((sourceId: string, label?: string) => {
     if (!label) return;
     connectingFromRef.current = sourceId;
@@ -1317,8 +1262,6 @@ export function useWorkflowBuilder(
     addStageFromPort,
     deleteNode,
     deleteEdge,
-    moveNode,
-    autoLayout,
     undo,
     redo,
     startConnect,

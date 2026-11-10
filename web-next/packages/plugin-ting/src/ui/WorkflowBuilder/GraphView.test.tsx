@@ -2,6 +2,8 @@ import { describe, it, expect, vi } from 'vitest';
 import { act, render, screen, fireEvent, createEvent } from '@testing-library/react';
 import {
   GraphView,
+  reworkLimitLabel,
+  workflowCardContent,
   buildIssueLevelMap,
   edgeAnchor,
   isGraphNodeKind,
@@ -12,7 +14,12 @@ import {
 } from './GraphView';
 import type { WorkflowNode, WorkflowEdge } from '../../domain/workflow';
 import { MIMIR_MOUNT_MIME, serializeWorkflowRegistryMount } from './mimirRegistry';
-import { STAGE_WIDTH, WAIT_HEIGHT, stageNodeHeight } from './graphUtils';
+import {
+  CARD_HEADER_HEIGHT,
+  CARD_PORT_PAD,
+  CARD_PORT_ROW,
+  CARD_WIDTH,
+} from '../../domain/workflowGeometry';
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -138,7 +145,6 @@ function defaultProps() {
     onAddNode: vi.fn(),
     onAddMimirResource: vi.fn(),
     onDeleteNode: vi.fn(),
-    onMoveNode: vi.fn(),
     onStartConnect: vi.fn(),
     onCancelConnect: vi.fn(),
     onCompleteConnect: vi.fn(),
@@ -147,6 +153,26 @@ function defaultProps() {
 
 function openAddMenu() {
   fireEvent.click(screen.getByTestId('open-add-step'));
+}
+
+/** A node's port socket for one event, on one side. */
+function socketFor(nodeId: string, direction: 'input' | 'output', eventType: string) {
+  const socket = screen
+    .getByTestId(`workflow-sockets-${nodeId}`)
+    .querySelector(`circle[data-direction="${direction}"][data-event-type="${eventType}"]`);
+  if (!socket) throw new Error(`no ${direction} socket for ${eventType} on ${nodeId}`);
+  return socket;
+}
+
+/** Where the canvas drew a node's card. */
+function cardBox(nodeId: string) {
+  const card = screen.getByTestId(`workflow-node-${nodeId}`).querySelector('foreignObject')!;
+  return {
+    x: Number(card.getAttribute('x')),
+    y: Number(card.getAttribute('y')),
+    width: Number(card.getAttribute('width')),
+    height: Number(card.getAttribute('height')),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -254,7 +280,6 @@ describe('GraphView', () => {
       clientY: 200,
     });
     fireEvent.mouseUp(screen.getByTestId('workflow-node-stage-1'));
-    expect(props.onMoveNode).not.toHaveBeenCalled();
     const onEdit = vi.fn();
     view.rerender(<GraphView {...props} readOnly onEdit={onEdit} />);
     pickerBounds();
@@ -290,17 +315,35 @@ describe('GraphView', () => {
     expect(screen.getByTestId('graph-view')).toBeInTheDocument();
   });
 
-  it('hides the auto-layout button when onAutoLayout is not supplied', () => {
-    render(<GraphView {...defaultProps()} />);
-    expect(screen.queryByTestId('auto-layout')).not.toBeInTheDocument();
+  it('lays the workflow out left to right itself, whatever positions were saved', () => {
+    const wired: WorkflowEdge = { ...edge, label: 'stage.completed -> stage.completed' };
+    // Saved the other way round: the gate left of the stage that feeds it.
+    const props = {
+      ...defaultProps(),
+      nodes: [
+        { ...stageNode, position: { x: 900, y: 500 } },
+        { ...gateNode, position: { x: 10, y: 10 } },
+      ],
+      edges: [wired],
+    };
+    render(<GraphView {...props} />);
+
+    expect(cardBox('stage-1').x).toBeLessThan(cardBox('gate-1').x);
+    expect(screen.queryByTestId('auto-layout')).toBeNull();
   });
 
-  it('shows the auto-layout button and calls the handler on click', () => {
-    const onAutoLayout = vi.fn();
-    render(<GraphView {...defaultProps()} onAutoLayout={onAutoLayout} />);
-    openAddMenu();
-    fireEvent.click(screen.getByTestId('auto-layout'));
-    expect(onAutoLayout).toHaveBeenCalledTimes(1);
+  it('selects a card on mouse down and never moves it', () => {
+    const props = defaultProps();
+    render(<GraphView {...props} />);
+    const before = cardBox('stage-1');
+    const card = screen.getByTestId('workflow-node-stage-1');
+
+    fireEvent.mouseDown(card, { button: 0, clientX: 100, clientY: 100 });
+    fireEvent.mouseMove(card, { clientX: 300, clientY: 260 });
+    fireEvent.mouseUp(card);
+
+    expect(props.onSelectNode).toHaveBeenCalledWith('stage-1');
+    expect(cardBox('stage-1')).toEqual(before);
   });
 
   it('renders the SVG canvas', () => {
@@ -370,26 +413,22 @@ describe('GraphView', () => {
     const { rerender } = render(<GraphView {...props} />);
 
     expect(screen.getByTestId('workflow-node-wait-1')).toHaveAttribute('data-kind', 'wait');
-    expect(screen.getByText('PASSIVE · 2 IN · 2 OUT')).toBeInTheDocument();
-    expect(screen.getByTestId('wait-output-wait-1')).toHaveAttribute(
-      'data-event-type',
-      'custom.build.finished',
+    expect(screen.getByTestId('workflow-node-wait-1')).toHaveTextContent(
+      'Waits for an outside event',
     );
-    expect(screen.getByTestId('wait-output-wait-1-1')).toHaveAttribute(
-      'data-event-type',
-      'custom.merge.finished',
-    );
-    fireEvent.click(screen.getByTestId('wait-output-wait-1'));
+    // A configured wait has ports like any card: no "configure" sockets.
+    expect(screen.queryByTestId('wait-output-wait-1')).toBeNull();
+    fireEvent.click(socketFor('wait-1', 'output', 'custom.build.finished'));
     expect(props.onStartConnect).toHaveBeenCalledWith('wait-1', 'custom.build.finished');
-    fireEvent.click(screen.getByTestId('wait-output-wait-1-1'));
+    fireEvent.click(socketFor('wait-1', 'output', 'custom.merge.finished'));
     expect(props.onStartConnect).toHaveBeenCalledWith('wait-1', 'custom.merge.finished');
 
     rerender(
       <GraphView {...props} connectingFromId="stage-1" connectingFromLabel="custom.build.queued" />,
     );
-    fireEvent.click(screen.getByTestId('wait-input-wait-1'));
+    fireEvent.click(socketFor('wait-1', 'input', 'custom.build.waiting'));
     expect(props.onCompleteConnect).toHaveBeenCalledWith('wait-1', 'custom.build.waiting');
-    fireEvent.click(screen.getByTestId('wait-input-wait-1-1'));
+    fireEvent.click(socketFor('wait-1', 'input', 'custom.review.waiting'));
     expect(props.onCompleteConnect).toHaveBeenCalledWith('wait-1', 'custom.review.waiting');
   });
 
@@ -401,7 +440,9 @@ describe('GraphView', () => {
     const props = { ...defaultProps(), nodes: [waitNode], edges: [] };
     const { rerender } = render(<GraphView {...props} />);
 
-    expect(screen.getByText('PASSIVE · CONFIGURE EVENTS')).toBeInTheDocument();
+    expect(screen.getByTestId('workflow-node-wait-1')).toHaveTextContent(
+      'Waits for an outside event',
+    );
     fireEvent.click(screen.getByTestId('wait-output-wait-1'));
     expect(props.onStartConnect).toHaveBeenCalledWith('wait-1', 'custom.build.finished');
 
@@ -559,22 +600,18 @@ describe('GraphView', () => {
     expect(props.onDeleteNode).toHaveBeenCalledWith('stage-1');
   });
 
-  it('shows delete button on selected node', () => {
+  it("puts the selected step's toolbar above its card and no other", () => {
     const props = { ...defaultProps(), selectedNodeId: 'stage-1' };
     render(<GraphView {...props} />);
-    expect(screen.getByTestId('delete-btn-stage-1')).toBeInTheDocument();
+    expect(screen.getAllByTestId('step-toolbar')).toHaveLength(1);
+    expect(screen.getByRole('toolbar', { name: 'Stage 1 actions' })).toBeInTheDocument();
   });
 
-  it('does not show delete buttons on unselected nodes', () => {
-    const props = { ...defaultProps(), selectedNodeId: 'stage-1' };
-    render(<GraphView {...props} />);
-    expect(screen.queryByTestId('delete-btn-gate-1')).toBeNull();
-  });
-
-  it('shows "Click target input…" hint when in connecting mode', () => {
+  it('says what to do while a wire is drawn, and hides the step toolbar', () => {
     const props = { ...defaultProps(), connectingFromId: 'stage-1', selectedNodeId: 'stage-1' };
     render(<GraphView {...props} />);
-    expect(screen.getByText(/choose a compatible input/i)).toBeInTheDocument();
+    expect(screen.getByText(/pick the step it goes to/i)).toBeInTheDocument();
+    expect(screen.queryByTestId('step-toolbar')).toBeNull();
   });
 
   it('renders with no nodes', () => {
@@ -583,10 +620,10 @@ describe('GraphView', () => {
     expect(screen.getByTestId('graph-canvas')).toBeInTheDocument();
   });
 
-  it('calls onDeleteNode via delete button on node', () => {
+  it('removes the selected step from its toolbar', () => {
     const props = { ...defaultProps(), selectedNodeId: 'stage-1' };
     render(<GraphView {...props} />);
-    fireEvent.click(screen.getByTestId('delete-btn-stage-1'));
+    fireEvent.click(screen.getByRole('button', { name: 'Remove Stage 1' }));
     expect(props.onDeleteNode).toHaveBeenCalledWith('stage-1');
   });
 
@@ -629,9 +666,14 @@ describe('GraphView', () => {
     render(<GraphView {...props} />);
 
     expect(screen.getByTestId('workflow-node-resource-1')).toHaveAttribute('data-kind', 'resource');
-    expect(screen.getByTestId('delete-btn-resource-1')).toBeInTheDocument();
-    expect(screen.getAllByText('WARN')).toHaveLength(1);
-    expect(screen.getAllByText('ERR')).toHaveLength(1);
+    expect(screen.getByTestId('delete-selected')).toBeInTheDocument();
+    // A step with a problem is marked on its card: its border and a badge, by severity.
+    expect(screen.getByTestId('workflow-node-stage-warning')).toHaveAttribute(
+      'data-issue',
+      'warning',
+    );
+    expect(screen.getByTestId('workflow-node-stage-error')).toHaveAttribute('data-issue', 'error');
+    expect(screen.getByTestId('workflow-node-resource-1')).toHaveAttribute('data-issue', 'warning');
 
     fireEvent.contextMenu(screen.getByTestId('workflow-node-resource-1'));
     expect(props.onInspectNode).toHaveBeenCalledWith('resource-1');
@@ -744,12 +786,12 @@ describe('GraphView', () => {
         selectedNodeId: 'include-1',
       };
       render(<GraphView {...props} />);
-      fireEvent.click(screen.getByTestId('delete-btn-include-1'));
+      fireEvent.click(screen.getByTestId('delete-selected'));
       expect(props.onDeleteNode).toHaveBeenCalledWith('include-1');
     });
   });
 
-  it('keeps foreignObject card roots non-positioned for WebKit SVG transforms', () => {
+  it('draws every kind as one card recipe, toned by kind, with non-positioned roots', () => {
     const { container } = render(
       <GraphView
         {...defaultProps()}
@@ -758,22 +800,13 @@ describe('GraphView', () => {
       />,
     );
 
-    const leftAccentCards = ['stage', 'trigger', 'wait', 'resource'];
-    const topAccentCards = ['gate', 'cond'];
-    for (const kind of [...leftAccentCards, ...topAccentCards, 'end']) {
-      const card = container.querySelector(`.workflow-${kind}-card`);
-      expect(card).not.toBeNull();
+    const tones = [...container.querySelectorAll<HTMLElement>('.workflow-card')].map(
+      (card) => card.dataset.tone,
+    );
+    expect(tones).toEqual(['trigger', 'agent', 'gate', 'cond', 'wait', 'end', 'resource']);
+    // WebKit transforms a foreignObject's positioned roots wrongly inside a scaled SVG.
+    for (const card of container.querySelectorAll('.workflow-card')) {
       expect(card).not.toHaveClass('niuu:relative');
-    }
-    // Tailwind supplies border-style in the browser; without its stylesheet,
-    // jsdom computes border widths as zero. Check the component's inline accents.
-    for (const kind of leftAccentCards) {
-      const card = container.querySelector<HTMLElement>(`.workflow-${kind}-card`);
-      expect(card?.style.borderLeftWidth).toBe('3px');
-    }
-    for (const kind of topAccentCards) {
-      const card = container.querySelector<HTMLElement>(`.workflow-${kind}-card`);
-      expect(card?.style.borderTopWidth).toBe('3px');
     }
   });
 
@@ -797,20 +830,27 @@ describe('GraphView', () => {
     const props = { ...defaultProps(), onDeleteEdge: vi.fn() };
     render(<GraphView {...props} />);
     const svg = screen.getByTestId('graph-canvas');
-    Object.defineProperty(svg, 'getBoundingClientRect', {
-      value: () => ({ left: 0, top: 0, width: 800, height: 600 }),
-    });
+    const graphLayer = svg.querySelector('g')!;
+    const transform = () => {
+      const [x, y, scale] = (
+        graphLayer.getAttribute('transform')?.match(/-?\d+(?:\.\d+)?/g) ?? []
+      ).map(Number);
+      return { x: x!, y: y!, scale: scale! };
+    };
+    const before = transform();
 
+    // Zooms about the pointer: at the canvas origin, the origin stays put.
     fireEvent.wheel(svg, { deltaY: -100 });
-    const graphLayer = svg.querySelector('g');
-    expect(graphLayer).toHaveAttribute('transform', 'translate(0,0) scale(1.1)');
+    expect(transform().scale).toBeCloseTo(before.scale * 1.1);
 
+    const zoomed = transform();
     fireEvent.mouseDown(svg, { clientX: 10, clientY: 20 });
     expect(svg).toHaveStyle({ cursor: 'grabbing' });
     expect(props.onSelectNode).toHaveBeenCalledWith(null);
 
     fireEvent.mouseMove(svg, { clientX: 30, clientY: 55 });
-    expect(graphLayer).toHaveAttribute('transform', 'translate(20,35) scale(1.1)');
+    expect(transform().x).toBeCloseTo(zoomed.x + 20);
+    expect(transform().y).toBeCloseTo(zoomed.y + 35);
 
     fireEvent.mouseUp(svg);
     expect(svg).toHaveStyle({ cursor: 'default' });
@@ -884,9 +924,11 @@ describe('GraphView', () => {
       value: () => ({ left: 0, top: 0, width: 800, height: 600 }),
     });
 
+    // Onto the card where the canvas laid it out.
+    const box = cardBox('stage-1');
     const drop = createEvent.drop(svg);
-    Object.defineProperty(drop, 'clientX', { value: 140 });
-    Object.defineProperty(drop, 'clientY', { value: 140 });
+    Object.defineProperty(drop, 'clientX', { value: box.x + box.width / 2 });
+    Object.defineProperty(drop, 'clientY', { value: box.y + box.height / 2 });
     Object.defineProperty(drop, 'dataTransfer', {
       value: {
         getData: (key: string) => (key === 'application/niuu-persona-id' ? 'coder' : ''),
@@ -916,15 +958,9 @@ describe('GraphView', () => {
     };
 
     const { rerender } = render(<GraphView {...connectProps} />);
-    const stageGroup = screen.getByTestId('workflow-node-stage-1');
-    // Stage ports are HTML buttons inside a foreignObject (see StageNode),
-    // not SVG <circle>s — connecting mode shows both input ports (only
-    // rendered while connecting) and output ports (always rendered).
-    const connectPorts = stageGroup.querySelectorAll('[data-testid^="stage-port-"]');
-    expect(connectPorts).toHaveLength(4);
-
-    fireEvent.click(connectPorts[0]!);
-    fireEvent.click(connectPorts[3]!);
+    // While a wire is drawn, a card shows every input it starts on, beside its outcomes.
+    fireEvent.click(socketFor('stage-1', 'input', 'brief'));
+    fireEvent.click(socketFor('stage-1', 'output', 'summary'));
     fireEvent.mouseDown(screen.getByTestId('workflow-node-gate-1'), { clientX: 300, clientY: 100 });
 
     expect(connectProps.onCompleteConnect).toHaveBeenCalledWith('stage-1', 'brief');
@@ -936,43 +972,41 @@ describe('GraphView', () => {
       nodes: [stageWithPorts],
       edges: [],
       personas: personaFixtures,
-      selectedNodeId: 'stage-1',
       onDeleteEdge: vi.fn(),
     };
 
     rerender(<GraphView {...idleProps} />);
-    const idleStageGroup = screen.getByTestId('workflow-node-stage-1');
-    // Idle (not connecting): only output ports render — inputs are gated on
-    // isConnectingMode, same as before.
-    const outputPorts = idleStageGroup.querySelectorAll('[data-testid^="stage-port-out-"]');
-    expect(outputPorts).toHaveLength(2);
+    // Idle and unselected: every outcome shows, unwired; no input does.
+    const sockets = screen.getByTestId('workflow-sockets-stage-1');
+    expect(
+      [...sockets.querySelectorAll('circle[data-direction="output"]')].map((socket) =>
+        socket.getAttribute('data-wiring'),
+      ),
+    ).toEqual(['open', 'open']);
+    expect(sockets.querySelectorAll('circle[data-direction="input"]')).toHaveLength(0);
 
-    fireEvent.click(outputPorts[1]!);
+    fireEvent.click(socketFor('stage-1', 'output', 'summary'));
     expect(idleProps.onStartConnect).toHaveBeenCalledWith('stage-1', 'summary');
   });
 
-  it('moves nodes only after the drag threshold and clears drag state on mouse up', () => {
+  it('wires a card dropped on while connecting when its step starts on the event', () => {
+    const stageWithPorts: WorkflowNode = { ...stageNode, personaIds: ['ravn-beta'] };
     const props = {
       ...defaultProps(),
-      nodes: [stageNode],
+      nodes: [stageWithPorts, gateNode],
       edges: [],
-      onDeleteEdge: vi.fn(),
+      personas: personaFixtures,
+      connectingFromId: 'gate-1',
+      connectingFromLabel: 'notes',
     };
+    const { rerender } = render(<GraphView {...props} />);
+    fireEvent.mouseDown(screen.getByTestId('workflow-node-stage-1'), { button: 0 });
+    expect(props.onCompleteConnect).toHaveBeenCalledWith('stage-1', 'notes');
 
-    render(<GraphView {...props} />);
-    const stage = screen.getByTestId('workflow-node-stage-1');
-
-    fireEvent.mouseDown(stage, { clientX: 100, clientY: 100 });
-    fireEvent.mouseMove(stage, { clientX: 103, clientY: 103 });
-    expect(props.onMoveNode).not.toHaveBeenCalled();
-
-    fireEvent.mouseMove(stage, { clientX: 112, clientY: 118 });
-    expect(props.onMoveNode).not.toHaveBeenCalled();
-
-    fireEvent.mouseUp(stage);
-    expect(props.onMoveNode).toHaveBeenCalledWith('stage-1', { x: 112, y: 118 });
-    fireEvent.mouseMove(stage, { clientX: 130, clientY: 140 });
-    expect(props.onMoveNode).toHaveBeenCalledTimes(1);
+    // A stage that does not start on the event needs its port picked instead.
+    rerender(<GraphView {...props} connectingFromLabel="unheard.event" />);
+    fireEvent.mouseDown(screen.getByTestId('workflow-node-stage-1'), { button: 0 });
+    expect(props.onCompleteConnect).toHaveBeenCalledTimes(1);
   });
 
   it('creates a new stage when a persona is dropped on empty canvas', () => {
@@ -1138,10 +1172,12 @@ describe('GraphView', () => {
       personaIds: ['ravn-alpha', 'ravn-beta'],
     };
 
+    // Ports sit on the card's edges, in rows under its head: brief/notes in, notes/summary out.
     expect(
       edgeAnchor(stageWithMembers as never, 'source', 'summary', personaFixtures as never),
-    ).toMatchObject({
-      x: stageWithMembers.position.x + STAGE_WIDTH,
+    ).toEqual({
+      x: stageWithMembers.position.x + CARD_WIDTH,
+      y: stageWithMembers.position.y + CARD_HEADER_HEIGHT + CARD_PORT_PAD + CARD_PORT_ROW * 1.5,
     });
     expect(
       edgeAnchor(stageWithMembers as never, 'target', 'brief', personaFixtures as never),
@@ -1162,13 +1198,15 @@ describe('GraphView', () => {
       { ...edge, id: 'out-2', source: 'wait-1', label: 'merged->done' },
     ];
 
+    // Ports are listed by event, so review.waiting and merged take the first rows.
+    const firstRow = waitNode.position.y + CARD_HEADER_HEIGHT + CARD_PORT_PAD + CARD_PORT_ROW / 2;
     expect(edgeAnchor(waitNode, 'target', 'review.waiting', [], edges)).toEqual({
       x: waitNode.position.x,
-      y: waitNode.position.y + WAIT_HEIGHT + 16 + 7,
+      y: firstRow,
     });
     expect(edgeAnchor(waitNode, 'source', 'merged', [], edges)).toEqual({
-      x: waitNode.position.x + 168,
-      y: waitNode.position.y + WAIT_HEIGHT + 16 + 7,
+      x: waitNode.position.x + CARD_WIDTH,
+      y: firstRow,
     });
   });
 
@@ -1182,10 +1220,23 @@ describe('GraphView', () => {
     render(<GraphView {...props} />);
 
     const paths = screen.getByTestId('workflow-edge-labeled-edge').querySelectorAll('path');
-    expect(screen.queryByText('notes -> brief')).not.toBeInTheDocument();
+    // The event a wire carries is written on it, until the Events toggle is turned off.
+    expect(screen.getByTestId('workflow-edge-event-labeled-edge')).toHaveTextContent(
+      'notes → brief',
+    );
+    fireEvent.click(screen.getByTestId('toggle-events'));
+    expect(screen.getByTestId('toggle-events')).toHaveAttribute('aria-pressed', 'false');
+    expect(screen.queryByTestId('workflow-edge-event-labeled-edge')).toBeNull();
 
+    // A selected wire says its event whatever the toggle.
     fireEvent.click(paths[1]!);
-    expect(screen.getByText('notes -> brief')).toBeInTheDocument();
+    expect(screen.getByTestId('workflow-edge-event-labeled-edge')).toHaveTextContent(
+      'notes → brief',
+    );
+    expect(screen.getByTestId('workflow-edge-labeled-edge')).toHaveAttribute(
+      'data-selected',
+      'true',
+    );
     expect(screen.getByTestId('delete-selected-edge')).toBeInTheDocument();
   });
 
@@ -1229,12 +1280,16 @@ describe('GraphView', () => {
     expect(screen.getByTestId('workflow-node-stage-long')).toHaveStyle({ cursor: 'crosshair' });
     expect(screen.getByTestId('workflow-node-gate-long')).toHaveStyle({ cursor: 'crosshair' });
     expect(screen.getByTestId('workflow-node-cond-long')).toHaveStyle({ cursor: 'crosshair' });
-    expect(screen.queryByTestId('delete-btn-stage-long')).toBeNull();
-    expect(screen.getByText('gpt-4.1')).toBeInTheDocument();
-    expect(screen.getByText('budget 12')).toBeInTheDocument();
-    expect(screen.getByText('Stage label that…')).toBeInTheDocument();
-    expect(screen.getByText('Gate la…')).toBeInTheDocument();
-    expect(screen.getByText('Condi…')).toBeInTheDocument();
+    expect(screen.queryByTestId('step-toolbar')).toBeNull();
+    // A card names its step in full (the card ellipsises it) and says who runs it.
+    expect(
+      screen.getByText('Stage label that is definitely longer than eighteen'),
+    ).toBeInTheDocument();
+    expect(screen.getByTestId('workflow-node-stage-long')).toHaveTextContent(
+      'ravn-alpha + ravn-beta · together',
+    );
+    expect(screen.getByTestId('workflow-node-gate-long')).toHaveTextContent('You decide');
+    expect(screen.getByTestId('workflow-node-cond-long')).toHaveTextContent('x > 0');
 
     fireEvent.contextMenu(screen.getByTestId('workflow-node-stage-long'));
     fireEvent.contextMenu(screen.getByTestId('workflow-node-gate-long'));
@@ -1288,12 +1343,12 @@ describe('GraphView', () => {
 
     render(<GraphView {...props} />);
 
-    expect(screen.getByText('EPHEMERAL')).toBeInTheDocument();
-    expect(screen.getByText('Resource node labe…')).toBeInTheDocument();
-    expect(screen.getByText('Trigger label defi…')).toBeInTheDocument();
-    expect(screen.getByText('code.requested')).toBeInTheDocument();
-    expect(screen.getByText('Finish f…')).toBeInTheDocument();
-    expect(screen.getByTestId('delete-btn-resource-ephemeral')).toBeInTheDocument();
+    expect(screen.getByTestId('workflow-node-resource-ephemeral')).toHaveTextContent('ephemeral');
+    expect(screen.getByTestId('workflow-node-trigger-fallback')).toHaveTextContent(
+      'When manual dispatch',
+    );
+    expect(screen.getByTestId('workflow-node-end-short')).toHaveTextContent('Finish flow now');
+    expect(screen.getByTestId('delete-selected')).toBeInTheDocument();
   });
 
   // ---------------------------------------------------------------------------
@@ -1349,10 +1404,11 @@ describe('GraphView', () => {
 
     fireEvent.click(screen.getByTestId('insert-from-port-reviewer'));
 
-    // stageNode fixture sits at (100, 100); the inserted stage lands to its right.
+    // The inserted stage is placed to the right of the card it follows.
+    const stage = cardBox('stage-1');
     expect(onAddStageWithPersona).toHaveBeenCalledWith('reviewer', undefined, {
-      x: 100 + STAGE_WIDTH + 96,
-      y: 100,
+      x: stage.x + CARD_WIDTH + 120,
+      y: stage.y,
     });
     expect(onCancelConnect).toHaveBeenCalledTimes(1);
   });
@@ -1386,9 +1442,10 @@ describe('GraphView', () => {
     );
 
     fireEvent.click(screen.getByTestId('insert-from-port-reviewer'));
+    const stage = cardBox('stage-1');
     expect(onAddStageFromPort).toHaveBeenCalledWith('stage-1', 'code.changed', 'reviewer', {
-      x: 100 + STAGE_WIDTH + 96,
-      y: 100,
+      x: stage.x + CARD_WIDTH + 120,
+      y: stage.y,
     });
   });
 
@@ -1427,9 +1484,10 @@ describe('GraphView', () => {
 
     fireEvent.click(screen.getByTestId('insert-from-port-flow-gate'));
 
+    const stage = cardBox('stage-1');
     expect(onAddNodeFromPort).toHaveBeenCalledWith('gate', 'stage-1', 'code.changed', {
-      x: 100 + STAGE_WIDTH + 96,
-      y: 100,
+      x: stage.x + CARD_WIDTH + 120,
+      y: stage.y,
     });
     expect(onCancelConnect).toHaveBeenCalledTimes(1);
   });
@@ -1475,7 +1533,7 @@ describe('GraphView', () => {
     ]);
   });
 
-  it('keeps unselected cards compact and reveals their full typed contract on selection', () => {
+  it("shows every outcome, and a step's incoming events only where wired or selected", () => {
     const typedStage: WorkflowNode = {
       ...stageNode,
       personaIds: ['ravn-alpha', 'ravn-beta'],
@@ -1492,31 +1550,32 @@ describe('GraphView', () => {
       personas: personaFixtures,
     };
     const { rerender } = render(<GraphView {...props} />);
+    const sockets = (direction: string) =>
+      [
+        ...document.querySelectorAll(
+          `[data-workflow-socket="true"][data-node-id="stage-1"][data-direction="${direction}"]`,
+        ),
+      ].map((socket) => [
+        socket.getAttribute('data-event-type'),
+        socket.getAttribute('data-wiring'),
+      ]);
 
-    expect(
-      document.querySelectorAll(
-        '[data-workflow-socket="true"][data-node-id="stage-1"][data-direction="output"]',
-      ),
-    ).toHaveLength(1);
-    expect(screen.queryByText('summary')).not.toBeInTheDocument();
-    expect(screen.getByText('+1 outcomes')).toBeInTheDocument();
-    fireEvent.click(screen.getByTestId('hidden-outcomes-stage-1'));
-    expect(props.onSelectNode).toHaveBeenCalledWith('stage-1');
+    // Both outcomes, the wired one marked so; no inputs, since nothing arrives at the stage.
+    expect(sockets('output')).toEqual([
+      ['notes', 'forward'],
+      ['summary', 'open'],
+    ]);
+    expect(sockets('input')).toEqual([]);
+    expect(screen.queryByText('+1 outcomes')).toBeNull();
 
     rerender(<GraphView {...props} selectedNodeId="stage-1" />);
-    expect(
-      document.querySelectorAll(
-        '[data-workflow-socket="true"][data-node-id="stage-1"][data-direction="output"]',
-      ),
-    ).toHaveLength(2);
-    expect(screen.getAllByText('summary')).toHaveLength(2);
-    const socketRows = document.querySelectorAll(
+    expect(sockets('input').map(([event]) => event)).toEqual(['brief', 'notes']);
+    // Every port row sits under the card's head.
+    const stage = cardBox('stage-1');
+    for (const socket of document.querySelectorAll(
       '[data-workflow-socket="true"][data-node-id="stage-1"]',
-    );
-    for (const socket of socketRows) {
-      expect(Number(socket.getAttribute('cy'))).toBeGreaterThan(
-        typedStage.position.y + stageNodeHeight(typedStage as never),
-      );
+    )) {
+      expect(Number(socket.getAttribute('cy'))).toBeGreaterThan(stage.y + CARD_HEADER_HEIGHT);
     }
   });
 
@@ -1568,19 +1627,29 @@ describe('GraphView', () => {
     expect(Math.abs((numbers[2] ?? 0) - (numbers[0] ?? 0))).toBeLessThanOrEqual(80);
   });
 
-  it('provides working zoom, fit, and one-to-one controls', () => {
+  it('frames the workflow once its canvas has a size, and offers zoom, fit and 1:1', () => {
+    const size = vi.spyOn(Element.prototype, 'getBoundingClientRect').mockReturnValue({
+      left: 0,
+      top: 0,
+      width: 2400,
+      height: 1600,
+    } as DOMRect);
     render(<GraphView {...defaultProps()} />);
-    const canvas = screen.getByTestId('graph-canvas');
-    Object.defineProperty(canvas, 'getBoundingClientRect', {
-      value: () => ({ left: 0, top: 0, width: 900, height: 600 }),
-    });
+    // Framed on mount, centred and never zoomed in past 100%.
+    expect(screen.getByTestId('zoom-level')).toHaveTextContent('100%');
+    expect(screen.getByTestId('graph-canvas').querySelector('g')).not.toHaveAttribute(
+      'transform',
+      'translate(0,0) scale(1)',
+    );
 
-    fireEvent.click(screen.getByTestId('zoom-in'));
-    expect(screen.getByTestId('zoom-level')).toHaveTextContent('115%');
+    fireEvent.click(screen.getByTestId('zoom-out'));
+    expect(screen.getByTestId('zoom-level')).toHaveTextContent('87%');
+    // Fit may zoom in to fill a large canvas.
     fireEvent.click(screen.getByTestId('zoom-fit'));
-    expect(screen.getByTestId('zoom-level')).not.toHaveTextContent('115%');
+    expect(screen.getByTestId('zoom-level')).toHaveTextContent('300%');
     fireEvent.click(screen.getByTestId('zoom-one-to-one'));
     expect(screen.getByTestId('zoom-level')).toHaveTextContent('100%');
+    size.mockRestore();
   });
 
   it('opens the add-step menu from a canvas-scoped Tab shortcut', () => {
@@ -1600,7 +1669,6 @@ describe('GraphView', () => {
     fireEvent.mouseDown(stage, { clientX: 100, clientY: 100 });
     fireEvent.mouseMove(stage, { clientX: 140, clientY: 140 });
     fireEvent.mouseUp(stage);
-    expect(props.onMoveNode).not.toHaveBeenCalled();
     fireEvent.contextMenu(stage);
     expect(props.onInspectNode).toHaveBeenCalledWith('stage-1');
   });
@@ -1668,7 +1736,7 @@ describe('GraphView', () => {
     }
   });
 
-  it('shows data-selected and the delete button on every selectable card kind when selected, and hides the delete button while connecting or read-only', () => {
+  it('selects every card kind with its toolbar, and hides the toolbar while connecting or read-only', () => {
     const props = {
       ...defaultProps(),
       nodes: [gateNode, condNode, waitNode, endNode, includeNode, subworkflowNode],
@@ -1680,17 +1748,17 @@ describe('GraphView', () => {
         'data-selected',
         'true',
       );
-      expect(screen.getByTestId(`delete-btn-${node.id}`)).toBeInTheDocument();
+      expect(screen.getByRole('toolbar', { name: `${node.label} actions` })).toBeInTheDocument();
       unmount();
     }
 
     const { rerender } = render(
       <GraphView {...props} selectedNodeId="gate-1" connectingFromId="stage-1" />,
     );
-    expect(screen.queryByTestId('delete-btn-gate-1')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('step-toolbar')).not.toBeInTheDocument();
 
     rerender(<GraphView {...props} selectedNodeId="gate-1" readOnly />);
-    expect(screen.queryByTestId('delete-btn-gate-1')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('step-toolbar')).not.toBeInTheDocument();
   });
 
   it('shows a crosshair cursor on gate/cond/wait/end/include/subworkflow cards while connecting', () => {
@@ -1701,7 +1769,7 @@ describe('GraphView', () => {
     };
     const { rerender } = render(<GraphView {...props} />);
     for (const node of [gateNode, condNode, waitNode, endNode, includeNode, subworkflowNode]) {
-      expect(screen.getByTestId(`workflow-node-${node.id}`)).toHaveStyle({ cursor: 'grab' });
+      expect(screen.getByTestId(`workflow-node-${node.id}`)).toHaveStyle({ cursor: 'pointer' });
     }
     rerender(<GraphView {...props} connectingFromId="stage-1" />);
     for (const node of [gateNode, condNode, waitNode, endNode, includeNode, subworkflowNode]) {
@@ -1814,5 +1882,253 @@ describe('GraphView', () => {
     fireEvent.mouseDown(screen.getByTestId('workflow-node-include-ambiguous'), { button: 0 });
     expect(props.onStartConnect).not.toHaveBeenCalled();
     prompt.mockRestore();
+  });
+
+  // ---------------------------------------------------------------------------
+  // The step toolbar, wires and cards of the left-to-right canvas
+  // ---------------------------------------------------------------------------
+
+  const flowPersonas = [
+    {
+      id: 'coder',
+      label: 'Coder',
+      role: 'build',
+      consumes: ['code.requested'],
+      produces: ['code.changed', 'code.blocked'],
+    },
+    {
+      id: 'reviewer',
+      label: 'Reviewer',
+      role: 'review',
+      consumes: ['code.changed'],
+      produces: ['review.passed', 'review.changes_requested'],
+    },
+  ];
+  const coderStage: WorkflowNode = {
+    ...stageNode,
+    id: 'code',
+    label: 'Implement',
+    personaIds: ['coder'],
+    stageMembers: [{ personaId: 'coder', model: 'claude-opus-5-5', budget: 40 }],
+  };
+  const reviewStage: WorkflowNode = {
+    ...stageNode,
+    id: 'review',
+    label: 'Review',
+    personaIds: ['reviewer'],
+    stageMembers: [{ personaId: 'reviewer', model: '', budget: 40 }],
+  };
+  const flowEdges: WorkflowEdge[] = [
+    {
+      ...edge,
+      id: 'start',
+      source: 'trigger-1',
+      target: 'code',
+      label: 'code.requested -> code.requested',
+    },
+    {
+      ...edge,
+      id: 'review-it',
+      source: 'code',
+      target: 'review',
+      label: 'code.changed -> code.changed',
+    },
+    {
+      ...edge,
+      id: 'send-back',
+      source: 'review',
+      target: 'code',
+      label: 'review.changes_requested -> code.requested',
+      rework: true,
+      maxIterations: 3,
+    },
+  ];
+  function flowProps(overrides: Record<string, unknown> = {}) {
+    return {
+      ...defaultProps(),
+      nodes: [triggerNode, coderStage, reviewStage],
+      edges: flowEdges,
+      personas: flowPersonas as never,
+      ...overrides,
+    };
+  }
+
+  it("lays a flow out left to right and writes each wire's event on it", () => {
+    render(<GraphView {...flowProps()} />);
+    expect(cardBox('trigger-1').x).toBeLessThan(cardBox('code').x);
+    expect(cardBox('code').x).toBeLessThan(cardBox('review').x);
+    expect(screen.getByTestId('workflow-edge-event-review-it')).toHaveTextContent('code.changed');
+    expect(screen.getByTestId('workflow-edge-event-start')).toHaveTextContent('code.requested');
+  });
+
+  it('routes work sent back under the cards with its limit on a chip', () => {
+    render(<GraphView {...flowProps()} />);
+    const wire = screen.getByTestId('workflow-edge-send-back');
+    expect(wire).toHaveAttribute('data-feedback', 'true');
+    expect(screen.getByTestId('workflow-edge-limit-send-back')).toHaveTextContent(
+      '↩ up to 3× · review.changes_requested',
+    );
+    const lowest = Math.max(
+      cardBox('code').y + cardBox('code').height,
+      cardBox('review').y + cardBox('review').height,
+    );
+    const ys = (
+      wire
+        .querySelectorAll('path')[1]
+        ?.getAttribute('d')
+        ?.match(/-?\d+(?:\.\d+)?/g) ?? []
+    )
+      .map(Number)
+      .filter((_, index) => index % 2 === 1);
+    expect(Math.max(...ys)).toBeGreaterThan(lowest);
+  });
+
+  it('says a rework wire with no limit has none', () => {
+    expect(reworkLimitLabel({})).toBe('↩ no limit');
+    expect(reworkLimitLabel({ maxIterations: 2 })).toBe('↩ up to 2×');
+  });
+
+  it('marks each outcome by where it goes: on, back, or nowhere yet', () => {
+    render(<GraphView {...flowProps()} />);
+    expect(socketFor('code', 'output', 'code.changed')).toHaveAttribute('data-wiring', 'forward');
+    expect(socketFor('code', 'output', 'code.blocked')).toHaveAttribute('data-wiring', 'open');
+    expect(socketFor('review', 'output', 'review.changes_requested')).toHaveAttribute(
+      'data-wiring',
+      'rework',
+    );
+    expect(socketFor('review', 'output', 'review.passed')).toHaveAttribute('data-wiring', 'open');
+  });
+
+  it('adds the next step on the outcome that goes nowhere yet, from the toolbar and Tab', () => {
+    const props = flowProps({ selectedNodeId: 'code' });
+    render(<GraphView {...props} />);
+    fireEvent.click(screen.getByTestId('step-toolbar-next'));
+    expect(props.onStartConnect).toHaveBeenCalledWith('code', 'code.blocked');
+
+    props.onStartConnect.mockClear();
+    const card = screen.getByTestId('workflow-node-code');
+    card.focus();
+    fireEvent.keyDown(card, { key: 'Tab' });
+    expect(props.onStartConnect).toHaveBeenCalledWith('code', 'code.blocked');
+  });
+
+  it('adds the next step on the forward outcome when every outcome is wired', () => {
+    // The review passes on to the end and sends changes back: Next follows the pass.
+    const wiredBoth = [
+      ...flowEdges,
+      {
+        ...edge,
+        id: 'finish',
+        source: 'review',
+        target: 'end-1',
+        label: 'review.passed -> review.passed',
+      },
+    ];
+    const props = flowProps({
+      nodes: [triggerNode, coderStage, reviewStage, endNode],
+      selectedNodeId: 'review',
+      edges: wiredBoth,
+    });
+    render(<GraphView {...props} />);
+    fireEvent.click(screen.getByTestId('step-toolbar-next'));
+    expect(props.onStartConnect).toHaveBeenCalledWith('review', 'review.passed');
+  });
+
+  it('adds a step alongside: from the same step, on the same event', () => {
+    const props = flowProps({ selectedNodeId: 'review' });
+    render(<GraphView {...props} />);
+    fireEvent.click(screen.getByTestId('step-toolbar-alongside'));
+    expect(props.onStartConnect).toHaveBeenCalledWith('code', 'code.changed');
+
+    props.onStartConnect.mockClear();
+    const card = screen.getByTestId('workflow-node-review');
+    card.focus();
+    fireEvent.keyDown(card, { key: 'Tab', shiftKey: true });
+    expect(props.onStartConnect).toHaveBeenCalledWith('code', 'code.changed');
+  });
+
+  it('offers no Alongside for a step nothing feeds, and Next opens the picker without outcomes', () => {
+    const props = flowProps({ nodes: [endNode], edges: [], selectedNodeId: 'end-1' });
+    render(<GraphView {...props} />);
+    expect(screen.queryByTestId('step-toolbar-alongside')).toBeNull();
+    expect(screen.queryByTestId('step-toolbar-next')).toBeNull();
+    const card = screen.getByTestId('workflow-node-end-1');
+    card.focus();
+    fireEvent.keyDown(card, { key: 'Tab' });
+    expect(screen.getByTestId('canvas-node-picker')).toBeInTheDocument();
+  });
+
+  it('writes an outcome name two members share as its event', () => {
+    const shared = [
+      { id: 'a', label: 'A', role: 'review', consumes: ['x'], produces: ['a.done'] },
+      { id: 'b', label: 'B', role: 'review', consumes: ['x'], produces: ['b.done'] },
+    ];
+    const pair: WorkflowNode = { ...stageNode, personaIds: ['a', 'b'] };
+    render(<GraphView {...defaultProps()} nodes={[pair]} edges={[]} personas={shared as never} />);
+    const labels = [...screen.getByTestId('workflow-sockets-stage-1').querySelectorAll('text')].map(
+      (label) => label.textContent,
+    );
+    expect(labels).toEqual(['a.done', 'b.done']);
+  });
+
+  describe('workflowCardContent', () => {
+    it('says who runs a stage, one member or several', () => {
+      expect(workflowCardContent(coderStage, flowPersonas)).toMatchObject({
+        tone: 'agent',
+        icon: 'code',
+        subtitle: 'Coder · claude-opus-5-5',
+        kindLabel: 'Stage step',
+      });
+      expect(workflowCardContent(reviewStage, flowPersonas).subtitle).toBe(
+        'Reviewer · default model',
+      );
+      const inTurn: WorkflowNode = {
+        ...stageNode,
+        personaIds: ['coder', 'reviewer'],
+        executionMode: 'sequential',
+      };
+      expect(workflowCardContent(inTurn, flowPersonas).subtitle).toBe('Coder + Reviewer · in turn');
+      expect(workflowCardContent(stageNode, []).subtitle).toBe('No persona yet');
+    });
+
+    it("names a persona's icon from its role in its id", () => {
+      const icon = (personaId: string) =>
+        workflowCardContent({ ...stageNode, personaIds: [personaId] }, []).icon;
+      expect(icon('security-auditor')).toBe('shield');
+      expect(icon('qa-tester')).toBe('flask');
+      expect(icon('planner')).toBe('list');
+      expect(icon('docs-writer')).toBe('pen');
+      expect(icon('merger')).toBe('code');
+      expect(icon('helper')).toBe('bot');
+    });
+
+    it('says who decides a gate', () => {
+      const gate = (mode: string) => workflowCardContent({ ...gateNode, mode } as WorkflowNode, []);
+      expect(gate('human_approval')).toMatchObject({ subtitle: 'You decide', icon: 'person' });
+      expect(gate('human_review')).toMatchObject({ subtitle: 'You review', icon: 'review' });
+      expect(gate('automated_approval')).toMatchObject({
+        subtitle: 'An agent decides',
+        icon: 'bot',
+      });
+      expect(gate('evidence').subtitle).toBe('Evidence decides');
+    });
+
+    it('describes waits, conditions, subworkflows, includes and the end', () => {
+      expect(
+        workflowCardContent(
+          { ...waitNode, conditions: ['forge.checks', 'timer'] } as WorkflowNode,
+          [],
+        ).subtitle,
+      ).toBe('Waits for forge.checks, timer');
+      expect(workflowCardContent({ ...condNode, predicate: '' } as WorkflowNode, []).subtitle).toBe(
+        'No condition yet',
+      );
+      expect(workflowCardContent(subworkflowNode, []).subtitle).toMatch(/^For each · /);
+      expect(workflowCardContent(includeNode, []).subtitle).toBe('planning · 2 nodes');
+      expect(workflowCardContent(endNode, [])).toMatchObject({ tone: 'end', icon: 'flag' });
+      expect(workflowCardContent({ ...triggerNode, source: '' } as WorkflowNode, []).subtitle).toBe(
+        'When started',
+      );
+    });
   });
 });

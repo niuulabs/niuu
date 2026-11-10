@@ -520,20 +520,16 @@ describe('WorkflowBuilder', () => {
     expect(screen.getByTestId('btn-redo')).toBeDisabled();
   });
 
-  it('undoes and redoes a node move via the toolbar buttons', () => {
+  it('undoes and redoes a change via the toolbar buttons', () => {
     render(<WorkflowBuilder initialWorkflow={makeWorkflow()} />);
-    fireEvent.mouseDown(screen.getByTestId('workflow-node-stage-1'), {
-      clientX: 100,
-      clientY: 100,
-    });
-    fireEvent.mouseMove(screen.getByTestId('workflow-node-stage-1'), {
-      clientX: 150,
-      clientY: 140,
-    });
-    fireEvent.mouseUp(screen.getByTestId('workflow-node-stage-1'));
+    // The canvas lays steps out itself, so the change undone is removing a step.
+    fireEvent.mouseDown(screen.getByTestId('workflow-node-stage-1'));
+    fireEvent.click(screen.getByTestId('delete-selected'));
+    expect(screen.queryByTestId('workflow-node-stage-1')).toBeNull();
     expect(screen.getByTestId('btn-undo')).toBeEnabled();
 
     fireEvent.click(screen.getByTestId('btn-undo'));
+    expect(screen.getByTestId('workflow-node-stage-1')).toBeInTheDocument();
     expect(screen.getByTestId('btn-undo')).toBeDisabled();
     expect(screen.getByTestId('btn-redo')).toBeEnabled();
 
@@ -544,15 +540,10 @@ describe('WorkflowBuilder', () => {
 
   it('leaves ⌘Z to the focused surface instead of installing a window shortcut', () => {
     render(<WorkflowBuilder initialWorkflow={makeWorkflow()} />);
-    fireEvent.mouseDown(screen.getByTestId('workflow-node-stage-1'), {
-      clientX: 100,
-      clientY: 100,
-    });
-    fireEvent.mouseMove(screen.getByTestId('workflow-node-stage-1'), {
-      clientX: 150,
-      clientY: 140,
-    });
-    fireEvent.mouseUp(screen.getByTestId('workflow-node-stage-1'));
+    // The canvas lays steps out itself, so the change undone is removing a step.
+    fireEvent.mouseDown(screen.getByTestId('workflow-node-stage-1'));
+    fireEvent.click(screen.getByTestId('delete-selected'));
+    expect(screen.queryByTestId('workflow-node-stage-1')).toBeNull();
 
     fireEvent.keyDown(window, { key: 'z', metaKey: true });
     expect(screen.getByTestId('btn-undo')).toBeEnabled();
