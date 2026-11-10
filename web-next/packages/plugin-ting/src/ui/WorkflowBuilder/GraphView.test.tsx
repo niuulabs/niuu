@@ -1998,9 +1998,10 @@ describe('GraphView', () => {
     render(<GraphView {...flowProps()} />);
     const wire = screen.getByTestId('workflow-edge-send-back');
     expect(wire).toHaveAttribute('data-feedback', 'true');
-    expect(screen.getByTestId('workflow-edge-limit-send-back')).toHaveTextContent(
-      '↩ up to 3× · review.changes_requested',
-    );
+    const chip = screen.getByTestId('workflow-edge-limit-send-back');
+    expect(chip).toHaveTextContent('↩ up to 3× · review.changes_requested');
+    // Only the chip's ↩ is coloured; the lane itself stays quiet.
+    expect(chip.querySelector('.workflow-wire-pill__mark')).toHaveTextContent('↩');
     const lowest = Math.max(
       cardBox('code').y + cardBox('code').height,
       cardBox('review').y + cardBox('review').height,

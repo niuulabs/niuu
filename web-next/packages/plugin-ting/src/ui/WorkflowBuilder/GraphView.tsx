@@ -615,7 +615,15 @@ function WirePill({
     >
       <rect width={width} height={18} rx={9} />
       <text x={width / 2} y={12.5} textAnchor="middle">
-        {text}
+        {/* Work sent back is drawn quietly: only the chip's ↩ carries a colour. */}
+        {tone === 'rework' && text.startsWith('↩') ? (
+          <>
+            <tspan className="workflow-wire-pill__mark">↩</tspan>
+            {text.slice(1)}
+          </>
+        ) : (
+          text
+        )}
       </text>
     </g>
   );
