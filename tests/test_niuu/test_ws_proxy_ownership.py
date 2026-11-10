@@ -13,7 +13,11 @@ from starlette.datastructures import Headers
 from identity.adapters.identity import EnvoyHeaderAuthenticationAdapter
 from niuu.app import SkuldPortRegistry, _proxy_forward_headers, _proxy_ws_identity
 from niuu.domain.models import Principal
-from niuu.session_proxy import SessionProxyGuardMissingError
+from niuu.session_proxy import (
+    DISPLAY_NAME_HEADER,
+    SessionProxyGuardMissingError,
+    _forwarded_principal,
+)
 
 
 class _FakeWebSocket(SimpleNamespace):
@@ -102,6 +106,64 @@ class TestProxyForwardHeaders:
         assert headers["x-auth-tenant"] == "victim-tenant"
         assert headers["x-auth-roles"] == "volundr:admin"
         assert "x-unrelated" not in headers
+
+    def test_dev_identity_without_an_asserted_person_projects_the_proxy_principal(self):
+        browser = SimpleNamespace(
+            headers=Headers({"authorization": "Bearer t", DISPLAY_NAME_HEADER: "Mallory"}),
+            query_params={},
+        )
+        headers = _proxy_forward_headers(
+            browser,
+            include_cookie=False,
+            dev_identity=True,
+            principal=Principal("dev-user", "dev@localhost", "default", ["volundr:admin"]),
+            display_name="Jozef",
+        )
+        assert headers["x-auth-user-id"] == "dev-user"
+        assert headers[DISPLAY_NAME_HEADER] == "Jozef"
+
+    def test_dev_identity_names_the_asserted_person_by_their_stored_name(self):
+        browser = SimpleNamespace(
+            headers=Headers({DISPLAY_NAME_HEADER: "Mallory"}),
+            query_params={"devUserId": "alice"},
+        )
+        headers = _proxy_forward_headers(
+            browser,
+            include_cookie=False,
+            dev_identity=True,
+            principal=Principal("dev-user", "", "default", []),
+            display_name="Alice Lindqvist",
+        )
+        assert headers["x-auth-user-id"] == "alice"
+        assert headers[DISPLAY_NAME_HEADER] == "Alice%20Lindqvist"
+
+
+class TestForwardedPrincipal:
+    def test_outside_dev_is_always_the_proxy_principal(self):
+        principal = Principal("bob", "", "t1", [])
+        browser = _ws(query={"devUserId": "alice"})
+        assert _forwarded_principal(browser, principal, dev_identity=False) is principal
+
+    def test_dev_without_an_asserted_person_is_the_proxy_principal(self):
+        principal = Principal("dev-user", "", "default", [])
+        assert _forwarded_principal(_ws(), principal, dev_identity=True) is principal
+
+    def test_dev_names_the_asserted_person(self):
+        browser = _ws(
+            query={
+                "devUserId": "alice",
+                "devEmail": "alice@niuu.local",
+                "devTenantId": "default",
+                "devRoles": "volundr:developer,volundr:viewer",
+            }
+        )
+        caller = _forwarded_principal(browser, Principal("dev-user", "", "", []), dev_identity=True)
+        assert (caller.user_id, caller.email, caller.tenant_id) == (
+            "alice",
+            "alice@niuu.local",
+            "default",
+        )
+        assert caller.roles == ["volundr:developer", "volundr:viewer"]
 
 
 class TestProxyWsIdentity:

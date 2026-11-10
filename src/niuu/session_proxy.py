@@ -448,6 +448,39 @@ _DEV_QUERY_TO_HEADER = (
 _DEV_QUERY_PARAMS = frozenset(query_key for query_key, _ in _DEV_QUERY_TO_HEADER)
 
 
+def _dev_asserted(conn: WebSocket | Request) -> dict[str, str]:
+    """The ``x-auth-*`` identity a local-dev browser asserts, by header or query param."""
+    asserted = {k.lower(): v for k, v in conn.headers.items() if k.lower() in _IDENTITY_HEADERS}
+    for query_key, header in _DEV_QUERY_TO_HEADER:
+        if value := conn.query_params.get(query_key):
+            asserted[header] = value
+    return asserted
+
+
+def _forwarded_principal(
+    conn: WebSocket | Request, principal: Principal | None, *, dev_identity: bool
+) -> Principal | None:
+    """The person the broker leg will carry as the caller, for naming their messages.
+
+    Outside local dev that is always the proxy's own *principal*. In local dev a browser
+    may assert another person (``devUserId``); the broker then records that person, so
+    their name has to be looked up for them and not for the proxy's own principal.
+    """
+    if not dev_identity:
+        return principal
+    asserted = _dev_asserted(conn)
+    user_id = asserted.get("x-auth-user-id", "").strip()
+    if not user_id:
+        return principal
+    roles = [r for r in asserted.get("x-auth-roles", "").split(",") if r.strip()]
+    return Principal(
+        user_id=user_id,
+        email=asserted.get("x-auth-email", "").strip(),
+        tenant_id=asserted.get("x-auth-tenant", "").strip(),
+        roles=roles,
+    )
+
+
 def _verified_identity_headers(
     principal: Principal | None, display_name: str = ""
 ) -> dict[str, str]:
@@ -501,13 +534,18 @@ def _proxy_forward_headers(
     if dev_identity:
         allow |= _IDENTITY_HEADERS
     headers = {k: v for k, v in websocket.headers.items() if k.lower() in allow}
-    if not dev_identity:
+    if not dev_identity or not _dev_asserted(websocket).get("x-auth-user-id", "").strip():
+        # The proxy's own principal: always outside local dev, and in local dev when the
+        # browser asserts nobody else (the dev user's own tab).
+        headers = {k: v for k, v in headers.items() if k.lower() not in _IDENTITY_HEADERS}
         headers.update(_verified_identity_headers(principal, display_name))
     else:
         for query_key, header in _DEV_QUERY_TO_HEADER:
             if value := websocket.query_params.get(query_key):
                 headers[header] = value
-        if display_name and DISPLAY_NAME_HEADER not in headers:
+        # ``display_name`` was resolved for the asserted person (_forwarded_principal): their
+        # stored name wins over one the browser asserted, which stands only when there is none.
+        if display_name:
             headers[DISPLAY_NAME_HEADER] = urllib.parse.quote(display_name, safe="")
     if room_role is not None:
         headers[ROOM_ROLE_HEADER] = room_role
@@ -737,7 +775,9 @@ async def _proxy_ws(
                 dev_identity=skuld_reg.dev_identity,
                 principal=principal,
                 room_role=room_role,
-                display_name=await skuld_reg.resolve_display_name(principal),
+                display_name=await skuld_reg.resolve_display_name(
+                    _forwarded_principal(websocket, principal, dev_identity=skuld_reg.dev_identity)
+                ),
             ),
             connect_kwargs=connect_kwargs,
             on_connected=_mark_connected,
@@ -902,14 +942,23 @@ def register_session_proxy_routes(app: FastAPI, skuld_reg: SkuldPortRegistry) ->
             ROOM_ROLE_HEADER,
             ROOM_CALLER_SESSION_HEADER,
         }
-        if not skuld_reg.dev_identity:
+        dev_asserted = skuld_reg.dev_identity and bool(
+            _dev_asserted(request).get("x-auth-user-id", "").strip()
+        )
+        if not dev_asserted:
             dropped |= _IDENTITY_HEADERS
         headers = {k: v for k, v in request.headers.items() if k.lower() not in dropped}
-        if not skuld_reg.dev_identity:
-            verified = await _proxy_principal(request)
-            headers.update(
-                _verified_identity_headers(verified, await skuld_reg.resolve_display_name(verified))
-            )
+        verified = await _proxy_principal(request)
+        caller = _forwarded_principal(request, verified, dev_identity=skuld_reg.dev_identity)
+        display_name = await skuld_reg.resolve_display_name(caller)
+        if not dev_asserted:
+            headers.update(_verified_identity_headers(verified, display_name))
+        else:
+            for query_key, header in _DEV_QUERY_TO_HEADER:
+                if value := request.query_params.get(query_key):
+                    headers[header] = value
+            if display_name:
+                headers[DISPLAY_NAME_HEADER] = urllib.parse.quote(display_name, safe="")
         if room_role is not None:
             headers[ROOM_ROLE_HEADER] = room_role
         if target is not None:
