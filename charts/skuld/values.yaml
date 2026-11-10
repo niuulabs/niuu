@@ -468,6 +468,10 @@ envoy:
     email: x-auth-email
     tenant: x-auth-tenant
     roles: x-auth-roles
+    # The caller's display name (percent-encoded), recorded as the author of
+    # their messages. Only the session proxy (niuu.session_proxy) stamps it; the
+    # Gateway removes any client-supplied copy.
+    displayName: x-auth-display-name
     # A client-supplied copy must never reach the broker: only the session
     # proxy (niuu.session_proxy) is trusted to stamp this, from a verified
     # session_participants grant (see the room-scoped Cedar actions).

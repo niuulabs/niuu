@@ -749,3 +749,137 @@ class TestImmediateCloseHook:
 
         assert len(seen_during_bridge["tracked"].get(("sess", "alice"), ())) == 1
         assert reg._live_connections == {}  # untracked once the connection ended
+
+
+_VERIFIED_ALICE = {
+    "x-verified-user": "alice",
+    "x-verified-email": "alice@example.test",
+    "x-verified-tenant": "t1",
+    "x-verified-roles": "volundr:developer",
+}
+
+
+class TestDisplayNameHeader:
+    """x-auth-display-name is stamped from the proxy's own resolution, never the client's."""
+
+    @staticmethod
+    def _ws_headers(tmp_path, *, client_headers: dict, resolver=None, dev_identity=False) -> dict:
+        from starlette.websockets import WebSocketDisconnect
+
+        app, reg = _bare_app(tmp_path, dev_identity=dev_identity)
+        if not dev_identity:
+            app.state.identity = _verifying_identity()
+        if resolver is not None:
+            reg.set_display_name_resolver(resolver)
+        reg.register("sess", 9123)
+        captured: dict = {}
+        with patch("websockets.asyncio.client.connect", side_effect=_capture_ws_dial(captured)):
+            with pytest.raises(WebSocketDisconnect):
+                with TestClient(app).websocket_connect(
+                    "/s/sess/session", headers=client_headers
+                ) as ws:
+                    ws.receive_text()
+        return captured["headers"]
+
+    def test_ws_stamps_the_provisioned_name_and_ignores_a_client_supplied_copy(
+        self, tmp_path
+    ) -> None:
+        looked_up: list[str] = []
+
+        async def resolver(user_id: str) -> str | None:
+            looked_up.append(user_id)
+            return "Alice Liddell"
+
+        headers = self._ws_headers(
+            tmp_path,
+            client_headers={**_VERIFIED_ALICE, "x-auth-display-name": "Mallory"},
+            resolver=resolver,
+        )
+
+        assert headers["x-auth-display-name"] == "Alice%20Liddell"
+        assert looked_up == ["alice"]
+
+    def test_ws_stamps_the_email_when_the_user_has_no_display_name(self, tmp_path) -> None:
+        async def resolver(user_id: str) -> str | None:
+            return ""
+
+        headers = self._ws_headers(
+            tmp_path,
+            client_headers={**_VERIFIED_ALICE, "x-auth-display-name": "Mallory"},
+            resolver=resolver,
+        )
+
+        assert headers["x-auth-display-name"] == "alice%40example.test"
+
+    def test_ws_stamps_the_email_when_no_resolver_is_wired(self, tmp_path) -> None:
+        headers = self._ws_headers(tmp_path, client_headers=_VERIFIED_ALICE)
+
+        assert headers["x-auth-display-name"] == "alice%40example.test"
+
+    def test_ws_sends_no_name_when_there_is_neither_a_display_name_nor_an_email(
+        self, tmp_path
+    ) -> None:
+        without_email = {k: v for k, v in _VERIFIED_ALICE.items() if k != "x-verified-email"}
+
+        headers = self._ws_headers(
+            tmp_path, client_headers={**without_email, "x-auth-display-name": "Mallory"}
+        )
+
+        assert "x-auth-display-name" not in headers
+
+    def test_ws_percent_encodes_a_non_ascii_name(self, tmp_path) -> None:
+        async def resolver(user_id: str) -> str | None:
+            return "José Ñandú"
+
+        headers = self._ws_headers(tmp_path, client_headers=_VERIFIED_ALICE, resolver=resolver)
+
+        assert headers["x-auth-display-name"] == "Jos%C3%A9%20%C3%91and%C3%BA"
+
+    def test_http_stamps_the_provisioned_name_and_ignores_a_client_supplied_copy(
+        self, tmp_path
+    ) -> None:
+        app, reg = _bare_app(tmp_path)
+        app.state.identity = _verifying_identity()
+        reg.register("sess", 9123)
+
+        async def resolver(user_id: str) -> str | None:
+            return "Alice Liddell"
+
+        reg.set_display_name_resolver(resolver)
+
+        with patch("httpx.AsyncClient") as mock_client_cls:
+            mock_client = _mock_http_client(mock_client_cls)
+            resp = TestClient(app).get(
+                "/s/sess/api/conversation/history",
+                headers={**_VERIFIED_ALICE, "x-auth-display-name": "Mallory"},
+            )
+
+        assert resp.status_code == 200
+        headers = mock_client.request.await_args.kwargs["headers"]
+        assert headers["x-auth-display-name"] == "Alice%20Liddell"
+
+    def test_http_forwards_no_client_name_when_the_proxy_has_none(self, tmp_path) -> None:
+        app, reg = _bare_app(tmp_path)
+        app.state.identity = _verifying_identity()
+        reg.register("sess", 9123)
+        without_email = {k: v for k, v in _VERIFIED_ALICE.items() if k != "x-verified-email"}
+
+        with patch("httpx.AsyncClient") as mock_client_cls:
+            mock_client = _mock_http_client(mock_client_cls)
+            resp = TestClient(app).get(
+                "/s/sess/api/conversation/history",
+                headers={**without_email, "x-auth-display-name": "Mallory"},
+            )
+
+        assert resp.status_code == 200
+        headers = mock_client.request.await_args.kwargs["headers"]
+        assert "x-auth-display-name" not in headers
+
+    def test_dev_identity_forwards_the_asserted_name(self, tmp_path) -> None:
+        headers = self._ws_headers(
+            tmp_path,
+            client_headers={"x-auth-user-id": "dev-user", "x-auth-display-name": "Dev Person"},
+            dev_identity=True,
+        )
+
+        assert headers["x-auth-display-name"] == "Dev Person"

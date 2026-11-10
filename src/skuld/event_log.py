@@ -13,6 +13,7 @@ import httpx
 from fastapi import WebSocket
 
 from niuu.domain.conversation_timeline import TIMELINE_KEY, observation, timeline
+from niuu.domain.message_author import AUTHOR_KEY, MessageAuthor
 from niuu.observability import get_observability
 from skuld.conversation_models import ConversationTurn
 from skuld.session_artifacts import SessionArtifacts
@@ -547,6 +548,7 @@ class EventLogMixin:
         *,
         request_id: str | None = None,
         ts: datetime | None = None,
+        author: MessageAuthor | None = None,
     ) -> dict | None:
         """Persist a HUMAN message to the durable event log as a user frame.
 
@@ -557,6 +559,10 @@ class EventLogMixin:
         frame, which the replay reducers render directly as a user turn (and
         string content distinguishes it from the CLI's block-list tool_result
         user frames).
+
+        The frame names its ``author`` when the sender was a verified person, so a
+        replay from the log alone keeps who said it. Frames logged before authorship
+        existed have none, and replay shows them with none.
         """
         if not content:
             return None
@@ -567,6 +573,7 @@ class EventLogMixin:
             "message": {"role": "user", "content": content},
             **({"request_id": request_id} if request_id else {}),
             **({"created_at": ts.isoformat()} if ts else {}),
+            **({AUTHOR_KEY: author.to_dict()} if author is not None else {}),
         }
         self._enqueue_event_log(frame, ts=ts)
         return timeline(frame)

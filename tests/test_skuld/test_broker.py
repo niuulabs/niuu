@@ -4892,6 +4892,7 @@ class TestBrokerRoomAdapter:
             source="browser",
             request_id=None,
             metadata=None,
+            author=None,
         )
 
     @pytest.mark.asyncio

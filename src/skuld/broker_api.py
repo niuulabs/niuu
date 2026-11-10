@@ -28,6 +28,7 @@ from niuu.build_identity import build_identity
 from niuu.domain.conversation_timeline import resolve_timeline_turn
 from niuu.domain.history_paging import InvalidHistoryCursorError
 from niuu.domain.json_text import json_text_safe
+from niuu.domain.message_author import MessageAuthor
 from niuu.domain.presented_files import (
     PRESENTED_ARTIFACT_KEY_FIELD,
     PRESENTED_ARTIFACT_KEY_PATTERN,
@@ -71,6 +72,7 @@ from skuld.presented_durable import (
 from skuld.preview import PreviewMiddleware
 from skuld.room_role_port import RoomRoleResolutionError
 from skuld.service_manager import ServiceCreateRequest, ServiceStatus
+from skuld.websocket_auth import author_from_headers
 from skuld.workflow_steps import WorkflowOfferRefusedError, WorkflowStepNotHostedError
 from volundr.log_aggregate import aggregate_workspace_logs
 
@@ -1579,6 +1581,20 @@ def _room_identity_fields(
     return None, f"room_{role}"
 
 
+def _request_author(request: Request) -> MessageAuthor | None:
+    """The verified person behind this request, for the message's author.
+
+    Read only from the headers the session proxy stamps (like the room role): never from
+    the body, so a caller below owner cannot name someone else as the author.
+    """
+    cfg = broker._settings.ws_auth
+    return author_from_headers(
+        request.headers,
+        user_id_header=cfg.user_id_header,
+        display_name_header=cfg.display_name_header,
+    )
+
+
 @app.post("/api/room/message")
 async def send_room_message(request: Request, body: _RoomMessageRequest) -> dict:
     """Inject a human-originated message into the active room session."""
@@ -1592,6 +1608,7 @@ async def send_room_message(request: Request, body: _RoomMessageRequest) -> dict
             participant_id=participant_id,
             metadata=metadata,
             deliver_to_transport=body.deliver_to_transport,
+            author=_request_author(request),
         )
     except ValueError as exc:
         raise HTTPException(400, str(exc))
@@ -1623,6 +1640,7 @@ async def send_directed_room_message(request: Request, body: _DirectedRoomMessag
             body.content,
             source=source,
             metadata=metadata,
+            author=_request_author(request),
         )
     except ValueError as exc:
         raise HTTPException(400, str(exc))

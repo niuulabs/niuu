@@ -107,6 +107,11 @@ class SkuldPortRegistry:
         self._room_role_resolver: (
             Callable[[str, str | None, str | None, tuple[str, ...]], Awaitable[str | None]] | None
         ) = None
+        # Optional async lookup of a user's provisioned display name, for the
+        # stamped x-auth-display-name header (see DISPLAY_NAME_HEADER). Set by
+        # the composition root from its user store. Without it the proxy stamps
+        # the caller's email.
+        self._display_name_resolver: Callable[[str], Awaitable[str | None]] | None = None
         # Live proxied browser sockets, keyed by (session_id, user_id), so a
         # revoke/demotion can close an ALREADY-OPEN connection immediately
         # (see close_connections) instead of relying solely on
@@ -166,6 +171,14 @@ class SkuldPortRegistry:
         responses and gate resolution, distinct from the attach decision.
         """
         self._room_role_resolver = resolver
+
+    def set_display_name_resolver(self, resolver: Callable[[str], Awaitable[str | None]]) -> None:
+        """Inject the lookup of a user's provisioned display name.
+
+        ``resolver(user_id) -> display_name | None``. ``None`` or an empty name
+        means the user has no display name on record.
+        """
+        self._display_name_resolver = resolver
 
     def set_preview_credential_issuer(
         self, issuer: Callable[[str, Principal], Awaitable[str]]
@@ -251,6 +264,21 @@ class SkuldPortRegistry:
         if self._dev_identity:
             return "owner"
         return None
+
+    async def resolve_display_name(self, principal: Principal | None) -> str:
+        """The name the broker records as the author of this caller's messages.
+
+        The provisioned user's display name when the registry can look one up;
+        otherwise the caller's verified email. Empty only when the caller has
+        neither: the proxy never invents a name.
+        """
+        if principal is None or not principal.user_id:
+            return ""
+        if self._display_name_resolver is not None:
+            name = await self._display_name_resolver(principal.user_id)
+            if name and name.strip():
+                return name.strip()
+        return principal.email.strip()
 
     async def resolve_target(self, session_id: str) -> SessionProxyTarget | None:
         """Resolve an externally hosted session service, when configured."""
@@ -382,6 +410,13 @@ async def _proxy_ws_identity(
     return (principal.user_id, principal.tenant_id, tuple(principal.roles))
 
 
+# The display name of the verified caller, percent-encoded UTF-8 (an HTTP header
+# value is not UTF-8 safe), recorded by the broker with the user id as the author of
+# the caller's messages. Stamped from the proxy's own resolution, like the room role:
+# outside local dev it is dropped from the browser's request and never forwarded from
+# it. Must match skuld.config.WsAuthConfig.display_name_header.
+DISPLAY_NAME_HEADER = "x-auth-display-name"
+
 # Identity headers the downstream session trusts as proxy-verified.
 _IDENTITY_HEADERS = frozenset(
     {
@@ -389,6 +424,7 @@ _IDENTITY_HEADERS = frozenset(
         "x-auth-email",
         "x-auth-tenant",
         "x-auth-roles",
+        DISPLAY_NAME_HEADER,
     }
 )
 # The room role ("owner"/"approver"/"viewer") the proxy resolved for this
@@ -412,8 +448,14 @@ _DEV_QUERY_TO_HEADER = (
 _DEV_QUERY_PARAMS = frozenset(query_key for query_key, _ in _DEV_QUERY_TO_HEADER)
 
 
-def _verified_identity_headers(principal: Principal | None) -> dict[str, str]:
-    """Project a principal the proxy resolved itself onto ``x-auth-*`` headers."""
+def _verified_identity_headers(
+    principal: Principal | None, display_name: str = ""
+) -> dict[str, str]:
+    """Project a principal the proxy resolved itself onto ``x-auth-*`` headers.
+
+    ``display_name`` is the proxy's own resolution of the caller's name
+    (``SkuldPortRegistry.resolve_display_name``); it is sent only when there is one.
+    """
     if principal is None or not principal.user_id:
         return {}
     headers = {
@@ -423,6 +465,8 @@ def _verified_identity_headers(principal: Principal | None) -> dict[str, str]:
     }
     if principal.email:
         headers["x-auth-email"] = principal.email
+    if display_name:
+        headers[DISPLAY_NAME_HEADER] = urllib.parse.quote(display_name, safe="")
     return headers
 
 
@@ -433,6 +477,7 @@ def _proxy_forward_headers(
     dev_identity: bool,
     principal: Principal | None,
     room_role: str | None = None,
+    display_name: str = "",
 ) -> dict[str, str]:
     """Build the header set forwarded from the browser leg to the broker leg.
 
@@ -444,7 +489,11 @@ def _proxy_forward_headers(
 
     ``room_role``, when resolved, is stamped as ``ROOM_ROLE_HEADER``. It is
     never in ``allow``, so a client-supplied copy on the incoming WebSocket is
-    never part of ``headers`` before this stamps the proxy's own value.
+    never part of ``headers`` before this stamps the proxy's own value. The
+    same holds for ``display_name`` outside local dev: it is projected with the
+    other ``x-auth-*`` values from the proxy's own resolution, never from the
+    client's copy. With ``dev_identity`` a browser-asserted display name is
+    forwarded like the rest of the dev identity.
     """
     allow = {"authorization"}
     if include_cookie:
@@ -453,11 +502,13 @@ def _proxy_forward_headers(
         allow |= _IDENTITY_HEADERS
     headers = {k: v for k, v in websocket.headers.items() if k.lower() in allow}
     if not dev_identity:
-        headers.update(_verified_identity_headers(principal))
+        headers.update(_verified_identity_headers(principal, display_name))
     else:
         for query_key, header in _DEV_QUERY_TO_HEADER:
             if value := websocket.query_params.get(query_key):
                 headers[header] = value
+        if display_name and DISPLAY_NAME_HEADER not in headers:
+            headers[DISPLAY_NAME_HEADER] = urllib.parse.quote(display_name, safe="")
     if room_role is not None:
         headers[ROOM_ROLE_HEADER] = room_role
     return headers
@@ -686,6 +737,7 @@ async def _proxy_ws(
                 dev_identity=skuld_reg.dev_identity,
                 principal=principal,
                 room_role=room_role,
+                display_name=await skuld_reg.resolve_display_name(principal),
             ),
             connect_kwargs=connect_kwargs,
             on_connected=_mark_connected,
@@ -854,7 +906,10 @@ def register_session_proxy_routes(app: FastAPI, skuld_reg: SkuldPortRegistry) ->
             dropped |= _IDENTITY_HEADERS
         headers = {k: v for k, v in request.headers.items() if k.lower() not in dropped}
         if not skuld_reg.dev_identity:
-            headers.update(_verified_identity_headers(await _proxy_principal(request)))
+            verified = await _proxy_principal(request)
+            headers.update(
+                _verified_identity_headers(verified, await skuld_reg.resolve_display_name(verified))
+            )
         if room_role is not None:
             headers[ROOM_ROLE_HEADER] = room_role
         if target is not None:

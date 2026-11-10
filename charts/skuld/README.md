@@ -393,6 +393,7 @@ Optional Envoy sidecar for JWT validation and header extraction. When enabled, E
 | `envoy.headerNames.email` | string | `"x-auth-email"` | Header name for email |
 | `envoy.headerNames.tenant` | string | `"x-auth-tenant"` | Header name for tenant |
 | `envoy.headerNames.roles` | string | `"x-auth-roles"` | Header name for roles |
+| `envoy.headerNames.displayName` | string | `"x-auth-display-name"` | Header the session proxy stamps with the caller's percent-encoded display name; recorded as the author of their messages. The Gateway removes any client-supplied copy |
 | `envoy.jwt.enabled` | bool | `false` | Enable JWT authentication filter |
 | `envoy.jwt.issuer` | string | `""` | JWT issuer URL (Keycloak realm) |
 | `envoy.jwt.audiences` | list | `[]` | Allowed JWT audiences |

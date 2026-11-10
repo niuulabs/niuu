@@ -31,6 +31,7 @@ unit (see skuld.memberValues). Every line is indented four spaces, to sit under 
       user_id_header: {{ .Values.envoy.headerNames.userId | quote }}
       tenant_header: {{ .Values.envoy.headerNames.tenant | quote }}
       roles_header: {{ .Values.envoy.headerNames.roles | quote }}
+      display_name_header: {{ .Values.envoy.headerNames.displayName | quote }}
       role_mapping: {{ .Values.envoy.authorization.roleMapping | toJson }}
       {{- toYaml $wsAuth | nindent 6 }}
       {{- if eq .Values.wsAuth.room_role_source "remote" }}
