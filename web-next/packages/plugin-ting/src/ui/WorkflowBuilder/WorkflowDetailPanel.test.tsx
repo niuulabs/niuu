@@ -101,6 +101,16 @@ const STAGE_NODE: WorkflowStageNode = {
   position: { x: 120, y: 160 },
 };
 
+/** A step saved with several members, from before a step had one persona. */
+const PAIR_STAGE: WorkflowStageNode = {
+  ...STAGE_NODE,
+  personaIds: ['planner', 'coder'],
+  stageMembers: [
+    { personaId: 'planner', model: 'claude-sonnet', budget: 40 },
+    { personaId: 'coder', model: 'gpt-5', budget: 40 },
+  ],
+};
+
 const RESOURCE_NODE: WorkflowResourceNode = {
   id: 'resource-1',
   kind: 'resource',
@@ -342,8 +352,15 @@ describe('WorkflowDetailPanel', () => {
     expect(screen.getByDisplayValue('Plan work')).toBeDisabled();
   });
 
+  it('offers no execution mode or concurrency for a step with one persona', () => {
+    renderPanel(STAGE_NODE);
+
+    expect(screen.queryByRole('button', { name: 'sequential' })).toBeNull();
+    expect(screen.queryByPlaceholderText('No limit')).toBeNull();
+  });
+
   it('shows an unset maxConcurrent as an empty field meaning no limit', () => {
-    const { maxConcurrent: _unset, ...unlimitedStage } = STAGE_NODE;
+    const { maxConcurrent: _unset, ...unlimitedStage } = PAIR_STAGE;
     renderPanel(unlimitedStage);
 
     const input = screen.getByPlaceholderText('No limit');
@@ -351,7 +368,7 @@ describe('WorkflowDetailPanel', () => {
   });
 
   it('clears maxConcurrent to undefined, never 0 or 1', () => {
-    const { props } = renderPanel(STAGE_NODE);
+    const { props } = renderPanel(PAIR_STAGE);
 
     fireEvent.change(screen.getByPlaceholderText('No limit'), { target: { value: '' } });
 
@@ -360,7 +377,7 @@ describe('WorkflowDetailPanel', () => {
   });
 
   it('ignores a maxConcurrent that is not a positive whole number', () => {
-    const { props } = renderPanel(STAGE_NODE);
+    const { props } = renderPanel(PAIR_STAGE);
     const input = screen.getByPlaceholderText('No limit');
 
     fireEvent.change(input, { target: { value: '0' } });
@@ -371,7 +388,7 @@ describe('WorkflowDetailPanel', () => {
   });
 
   it('updates stage configuration and validation details', () => {
-    const { props } = renderPanel(STAGE_NODE);
+    const { props } = renderPanel(PAIR_STAGE);
 
     fireEvent.change(screen.getByDisplayValue('Plan work'), {
       target: { value: 'Plan scope' },
@@ -419,9 +436,20 @@ describe('WorkflowDetailPanel', () => {
     fireEvent.click(screen.getByRole('button', { name: '×' }));
     expect(props.onRemovePersona).toHaveBeenCalledWith('stage-1', 'planner');
 
-    fireEvent.change(selects[2]!, { target: { value: 'reviewer' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Add agent' }));
-    expect(props.onAddPersona).toHaveBeenCalledWith('stage-1', 'reviewer', 'claude-sonnet', 40);
+    // A step has one persona: another is another step, added beside it on the canvas.
+    expect(screen.queryByRole('button', { name: 'Assign agent' })).toBeNull();
+    expect(screen.getByText(/Each step has one persona/)).toBeInTheDocument();
+  });
+
+  it('assigns a persona to a step that has none, with the default model', () => {
+    const workflow: Workflow = { ...BASE_WORKFLOW, nodes: [STAGE_WITHOUT_MEMBERS], edges: [] };
+    const { props } = renderPanel(STAGE_WITHOUT_MEMBERS, { workflow, issues: [] });
+
+    fireEvent.click(screen.getByRole('button', { name: 'flock' }));
+    fireEvent.change(screen.getAllByRole('combobox')[0]!, { target: { value: 'reviewer' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Assign agent' }));
+
+    expect(props.onAddPersona).toHaveBeenCalledWith('stage-empty', 'reviewer', 'claude-sonnet', 40);
   });
 
   it('updates resource bindings and supports ephemeral local mounts', () => {
@@ -1002,15 +1030,13 @@ describe('WorkflowDetailPanel', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'flock' }));
     expect(screen.getByText('No agents assigned yet.')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Add agent' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Assign agent' })).toBeDisabled();
 
     fireEvent.click(screen.getByRole('button', { name: 'validate' }));
     expect(screen.getByText('No validation issues on this node.')).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: 'config' }));
-    expect(screen.getByPlaceholderText('No limit')).toHaveValue(null);
-    fireEvent.change(screen.getByPlaceholderText('No limit'), { target: { value: '2' } });
-    expect(props.onUpdateNode).toHaveBeenCalledWith('stage-empty', { maxConcurrent: 2 });
+    expect(screen.queryByPlaceholderText('No limit')).toBeNull();
 
     fireEvent.click(screen.getByRole('button', { name: 'Delete node' }));
     expect(props.onDeleteNode).toHaveBeenCalledWith('stage-empty');

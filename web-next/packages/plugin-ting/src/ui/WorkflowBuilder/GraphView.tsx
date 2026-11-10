@@ -1706,8 +1706,10 @@ export function GraphView({
     const mimirMount = parseWorkflowRegistryMount(e.dataTransfer.getData(MIMIR_MOUNT_MIME));
 
     if (personaId) {
+      // A step has one persona. Dropped on a step that has none yet, the persona runs it;
+      // anywhere else, even on a step that has one, it becomes a step of its own.
       const targetStage = findStageAtPoint(position.x, position.y);
-      if (targetStage?.kind === 'stage') {
+      if (targetStage?.kind === 'stage' && normalizedStageMembers(targetStage).length === 0) {
         onAddPersonaToStage?.(targetStage.id, personaId);
         onSelectNode(targetStage.id);
         return;

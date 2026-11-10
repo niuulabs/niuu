@@ -926,42 +926,48 @@ function StageInspector({
             />
           </div>
 
-          <div>
-            <label className={SECTION_LABEL}>Execution</label>
-            <SegmentedFilter
-              options={executionOptions}
-              value={node.executionMode ?? 'parallel'}
-              onChange={(mode) => onUpdateNode(node.id, { executionMode: mode })}
-              aria-label="Execution mode"
-              className="niuu:mt-1 niuu:rounded-xl niuu:border niuu:border-border-subtle"
-            />
-          </div>
+          {/* How several members run together. A step has one persona now; a step saved with
+              several still shows how they run. */}
+          {stageMembers.length > 1 && (
+            <>
+              <div>
+                <label className={SECTION_LABEL}>Execution</label>
+                <SegmentedFilter
+                  options={executionOptions}
+                  value={node.executionMode ?? 'parallel'}
+                  onChange={(mode) => onUpdateNode(node.id, { executionMode: mode })}
+                  aria-label="Execution mode"
+                  className="niuu:mt-1 niuu:rounded-xl niuu:border niuu:border-border-subtle"
+                />
+              </div>
 
-          <div className="niuu:grid niuu:grid-cols-2 niuu:gap-2">
-            <div>
-              <label className={SECTION_LABEL}>Max concurrent</label>
-              <input
-                type="number"
-                className={INPUT}
-                value={node.maxConcurrent ?? ''}
-                min={1}
-                step={1}
-                placeholder="No limit"
-                onChange={(e) => {
-                  const raw = e.target.value;
-                  if (raw === '') {
-                    onUpdateNode(node.id, { maxConcurrent: undefined });
-                    return;
-                  }
-                  const limit = Number(raw);
-                  // Only a positive whole number is a limit; anything else is not stored.
-                  if (!Number.isInteger(limit) || limit < 1) return;
-                  onUpdateNode(node.id, { maxConcurrent: limit });
-                }}
-              />
-            </div>
-            <div />
-          </div>
+              <div className="niuu:grid niuu:grid-cols-2 niuu:gap-2">
+                <div>
+                  <label className={SECTION_LABEL}>Max concurrent</label>
+                  <input
+                    type="number"
+                    className={INPUT}
+                    value={node.maxConcurrent ?? ''}
+                    min={1}
+                    step={1}
+                    placeholder="No limit"
+                    onChange={(e) => {
+                      const raw = e.target.value;
+                      if (raw === '') {
+                        onUpdateNode(node.id, { maxConcurrent: undefined });
+                        return;
+                      }
+                      const limit = Number(raw);
+                      // Only a positive whole number is a limit; anything else is not stored.
+                      if (!Number.isInteger(limit) || limit < 1) return;
+                      onUpdateNode(node.id, { maxConcurrent: limit });
+                    }}
+                  />
+                </div>
+                <div />
+              </div>
+            </>
+          )}
 
           {(inbound.length > 0 || outbound.length > 0) && (
             <div className="niuu:rounded-md niuu:border niuu:border-border-subtle niuu:bg-bg-elevated niuu:p-3 niuu:flex niuu:flex-col niuu:gap-2">
@@ -1156,48 +1162,56 @@ function StageInspector({
             })}
           </div>
 
-          <div className="niuu:border-t niuu:border-border niuu:pt-6">
-            <label className={SECTION_LABEL}>Add persona</label>
-            <div className="niuu:grid niuu:grid-cols-1 niuu:gap-2 niuu:mt-0.5">
-              <select
-                className={INPUT}
-                value={newPersonaId}
-                onChange={(e) => setNewPersonaId(e.target.value)}
-              >
-                <option value="">Select an agent…</option>
-                {availablePersonas.map((persona) => (
-                  <option key={persona.id} value={persona.id}>
-                    {persona.label} · {persona.role}
-                  </option>
-                ))}
-              </select>
-              <select
-                className={INPUT}
-                value={effectiveNewModelId}
-                onChange={(e) => setNewModelId(e.target.value)}
-              >
-                <option value="">Select a model…</option>
-                {availableModels.map((model) => (
-                  <option key={model.id} value={model.id}>
-                    {model.label}
-                  </option>
-                ))}
-              </select>
-              <button
-                type="button"
-                className={CHIP_BTN}
-                disabled={!newPersonaId || !effectiveNewModelId}
-                onClick={() => {
-                  if (!newPersonaId || !effectiveNewModelId) return;
-                  onAddPersona(node.id, newPersonaId, effectiveNewModelId, 40);
-                  setNewPersonaId('');
-                  setNewModelId(defaultModelId);
-                }}
-              >
-                Add agent
-              </button>
+          {/* A step has one persona: another persona is another step, added on the canvas. */}
+          {stageMembers.length === 0 ? (
+            <div className="niuu:border-t niuu:border-border niuu:pt-6">
+              <label className={SECTION_LABEL}>Persona</label>
+              <div className="niuu:grid niuu:grid-cols-1 niuu:gap-2 niuu:mt-0.5">
+                <select
+                  className={INPUT}
+                  value={newPersonaId}
+                  onChange={(e) => setNewPersonaId(e.target.value)}
+                >
+                  <option value="">Select an agent…</option>
+                  {availablePersonas.map((persona) => (
+                    <option key={persona.id} value={persona.id}>
+                      {persona.label} · {persona.role}
+                    </option>
+                  ))}
+                </select>
+                <select
+                  className={INPUT}
+                  value={effectiveNewModelId}
+                  onChange={(e) => setNewModelId(e.target.value)}
+                >
+                  <option value="">Select a model…</option>
+                  {availableModels.map((model) => (
+                    <option key={model.id} value={model.id}>
+                      {model.label}
+                    </option>
+                  ))}
+                </select>
+                <button
+                  type="button"
+                  className={CHIP_BTN}
+                  disabled={!newPersonaId || !effectiveNewModelId}
+                  onClick={() => {
+                    if (!newPersonaId || !effectiveNewModelId) return;
+                    onAddPersona(node.id, newPersonaId, effectiveNewModelId, 40);
+                    setNewPersonaId('');
+                    setNewModelId(defaultModelId);
+                  }}
+                >
+                  Assign agent
+                </button>
+              </div>
             </div>
-          </div>
+          ) : (
+            <p className="niuu:m-0 niuu:text-xs niuu:text-text-muted">
+              Each step has one persona. To run another beside it, select the step and choose
+              Alongside.
+            </p>
+          )}
 
           <div className="niuu:border-t niuu:border-border niuu:pt-4">
             <button type="button" className={DELETE_BTN} onClick={() => onDeleteNode(node.id)}>

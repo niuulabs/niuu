@@ -940,6 +940,39 @@ describe('GraphView', () => {
     expect(props.onSelectNode).toHaveBeenCalledWith('stage-1');
   });
 
+  it('makes a persona dropped on a step that has one a step of its own, never a second member', () => {
+    const staffed: WorkflowNode = { ...stageNode, personaIds: ['ravn-alpha'] };
+    const props = {
+      ...defaultProps(),
+      nodes: [staffed],
+      edges: [],
+      onAddPersonaToStage: vi.fn(),
+      onAddStageWithPersona: vi.fn(),
+    };
+    render(<GraphView {...props} />);
+    const svg = screen.getByTestId('graph-canvas');
+    Object.defineProperty(svg, 'getBoundingClientRect', {
+      value: () => ({ left: 0, top: 0, width: 800, height: 600 }),
+    });
+
+    const box = cardBox('stage-1');
+    const drop = createEvent.drop(svg);
+    Object.defineProperty(drop, 'clientX', { value: box.x + box.width / 2 });
+    Object.defineProperty(drop, 'clientY', { value: box.y + box.height / 2 });
+    Object.defineProperty(drop, 'dataTransfer', {
+      value: {
+        getData: (key: string) => (key === 'application/niuu-persona-id' ? 'coder' : ''),
+      },
+    });
+    fireEvent(svg, drop);
+
+    expect(props.onAddPersonaToStage).not.toHaveBeenCalled();
+    expect(props.onAddStageWithPersona).toHaveBeenCalledWith('coder', undefined, {
+      x: box.x + box.width / 2,
+      y: box.y + box.height / 2,
+    });
+  });
+
   it('routes stage port clicks and connect-mode node clicks to connect handlers', () => {
     const stageWithPorts: WorkflowNode = {
       ...stageNode,
