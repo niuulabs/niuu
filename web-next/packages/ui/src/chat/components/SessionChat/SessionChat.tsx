@@ -42,6 +42,7 @@ import {
   messageModel,
   ModelSpeaker,
 } from '../ChatMessages';
+import { isNotificationCardTool, isSecretRequestTool } from '../ToolBlock/groupContentBlocks';
 import { RoomMessage } from '../RoomMessage';
 import { ThreadGroup } from '../ThreadGroup';
 import { WorkersStrip } from '../WorkersStrip';
@@ -344,6 +345,16 @@ function groupStartedAt(
 }
 
 /** "54s", "2m 5s", "1h 12m": how long a turn worked, as Lexi writes it. */
+/** A turn that carries a card for the operator: a notification or a secret request. */
+function addressesOperator(message: ChatMessage): boolean {
+  return (message.parts ?? []).some(
+    (part) =>
+      part.type === 'tool_use' &&
+      !!part.name &&
+      (isNotificationCardTool(part.name) || isSecretRequestTool(part.name)),
+  );
+}
+
 function workedDuration(seconds: number): string {
   if (seconds < 60) return `${seconds}s`;
   const minutes = Math.floor(seconds / 60);
@@ -654,7 +665,9 @@ function SessionChatView({
 
   // Never fold across speakers, threads, visibility changes, or system notices.
   // Consecutive contributions remain in transcript order, including when a
-  // participant returns after another participant has spoken.
+  // participant returns after another participant has spoken. A notification or
+  // secret request is addressed to the operator, so it stands on its own like a
+  // notice instead of folding into the speaker's "Worked" row.
   const compactRoomGroups = useMemo(() => {
     const groups: (MessageGroup | { type: 'compact'; turn: CompactTurn })[] = [];
     let run: ChatMsg[] = [];
@@ -677,7 +690,8 @@ function SessionChatView({
       if (
         group.type === 'thread' ||
         group.message.role !== 'assistant' ||
-        group.message.metadata?.messageType
+        group.message.metadata?.messageType ||
+        addressesOperator(group.message)
       ) {
         flush();
         groups.push(group);

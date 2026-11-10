@@ -47,3 +47,24 @@ under `persona`, or the refusal under `error`.
 Bundled workflows pin their personas by digest. Run
 `uv run python scripts/repin_bundled_workflows.py` to re-pin them (and bump each changed
 workflow's `version` and its entry in `tests/test_ting/data/bundled_workflow_versions.lock.json`).
+
+## Creating and editing personas
+
+The persona library's **New** opens a wizard: start from Blank or a copy of a persona you
+have, then name it, choose what it may change, the events it starts on, how it can finish
+(each outcome, the event it sends, and when to report it) and its instructions. The YAML
+beside it is exactly what is saved, and the **YAML** mode edits the same persona as text;
+**Edit** opens the same editor on an existing persona.
+
+Both save the persona's whole document, as written, through the Forge persona API:
+
+| Route | Does |
+|---|---|
+| `POST /api/v1/personas/yaml` `{"yaml": "..."}` | Create a persona; 409 when the name exists |
+| `PUT /api/v1/personas/{name}/yaml` `{"yaml": "..."}` | Replace it, or override a built-in; the YAML's `name` must be `{name}` |
+| `POST /api/v1/personas/yaml/check` `{"yaml": "..."}` | Answer `{valid, errors}` as saving would, without saving |
+
+The YAML is checked as strictly as a pinned persona: an unknown field, a `produces.when` for an
+outcome the persona does not map, or a `permission_mode` no harness knows is refused (422) and
+named, never saved with it dropped. The stored document is what agents and workflow pins read
+(`GET /api/v1/personas/{name}/portable`), and a fork copies it whole.

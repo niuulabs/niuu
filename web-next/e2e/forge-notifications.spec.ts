@@ -433,7 +433,7 @@ test('notifications feed: live rows, reconnect gap-fill, filters, delivery and m
     .filter({ hasText: 'Benchmark run crashed' })
     .getByRole('button', { name: /Benchmark run crashed — open gpu-bench/ })
     .click();
-  await expect(page).toHaveURL(/\/volundr\/session\/sess-bench#notification-n-crash$/);
+  await expect(page).toHaveURL(/\/volundr\/sessions\/sess-bench#notification-n-crash$/);
 });
 
 test('a host the first load missed is picked up by refetching, not by gap-fill', async ({
@@ -516,7 +516,7 @@ test('notifications feed is keyboard accessible', async ({ page }) => {
   await expect(page.getByTestId('notifications-unread')).toHaveText('1 unread');
   await open(1).focus();
   await page.keyboard.press('Enter');
-  await expect(page).toHaveURL(/\/volundr\/session\/sess-bench#notification-n-crash$/);
+  await expect(page).toHaveURL(/\/volundr\/sessions\/sess-bench#notification-n-crash$/);
 });
 
 async function sessionFixture(page: Page) {

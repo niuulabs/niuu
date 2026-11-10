@@ -588,7 +588,7 @@ key from `private_key_path` (the `.p8` file) or, as PEM text, from `private_key`
 
 Messages link back to `notifications.public_web_url`, or else the host's public origin,
 with `session_link_path` (default
-`/volundr/session/{session_id}#notification-{notification_id}`, which opens the session
+`/volundr/sessions/{session_id}#notification-{notification_id}`, which opens the session
 at the notification's card) or `feed_link_path` for sessionless notifications. Set
 `public_web_url` whenever Forge is reached through a proxy or a public hostname. Relative
 notification links (`/volundr/…`) are made absolute against the same base.
@@ -1032,7 +1032,7 @@ notifications:
   max_page_size: 200
   public_web_url: ""         # deep-link origin; empty = the host's public origin
   host_label: ""             # host name shown in messages; empty = the URL's hostname
-  session_link_path: /volundr/session/{session_id}#notification-{notification_id}
+  session_link_path: /volundr/sessions/{session_id}#notification-{notification_id}
   feed_link_path: /volundr/notifications
   resident_link_path: /ravn?ravn={resident_id}&tab=chat
   resident_session_link_path: /ravn?ravn={resident_id}&tab=chat&session={resident_session_id}
