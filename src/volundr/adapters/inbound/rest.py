@@ -182,7 +182,7 @@ from volundr.domain.session_broker import (
     server_side_http_proxy_target,
     session_proxy_url,
 )
-from volundr.domain.session_participants import SessionParticipant
+from volundr.domain.session_participants import ParticipantStatus, SessionParticipant
 from volundr.domain.session_read_state import (
     SessionReadState,
     SessionReadStateChange,
@@ -2715,6 +2715,9 @@ def create_router(
         return sessions
 
     def _room_summary(session: Session, room: SessionRoomInfo) -> SessionRoomSummary:
+        # An invitation not yet accepted names the session, its owner and the offered role;
+        # the room's content (project, endpoint, activity) is for those who joined.
+        joined = room.participant_status != ParticipantStatus.INVITED.value
         coordination = session.coordination
         return SessionRoomSummary(
             id=session.id,
@@ -2724,18 +2727,24 @@ def create_router(
             room=room,
             coordination=(
                 SessionRoomCoordination(project_id=coordination.project_id, role=coordination.role)
-                if coordination is not None
+                if coordination is not None and joined
                 else None
             ),
             model=session.effective_model,
-            chat_endpoint=_public_session_endpoint(
-                session.chat_endpoint,
-                str(session.id),
-                public_host=server_public_host,
+            chat_endpoint=(
+                _public_session_endpoint(
+                    session.chat_endpoint,
+                    str(session.id),
+                    public_host=server_public_host,
+                )
+                if joined
+                else None
             ),
             last_active=(session.last_active or session.created_at).isoformat(),
-            activity_state=(session.activity_state.value if session.activity_state else None),
-            needs_attention=session.needs_attention,
+            activity_state=(
+                session.activity_state.value if session.activity_state and joined else None
+            ),
+            needs_attention=session.needs_attention and joined,
         )
 
     def _grant_room(grant: SessionParticipant) -> SessionRoomInfo:

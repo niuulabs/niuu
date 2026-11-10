@@ -8,7 +8,11 @@ from uuid import UUID
 import asyncpg
 
 from volundr.domain.ports import SessionParticipantRepository
-from volundr.domain.session_participants import ParticipantRole, SessionParticipant
+from volundr.domain.session_participants import (
+    ParticipantCandidate,
+    ParticipantRole,
+    SessionParticipant,
+)
 
 _COLUMNS = (
     "session_id, user_id, tenant_id, role, status, invited_by, created_at, updated_at, expires_at"
@@ -114,6 +118,39 @@ class PostgresSessionParticipantRepository(SessionParticipantRepository):
             user_id,
         )
         return [self._row_to_participant(row) for row in rows]
+
+    async def list_invited_for_user(self, user_id: str) -> list[SessionParticipant]:
+        rows = await self._pool.fetch(
+            f"SELECT {_COLUMNS} FROM session_participants "
+            "WHERE user_id = $1 AND status = 'invited'",
+            user_id,
+        )
+        return [self._row_to_participant(row) for row in rows]
+
+    async def candidates(
+        self, session_id: UUID, tenant_id: str, owner_id: str, query: str
+    ) -> list[ParticipantCandidate]:
+        rows = await self._pool.fetch(
+            "SELECT u.id, u.display_name, u.email FROM users u "
+            "JOIN tenant_memberships t ON t.user_id = u.id "
+            "WHERE t.tenant_id = $2 AND u.status = 'active' AND u.id <> $3 "
+            "AND NOT EXISTS (SELECT 1 FROM session_participants p "
+            "WHERE p.session_id = $1 AND p.user_id = u.id "
+            "AND p.status IN ('invited', 'active')) "
+            "AND ($4 = '' OR strpos(lower(u.display_name), lower($4)) > 0 "
+            "OR strpos(lower(u.email), lower($4)) > 0) "
+            "ORDER BY u.display_name, u.email",
+            session_id,
+            tenant_id,
+            owner_id,
+            query,
+        )
+        return [
+            ParticipantCandidate(
+                user_id=row["id"], display_name=row["display_name"], email=row["email"]
+            )
+            for row in rows
+        ]
 
     @staticmethod
     def _row_to_participant(row: asyncpg.Record) -> SessionParticipant:

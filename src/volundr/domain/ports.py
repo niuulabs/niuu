@@ -99,7 +99,11 @@ from volundr.domain.models import (  # noqa: F401
 from volundr.domain.projects import SessionCoordination
 from volundr.domain.push import PushTokenKind
 from volundr.domain.session_changes import SessionChanges
-from volundr.domain.session_participants import ParticipantRole, SessionParticipant
+from volundr.domain.session_participants import (
+    ParticipantCandidate,
+    ParticipantRole,
+    SessionParticipant,
+)
 from volundr.domain.session_read_state import SessionReadState, SessionReadStateChange
 from volundr.domain.session_runtimes import SessionRuntimeOffer
 from volundr.domain.session_startup import SessionStartup, StartupStage
@@ -517,6 +521,25 @@ class SessionParticipantRepository(ABC):
         participates in but does not own (see ``SessionParticipantService.
         list_participant_sessions``) — a visibility grant, not a Cedar
         read/list grant.
+        """
+
+    @abstractmethod
+    async def list_invited_for_user(self, user_id: str) -> list[SessionParticipant]:
+        """Return every status=INVITED grant for a user, across sessions.
+
+        Lets the invitee find the invitation in their session list and accept or
+        decline it. Callers still filter expiry (``SessionParticipant.is_pending``).
+        """
+
+    @abstractmethod
+    async def candidates(
+        self, session_id: UUID, tenant_id: str, owner_id: str, query: str
+    ) -> list[ParticipantCandidate]:
+        """Active members of ``tenant_id`` who could be invited into the session.
+
+        Not the owner, and not anyone already invited or active on the session; a
+        revoked grant can be invited again. ``query`` matches display name or email,
+        case-insensitively; empty matches everyone.
         """
 
 

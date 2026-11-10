@@ -1,5 +1,6 @@
 """Invite/accept/revoke/list permission cases for durable session participation."""
 
+import asyncio
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock
 
@@ -24,6 +25,7 @@ from volundr.domain.session_participants import (
     ParticipantNotFoundError,
     ParticipantRole,
     ParticipantStateError,
+    ParticipantStatus,
     SelfInviteError,
 )
 
@@ -289,13 +291,45 @@ async def test_list_participant_sessions_returns_active_grant_sessions_with_role
     assert grant.user_id == "invitee"
 
 
-async def test_list_participant_sessions_excludes_invited_not_yet_accepted():
+async def test_list_participant_sessions_lists_an_invitation_as_pending_not_active():
     service, session = await _service()
     await service.invite(
         session, OWNER, user_id="invitee", role=ParticipantRole.VIEWER, expires_at=None
     )
-    # Not accepted yet.
+
+    listed = await service.list_participant_sessions(INVITEE)
+
+    assert [(s.id, g.status) for s, g in listed] == [(session.id, ParticipantStatus.INVITED)]
+    assert not listed[0][1].is_active
+    # Listing it gives no room access: the room's grant sets see active grants only.
+    grants = await service.active_grants(session)
+    assert "invitee" not in grants.viewer_ids
+
+
+async def test_list_participant_sessions_omits_an_expired_invitation():
+    service, session = await _service()
+    await service.invite(
+        session,
+        OWNER,
+        user_id="invitee",
+        role=ParticipantRole.VIEWER,
+        expires_at=datetime.now(UTC) + timedelta(milliseconds=30),
+    )
+    await asyncio.sleep(0.05)
+
     assert await service.list_participant_sessions(INVITEE) == []
+
+
+async def test_list_participant_sessions_shows_the_accepted_invitation_as_active():
+    service, session = await _service()
+    await service.invite(
+        session, OWNER, user_id="invitee", role=ParticipantRole.APPROVER, expires_at=None
+    )
+    await service.accept(session, INVITEE)
+
+    [(_, grant)] = await service.list_participant_sessions(INVITEE)
+
+    assert grant.status == ParticipantStatus.ACTIVE
 
 
 async def test_list_participant_sessions_excludes_revoked():
@@ -434,3 +468,164 @@ async def test_effective_room_role_of_no_principal_raises_like_check_room_access
     service, session = await _service()
     with pytest.raises(PermissionError):
         await service.effective_room_role(session, None)
+
+
+class _Notices:
+    """Records what the service tells the notification feed."""
+
+    def __init__(self):
+        self.sent = []
+        self.settled = []
+
+    async def invitation_sent(self, session, participant, *, invited_by_name):
+        self.sent.append((session.id, participant.user_id, participant.role, invited_by_name))
+
+    async def invitation_settled(self, session, participant, *, resolution):
+        self.settled.append((session.id, participant.user_id, participant.status, resolution))
+
+
+async def _service_with_notices():
+    user_repository = _user_repository()
+    user_repository.get.side_effect = lambda user_id: User(
+        id=user_id, email=f"{user_id}@example.test", display_name=user_id.title()
+    )
+    service, session = await _service(user_repository)
+    notices = _Notices()
+    service.set_invitation_notices(notices)
+    return service, session, notices
+
+
+async def test_inviting_tells_the_invitee_who_invited_them():
+    service, session, notices = await _service_with_notices()
+    await service.invite(
+        session, OWNER, user_id="invitee", role=ParticipantRole.APPROVER, expires_at=None
+    )
+
+    assert notices.sent == [(session.id, "invitee", ParticipantRole.APPROVER, "Owner")]
+    assert notices.settled == []
+
+
+async def test_accepting_settles_the_invitation_with_the_grant_it_announced():
+    service, session, notices = await _service_with_notices()
+    invited = await service.invite(
+        session, OWNER, user_id="invitee", role=ParticipantRole.VIEWER, expires_at=None
+    )
+    await service.accept(session, INVITEE)
+
+    [(_, user_id, status, resolution)] = notices.settled
+    assert (user_id, resolution) == ("invitee", "Accepted.")
+    # The settled notice is found by the stamp of the invitation, not of the acceptance.
+    assert status == ParticipantStatus.INVITED
+    assert invited.updated_at is not None
+
+
+async def test_declining_settles_the_invitation():
+    service, session, notices = await _service_with_notices()
+    await service.invite(
+        session, OWNER, user_id="invitee", role=ParticipantRole.VIEWER, expires_at=None
+    )
+    await service.revoke(session, INVITEE, "invitee")
+
+    assert [entry[3] for entry in notices.settled] == ["Declined."]
+
+
+async def test_the_owner_withdrawing_an_invitation_settles_it():
+    service, session, notices = await _service_with_notices()
+    await service.invite(
+        session, OWNER, user_id="invitee", role=ParticipantRole.VIEWER, expires_at=None
+    )
+    await service.revoke(session, OWNER, "invitee")
+
+    assert [entry[3] for entry in notices.settled] == ["Withdrawn by the owner."]
+
+
+async def test_removing_someone_who_already_joined_settles_nothing_more():
+    service, session, notices = await _service_with_notices()
+    await service.invite(
+        session, OWNER, user_id="invitee", role=ParticipantRole.VIEWER, expires_at=None
+    )
+    await service.accept(session, INVITEE)
+    notices.settled.clear()
+    await service.revoke(session, OWNER, "invitee")
+
+    assert notices.settled == []
+
+
+async def test_a_service_without_notices_still_invites_and_accepts():
+    service, session = await _service()
+    await service.invite(
+        session, OWNER, user_id="invitee", role=ParticipantRole.VIEWER, expires_at=None
+    )
+
+    assert (await service.accept(session, INVITEE)).status == ParticipantStatus.ACTIVE
+
+
+async def _service_with_directory():
+    service, session = await _service()
+    repository = service._repository
+    repository.directory = [
+        ("owner", "Olivia Owner", "olivia@example.test", "acme"),
+        ("invitee", "Ivan Invitee", "ivan@example.test", "acme"),
+        ("zed", "Zed Zimmer", "zed@example.test", "acme"),
+        ("stranger", "Sam Stranger", "sam@other.test", "other-tenant"),
+    ]
+    return service, session
+
+
+async def test_candidates_are_the_orgs_people_who_are_not_the_owner():
+    service, session = await _service_with_directory()
+
+    found = await service.candidates(session, OWNER, "")
+
+    assert [c.user_id for c in found] == ["invitee", "zed"]
+    assert found[0].display_name == "Ivan Invitee"
+    assert found[0].email == "ivan@example.test"
+
+
+async def test_candidates_match_name_or_email_ignoring_case():
+    service, session = await _service_with_directory()
+
+    assert [c.user_id for c in await service.candidates(session, OWNER, " ZIM ")] == ["zed"]
+    assert [c.user_id for c in await service.candidates(session, OWNER, "ivan@")] == ["invitee"]
+    assert await service.candidates(session, OWNER, "nobody") == []
+
+
+async def test_candidates_leave_out_invited_and_active_people_but_not_removed_ones():
+    service, session = await _service_with_directory()
+    await service.invite(
+        session, OWNER, user_id="invitee", role=ParticipantRole.VIEWER, expires_at=None
+    )
+    assert [c.user_id for c in await service.candidates(session, OWNER, "")] == ["zed"]
+
+    await service.accept(session, INVITEE)
+    assert [c.user_id for c in await service.candidates(session, OWNER, "")] == ["zed"]
+
+    await service.revoke(session, OWNER, "invitee")
+    assert [c.user_id for c in await service.candidates(session, OWNER, "")] == ["invitee", "zed"]
+
+
+async def test_only_the_owner_or_an_admin_may_ask_for_candidates():
+    service, session = await _service_with_directory()
+    with pytest.raises(SessionAccessDeniedError):
+        await service.candidates(session, OUTSIDER, "")
+    with pytest.raises(SessionAccessDeniedError):
+        await service.candidates(session, INVITEE, "")
+
+
+async def test_participation_of_an_owner_an_invitee_a_member_and_a_stranger():
+    service, session = await _service_with_directory()
+    await service.invite(
+        session, OWNER, user_id="invitee", role=ParticipantRole.APPROVER, expires_at=None
+    )
+
+    assert await service.participation(session, OWNER) == ("owner", None)
+    role, grant = await service.participation(session, INVITEE)
+    assert (role, grant.status) == (None, ParticipantStatus.INVITED)
+    assert await service.participation(session, OUTSIDER) == (None, None)
+
+    await service.accept(session, INVITEE)
+    role, grant = await service.participation(session, INVITEE)
+    assert (role, grant.status) == ("approver", ParticipantStatus.ACTIVE)
+
+    await service.revoke(session, OWNER, "invitee")
+    assert await service.participation(session, INVITEE) == (None, None)

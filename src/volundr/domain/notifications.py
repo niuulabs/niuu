@@ -78,6 +78,9 @@ PUSH_DATA_KEY = "push_data"
 #: rules and feed row; settling any one of them settles the whole group.
 COPY_OF_KEY = "copy_of"
 
+#: Metadata key of an invitation into a session's chat: the role the invitee was offered.
+PARTICIPANT_INVITATION_KEY = "participant_invitation"
+
 #: Kinds that ask someone to decide or act: a workflow gate, a permission prompt, a
 #: question. Anyone whose role may answer them is told, not only the session's owner.
 #: Every other kind (a milestone, a reply, an error report) stays with the owner.

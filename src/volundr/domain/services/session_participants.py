@@ -13,6 +13,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
+from typing import Protocol
 from uuid import UUID
 
 from volundr.domain.models import Principal, Session, SessionStatus
@@ -24,6 +25,7 @@ from volundr.domain.session_participants import (
     InviteeNotFoundError,
     OwnerInviteError,
     ParticipantAlreadyActiveError,
+    ParticipantCandidate,
     ParticipantNotFoundError,
     ParticipantRole,
     ParticipantStateError,
@@ -39,6 +41,22 @@ from .room_grants import RoomGrantSource
 from .session import SessionAccessDeniedError, SessionService
 
 logger = logging.getLogger(__name__)
+
+
+class InvitationNotices(Protocol):
+    """Tells an invitee of the invitation, and closes the notice once it is answered.
+
+    Implemented by the notification feed; absent on a host that runs without one, which
+    is the operator's decision (the invitee still finds the invitation in their list).
+    """
+
+    async def invitation_sent(
+        self, session: Session, participant: SessionParticipant, *, invited_by_name: str
+    ) -> None: ...
+
+    async def invitation_settled(
+        self, session: Session, participant: SessionParticipant, *, resolution: str
+    ) -> None: ...
 
 
 class SessionParticipantService:
@@ -68,6 +86,11 @@ class SessionParticipantService:
         # composition root via set_revocation_notifier(); never required —
         # revoke() must succeed even where no live-socket layer is wired.
         self._revocation_notifier: Callable[[UUID, str], Awaitable[None]] | None = None
+        self._invitation_notices: InvitationNotices | None = None
+
+    def set_invitation_notices(self, notices: InvitationNotices) -> None:
+        """Tell invitees of invitations through ``notices`` (the notification feed)."""
+        self._invitation_notices = notices
 
     def set_revocation_notifier(self, notifier: Callable[[UUID, str], Awaitable[None]]) -> None:
         """Inject the immediate-close hook invoked after a successful revoke."""
@@ -117,8 +140,41 @@ class SessionParticipantService:
                 f"User {user_id} already has an active grant; revoke it first to change role"
             )
         invited_by = principal.user_id if principal is not None else "unauthenticated"
-        return await self._repository.invite(
+        if existing is not None and existing.status == ParticipantStatus.INVITED:
+            # Inviting again (another role, a new expiry) replaces the open invitation, so
+            # the invitee has one open notice, not a stale one beside the new one.
+            await self._settle_invitation(session, existing, "Replaced by a new invitation.")
+        participant = await self._repository.invite(
             session.id, user_id, session.tenant_id or "", role, invited_by, expires_at
+        )
+        if self._invitation_notices is not None:
+            # Not swallowed: the grant exists, so a failure here is the caller's to see and
+            # retry (inviting again is idempotent), not an invitee nobody told.
+            inviter = await self._user_repository.get(invited_by)
+            await self._invitation_notices.invitation_sent(
+                session,
+                participant,
+                invited_by_name=(inviter.display_name or inviter.email or invited_by)
+                if inviter is not None
+                else invited_by,
+            )
+        return participant
+
+    async def candidates(
+        self, session: Session, principal: Principal | None, query: str
+    ) -> list[ParticipantCandidate]:
+        """Active members of the session's org who could be invited into its chat.
+
+        For the people who may invite (the owner and admins): the org's members who
+        are not the owner and do not hold an invited or active grant already.
+
+        Raises:
+            PermissionError: Authorization is configured and no principal was given.
+            SessionAccessDeniedError: The caller is not the session's owner or an admin.
+        """
+        await self.check_room_access(session, principal, "admit")
+        return await self._repository.candidates(
+            session.id, session.tenant_id or "", session.owner_id or "", query.strip()
         )
 
     async def accept(self, session: Session, principal: Principal) -> SessionParticipant:
@@ -140,6 +196,7 @@ class SessionParticipantService:
             raise ParticipantNotFoundError(
                 f"No invited grant for user {principal.user_id} on session {session.id}"
             )
+        await self._settle_invitation(session, existing, "Accepted.")
         return accepted
 
     async def revoke(self, session: Session, principal: Principal | None, user_id: str) -> None:
@@ -153,9 +210,14 @@ class SessionParticipantService:
         self_leaving = principal is not None and principal.user_id == user_id
         if not self_leaving:
             await self.check_room_access(session, principal, "admit")
+        held = await self._repository.get(session.id, user_id)
         revoked = await self._repository.revoke(session.id, user_id)
         if revoked is None:
             raise ParticipantNotFoundError(f"No grant for user {user_id} on session {session.id}")
+        if held is not None and held.status == ParticipantStatus.INVITED:
+            await self._settle_invitation(
+                session, held, "Declined." if self_leaving else "Withdrawn by the owner."
+            )
         if self._revocation_notifier is not None:
             # Best-effort, immediate: the grant IS revoked in the database
             # regardless of this outcome, and the session proxy's interval
@@ -173,6 +235,28 @@ class SessionParticipantService:
                     user_id,
                     exc_info=True,
                 )
+
+    async def _settle_invitation(
+        self, session: Session, invitation: SessionParticipant, resolution: str
+    ) -> None:
+        if self._invitation_notices is None:
+            return
+        await self._invitation_notices.invitation_settled(
+            session, invitation, resolution=resolution
+        )
+
+    async def participation(
+        self, session: Session, principal: Principal
+    ) -> tuple[str | None, SessionParticipant | None]:
+        """The caller's room role on *session* and their own pending or active grant.
+
+        ``(None, None)`` means the caller has no relation to the session at all. An
+        invitee who has not accepted has a grant but no room role yet.
+        """
+        grant = await self._repository.get(session.id, principal.user_id)
+        if grant is not None and grant.status == ParticipantStatus.REVOKED:
+            grant = None
+        return await self.effective_room_role(session, principal), grant
 
     async def list_participants(
         self, session: Session, principal: Principal | None
@@ -229,11 +313,22 @@ class SessionParticipantService:
         Batched: one query for every active grant this user holds, one
         query to fetch the sessions, one Cedar evaluation for all of them.
         """
-        grants = [
-            g
-            for g in await self._repository.list_active_for_user(principal.user_id)
-            if g.is_active and g.tenant_id == principal.tenant_id
+        held = [
+            *(
+                g
+                for g in await self._repository.list_active_for_user(principal.user_id)
+                if g.is_active
+            ),
+            # An invitation not yet answered: the invitee finds the session to accept or
+            # decline it. It gives no room access (the room sets above see active grants
+            # only) and the summary built from it carries no room content.
+            *(
+                g
+                for g in await self._repository.list_invited_for_user(principal.user_id)
+                if g.is_pending
+            ),
         ]
+        grants = [g for g in held if g.tenant_id == principal.tenant_id]
         sessions_by_id = (
             await self._session_service.get_many_sessions([g.session_id for g in grants])
             if grants
@@ -246,7 +341,12 @@ class SessionParticipantService:
         }
         for session, project_grant in await self._project_sessions(principal):
             held = by_session.get(session.id)
-            if held is None or _room_rank(project_grant.role) > _room_rank(held[1].role):
+            # A project member's access is real; a pending invitation is only an offer.
+            if (
+                held is None
+                or held[1].status == ParticipantStatus.INVITED
+                or _room_rank(project_grant.role) > _room_rank(held[1].role)
+            ):
                 by_session[session.id] = (session, project_grant)
         candidates: list[tuple[Session, SessionParticipant]] = []
         resources = []

@@ -4185,30 +4185,149 @@ def create_volundr_router(
             raise HTTPException(502, "Unexpected Forge status response")
         return {**payload, "host": instance.id}
 
+    async def _session_member_call(
+        request: Request,
+        session_id: UUID,
+        principal: Principal,
+        *,
+        method: str,
+        suffix: str,
+        body: dict[str, Any] | None = None,
+        params: list[tuple[str, str]] | None = None,
+        expect_list: bool = False,
+    ) -> Response:
+        """A call about a session's people, on the node that holds the session.
+
+        The node is found through the caller's own standing in the session
+        (``/participants/me``), which answers an owner, an admin, a participant and an
+        invitee who has not accepted yet: none of the last three can read the session
+        itself, so the ordinary owner lookup would never find it for them. Forge's answer
+        comes back as it is, with its status (201 for an invitation, 204 for a removal).
+        """
+        instance, _ = await _find_runtime_owner(
+            service,
+            principal,
+            request,
+            f"/sessions/{session_id}/participants/me",
+            f"Session not found: {session_id}",
+            embedded_app=embedded_forge_app,
+            local_scope=_local_session_scope(request),
+        )
+        response = await _request_remote(
+            instance,
+            request,
+            method=method,
+            path=f"/sessions/{session_id}{suffix}",
+            json_body=body,
+            params=params,
+            embedded_app=embedded_forge_app,
+        )
+        _ensure_remote_success(response)
+        if response.status_code == status.HTTP_204_NO_CONTENT:
+            return Response(status_code=status.HTTP_204_NO_CONTENT)
+        payload = _remote_json(response)
+        if expect_list and not isinstance(payload, list):
+            raise HTTPException(502, f"Unexpected Forge response from {suffix}")
+        return JSONResponse(content=payload, status_code=response.status_code)
+
     @router.get("/sessions/{session_id}/people")
     async def list_session_people(
         request: Request,
         session_id: UUID,
         principal: Principal = Depends(extract_principal),
-    ) -> list[dict[str, Any]]:
-        """The people on the session's project, from the node that owns the session.
+    ) -> Response:
+        """The people on the session's project, from the node that holds the session.
 
         A session with no project is the owner's 409, passed through with its reason."""
-        instance, _ = await _find_session_owner(
-            service, principal, request, str(session_id), embedded_app=embedded_forge_app
+        return await _session_member_call(
+            request, session_id, principal, method="GET", suffix="/people", expect_list=True
         )
-        response = await _request_remote(
-            instance,
+
+    @router.get("/sessions/{session_id}/participants")
+    async def list_session_participants(
+        request: Request,
+        session_id: UUID,
+        principal: Principal = Depends(extract_principal),
+    ) -> Response:
+        """Everyone with a grant in this chat (the owner, admins and participants)."""
+        return await _session_member_call(
             request,
+            session_id,
+            principal,
             method="GET",
-            path=f"/sessions/{session_id}/people",
-            embedded_app=embedded_forge_app,
+            suffix="/participants",
+            expect_list=True,
         )
-        _ensure_remote_success(response)
-        payload = _remote_json(response)
-        if not isinstance(payload, list):
-            raise HTTPException(502, "Unexpected Forge people response")
-        return payload
+
+    @router.get("/sessions/{session_id}/participants/me")
+    async def my_session_participation(
+        request: Request,
+        session_id: UUID,
+        principal: Principal = Depends(extract_principal),
+    ) -> Response:
+        """The caller's own standing in the chat: room role and grant."""
+        return await _session_member_call(
+            request, session_id, principal, method="GET", suffix="/participants/me"
+        )
+
+    @router.post("/sessions/{session_id}/participants", status_code=status.HTTP_201_CREATED)
+    async def invite_session_participant(
+        request: Request,
+        session_id: UUID,
+        body: dict[str, Any] = Body(default_factory=dict),
+        principal: Principal = Depends(extract_principal),
+    ) -> Response:
+        """Invite a person of the org into this chat (the owner or an admin)."""
+        return await _session_member_call(
+            request, session_id, principal, method="POST", suffix="/participants", body=body
+        )
+
+    @router.post("/sessions/{session_id}/participants/accept")
+    async def accept_session_invitation(
+        request: Request,
+        session_id: UUID,
+        principal: Principal = Depends(extract_principal),
+    ) -> Response:
+        """The invitee joins the chat."""
+        return await _session_member_call(
+            request, session_id, principal, method="POST", suffix="/participants/accept"
+        )
+
+    @router.delete(
+        "/sessions/{session_id}/participants/{user_id}", status_code=status.HTTP_204_NO_CONTENT
+    )
+    async def remove_session_participant(
+        request: Request,
+        session_id: UUID,
+        user_id: str,
+        principal: Principal = Depends(extract_principal),
+    ) -> Response:
+        """Remove someone from the chat; an invitee declines and a participant leaves."""
+        return await _session_member_call(
+            request,
+            session_id,
+            principal,
+            method="DELETE",
+            suffix=f"/participants/{quote(user_id, safe='')}",
+        )
+
+    @router.get("/sessions/{session_id}/participant-candidates")
+    async def session_participant_candidates(
+        request: Request,
+        session_id: UUID,
+        q: str = Query(""),
+        principal: Principal = Depends(extract_principal),
+    ) -> Response:
+        """People of the org who could be invited into this chat (the owner or an admin)."""
+        return await _session_member_call(
+            request,
+            session_id,
+            principal,
+            method="GET",
+            suffix="/participant-candidates",
+            params=[("q", q)],
+            expect_list=True,
+        )
 
     @router.post("/sessions/{session_id}/person-questions")
     async def ask_session_person(
