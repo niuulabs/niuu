@@ -28,6 +28,10 @@ import { BUTTON, CONTROL } from './ProjectMembers';
 /** The choices for where one kind of event goes, in the order they are offered. */
 type Destination = TeamDeliverTo | 'none';
 
+const ROUTE_ROW = 'niuu:flex niuu:flex-wrap niuu:items-center niuu:gap-x-3 niuu:gap-y-1';
+const ROUTE_LABEL = 'niuu:min-w-0 niuu:flex-[1_1_9rem]';
+const ROUTE_TARGET = 'niuu:min-w-0 niuu:flex-[1_1_10rem]';
+
 const ROUTE_ROWS: ReadonlyArray<{
   event: TeamRouteEvent;
   label: string;
@@ -125,20 +129,29 @@ function RouteGrid({
 
   return (
     <div
-      className="niuu:grid niuu:grid-cols-[minmax(0,1fr)_minmax(0,1fr)] niuu:items-center niuu:gap-x-3 niuu:gap-y-2 niuu:pl-10"
+      className="niuu:flex niuu:flex-col niuu:gap-2 niuu:pl-10"
       data-testid={`project-integration-routes-${connection.id}`}
     >
-      <span className="niuu:text-[11px] niuu:uppercase niuu:text-text-muted">When</span>
-      <span className="niuu:text-[11px] niuu:uppercase niuu:text-text-muted">Send to</span>
+      {/* Each row wraps the select under its label when the column is narrow. */}
+      <div className={ROUTE_ROW}>
+        <span className={`${ROUTE_LABEL} niuu:text-[11px] niuu:uppercase niuu:text-text-muted`}>
+          When
+        </span>
+        <span className={`${ROUTE_TARGET} niuu:text-[11px] niuu:uppercase niuu:text-text-muted`}>
+          Send to
+        </span>
+      </div>
       {ROUTE_ROWS.map((row) => {
         const current: Destination =
           routeFor(routes, connection.id, row.event)?.deliver_to ?? 'none';
         return (
-          <div key={row.event} className="niuu:contents">
-            <span className="niuu:text-sm niuu:text-text-primary">{row.label}</span>
+          <div key={row.event} className={ROUTE_ROW}>
+            <span className={`${ROUTE_LABEL} niuu:text-sm niuu:text-text-primary`}>
+              {row.label}
+            </span>
             <select
               aria-label={`Send ${row.label} to`}
-              className={CONTROL}
+              className={`${CONTROL} ${ROUTE_TARGET}`}
               value={current}
               disabled={!manage || setRoute.isPending}
               onChange={(event) => choose(row.event, event.target.value as Destination)}
@@ -193,7 +206,7 @@ function ConnectionRow({
           {name.slice(0, 1).toUpperCase()}
         </span>
         <div className="niuu:flex niuu:min-w-0 niuu:flex-1 niuu:flex-col">
-          <span className="niuu:flex niuu:items-center niuu:gap-2 niuu:text-sm niuu:text-text-primary">
+          <span className="niuu:flex niuu:flex-wrap niuu:items-center niuu:gap-2 niuu:text-sm niuu:text-text-primary">
             {name}
             <span className="niuu:rounded-full niuu:bg-bg-tertiary niuu:px-2 niuu:py-0.5 niuu:text-[11px] niuu:text-text-secondary">
               {connection.enabled ? 'Connected' : 'Paused'}
@@ -206,7 +219,7 @@ function ConnectionRow({
         {manage ? (
           <button
             type="button"
-            className={BUTTON}
+            className={`${BUTTON} niuu:shrink-0`}
             aria-label={`Remove ${name}`}
             disabled={remove.isPending}
             onClick={() => remove.mutate(connection.id)}

@@ -1,7 +1,7 @@
 """REST routes for a project's team integrations (``/projects/{id}/integrations``).
 
 Every member reads; project owners connect, route and remove. A provider's app
-install (Slack, Linear) starts at ``POST /api/v1/integrations/oauth/{slug}/authorize-team``;
+install (Slack, Linear) starts at ``POST /api/v1/forge/integrations/oauth/{slug}/authorize-team``;
 a service account (Jira) connects here with its client credentials.
 """
 

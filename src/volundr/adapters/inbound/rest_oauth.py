@@ -313,7 +313,6 @@ def _build_oauth_router(
             request_base_url=str(request.base_url),
         )
 
-    @router.post("/{slug}/authorize-team", response_model=AuthorizeResponse)
     async def authorize_team(
         slug: str,
         data: TeamAuthorizeRequest,
@@ -321,11 +320,7 @@ def _build_oauth_router(
         principal: Principal = Depends(extract_principal),
     ) -> AuthorizeResponse:
         """Start a provider's app install for a project's team; project owners only."""
-        if team_integrations is None:
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="Team integrations need projects (projects.enabled) on this Forge",
-            )
+        assert team_integrations is not None
         with team_http_errors():
             await team_integrations.owner_project(data.project_id, principal)
             team_integrations.definition(slug)
@@ -341,6 +336,14 @@ def _build_oauth_router(
                 "email": principal.email,
                 "roles": list(principal.roles),
             },
+        )
+
+    if team_integrations is not None:
+        router.add_api_route(
+            "/{slug}/authorize-team",
+            authorize_team,
+            methods=["POST"],
+            response_model=AuthorizeResponse,
         )
 
     @router.get("/callback")
@@ -573,7 +576,6 @@ def create_oauth_router(
     integration_repo: IntegrationRepository,
     oauth_clients: OAuthClientRegistry | None = None,
     credential_lock: CredentialRefreshLockPort | None = None,
-    team_integrations: ProjectIntegrationService | None = None,
 ) -> APIRouter:
     """Create the canonical shared OAuth router."""
     access_logger = logging.getLogger("uvicorn.access")
@@ -586,7 +588,6 @@ def create_oauth_router(
         integration_repo,
         oauth_clients=oauth_clients,
         prefix="/api/v1/integrations/oauth",
-        team_integrations=team_integrations,
     )
     from volundr.adapters.inbound.rest_mcp_oauth import create_mcp_oauth_router
 
@@ -596,6 +597,31 @@ def create_oauth_router(
     return router
 
 
+#: Where Forge runs a project team's app installs: Forge owns projects, so a team install
+#: starts and returns here whichever host serves the shared OAuth routes.
+TEAM_OAUTH_PREFIX = "/api/v1/forge/integrations/oauth"
+
+
+def create_team_oauth_router(
+    oauth_config: OAuthConfig,
+    integration_registry: IntegrationRegistry,
+    credential_store: CredentialStorePort,
+    integration_repo: IntegrationRepository,
+    team_integrations: ProjectIntegrationService,
+    oauth_clients: OAuthClientRegistry | None = None,
+) -> APIRouter:
+    """Forge's OAuth routes for team installs (``{slug}/authorize-team`` and ``callback``)."""
+    return _build_oauth_router(
+        oauth_config,
+        integration_registry,
+        credential_store,
+        integration_repo,
+        oauth_clients=oauth_clients,
+        prefix=TEAM_OAUTH_PREFIX,
+        team_integrations=team_integrations,
+    )
+
+
 def create_canonical_oauth_router(
     oauth_config: OAuthConfig,
     integration_registry: IntegrationRegistry,
@@ -603,7 +629,6 @@ def create_canonical_oauth_router(
     integration_repo: IntegrationRepository,
     oauth_clients: OAuthClientRegistry | None = None,
     credential_lock: CredentialRefreshLockPort | None = None,
-    team_integrations: ProjectIntegrationService | None = None,
 ) -> APIRouter:
     """Backward-compatible alias for the canonical shared OAuth router."""
     return create_oauth_router(
@@ -613,5 +638,4 @@ def create_canonical_oauth_router(
         integration_repo,
         oauth_clients,
         credential_lock,
-        team_integrations,
     )

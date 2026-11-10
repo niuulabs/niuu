@@ -2124,9 +2124,21 @@ def create_app(
                     integration_repo=integration_repo,
                     oauth_clients=oauth_clients,
                     credential_lock=PostgresCredentialRefreshLock(pool),
-                    team_integrations=project_integration_service,
                 )
             )
+            if project_integration_service is not None:
+                from volundr.adapters.inbound.rest_oauth import create_team_oauth_router
+
+                app.include_router(
+                    create_team_oauth_router(
+                        oauth_config=settings.oauth,
+                        integration_registry=integration_registry,
+                        credential_store=credential_store,
+                        integration_repo=integration_repo,
+                        team_integrations=project_integration_service,
+                        oauth_clients=oauth_clients,
+                    )
+                )
             app.include_router(create_canonical_tracker_router(tracker_service=tracker_service))
             app.include_router(create_canonical_issues_router(integration_repo, tracker_factory))
 

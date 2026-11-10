@@ -181,6 +181,26 @@ _WS_FORBIDDEN = 4403
 _WS_REASON_CHARS = 120
 
 
+#: Read-only collections under a project's team integrations.
+_TEAM_INTEGRATION_LISTS = frozenset({"catalog", "routes", "usage"})
+
+
+def _team_integration_operation(method: str, pieces: list[str]) -> bool:
+    """Whether ``method`` on ``/projects/{id}/<pieces>`` is a team-integrations route."""
+    if not pieces or pieces[0] != "integrations":
+        return False
+    match pieces[1:]:
+        case []:
+            return method in ("GET", "POST")
+        case [name] if name in _TEAM_INTEGRATION_LISTS:
+            return method == "GET"
+        case [connection_id] if connection_id:
+            return method in ("PATCH", "DELETE")
+        case ["routes", event] if event:
+            return method in ("PUT", "DELETE")
+    return False
+
+
 def _is_session_principal(principal: Principal) -> bool:
     return principal.token_use == FORGE_SESSION_TOKEN_USE
 
@@ -2058,6 +2078,7 @@ def create_volundr_router(
     @router.patch("/projects/{project_id}")
     @router.get("/projects/{project_id}/{operation:path}")
     @router.post("/projects/{project_id}/{operation:path}")
+    @router.put("/projects/{project_id}/{operation:path}")
     @router.patch("/projects/{project_id}/{operation:path}")
     @router.delete("/projects/{project_id}/{operation:path}")
     async def project_operation(
@@ -2090,6 +2111,7 @@ def create_volundr_router(
             (request.method, operation) in allowed
             or (request.method == "POST" and is_ack)
             or (request.method in ("PATCH", "DELETE") and is_member)
+            or _team_integration_operation(request.method, pieces)
         )
         if not known:
             raise HTTPException(404, "Unknown project operation")
@@ -2882,6 +2904,56 @@ def create_volundr_router(
         )
         _ensure_remote_success(response)
         return response.json()
+
+    async def _team_oauth_on_this_node(
+        request: Request, method: str, path: str, headers: dict[str, str]
+    ) -> Response:
+        """Forward a team app install to this node's own Forge, where its state lives.
+
+        The install starts and returns on the same Forge (the browser's callback carries
+        no identity to route by), so a node without an embedded Forge refuses it.
+        """
+        if embedded_forge_app is None:
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=(
+                    "Team installs run on the Forge that holds the project; this node has "
+                    "no Forge of its own, so install from the project's home node"
+                ),
+            )
+        transport = httpx.ASGITransport(app=embedded_forge_app)
+        # The browser's own origin, so Forge builds the provider's redirect back to it.
+        origin = str(request.base_url).rstrip("/")
+        async with httpx.AsyncClient(transport=transport, base_url=origin) as c:
+            upstream = await c.request(
+                method,
+                f"/api/v1/forge{path}",
+                params=_query_params(request),
+                content=await request.body(),
+                headers={**headers, "content-type": request.headers.get("content-type", "")},
+            )
+        return Response(
+            content=upstream.content,
+            status_code=upstream.status_code,
+            media_type=upstream.headers.get("content-type"),
+        )
+
+    @router.post("/integrations/oauth/{slug}/authorize-team")
+    async def authorize_team_install(
+        request: Request, slug: str, principal: Principal = Depends(extract_principal)
+    ) -> Response:
+        """Start a project team's app install (project owners only, checked by Forge)."""
+        return await _team_oauth_on_this_node(
+            request,
+            "POST",
+            f"/integrations/oauth/{slug}/authorize-team",
+            _forward_local_headers(request),
+        )
+
+    @router.get("/integrations/oauth/callback")
+    async def team_install_callback(request: Request) -> Response:
+        """The provider's redirect back from a team install; Forge checks the state."""
+        return await _team_oauth_on_this_node(request, "GET", "/integrations/oauth/callback", {})
 
     @router.get("/session-runtimes")
     async def get_session_runtimes(

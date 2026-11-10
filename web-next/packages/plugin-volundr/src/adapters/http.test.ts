@@ -3115,10 +3115,10 @@ describe('Forge project grouping contract', () => {
     await service.connectTeamServiceAccount(project, connect);
     expect(client.post).toHaveBeenLastCalledWith('/projects/lexi/integrations', connect);
     await service.startTeamOAuth(project, 'slack', { channel: '#eng' });
-    expect(getDerivedClient('http://localhost:8080/api/v1').post).toHaveBeenCalledWith(
-      '/integrations/oauth/slack/authorize-team',
-      { project_id: 'lexi', config: { channel: '#eng' } },
-    );
+    expect(client.post).toHaveBeenLastCalledWith('/integrations/oauth/slack/authorize-team', {
+      project_id: 'lexi',
+      config: { channel: '#eng' },
+    });
     await service.updateTeamIntegration(project, 'c 1', { enabled: false });
     expect(client.patch).toHaveBeenLastCalledWith('/projects/lexi/integrations/c%201', {
       enabled: false,

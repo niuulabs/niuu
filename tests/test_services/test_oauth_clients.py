@@ -202,3 +202,23 @@ async def test_managed_store_provisions_registration_and_restart(store):
     assert (await store.get_value("system", "oauth-clients", "gitlab--work"))[
         "client_id"
     ] == "client"
+
+
+def test_team_app_installs_take_a_registered_application(store) -> None:
+    registry = _registry(store)
+    # Slack and Linear install as the team's app; their application can be registered.
+    assert registry.supports("slack") is True
+    assert registry.supports("linear") is True
+    # Jira's team install is a service account, but its people still sign in through an app.
+    assert registry.supports("jira") is True
+    assert registry.supports("telegram") is False
+
+
+async def test_a_slack_application_is_registered_with_its_secret(store) -> None:
+    registry = _registry(store)
+    client = await registry.register("slack", "cid", "secret", base_url="http://127.0.0.1:8099")
+    assert client.endpoint("https://slack.com/api/oauth.v2.access") == (
+        "http://127.0.0.1:8099/api/oauth.v2.access"
+    )
+    with pytest.raises(OAuthClientError, match="secret"):
+        await registry.register("slack", "cid", "")
