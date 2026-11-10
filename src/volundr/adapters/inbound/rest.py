@@ -1848,7 +1848,7 @@ class SessionStatusResponse(BaseModel):
 class SessionRoomInfo(BaseModel):
     """The caller's own durable grant on a session they participate in."""
 
-    role: str = Field(description="observer/teacher/debugger/approver")
+    role: str = Field(description="viewer/approver")
     participant_status: str = Field(description="invited/active/revoked")
     expires_at: str | None = Field(default=None, description="ISO 8601 grant expiry, if any")
 

@@ -1481,11 +1481,9 @@ class _RoomJoinRequest(BaseModel):
     participant_id: str
     display_name: str = ""
     environment_id: str
-    role: str = "observer"
     room_id: str = ""
     capabilities: list[str] = Field(default_factory=list)
     surfaces: list[str] = Field(default_factory=lambda: ["skuld.room"])
-    environment_action_authorities: list[str] = Field(default_factory=list)
     participant_type: str = "human"
     session_id: str = ""
     subscribes_to: list[str] = Field(default_factory=list)
@@ -1514,13 +1512,6 @@ class _RoomCloseRequest(BaseModel):
     room_id: str
     reason: str = "closed"
     summary: str = ""
-
-
-class _RoomCapabilityRequest(BaseModel):
-    """Request body for verifying a participant control capability."""
-
-    participant_id: str
-    capability: str
 
 
 @app.post("/api/message", dependencies=_LOOPBACK_GUARD)
@@ -1778,11 +1769,9 @@ async def join_room(body: _RoomJoinRequest) -> dict:
             participant_id=body.participant_id,
             display_name=body.display_name,
             environment_id=body.environment_id,
-            role=body.role,
             room_id=body.room_id,
             capabilities=body.capabilities or None,
             surfaces=body.surfaces or None,
-            environment_action_authorities=body.environment_action_authorities,
             participant_type=body.participant_type,
             session_id=body.session_id,
             subscribes_to=body.subscribes_to or None,
@@ -1846,20 +1835,6 @@ async def close_room(body: _RoomCloseRequest) -> dict:
     except RuntimeError as exc:
         raise HTTPException(503, str(exc))
     return {"status": "closed", **closed}
-
-
-@app.post("/api/room/require-capability")
-async def require_room_capability(body: _RoomCapabilityRequest) -> dict:
-    """Verify a joined participant holds a control capability (403 otherwise)."""
-    try:
-        broker.require_room_capability(body.participant_id, body.capability)
-    except RuntimeError as exc:
-        raise HTTPException(503, str(exc))
-    except LookupError as exc:
-        raise HTTPException(404, str(exc))
-    except PermissionError as exc:
-        raise HTTPException(403, str(exc))
-    return {"status": "ok", "participant_id": body.participant_id, "capability": body.capability}
 
 
 @app.get("/api/room/participants")

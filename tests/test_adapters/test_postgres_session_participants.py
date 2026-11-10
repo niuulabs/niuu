@@ -16,7 +16,7 @@ def _row(**overrides) -> dict:
         "session_id": overrides.get("session_id", uuid4()),
         "user_id": "invitee",
         "tenant_id": "acme",
-        "role": "observer",
+        "role": "viewer",
         "status": "invited",
         "invited_by": "owner",
         "created_at": now,
@@ -38,11 +38,11 @@ async def test_invite_upserts_and_always_resets_status_to_invited():
     repo, pool = adapter()
     sid = uuid4()
     pool.fetchrow.return_value = _row(session_id=sid)
-    result = await repo.invite(sid, "invitee", "acme", ParticipantRole.OBSERVER, "owner", None)
+    result = await repo.invite(sid, "invitee", "acme", ParticipantRole.VIEWER, "owner", None)
     assert result.status.value == "invited"
     sql, *params = pool.fetchrow.call_args.args
     assert "ON CONFLICT (session_id, user_id) DO UPDATE" in sql
-    assert params == [sid, "invitee", "acme", "observer", "owner", None]
+    assert params == [sid, "invitee", "acme", "viewer", "owner", None]
 
 
 async def test_accept_only_matches_invited_rows():

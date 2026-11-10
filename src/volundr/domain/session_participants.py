@@ -7,11 +7,8 @@ invitee accepts, and a grant can expire. Authorization never trusts the raw
 is inactive (see ``SessionParticipant.is_active``), and Cedar policy only ever
 sees the *computed* active/unexpired sets built by ``compute_room_grants``.
 
-All four roles read the room and speak in it by default; ``approver`` additionally
-answers tool-permission prompts. ``teacher`` and
-``debugger`` exist as distinct invitation intents but carry the same baseline
-grant as ``observer`` in this version — there is no third permission tier for
-them yet.
+Both roles read the room and speak in it; ``approver`` additionally
+answers tool-permission prompts.
 """
 
 from __future__ import annotations
@@ -25,9 +22,7 @@ from pydantic import BaseModel
 
 
 class ParticipantRole(StrEnum):
-    OBSERVER = "observer"
-    TEACHER = "teacher"
-    DEBUGGER = "debugger"
+    VIEWER = "viewer"
     APPROVER = "approver"
 
 

@@ -76,7 +76,7 @@ async def _owned_and_shared_sessions(session_service, participant_service):
 
     owner_principal = Principal("owner", "", "acme", ["volundr:developer"])
     await participant_service.invite(
-        shared, owner_principal, user_id="invitee", role=ParticipantRole.OBSERVER, expires_at=None
+        shared, owner_principal, user_id="invitee", role=ParticipantRole.VIEWER, expires_at=None
     )
     invitee_principal = Principal("invitee", "", "acme", ["volundr:developer"])
     await participant_service.accept(shared, invitee_principal)
@@ -100,7 +100,7 @@ def test_participant_session_renders_as_room_summary_in_the_list(wired_app):
     summary = by_id[str(shared.id)]
     assert summary["kind"] == "room_summary"
     assert summary["name"] == "shared-room"
-    assert summary["room"]["role"] == "observer"
+    assert summary["room"]["role"] == "viewer"
     assert summary["room"]["participant_status"] == "active"
     # Never the owner-only detail a full SessionResponse would carry.
     assert "pod_name" not in summary
@@ -148,7 +148,7 @@ def test_room_endpoint_works_for_a_participant(wired_app):
     assert response.status_code == 200
     body = response.json()
     assert body["kind"] == "room_summary"
-    assert body["room"]["role"] == "observer"
+    assert body["room"]["role"] == "viewer"
 
 
 def test_room_endpoint_403s_an_unrelated_tenant_developer(wired_app):

@@ -4419,11 +4419,9 @@ class Broker(
         participant_id: str,
         display_name: str,
         environment_id: str,
-        role: str = "observer",
         room_id: str = "",
         capabilities: list[str] | None = None,
         surfaces: list[str] | None = None,
-        environment_action_authorities: list[str] | None = None,
         participant_type: str = "human",
         session_id: str = "",
         subscribes_to: list[str] | None = None,
@@ -4436,11 +4434,9 @@ class Broker(
             participant_id,
             display_name=display_name,
             environment_id=environment_id,
-            role=role,
             room_id=room_id,
             capabilities=capabilities,
             surfaces=surfaces,
-            environment_action_authorities=environment_action_authorities,
             participant_type=participant_type,
             session_id=session_id,
             subscribes_to=subscribes_to,
@@ -4456,7 +4452,6 @@ class Broker(
                     "member": {
                         "display_name": display_name,
                         "environment_id": environment_id,
-                        "role": role,
                         "participant_type": participant_type,
                         "session_id": session_id,
                         "subscribes_to": subscribes_to or [],
@@ -4536,12 +4531,6 @@ class Broker(
             reason=reason,
             summary=summary,
         )
-
-    def require_room_capability(self, participant_id: str, capability: str) -> None:
-        """Raise when a room participant cannot perform a control action."""
-        if self._room_bridge is None:
-            raise RuntimeError("Room mode is not enabled")
-        self._room_bridge.require_participant_capability(participant_id, capability)
 
     async def _send_explicit_human_message_to_transport(self, content: str) -> None:
         """Deliver an explicit human room message to Skuld's own transport."""
@@ -4715,7 +4704,10 @@ class Broker(
                 continue
             participant_id = frame.payload["participant_id"]
             if frame.payload["joined"]:
-                self._restored_room_members[participant_id] = frame.payload["member"]
+                # Seats logged before room roles were removed still carry a "role";
+                # joining no longer takes one, and it never granted anything.
+                member = {k: v for k, v in frame.payload["member"].items() if k != "role"}
+                self._restored_room_members[participant_id] = member
             else:
                 self._restored_room_members.pop(participant_id, None)
 
@@ -4787,7 +4779,6 @@ from skuld.broker_api import (  # noqa: E402, F401
     _RoomHeartbeatRequest,
     _RoomLeaveRequest,
     _RoomCloseRequest,
-    _RoomCapabilityRequest,
     send_message_to_session,
     send_room_message,
     send_directed_room_message,
@@ -4796,7 +4787,6 @@ from skuld.broker_api import (  # noqa: E402, F401
     heartbeat_room,
     leave_room,
     close_room,
-    require_room_capability,
     get_room_participants,
     get_communication_routes,
     _TokenRedactFilter,

@@ -54,7 +54,6 @@ class TestParticipant:
         assert p.attention_state == "available"
         assert p.heartbeat_ttl_s == 90.0
         assert p.last_heartbeat_at is None
-        assert p.authority_role == ""
         assert p.room_ids == ()
 
     def test_environment_presence_fields_can_be_set(self):
@@ -71,7 +70,6 @@ class TestParticipant:
             attention_state="available",
             heartbeat_ttl_s=30.0,
             last_heartbeat_at=123.0,
-            authority_role="autonomous",
             room_ids=("room-1",),
         )
 
