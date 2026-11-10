@@ -90,6 +90,8 @@ import {
 
 const MIN_ZOOM = 0.3;
 const MAX_ZOOM = 3.0;
+/** A viewer framing a whole workflow in a short or narrow panel may go below the editor's floor. */
+const VIEWER_MIN_ZOOM = 0.1;
 
 // ---------------------------------------------------------------------------
 // Colour palette (CSS variables)
@@ -2255,7 +2257,7 @@ export function GraphView({
         const scale = Math.min(
           scaleLimit,
           Math.max(
-            MIN_ZOOM,
+            VIEWER_MIN_ZOOM,
             Math.min(
               rect.width / (drawn.width + margin * 2),
               rect.height / (drawn.height + margin * 2),
