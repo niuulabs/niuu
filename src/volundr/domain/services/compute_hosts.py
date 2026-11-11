@@ -258,7 +258,7 @@ class ComputeHostService:
         tags: list[str],
         slots: int | None,
     ) -> MintedHostCode:
-        if "volundr:admin" not in principal.roles:
+        if not self.can_manage(principal):
             raise ComputeHostAccessError("Only admins may add hosts")
         chosen = self._execution(execution)
         if chosen.refusal is not None:
@@ -809,8 +809,13 @@ class ComputeHostService:
         return connector
 
     @staticmethod
-    def _require_admin(principal: Principal) -> None:
-        if "volundr:admin" not in principal.roles:
+    def can_manage(principal: Principal) -> bool:
+        """Whether the principal may change hosts: admins only. Reading the list is open."""
+        return "volundr:admin" in principal.roles
+
+    @classmethod
+    def _require_admin(cls, principal: Principal) -> None:
+        if not cls.can_manage(principal):
             raise ComputeHostAccessError("Only admins may manage hosts")
 
     @staticmethod

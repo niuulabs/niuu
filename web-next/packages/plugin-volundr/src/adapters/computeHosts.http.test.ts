@@ -45,6 +45,7 @@ const hostPayload = {
 
 const listPayload = {
   pool_id: 'valhalla-hosts',
+  can_manage: true,
   hosts: [hostPayload],
   summary: {
     hosts: 1,
@@ -126,6 +127,44 @@ describe('compute hosts over HTTP', () => {
     });
   });
 
+  it('reads the read-only answer a non-manager gets, without the operator-only fields', async () => {
+    const client = makeClient();
+    const {
+      suggested_slots: _suggested,
+      findings: _findings,
+      host_key_fingerprint: _fingerprint,
+      registered_by: _registeredBy,
+      ...visible
+    } = hostPayload;
+    client.get.mockResolvedValue({
+      pool_id: 'valhalla-hosts',
+      can_manage: false,
+      hosts: [
+        {
+          ...visible,
+          connection: { kind: 'direct_ssh', connected: true, since: null },
+          sessions: [{ slot: 0, state: 'busy' }],
+        },
+      ],
+      summary: listPayload.summary,
+    });
+    const overview = await buildVolundrHttpAdapter(client).getComputeHosts('forge');
+    expect(overview).toMatchObject({
+      canManage: false,
+      connectors: [],
+      runtimes: [],
+      pairingCodes: [],
+    });
+    expect(overview?.hosts[0]).toMatchObject({
+      connection: { kind: 'direct_ssh', target: '', lastError: null },
+      sessions: [{ slot: 0, sessionId: null, state: 'busy' }],
+      suggestedSlots: null,
+      findings: [],
+      hostKeyFingerprint: null,
+      registeredBy: null,
+    });
+  });
+
   it('reads a host with no facts yet as unmeasured', async () => {
     const client = makeClient();
     client.get.mockResolvedValue({
@@ -153,6 +192,17 @@ describe('compute hosts over HTTP', () => {
   it('refuses an answer that is not a host list', async () => {
     const client = makeClient();
     client.get.mockResolvedValue({ pool_id: 'p' });
+    await expect(buildVolundrHttpAdapter(client).getComputeHosts('forge')).rejects.toThrow(
+      'Invalid compute hosts from forge',
+    );
+    // A Forge that predates can_manage, and a manager's answer missing its pairing codes.
+    const { can_manage: _canManage, ...withoutCanManage } = listPayload;
+    client.get.mockResolvedValue(withoutCanManage);
+    await expect(buildVolundrHttpAdapter(client).getComputeHosts('forge')).rejects.toThrow(
+      'Invalid compute hosts from forge',
+    );
+    const { pairing_codes: _codes, ...withoutCodes } = listPayload;
+    client.get.mockResolvedValue(withoutCodes);
     await expect(buildVolundrHttpAdapter(client).getComputeHosts('forge')).rejects.toThrow(
       'Invalid compute hosts from forge',
     );

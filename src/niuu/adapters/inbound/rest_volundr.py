@@ -3019,10 +3019,12 @@ def create_volundr_router(
         method: str,
         path: str,
     ) -> Response:
-        """Pass one compute-host admin call to one Forge, answer and status untouched.
+        """Pass one compute-host call to one Forge, answer and status untouched.
 
-        The Forge owns the authorization (``volundr:admin``) and the answers, 4xx bodies
-        included, so the console shows the Forge's own reason.
+        Which Forge the caller may address is the node's visibility
+        (``_resolve_target_instance``); what they may do there is the Forge's own: the
+        list is open to anyone who reaches it, every change needs ``volundr:admin``, and
+        4xx bodies pass through so the console shows the Forge's own reason.
         """
         instance = await _resolve_target_instance(service, principal, instance_id)
         body = await request.body()
@@ -3054,7 +3056,11 @@ def create_volundr_router(
         instance_id: str | None = Query(default=None),
         principal: Principal = Depends(extract_principal),
     ) -> Response:
-        """The Forge's registered hosts, pool summary, connectors, runtimes and pairing codes."""
+        """The Forge's registered hosts and pool summary, for anyone who can see the node.
+
+        A caller who may manage hosts also gets the connectors, runtimes and pairing codes;
+        ``can_manage`` says which view this is.
+        """
         return await _proxy_compute_hosts(
             request, principal, instance_id, method="GET", path="/compute/hosts"
         )

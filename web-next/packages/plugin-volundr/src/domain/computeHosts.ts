@@ -34,12 +34,14 @@ const SECONDS_PER_MINUTE = 60;
 
 export interface HostSession {
   slot: number;
-  sessionId: string;
+  /** Null when the reader may not manage hosts: other people's session ids stay out. */
+  sessionId: string | null;
   state: HostSessionState;
 }
 
 export interface HostConnection {
   kind: string;
+  /** The host's address; empty when the reader may not manage hosts. */
   target: string;
   connected: boolean;
   since: string | null;
@@ -83,9 +85,11 @@ export interface ComputeHost {
   facts: HostFacts;
   suggestedSlots: SuggestedSlots | null;
   findings: string[];
-  hostKeyFingerprint: string;
+  /** Null when the reader may not manage hosts. */
+  hostKeyFingerprint: string | null;
   registeredAt: string;
-  registeredBy: string;
+  /** Null when the reader may not manage hosts. */
+  registeredBy: string | null;
   lastCheckedAt: string | null;
 }
 
@@ -141,6 +145,11 @@ export interface PairingCode {
 
 export interface ComputeHostsOverview {
   poolId: string;
+  /**
+   * Whether the reader may change hosts. When false the page is read-only and Forge has
+   * left the connectors, runtimes and pairing codes out of the answer.
+   */
+  canManage: boolean;
   hosts: ComputeHost[];
   summary: ComputeSummary;
   connectors: ComputeConnector[];
