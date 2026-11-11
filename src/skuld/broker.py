@@ -565,8 +565,10 @@ class Broker(
         self.preview_forwarder: PreviewForwarder | None = None
         self._channels = ChannelRegistry()
         self._http_client: httpx.AsyncClient | None = None
-        self._http_client_jwt: str | None = None  # JWT used to create _http_client
         self._http_client_auth_header: str = ""
+        # Carries the session credential on this session's own record (log, activity,
+        # usage, message claims); see EventLogMixin._get_session_http_client.
+        self._session_http_client: httpx.AsyncClient | None = None
         self._workload_jwt: str | None = None
         self._workload_jwt_expires_at: float = 0.0
         self._sleipnir_publisher: SleipnirPublisher = sleipnir_publisher or InProcessBus()
@@ -741,10 +743,6 @@ class Broker(
         # first forwarded user message; None when disabled.
         self._reflex_injector: Any = None
         self._reflex_initialised = False
-
-        # JWT identity state — populated on first browser WebSocket connection
-        self._user_jwt: str | None = None
-        self._user_claims: dict = {}
 
     @staticmethod
     def _parse_trace_uuid(value: object) -> uuid.UUID:
@@ -3479,7 +3477,7 @@ class Broker(
                     )
                     token = str(uuid.uuid4())
                     claim = await claim_message(
-                        await self._get_http_client(),
+                        await self._get_session_http_client(),
                         session_id=self.session_id,
                         request_id=request_id,
                         content=content_str,
@@ -4036,7 +4034,7 @@ class Broker(
         if settle_claim and token and status != "pending":
             try:
                 await settle_message(
-                    await self._get_http_client(),
+                    await self._get_session_http_client(),
                     session_id=self.session_id,
                     request_id=request_id,
                     token=token,
@@ -4811,7 +4809,7 @@ class Broker(
             return
         try:
             durable = await fetch_durable_history(
-                await self._get_http_client(),
+                await self._get_session_http_client(),
                 session_id=self.session_id,
                 path=self.FORGE_LOG_PATH_TEMPLATE.format(sid=self.session_id),
                 timeout_seconds=self._settings.history_hydration_timeout_seconds,

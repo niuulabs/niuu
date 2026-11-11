@@ -38,6 +38,7 @@ from volundr.adapters.inbound.rest_session_log import create_session_log_router
 from volundr.adapters.inbound.rest_session_people import create_session_people_router
 from volundr.adapters.outbound.identity import AllowAllIdentityAdapter
 from volundr.config import ForgeMcpHttpConfig
+from volundr.domain.message_delivery import MessageDelivery
 from volundr.domain.models import Session, SessionLogEntry, SessionStatus, User
 from volundr.domain.notifications import NotificationSinkInfo
 from volundr.domain.ports import SessionEventLogRepository
@@ -88,11 +89,15 @@ class InMemoryLog(SessionEventLogRepository):
 
 
 class InMemoryDeliveries:
-    async def claim(self, *args: Any) -> Any:
-        raise AssertionError("not used")
+    def __init__(self) -> None:
+        self.claimed: list[tuple[UUID, str]] = []
 
-    async def settle(self, *args: Any) -> Any:
-        raise AssertionError("not used")
+    async def claim(self, session_id: UUID, request_id: str, *args: Any) -> Any:
+        self.claimed.append((session_id, request_id))
+        return MessageDelivery(request_id, "pending", claimed=True)
+
+    async def settle(self, session_id: UUID, request_id: str, _token: Any, status: str, *_: Any):
+        return MessageDelivery(request_id, status)
 
     async def get(self, session_id: UUID, request_id: str) -> Any:
         return None

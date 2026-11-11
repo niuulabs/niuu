@@ -186,15 +186,6 @@ class TestHandlerRejection:
         ws.accept.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_rejected_caller_does_not_overwrite_jwt(self):
-        broker = _broker(owner_id="alice")
-        broker._user_jwt = "existing-jwt"
-        token = _jwt({"sub": "mallory"})
-        ws = _fake_ws(headers={"authorization": f"Bearer {token}"})
-        await broker.handle_websocket(ws)
-        assert broker._user_jwt == "existing-jwt"
-
-    @pytest.mark.asyncio
     async def test_cli_websocket_rejected(self):
         broker = _broker(owner_id="alice")
         ws = _fake_ws(headers={"x-auth-user-id": "mallory"})

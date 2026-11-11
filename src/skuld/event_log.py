@@ -36,6 +36,19 @@ class EventLogRejectedError(RuntimeError):
     """
 
 
+class ForgeCredentialError(RuntimeError):
+    """The broker cannot obtain the Forge credential its configuration names.
+
+    ``transient`` is true only for an exchange that may answer on a retry (unreachable,
+    5xx, timeout, rate limit); a refusal, an empty token file or a malformed answer
+    never fixes itself.
+    """
+
+    def __init__(self, message: str, *, transient: bool) -> None:
+        super().__init__(message)
+        self.transient = transient
+
+
 class _EventLogHeadUnavailableError(Exception):
     """The event-log head fetch failed in a way a retry can fix (network, 5xx, 401, 408, 429)."""
 
@@ -51,42 +64,67 @@ _sanitize_log = sanitize_log
 class EventLogMixin:
     """Broker behavior for durable events, tracing, pipeline, and usage."""
 
-    def _build_auth_headers(self) -> dict[str, str]:
-        """Build authentication headers for Volundr API calls.
+    def _workload_identity_projected(self) -> bool:
+        """Whether this session was given a workload identity to exchange.
 
-        Priority:
-        1. The configured external API token when explicitly injected for external use.
-        2. Short-lived workload JWT exchanged from projected service-account token.
-        3. User JWT from WebSocket connection (fallback for dev/local).
-        4. Empty (dev mode — no auth, Volundr backend must accept).
+        The token file is projected by the deployment (a Kubernetes service-account
+        token, or a VM guest's metadata delivery); where it does not exist, no workload
+        identity is configured for this session.
+        """
+        return Path(self._settings.workload_identity.token_file).exists()
+
+    def _workload_jwt_fresh(self) -> bool:
+        return bool(self._workload_jwt) and self._workload_jwt_expires_at - 30 > time.time()
+
+    def _build_auth_headers(self) -> dict[str, str]:
+        """The broker's own Forge credential, decided by configuration alone.
+
+        1. ``external_api_token``, when set.
+        2. The workload JWT, when a workload identity is projected for this session
+           (``workload_identity.token_file`` exists). ``_refresh_workload_token`` must
+           have obtained it; it raises when it cannot.
+        3. No credential: none is configured, which only a Forge that authenticates
+           nobody (mini mode's allow-all identity) accepts.
+
+        A browser login is never borrowed: it belongs to whoever attached last, expires
+        within minutes, and would act as that person.
         """
         service_token = self._settings.external_api_token
         if service_token:
             return {"Authorization": f"Bearer {service_token}"}
 
-        if self._workload_jwt and self._workload_jwt_expires_at - 30 > time.time():
+        if self._workload_identity_projected():
+            if not self._workload_jwt_fresh():
+                raise ForgeCredentialError(
+                    "The workload JWT has not been exchanged; call _refresh_workload_token "
+                    "before building the broker's Forge headers.",
+                    transient=False,
+                )
             return {"Authorization": f"Bearer {self._workload_jwt}"}
 
-        if self._user_jwt:
-            return {"Authorization": f"Bearer {self._user_jwt}"}
-
-        logger.debug("No auth token available — requests will be unauthenticated")
         return {}
 
     async def _refresh_workload_token(self) -> None:
-        """Refresh cached workload JWT from the projected service-account token."""
-        now = time.time()
-        if self._workload_jwt and self._workload_jwt_expires_at - 30 > now:
+        """Exchange the projected workload token for a Forge JWT; raise when it cannot.
+
+        Does nothing when no workload identity is projected for this session, or while
+        the current JWT is fresh.
+        """
+        if self._settings.external_api_token or self._workload_jwt_fresh():
+            return
+        if not self._workload_identity_projected():
             return
 
         workload = self._settings.workload_identity
         token_path = Path(workload.token_file)
-        if not token_path.exists():
-            return
-
         proof = token_path.read_text(encoding="utf-8").strip()
         if not proof:
-            return
+            raise ForgeCredentialError(
+                f"workload_identity.token_file {str(token_path)!r} is empty, so this session "
+                "cannot authenticate to Forge. The deployment projects the token there; "
+                "fix the projection, or set external_api_token.",
+                transient=False,
+            )
 
         exchange_url = workload.exchange_url.strip()
         if not exchange_url:
@@ -99,33 +137,53 @@ class EventLogMixin:
                     exchange_url,
                     json={"token": proof, "audiences": audiences},
                 )
-            response.raise_for_status()
+        except httpx.HTTPError as exc:
+            raise ForgeCredentialError(
+                f"The workload token exchange at {exchange_url} is unreachable: {exc!r}",
+                transient=True,
+            ) from exc
+        if response.status_code >= 300:
+            raise ForgeCredentialError(
+                f"The workload token exchange at {exchange_url} refused this session's "
+                f"workload token ({response.status_code}): {response.text[:200]}. This "
+                "session cannot authenticate to Forge until the exchange admits it (a "
+                "subject mapping for its service account), or external_api_token is set.",
+                transient=response.status_code >= 500 or response.status_code in (408, 429),
+            )
+        try:
             payload = response.json()
-        except Exception:
-            logger.warning("Workload token exchange failed", exc_info=True)
-            return
+        except ValueError as exc:
+            raise ForgeCredentialError(
+                f"The workload token exchange at {exchange_url} answered no JSON: "
+                f"{response.text[:200]}",
+                transient=False,
+            ) from exc
 
-        token = str(payload.get("token") or "")
-        if not token:
-            logger.warning("Workload token exchange returned no token")
-            return
-
-        expires_at = payload.get("expiresAt") or payload.get("expires_at")
+        token = str(payload.get("token") or "") if isinstance(payload, dict) else ""
+        expires_at = (
+            payload.get("expiresAt") or payload.get("expires_at")
+            if isinstance(payload, dict)
+            else None
+        )
+        if not token or not isinstance(expires_at, int | float):
+            raise ForgeCredentialError(
+                f"The workload token exchange at {exchange_url} answered without a token "
+                "and its expiry (token, expiresAt).",
+                transient=False,
+            )
         self._workload_jwt = token
-        self._workload_jwt_expires_at = float(expires_at or (now + 300))
+        self._workload_jwt_expires_at = float(expires_at)
 
     async def _get_http_client(self) -> httpx.AsyncClient:
-        """Lazy-init HTTP client for Volundr API calls.
+        """The broker's Forge client, authenticated with ``_build_auth_headers``.
 
-        Recreates the client when the JWT changes so the Authorization
-        header stays current.
+        Recreated when the credential changes (a refreshed workload JWT), so the
+        Authorization header stays current.
         """
         await self._refresh_workload_token()
         headers = self._build_auth_headers()
         auth_header = headers.get("Authorization", "")
-        if self._http_client is not None and (
-            self._http_client_jwt != self._user_jwt or self._http_client_auth_header != auth_header
-        ):
+        if self._http_client is not None and self._http_client_auth_header != auth_header:
             await self._http_client.aclose()
             self._http_client = None
 
@@ -135,9 +193,28 @@ class EventLogMixin:
                 timeout=10.0,
                 headers=headers,
             )
-            self._http_client_jwt = self._user_jwt
             self._http_client_auth_header = auth_header
         return self._http_client
+
+    async def _get_session_http_client(self) -> httpx.AsyncClient:
+        """Forge client for this session's own record: its log, activity, usage and
+        message claims.
+
+        When Forge delivered this launch's session credential (``forge_mcp.token``),
+        these calls carry it: it is bound to this one session, acts as its owner, and
+        outlives any browser login. Forge's session-route allow-list admits it on
+        exactly these routes. Without one, they use the broker's own credential.
+        """
+        token = self._settings.forge_mcp.token
+        if not token:
+            return await self._get_http_client()
+        if self._session_http_client is None:
+            self._session_http_client = httpx.AsyncClient(
+                base_url=self.volundr_api_url,
+                timeout=10.0,
+                headers={"Authorization": f"Bearer {token}"},
+            )
+        return self._session_http_client
 
     def _next_sequence(self) -> int:
         """Return a monotonically increasing sequence number."""
@@ -626,6 +703,10 @@ class EventLogMixin:
                 await self._flush_event_log()
             except EventLogRejectedError:
                 raise
+            except ForgeCredentialError as exc:
+                if not exc.transient:
+                    raise
+                logger.error("event log flush has no Forge credential yet: %s", exc)
             except Exception:
                 logger.debug("event log flush iteration failed", exc_info=True)
 
@@ -652,7 +733,7 @@ class EventLogMixin:
             if not batch:
                 return
 
-            client = await self._get_http_client()
+            client = await self._get_session_http_client()
             path = self.FORGE_LOG_PATH_TEMPLATE.format(sid=self.session_id)
             try:
                 response = await client.post(path, json={"entries": batch})
@@ -738,8 +819,13 @@ class EventLogMixin:
 
     async def _fetch_event_log_head(self) -> int:
         """GET the stored head; a retryable failure raises ``_EventLogHeadUnavailableError``."""
-        client = await self._get_http_client()
         path = self.FORGE_LOG_PATH_TEMPLATE.format(sid=self.session_id) + "/head"
+        try:
+            client = await self._get_session_http_client()
+        except ForgeCredentialError as exc:
+            if exc.transient:
+                raise _EventLogHeadUnavailableError(str(exc)) from exc
+            raise EventLogRejectedError(str(exc)) from exc
         try:
             response = await client.get(path)
         except httpx.HTTPError as exc:
@@ -947,8 +1033,14 @@ class EventLogMixin:
             logger.debug("No modelUsage in result event, skipping usage report")
             return
 
-        client = await self._get_http_client()
-        url = self._settings.usage_report_path or (f"{FORGE_SESSIONS_PATH}/{self.session_id}/usage")
+        # A configured usage_report_path is another service's route: the broker's own
+        # credential. The session's own usage route takes its session credential.
+        if self._settings.usage_report_path:
+            client = await self._get_http_client()
+            url = self._settings.usage_report_path
+        else:
+            client = await self._get_session_http_client()
+            url = f"{FORGE_SESSIONS_PATH}/{self.session_id}/usage"
 
         for model_id, usage in model_usage.items():
             tokens = (

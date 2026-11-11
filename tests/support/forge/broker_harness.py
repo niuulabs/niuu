@@ -68,8 +68,8 @@ class FakeWebSocket:
         # Set by ``kill`` to make the NEXT receive raise WebSocketDisconnect,
         # unwinding handle_websocket exactly like a dropped browser socket.
         self._disconnect = False
-        # Headers are read pre-accept by _update_jwt_from_websocket AND by
-        # WebSocketLifecycleMixin._resolve_room_role. This harness models a
+        # Headers are read pre-accept by WebSocketLifecycleMixin._resolve_room_role.
+        # This harness models a
         # single trusted local browser connection (not a multi-role
         # scenario), so it defaults to the owner room role — every existing
         # harness-based test exercises owner-level actions (interrupt,

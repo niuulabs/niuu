@@ -18,8 +18,14 @@ The tool contract is in
 
 Each time Forge starts or resumes a session, it mints a credential for that launch
 and hands it to the session's broker as `SKULD__FORGE_MCP__TOKEN`. It also passes the
-grants as `SKULD__FORGE_MCP__GRANTS`. The broker uses the credential only for Forge
-MCP calls. Its own log, activity and usage reports keep the broker's own credential.
+grants as `SKULD__FORGE_MCP__GRANTS`. The broker uses the credential for Forge MCP
+calls, for durable presented-file uploads, and for its session's own record: the
+durable log (append, head and history), activity and usage reports, and the
+duplicate-send claim and settlement of each message it is handed. Every other Forge
+call (chronicles, events, trace spans) uses the broker's own credential:
+`external_api_token` when set, otherwise the workload JWT exchanged from the projected
+service-account token. A failed exchange stops those calls with the reason; the
+broker never borrows the login of whoever has the session open in a browser.
 Skuld removes the token from the environment of every agent process it starts, so the
 model never sees it. The token never appears in argv, logs or the local process state
 file.

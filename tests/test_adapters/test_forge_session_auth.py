@@ -93,6 +93,18 @@ class TestPolicyTable:
             ("POST", "/sessions/S/log", FORGE_NOTIFY_SCOPE, Binding.OWN),
             ("POST", "/sessions/S/activity", FORGE_NOTIFY_SCOPE, Binding.OWN),
             ("POST", "/sessions/S/usage", FORGE_NOTIFY_SCOPE, Binding.OWN),
+            (
+                "POST",
+                "/sessions/S/message-deliveries/r-1/claim",
+                FORGE_NOTIFY_SCOPE,
+                Binding.OWN,
+            ),
+            (
+                "POST",
+                "/sessions/S/message-deliveries/r-1/settle",
+                FORGE_NOTIFY_SCOPE,
+                Binding.OWN,
+            ),
             ("PUT", "/sessions/S/description", FORGE_NOTIFY_SCOPE, Binding.OWN),
             ("PUT", f"/sessions/S/files/presented/pf_{'a' * 32}", FORGE_NOTIFY_SCOPE, Binding.OWN),
             ("POST", "/sessions/S/secret-requests", FORGE_SESSION_SECRET_SCOPE, Binding.OWN),
@@ -144,7 +156,8 @@ class TestPolicyTable:
             ("DELETE", "/sessions/S/person-questions/q-1"),
             ("GET", "/sessions/S/person-questions/q-1/answer"),
             ("GET", "/sessions/S/files"),
-            ("POST", "/sessions/S/message-deliveries/r/claim"),
+            ("GET", "/sessions/S/message-deliveries/r/claim"),
+            ("DELETE", "/sessions/S/message-deliveries/r"),
             # Supplying or declining a secret is the owner's alone.
             ("POST", "/sessions/S/secret-requests/r-1/fulfill"),
             ("POST", "/sessions/S/secret-requests/r-1/decline"),
@@ -679,3 +692,39 @@ class TestMiddlewareOutsideHttp:
             launch_id="l",
         )
         assert issued.expires_at - int(time.time()) > 0
+
+
+class TestMessageDeliveryClaims:
+    """A broker claims and settles the messages it is handed with its own session
+    credential, which outlives any browser login, and only for its own session."""
+
+    CLAIM = {"payload_hash": "a" * 64, "claim_token": str(uuid.uuid4())}
+
+    async def test_own_session_claims_and_settles(self, forge) -> None:
+        own = await forge.session("own")
+        token = (await forge.start(own)).token
+        base = f"{PREFIX}/sessions/{own.id}/message-deliveries/r-1"
+
+        claimed = forge.client.post(f"{base}/claim", json=self.CLAIM, headers=bearer(token))
+        assert claimed.status_code == 200, claimed.text
+        assert claimed.json()["claimed"] is True
+
+        settled = forge.client.post(
+            f"{base}/settle",
+            json={"claim_token": self.CLAIM["claim_token"], "status": "delivered"},
+            headers=bearer(token),
+        )
+        assert settled.status_code == 200, settled.text
+        assert settled.json()["status"] == "delivered"
+
+    async def test_another_sessions_credential_is_refused(self, forge) -> None:
+        own = await forge.session("own")
+        peer = await forge.session("peer")
+        token = (await forge.start(own)).token
+
+        response = forge.client.post(
+            f"{PREFIX}/sessions/{peer.id}/message-deliveries/r-1/claim",
+            json=self.CLAIM,
+            headers=bearer(token),
+        )
+        assert response.status_code == 403

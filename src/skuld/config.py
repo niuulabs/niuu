@@ -661,8 +661,10 @@ class WorkloadIdentityConfig(BaseModel):
     token_file: str = Field(
         default="/var/run/secrets/niuu-workload/token",
         description=(
-            "Projected workload identity token file. Token exchange is "
-            "skipped when the file does not exist (dev/local sessions)."
+            "Projected workload identity token file. Where it exists, the broker "
+            "exchanges it for its own Forge credential and a failed exchange is an "
+            "error, never a different credential; where it does not, no workload "
+            "identity is configured for this session."
         ),
     )
     exchange_url: str = Field(
@@ -789,8 +791,9 @@ class ForgeMcpConfig(BaseModel):
         default="",
         description=(
             "Scoped session-bound Forge token (SKULD__FORGE_MCP__TOKEN), minted by Forge "
-            "at launch. The bearer for MCP-proxied Forge calls and durable presented-file "
-            "uploads; empty uses the broker's own credential (and offers no grants)."
+            "at launch. The bearer for MCP-proxied Forge calls, durable presented-file "
+            "uploads and the session's own record (log, activity, usage, message claims); "
+            "empty uses the broker's own credential (and offers no grants)."
         ),
     )
     token_file: str = Field(

@@ -130,6 +130,20 @@ ROUTE_POLICIES: tuple[RoutePolicy, ...] = (
     RoutePolicy("POST", f"{_S}/log", FORGE_NOTIFY_SCOPE, Binding.OWN),
     RoutePolicy("POST", f"{_S}/activity", FORGE_NOTIFY_SCOPE, Binding.OWN),
     RoutePolicy("POST", f"{_S}/usage", FORGE_NOTIFY_SCOPE, Binding.OWN),
+    # The broker's durable duplicate-send claim for a message it was handed, and its
+    # settlement: the session's own deliveries only.
+    RoutePolicy(
+        "POST",
+        f"{_S}/message-deliveries/{{request_id}}/claim",
+        FORGE_NOTIFY_SCOPE,
+        Binding.OWN,
+    ),
+    RoutePolicy(
+        "POST",
+        f"{_S}/message-deliveries/{{request_id}}/settle",
+        FORGE_NOTIFY_SCOPE,
+        Binding.OWN,
+    ),
     # The agent keeps its own session's descriptions current; PUT {_S} stays denied.
     RoutePolicy("PUT", f"{_S}/description", FORGE_NOTIFY_SCOPE, Binding.OWN),
     # The broker's durable copy of a file its own session presented (F2).

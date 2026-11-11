@@ -6,7 +6,6 @@ import logging
 import os
 import time
 import uuid
-from types import SimpleNamespace
 from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import httpx
@@ -3484,48 +3483,18 @@ class TestHandleWebSocket:
         assert "not initialized" in sent["content"]
 
     @pytest.mark.asyncio
-    async def test_handle_websocket_viewer_connection_does_not_overwrite_user_jwt(
-        self, test_broker
-    ):
-        """A viewer/approver connecting after the owner must not swap the
-        broker's single stored _user_jwt/_user_claims — those are read later
-        for actions taken "as the user" (e.g. the chronicle watcher's auth
-        headers), and must keep reflecting the actual owner."""
+    async def test_browser_login_never_becomes_the_brokers_forge_credential(self, test_broker):
+        """The owner's browser bearer is not kept for the broker's own Forge calls: it
+        belongs to whoever attached last and expires within minutes."""
         mock_transport = AsyncMock()
         mock_transport.is_alive = True
         mock_transport.capabilities = TransportCapabilities()
         test_broker._transport = mock_transport
-        test_broker._user_jwt = "owners-original-token"
-        # room_role_source="proxy": the process-backend topology, where a
-        # missing header means viewer. The Kubernetes "deployment" default
-        # (a missing header means owner, unconditionally) is covered by
-        # test_handle_websocket_owner_connection_updates_user_jwt's header
-        # case and by test_enforce_room_role_middleware.py.
-        test_broker._settings.ws_auth.room_role_source = "proxy"
-
-        mock_ws = AsyncMock()
-        # No x-niuu-room-role header, not loopback -> _resolve_room_role
-        # resolves "viewer" for this connection under room_role_source=proxy.
-        mock_ws.headers = {"authorization": "Bearer a-viewers-token"}
-        mock_ws.client = SimpleNamespace(host="203.0.113.9")
-        mock_ws.query_params = {}
-        mock_ws.receive_json = AsyncMock(side_effect=[WebSocketDisconnect()])
-
-        await test_broker.handle_websocket(mock_ws)
-
-        assert test_broker._user_jwt == "owners-original-token"
-
-    @pytest.mark.asyncio
-    async def test_handle_websocket_owner_connection_updates_user_jwt(self, test_broker):
-        mock_transport = AsyncMock()
-        mock_transport.is_alive = True
-        mock_transport.capabilities = TransportCapabilities()
-        test_broker._transport = mock_transport
-        test_broker._user_jwt = "stale-token"
+        test_broker._settings.workload_identity.token_file = "/nonexistent/niuu-workload/token"
 
         mock_ws = AsyncMock()
         mock_ws.headers = {
-            "authorization": "Bearer the-owners-fresh-token",
+            "authorization": "Bearer the-owners-browser-token",
             "x-niuu-room-role": "owner",
         }
         mock_ws.query_params = {}
@@ -3533,7 +3502,8 @@ class TestHandleWebSocket:
 
         await test_broker.handle_websocket(mock_ws)
 
-        assert test_broker._user_jwt == "the-owners-fresh-token"
+        assert not hasattr(test_broker, "_user_jwt")
+        assert test_broker._build_auth_headers() == {}
 
     @pytest.mark.asyncio
     async def test_handle_websocket_normal_flow(self, test_broker):
@@ -5464,8 +5434,8 @@ class TestWorkloadTokenRefresh:
         captured: dict = {}
 
         class _FakeResponse:
-            def raise_for_status(self):
-                return None
+            status_code = 200
+            text = ""
 
             def json(self):
                 return {"token": "workload-jwt", "expires_at": time.time() + 300}
@@ -5500,8 +5470,8 @@ class TestWorkloadTokenRefresh:
         captured: dict = {}
 
         class _FakeResponse:
-            def raise_for_status(self):
-                return None
+            status_code = 200
+            text = ""
 
             def json(self):
                 return {"token": "workload-jwt", "expires_at": time.time() + 300}

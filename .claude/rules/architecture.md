@@ -195,8 +195,9 @@ pods, `forge_mcp.session_tokens.projection_adapter`
 `sessionCredentialProjection`) writes it to one Secret per session and mounts it
 read-only; the HelmRelease values carry only the file path (Skuld's
 `forge_mcp.token_file`), never the token, and the Secret is deleted when the
-session stops. The broker uses it for Forge MCP calls and for durable
-presented-file uploads. The
+session stops. The broker uses it for Forge MCP calls, for durable
+presented-file uploads, and for its session's own record (durable log, activity, usage,
+and message delivery claims). The
 Volundr chart turns `session_tokens` and this projection on wherever Forge has a signing key
 (workload identity with `signingKey.existingSecret`, or `forge_mcp.session_tokens.signing_key_file`);
 enabling them without one fails the render. When adding a NEW Forge route a session broker may call, add it

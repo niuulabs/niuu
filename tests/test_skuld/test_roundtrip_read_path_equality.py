@@ -741,8 +741,6 @@ class TestConfiguredVisibilityDefaultParityINV10:
             async def close(self, code: int = 1000) -> None:
                 return None
 
-        broker._update_jwt_from_websocket = lambda _ws: None  # type: ignore[assignment]
-
         # The handshake registers the live channel and the disconnect tears it down
         # in `finally`, so capture it AT add-time (its show_internal is fixed at
         # construction from the configured default — the M-7 surface under test).

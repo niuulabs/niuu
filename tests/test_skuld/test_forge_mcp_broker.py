@@ -103,7 +103,6 @@ def _broker(tmp_path, forge: FakeForge | None, **forge_mcp: Any) -> Broker:
         broker._http_client = httpx.AsyncClient(
             base_url=FORGE, transport=httpx.MockTransport(forge.handler), headers=headers
         )
-        broker._http_client_jwt = broker._user_jwt
         broker._http_client_auth_header = headers.get("Authorization", "")
     return broker
 
@@ -385,9 +384,18 @@ class TestEnvironment:
 
 
 class TestForgeProxy:
-    async def test_scoped_token_is_used_for_mcp_calls_only(self, flushing, forge) -> None:
+    async def test_scoped_token_carries_mcp_calls_and_the_sessions_own_log(
+        self, flushing, forge, monkeypatch
+    ) -> None:
         flushing._settings.forge_mcp.token = MESSAGE_TOKEN
         flushing._forge_mcp_toolbox_cache = None
+        real_client = httpx.AsyncClient
+
+        def to_forge(*args, **kwargs):
+            kwargs.setdefault("transport", httpx.MockTransport(forge.handler))
+            return real_client(*args, **kwargs)
+
+        monkeypatch.setattr("skuld.event_log.httpx.AsyncClient", to_forge)
         forge.routes[("GET", "/api/v1/forge/sessions")] = lambda _r: httpx.Response(200, json=[])
 
         await _call(flushing, "list_sessions", {"scope": "local"})
@@ -397,7 +405,7 @@ class TestForgeProxy:
         assert listed.headers["authorization"] == f"Bearer {MESSAGE_TOKEN}"
         assert listed.url.params["scope"] == "local"
         log_post = next(r for r in forge.requests if r.url.path == LOG_PATH)
-        assert log_post.headers["authorization"] == f"Bearer {SERVICE_TOKEN}"
+        assert log_post.headers["authorization"] == f"Bearer {MESSAGE_TOKEN}"
 
     async def test_broker_credential_without_scoped_token(self, tmp_path, forge) -> None:
         forge.routes[("GET", f"/api/v1/forge/sessions/{PEER_ID}")] = lambda _r: httpx.Response(
