@@ -39,12 +39,37 @@ dream:
   phases: [lint, backlinks, orphans]
   activeDeadlineSeconds: 1800
 
+# -- Pod-level security context of the server and the dream job. Set a field to null to drop it (for example runAsUser: null where an
+# admission policy rejects an explicit UID).
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  runAsGroup: 1000
+  fsGroup: 1000
+# -- Container-level security context of the server and the dream job.
+securityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop: [ALL]
+
 replicaCount: 1
 
 # Provision a database per release through the installed CloudNativePG operator.
 postgres:
   enabled: false
   image: ghcr.io/cloudnative-pg/postgresql:17
+  # The job that creates the gbrain database, run as the postgres image's user (26).
+  databaseInit:
+    # -- Pod-level security context. Set a field to null to drop it.
+    podSecurityContext:
+      runAsNonRoot: true
+      runAsUser: 26
+      runAsGroup: 26
+    # -- Container-level security context.
+    securityContext:
+      allowPrivilegeEscalation: false
+      capabilities:
+        drop: [ALL]
   instances: 2
   storageClass: ""
   size: 5Gi

@@ -384,14 +384,10 @@ spec:
         - name: envoy
           image: "{{ .Values.envoy.image.repository }}:{{ .Values.envoy.image.tag }}"
           imagePullPolicy: {{ .Values.envoy.image.pullPolicy }}
+          {{- with .Values.envoy.securityContext }}
           securityContext:
-            allowPrivilegeEscalation: false
-            readOnlyRootFilesystem: true
-            runAsNonRoot: true
-            runAsUser: 1000
-            capabilities:
-              drop:
-                - ALL
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
           ports:
             - name: envoy
               containerPort: {{ .Values.envoy.port }}

@@ -962,6 +962,16 @@ git:
 
 # Envoy sidecar proxy (JWT validation, header extraction)
 envoy:
+  # -- Envoy sidecar container securityContext. Set a field to null to drop it (for example runAsUser: null where an
+  # admission policy rejects an explicit UID).
+  securityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    runAsNonRoot: true
+    runAsUser: 1000
+    capabilities:
+      drop:
+        - ALL
   # -- Enable Envoy sidecar proxy
   enabled: false
   image:
@@ -2136,6 +2146,23 @@ sessionDefinitions:
 
 # Web UI (optional standalone frontend)
 web:
+  # -- Pod-level security context. Set a field to null to drop it (for example runAsUser: null where an
+  # admission policy rejects an explicit UID).
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 1001
+    fsGroup: 1001
+    seccompProfile:
+      type: RuntimeDefault
+  # -- Container-level security context.
+  securityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    runAsNonRoot: true
+    runAsUser: 1001
+    capabilities:
+      drop:
+        - ALL
   # -- Enable the Volundr web UI component
   enabled: false
 
@@ -2206,6 +2233,23 @@ web:
 
 # Next-generation web UI (optional standalone frontend)
 webNext:
+  # -- Pod-level security context. Set a field to null to drop it (for example runAsUser: null where an
+  # admission policy rejects an explicit UID).
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 1001
+    fsGroup: 1001
+    seccompProfile:
+      type: RuntimeDefault
+  # -- Container-level security context.
+  securityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    runAsNonRoot: true
+    runAsUser: 1001
+    capabilities:
+      drop:
+        - ALL
   # -- Enable the composable Niuu web UI component
   enabled: false
 

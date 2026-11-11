@@ -53,11 +53,21 @@ podAnnotations:
 # -- Additional pod labels.
 podLabels: {}
 
-# -- Pod-level security context (merged with the hardened defaults in the template).
-podSecurityContext: {}
+# -- Pod-level security context. Set a field to null to drop it (for example runAsUser: null where an
+# admission policy rejects an explicit UID).
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  fsGroup: 1000
 
-# -- Container-level security context (merged with the hardened defaults in the template).
-securityContext: {}
+# -- Container-level security context. Set a field to null to drop it (for example runAsUser: null where an
+# admission policy rejects an explicit UID).
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
 
 # -- Optional priority class name.
 priorityClassName: ""

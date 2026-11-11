@@ -60,11 +60,21 @@ podAnnotations: {}
 # -- Additional pod labels.
 podLabels: {}
 
-# -- Pod-level security context.
-podSecurityContext: {}
+# -- Pod-level security context. Set a field to null to drop it (for example runAsUser: null where an
+# admission policy rejects an explicit UID).
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  fsGroup: 1000
 
-# -- Container-level security context.
-securityContext: {}
+# -- Container-level security context. Set a field to null to drop it (for example runAsUser: null where an
+# admission policy rejects an explicit UID).
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
 
 # -- Optional priority class name.
 priorityClassName: ""
@@ -83,6 +93,16 @@ service:
   annotations: {}
 
 envoy:
+  # -- Envoy sidecar container securityContext. Set a field to null to drop it (for example runAsUser: null where an
+  # admission policy rejects an explicit UID).
+  securityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    runAsNonRoot: true
+    runAsUser: 1000
+    capabilities:
+      drop:
+        - ALL
   enabled: false
   image:
     repository: envoyproxy/envoy

@@ -36,11 +36,8 @@ spec:
     spec:
       {{- include "mimir.imagePullSecrets" . | nindent 6 }}
       serviceAccountName: {{ include "mimir.serviceAccountName" . }}
-      securityContext:
-        runAsNonRoot: true
-        runAsUser: 1000
-        fsGroup: 1000
       {{- with .Values.podSecurityContext }}
+      securityContext:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       {{- with .Values.priorityClassName }}
@@ -55,13 +52,8 @@ spec:
           command:
             {{- toYaml . | nindent 12 }}
           {{- end }}
-          securityContext:
-            allowPrivilegeEscalation: false
-            readOnlyRootFilesystem: true
-            capabilities:
-              drop:
-                - ALL
           {{- with .Values.securityContext }}
+          securityContext:
             {{- toYaml . | nindent 12 }}
           {{- end }}
           args:
@@ -147,14 +139,10 @@ spec:
         - name: envoy
           image: "{{ .Values.envoy.image.repository }}:{{ .Values.envoy.image.tag }}"
           imagePullPolicy: {{ .Values.envoy.image.pullPolicy }}
+          {{- with .Values.envoy.securityContext }}
           securityContext:
-            allowPrivilegeEscalation: false
-            readOnlyRootFilesystem: true
-            runAsNonRoot: true
-            runAsUser: 1000
-            capabilities:
-              drop:
-                - ALL
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
           ports:
             - name: envoy
               containerPort: {{ .Values.envoy.port }}

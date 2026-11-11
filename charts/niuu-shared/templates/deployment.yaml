@@ -31,6 +31,10 @@ spec:
     spec:
       {{- include "niuu-shared.imagePullSecrets" . | nindent 6 }}
       serviceAccountName: {{ include "niuu-shared.serviceAccountName" . }}
+      {{- with .Values.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       {{- if or .Values.migrations.enabled .Values.initContainers }}
       initContainers:
         {{- if .Values.migrations.enabled }}
@@ -99,6 +103,10 @@ spec:
             - name: DATABASE__PORT
               value: {{ include "niuu-shared.databasePort" . | quote }}
             - name: DATABASE__NAME
+              value: {{ .Values.database.name | quote }}
+            # niuu.service_databases replaces DATABASE__NAME with this
+            # per-service name (service "niuu-shared"), so it must carry database.name.
+            - name: NIUU_DATABASE_NAME_NIUU_SHARED
               value: {{ .Values.database.name | quote }}
             - name: DATABASE__USER
               valueFrom:
@@ -272,14 +280,10 @@ spec:
         - name: envoy
           image: "{{ .Values.envoy.image.repository }}:{{ .Values.envoy.image.tag }}"
           imagePullPolicy: {{ .Values.envoy.image.pullPolicy }}
+          {{- with .Values.envoy.securityContext }}
           securityContext:
-            allowPrivilegeEscalation: false
-            readOnlyRootFilesystem: true
-            runAsNonRoot: true
-            runAsUser: 1000
-            capabilities:
-              drop:
-                - ALL
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
           ports:
             - name: envoy
               containerPort: {{ .Values.envoy.port }}
