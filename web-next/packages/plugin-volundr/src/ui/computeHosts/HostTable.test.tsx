@@ -7,7 +7,11 @@ import { HostTable } from './HostTable';
 const hosts = seedComputeHosts();
 const NOW = Date.parse('2026-11-06T12:00:00Z');
 
-function renderTable(list: ComputeHost[] = hosts, busy: ReadonlySet<string> = new Set()) {
+function renderTable(
+  list: ComputeHost[] = hosts,
+  busy: ReadonlySet<string> = new Set(),
+  readOnly = false,
+) {
   const onAction = vi.fn();
   const onTagsChange = vi.fn();
   render(
@@ -17,6 +21,7 @@ function renderTable(list: ComputeHost[] = hosts, busy: ReadonlySet<string> = ne
       busy={busy}
       onAction={onAction}
       onTagsChange={onTagsChange}
+      readOnly={readOnly}
     />,
   );
   return { onAction, onTagsChange };
@@ -72,6 +77,21 @@ describe('HostTable', () => {
       within(finding).getByText('node vite (pid 48211) still running as niuu-slot-4'),
     ).toBeInTheDocument();
     expect(finding).toHaveTextContent('Fix it on the host, then Check now.');
+  });
+
+  it('is read-only for someone who may not manage hosts', () => {
+    renderTable(hosts, new Set(), true);
+    expect(screen.queryByRole('columnheader', { name: 'Actions' })).toBeNull();
+    expect(screen.queryAllByRole('button')).toHaveLength(0);
+    expect(within(row('hrimfaxi')).getByText('site:hnoss')).toBeInTheDocument();
+    const finding = screen.getByTestId('findings-alsvin');
+    expect(finding).toHaveTextContent('takes no new sessions until it passes a check');
+    expect(finding).not.toHaveTextContent('Check now');
+  });
+
+  it('shows an empty read-only table across all its columns', () => {
+    renderTable([], new Set(), true);
+    expect(screen.getByText('No hosts match.')).toHaveAttribute('colspan', '6');
   });
 
   it('explains a disconnected host and that its sessions keep running', () => {

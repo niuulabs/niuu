@@ -24,6 +24,23 @@ describe('ForgeHostsLink', () => {
     expect(link).toHaveClass('action');
   });
 
+  it('as a chip, carries the host count and the free slots', async () => {
+    renderWithVolundr(<ForgeHostsLink instanceId="forge-a" variant="chip" className="chip" />);
+    const link = await screen.findByRole('link', { name: /^Hosts: \d+ hosts?, \d+ free slots?$/ });
+    expect(link).toHaveAttribute('href', '/volundr/hosts?instance_id=forge-a');
+    expect(link).toHaveClass('chip');
+    expect(link).toHaveTextContent(/^Hosts · 8 · 8 free$/);
+  });
+
+  it('as a chip, reads one host and one slot in the singular', async () => {
+    const getComputeHosts = vi.fn().mockResolvedValue({
+      summary: { hosts: 1, slotsFree: 1 },
+    });
+    const service: IVolundrService = { ...createMockVolundrService(), getComputeHosts };
+    renderWithVolundr(<ForgeHostsLink instanceId="forge-a" variant="chip" />, { service });
+    expect(await screen.findByRole('link', { name: 'Hosts: 1 host, 1 free slot' })).toBeVisible();
+  });
+
   it('does not appear for a Forge without compute hosts', async () => {
     const getComputeHosts = vi.fn().mockResolvedValue(null);
     const service: IVolundrService = { ...createMockVolundrService(), getComputeHosts };

@@ -128,7 +128,7 @@ function HostTagEditor({
   );
 }
 
-function Findings({ host }: { host: ComputeHost }) {
+function Findings({ host, readOnly }: { host: ComputeHost; readOnly: boolean }) {
   const tone = findingTone(host);
   const sessions = host.sessions.length;
   const toneClass =
@@ -162,7 +162,7 @@ function Findings({ host }: { host: ComputeHost }) {
           ))}
         </ul>
       ) : null}
-      {host.state === 'quarantined' ? (
+      {host.state === 'quarantined' && !readOnly ? (
         <p className="niuu:mt-1">
           Fix it on the host, then <b>Check now</b>.
         </p>
@@ -178,10 +178,20 @@ export interface HostTableProps {
   busy: ReadonlySet<string>;
   onAction: (host: ComputeHost, action: HostAction) => void;
   onTagsChange: (host: ComputeHost, tags: string[]) => void;
+  /** A reader who may not manage hosts: no actions column, tags are plain chips. */
+  readOnly?: boolean;
 }
 
 /** One row per host, with its findings inline under the rows that need attention. */
-export function HostTable({ hosts, now, busy, onAction, onTagsChange }: HostTableProps) {
+export function HostTable({
+  hosts,
+  now,
+  busy,
+  onAction,
+  onTagsChange,
+  readOnly = false,
+}: HostTableProps) {
+  const columnCount = readOnly ? COLUMN_COUNT - 1 : COLUMN_COUNT;
   return (
     <div className="niuu:overflow-x-auto niuu:rounded-xl niuu:border niuu:border-border-subtle niuu:bg-bg-secondary">
       <table className="niuu:w-full niuu:min-w-[60rem] niuu:border-collapse">
@@ -192,16 +202,18 @@ export function HostTable({ hosts, now, busy, onAction, onTagsChange }: HostTabl
                 {heading}
               </th>
             ))}
-            <th scope="col" className="niuu:px-3 niuu:py-2 niuu:text-right niuu:font-medium">
-              Actions
-            </th>
+            {readOnly ? null : (
+              <th scope="col" className="niuu:px-3 niuu:py-2 niuu:text-right niuu:font-medium">
+                Actions
+              </th>
+            )}
           </tr>
         </thead>
         <tbody>
           {hosts.length === 0 ? (
             <tr>
               <td
-                colSpan={COLUMN_COUNT}
+                colSpan={columnCount}
                 className="niuu:px-3 niuu:py-6 niuu:text-center niuu:text-sm niuu:text-text-muted"
               >
                 No hosts match.
@@ -226,11 +238,19 @@ export function HostTable({ hosts, now, busy, onAction, onTagsChange }: HostTabl
                     </div>
                   </td>
                   <td className="niuu:px-3 niuu:py-3">
-                    <HostTagEditor
-                      host={host}
-                      disabled={pending}
-                      onChange={(tags) => onTagsChange(host, tags)}
-                    />
+                    {readOnly ? (
+                      <div className="niuu:flex niuu:flex-wrap niuu:gap-1">
+                        {host.tags.map((tag) => (
+                          <Chip key={tag}>{tag}</Chip>
+                        ))}
+                      </div>
+                    ) : (
+                      <HostTagEditor
+                        host={host}
+                        disabled={pending}
+                        onChange={(tags) => onTagsChange(host, tags)}
+                      />
+                    )}
                   </td>
                   <td className="niuu:px-3 niuu:py-3">
                     <HostStatePill host={host} />
@@ -256,27 +276,29 @@ export function HostTable({ hosts, now, busy, onAction, onTagsChange }: HostTabl
                     />
                     {connectionLabel(host.connection, now)}
                   </td>
-                  <td className="niuu:px-3 niuu:py-3">
-                    <div className="niuu:flex niuu:flex-wrap niuu:justify-end niuu:gap-0.5">
-                      {hostActions(host).map((action) => (
-                        <button
-                          key={action}
-                          type="button"
-                          disabled={pending}
-                          aria-label={`${ACTION_LABEL[action]} ${host.name}`}
-                          className="niuu:rounded-md niuu:px-2 niuu:py-1 niuu:text-xs niuu:text-text-secondary niuu:hover:bg-bg-tertiary niuu:hover:text-text-primary niuu:disabled:opacity-50"
-                          onClick={() => onAction(host, action)}
-                        >
-                          {ACTION_LABEL[action]}
-                        </button>
-                      ))}
-                    </div>
-                  </td>
+                  {readOnly ? null : (
+                    <td className="niuu:px-3 niuu:py-3">
+                      <div className="niuu:flex niuu:flex-wrap niuu:justify-end niuu:gap-0.5">
+                        {hostActions(host).map((action) => (
+                          <button
+                            key={action}
+                            type="button"
+                            disabled={pending}
+                            aria-label={`${ACTION_LABEL[action]} ${host.name}`}
+                            className="niuu:rounded-md niuu:px-2 niuu:py-1 niuu:text-xs niuu:text-text-secondary niuu:hover:bg-bg-tertiary niuu:hover:text-text-primary niuu:disabled:opacity-50"
+                            onClick={() => onAction(host, action)}
+                          >
+                            {ACTION_LABEL[action]}
+                          </button>
+                        ))}
+                      </div>
+                    </td>
+                  )}
                 </tr>
                 {showFindings ? (
                   <tr>
-                    <td colSpan={COLUMN_COUNT} className="niuu:px-3 niuu:pb-3">
-                      <Findings host={host} />
+                    <td colSpan={columnCount} className="niuu:px-3 niuu:pb-3">
+                      <Findings host={host} readOnly={readOnly} />
                     </td>
                   </tr>
                 ) : null}

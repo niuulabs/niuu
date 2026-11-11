@@ -260,6 +260,22 @@ compute:
   firewall. The listener serves only `join.sh` and `join`: no UI, no API docs, no
   admin route.
 
+## Who sees the hosts
+
+Anyone who can reach a Forge can read its host list: on the Guild page the Forge's
+card carries a **Hosts · 2 · 5 free** chip (host count, free slots) that opens the
+Hosts page, shown to everyone the Forge node is visible to (`system`, `tenant` or
+`user` scope, as set on the node). The Forge itself only authenticates the caller;
+who may address the node is Guild's visibility. A person who reaches the Forge's own
+URL directly, bypassing Guild, can read the list too, so a `user`-scoped node is
+not a secret about its Forge.
+
+Only `volundr:admin` changes anything (add, drain, resume, re-prepare, check,
+capacity, tags, remove, revoke). The list answers `can_manage`; when it is false the
+page is read-only and Forge leaves the pairing codes, connector and runtime choices,
+host addresses, key fingerprints, audit findings, capacity advice and session ids out
+of the answer.
+
 ## Add a host
 
 In the UI, open **Forge → Compute → Hosts → Add host**. Choose the runtime, tags, how
