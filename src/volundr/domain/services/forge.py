@@ -23,7 +23,11 @@ from volundr.domain.services.forge_session_launch import (
     GRANTS_KEY,
     launch_id_of,
 )
-from volundr.domain.services.session import SessionNotFoundError, SessionStateError
+from volundr.domain.services.session import (
+    SessionAccessDeniedError,
+    SessionNotFoundError,
+    SessionStateError,
+)
 from volundr.domain.session_broker import broker_base_url
 from volundr.domain.workflow_session import (
     PERSONA_DEFINITION_KEY,
@@ -686,12 +690,46 @@ class ForgeService:
         return await self._session_service.changes_since(cursor, principal)
 
     async def get_read_state(self, session_id: UUID, principal: Principal) -> SessionReadState:
-        return await self._session_service.get_read_state(session_id, principal)
+        await self.ensure_transcript_reader(session_id, principal)
+        return await self._session_service.get_read_state(session_id, principal.user_id)
 
     async def change_read_state(
         self, session_id: UUID, change: SessionReadStateChange, principal: Principal
     ) -> SessionReadState:
-        return await self._session_service.change_read_state(session_id, change, principal)
+        await self.ensure_transcript_reader(session_id, principal)
+        return await self._session_service.change_read_state(session_id, change, principal.user_id)
+
+    async def ensure_transcript_reader(self, session_id: UUID, principal: Principal | None) -> None:
+        """``ensure_transcript_access`` by id, on the stored row (no pod reconcile).
+
+        Raises:
+            SessionNotFoundError: No such session.
+            PermissionError: Authorization is configured and no principal was given.
+            SessionAccessDeniedError: The caller holds neither right.
+        """
+        session = await self._session_service.get_session(session_id)
+        if session is None:
+            raise SessionNotFoundError(session_id)
+        await self.ensure_transcript_access(session, principal)
+
+    async def ensure_transcript_access(self, session: Session, principal: Principal | None) -> None:
+        """Authorize reading a session's conversation: "read", or "read_room".
+
+        The owner, admins and tenant viewers read every session ("read"). The people
+        in its room (an active participant grant, or the session's project) read its
+        transcript, tool results, attachments and presented files, and keep their own
+        read state of it, on "read_room": the same right that opens the room.
+
+        Raises:
+            PermissionError: Authorization is configured and no principal was given.
+            SessionAccessDeniedError: The caller holds neither right.
+        """
+        try:
+            await self._session_service._check_access(session, principal, "read")
+            return
+        except SessionAccessDeniedError:
+            pass
+        await self._session_participant_service.check_room_access(session, principal, "read_room")
 
     async def get_session(self, session_id: UUID) -> Session | None:
         session = await self._session_service.reconcile_session_if_active(session_id)

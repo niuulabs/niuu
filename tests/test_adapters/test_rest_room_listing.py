@@ -318,3 +318,87 @@ def test_conversation_without_a_caller_is_refused(wired_app):
 
     assert response.status_code == 401, response.text
     assert "Authentication is required" in response.json()["detail"]
+
+
+#: Each route's answer once a caller is admitted. This app has no broker or archive
+#: behind the routes, so an admitted caller reaches that answer, never the data.
+_TRANSCRIPT_ROUTES = [
+    ("/tool-result/tu1", 404, "tool_result not found: tu1"),
+    ("/attachments", 503, "Session archive service not available"),
+    ("/read-state", 200, None),
+    ("/files/presented/pf1", 404, "has no active endpoint"),
+]
+
+
+@pytest.mark.parametrize(("suffix", "code", "detail"), _TRANSCRIPT_ROUTES)
+@pytest.mark.parametrize("user", ["invitee", "owner", "stranger"])
+def test_transcript_reads_are_open_to_the_room_and_closed_to_strangers(
+    wired_app, suffix, code, detail, user
+):
+    """Tool results, attachments, presented files and the reader's own read state follow
+    the conversation: the session's room reads them, a tenant developer who was never
+    invited is refused before anything is looked up."""
+    import asyncio
+
+    app, session_service, participant_service = wired_app
+    client = TestClient(app)
+    shared = asyncio.run(_shared_session_without_a_broker(session_service, participant_service))
+
+    response = client.get(f"/api/v1/forge/sessions/{shared.id}{suffix}", headers=_headers(user))
+
+    if user == "stranger":
+        assert response.status_code == 403, response.text
+        assert response.json()["detail"] in (
+            f"Access denied to session {shared.id}",
+            "Access denied",
+        )
+        return
+    assert response.status_code == code, response.text
+    if detail is not None:
+        assert detail in response.json()["detail"]
+
+
+def test_an_invitee_marks_the_shared_session_read(wired_app):
+    import asyncio
+
+    app, session_service, participant_service = wired_app
+    client = TestClient(app)
+    shared = asyncio.run(_shared_session_without_a_broker(session_service, participant_service))
+
+    response = client.patch(
+        f"/api/v1/forge/sessions/{shared.id}/read-state",
+        headers=_headers("invitee"),
+        json={"state": "read", "expected_revision": 0, "through_seq": 0},
+    )
+
+    assert response.status_code == 200, response.text
+
+
+def test_a_stranger_cannot_mark_the_shared_session_read(wired_app):
+    import asyncio
+
+    app, session_service, participant_service = wired_app
+    client = TestClient(app)
+    shared = asyncio.run(_shared_session_without_a_broker(session_service, participant_service))
+
+    response = client.patch(
+        f"/api/v1/forge/sessions/{shared.id}/read-state",
+        headers=_headers("stranger"),
+        json={"state": "read", "expected_revision": 0, "through_seq": 0},
+    )
+
+    assert response.status_code == 403, response.text
+
+
+def test_a_tool_result_without_a_caller_is_refused(wired_app):
+    import asyncio
+
+    app, session_service, participant_service = wired_app
+    client = TestClient(app)
+    shared = asyncio.run(_shared_session_without_a_broker(session_service, participant_service))
+
+    app.state.identity = None  # no identity: the request has no principal at all
+
+    response = client.get(f"/api/v1/forge/sessions/{shared.id}/tool-result/tu1")
+
+    assert response.status_code == 401, response.text

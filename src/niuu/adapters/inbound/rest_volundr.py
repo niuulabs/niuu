@@ -928,7 +928,18 @@ async def _find_runtime_owner(
     local_scope: bool = False,
     extra_headers: dict[str, str] | None = None,
     candidates: list[RegisteredInstance] | None = None,
+    refusal_locates: bool = False,
 ) -> tuple[RegisteredInstance, dict[str, Any]]:
+    """The node that holds the resource at *path*, and its answer.
+
+    Only the node that holds a resource can refuse the caller it (403); every other
+    node has no such resource (404). A refusal is therefore never "not here": with no
+    node serving the resource, the caller gets that node's 403, not a 404. With
+    *refusal_locates*, the refusing node is returned instead (with an empty payload),
+    for a route the node authorizes more widely than *path*: the session's people
+    read its conversation on "read_room" although the node refuses them the session.
+    """
+
     async def probe(
         instance: RegisteredInstance,
     ) -> tuple[RegisteredInstance, httpx.Response | httpx.RequestError | HTTPException]:
@@ -986,6 +997,8 @@ async def _find_runtime_owner(
                     )
                 },
             )
+        if refusal_locates and response.status_code == status.HTTP_403_FORBIDDEN:
+            return instance, {}
         if response.status_code != status.HTTP_404_NOT_FOUND:
             _ensure_remote_success(response)
             payload = response.json()
@@ -996,6 +1009,7 @@ async def _find_runtime_owner(
         instances = [instance for instance in instances if instance is not local[0]]
     tasks = [asyncio.create_task(probe(instance)) for instance in instances]
     refused: HTTPException | None = None
+    holder_refused: tuple[RegisteredInstance, httpx.Response] | None = None
     unanswered: list[SourceFailure] = []
     try:
         # Ownership is unknown until a visible instance returns the resource.
@@ -1006,11 +1020,14 @@ async def _find_runtime_owner(
             except HTTPException as exc:
                 refused = exc  # a policy refusal (a session credential stays on its node)
                 continue
-            if isinstance(response, httpx.Response) and response.status_code in {
-                status.HTTP_403_FORBIDDEN,
-                status.HTTP_404_NOT_FOUND,
-            }:
-                continue
+            if isinstance(response, httpx.Response):
+                if response.status_code == status.HTTP_403_FORBIDDEN:
+                    # It holds the resource and refused it. A node that serves it still
+                    # wins, so this is only the answer once no node has.
+                    holder_refused = holder_refused or (instance, response)
+                    continue
+                if response.status_code == status.HTTP_404_NOT_FOUND:
+                    continue
             if not isinstance(response, httpx.Response) or response.is_error:
                 unanswered.append(_unanswered(instance, response))
                 continue
@@ -1019,8 +1036,13 @@ async def _find_runtime_owner(
                 return instance, _with_instance(
                     payload, instance, rebase_chat_endpoint=rebase_chat_endpoint
                 )
+        if holder_refused is not None and refusal_locates:
+            return holder_refused[0], {}
         if refused is not None:
             raise refused
+        if holder_refused is not None:
+            # The node that holds it said no; a 404 would tell the caller it is gone.
+            _ensure_remote_success(holder_refused[1])
         if unanswered:
             # A partial search cannot establish that the resource is absent: a client may
             # read 404 as "gone", and a sleeping node must never make a live session
@@ -1047,7 +1069,15 @@ async def _find_session_owner(
     embedded_app: ASGIApp | None = None,
     extra_headers: dict[str, str] | None = None,
     candidates: list[RegisteredInstance] | None = None,
+    transcript: bool = False,
 ) -> tuple[RegisteredInstance, dict[str, Any]]:
+    """The node that holds a session, found through the session read ("read").
+
+    *transcript*: the route is one the node also opens to the people in the session's
+    room ("read_room": its conversation, tool results, attachments and read state), so
+    a node that refuses the caller the session itself is still where it goes; that
+    node decides. The payload is then empty.
+    """
     return await _find_runtime_owner(
         service,
         principal,
@@ -1058,6 +1088,7 @@ async def _find_session_owner(
         local_scope=_local_session_scope(request),
         extra_headers=extra_headers,
         candidates=candidates,
+        refusal_locates=transcript,
     )
 
 
@@ -4482,7 +4513,12 @@ def create_volundr_router(
         principal: Principal = Depends(extract_principal),
     ) -> dict[str, Any]:
         instance, _ = await _find_session_owner(
-            service, principal, request, session_id, embedded_app=embedded_forge_app
+            service,
+            principal,
+            request,
+            session_id,
+            embedded_app=embedded_forge_app,
+            transcript=True,
         )
         response = await _request_remote(
             instance,
@@ -4502,7 +4538,12 @@ def create_volundr_router(
         principal: Principal = Depends(extract_principal),
     ) -> dict[str, Any]:
         instance, _ = await _find_session_owner(
-            service, principal, request, session_id, embedded_app=embedded_forge_app
+            service,
+            principal,
+            request,
+            session_id,
+            embedded_app=embedded_forge_app,
+            transcript=True,
         )
         response = await _request_remote(
             instance,
@@ -4782,6 +4823,7 @@ def create_volundr_router(
             request,
             session_id,
             embedded_app=embedded_forge_app,
+            transcript=True,
         )
         t_owner = time.perf_counter()
         response = await _request_remote(
@@ -4828,6 +4870,7 @@ def create_volundr_router(
             request,
             session_id,
             embedded_app=embedded_forge_app,
+            transcript=True,
         )
         response = await _request_remote(
             instance,
@@ -4854,6 +4897,7 @@ def create_volundr_router(
             request,
             session_id,
             embedded_app=embedded_forge_app,
+            transcript=True,
         )
         response = await _request_remote(
             instance,
@@ -4879,6 +4923,7 @@ def create_volundr_router(
             request,
             session_id,
             embedded_app=embedded_forge_app,
+            transcript=True,
         )
         response = await _request_remote(
             instance,
@@ -4910,6 +4955,7 @@ def create_volundr_router(
             request,
             session_id,
             embedded_app=embedded_forge_app,
+            transcript=True,
         )
         response = await _request_remote(
             instance,

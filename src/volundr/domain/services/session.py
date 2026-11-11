@@ -466,12 +466,14 @@ class SessionService:
         reader_id = principal.user_id if principal is not None else None
         return await self._repository.changes_since(cursor, reader_id)
 
-    async def get_read_state(self, session_id: UUID, principal: Principal) -> SessionReadState:
-        session = await self._repository.get(session_id)
-        if session is None:
-            raise SessionNotFoundError(session_id)
-        await self._check_access(session, principal, "read")
-        states = await self._repository.get_read_states([session_id], principal.user_id)
+    async def get_read_state(self, session_id: UUID, reader_id: str) -> SessionReadState:
+        """*reader_id*'s read state of a session the caller has already authorized.
+
+        Whoever may read the session's transcript has a read state of it: the owner,
+        admins and tenant viewers ("read") and the people in its room ("read_room"),
+        so ``ForgeService`` checks both before calling this.
+        """
+        states = await self._repository.get_read_states([session_id], reader_id)
         if session_id not in states:
             raise SessionNotFoundError(session_id)
         return states[session_id]
@@ -480,14 +482,11 @@ class SessionService:
         self,
         session_id: UUID,
         change: SessionReadStateChange,
-        principal: Principal,
+        reader_id: str,
     ) -> SessionReadState:
-        session = await self._repository.get(session_id)
-        if session is None:
-            raise SessionNotFoundError(session_id)
-        await self._check_access(session, principal, "read")
-        state = await self._repository.change_read_state(session_id, principal.user_id, change)
-        await self.notify_read_state_changed(session_id, reader_id=principal.user_id)
+        """Change *reader_id*'s read state of a session the caller has already authorized."""
+        state = await self._repository.change_read_state(session_id, reader_id, change)
+        await self.notify_read_state_changed(session_id, reader_id=reader_id)
         return state
 
     async def notify_read_state_changed(

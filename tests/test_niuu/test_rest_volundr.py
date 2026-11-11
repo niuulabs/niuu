@@ -876,12 +876,132 @@ def test_get_session_returns_404_when_no_visible_instance_owns_it() -> None:
         ]
     )
     respx.get("http://alpha/api/v1/forge/sessions/missing").mock(return_value=Response(404))
-    respx.get("http://beta/api/v1/forge/sessions/missing").mock(return_value=Response(403))
+    respx.get("http://beta/api/v1/forge/sessions/missing").mock(return_value=Response(404))
 
     response = client.get("/api/v1/forge/sessions/missing", headers=_headers())
 
     assert response.status_code == 404
     assert response.json()["detail"] == "Session not found: missing"
+
+
+@respx.mock
+def test_a_session_its_node_refuses_is_that_refusal_not_a_404() -> None:
+    """Only the node that holds a session can refuse it, so the caller hears the refusal.
+
+    A 404 told an invited person's web client that the session was gone, and the client
+    falls back to the room view only on a refusal.
+    """
+    client = _client(
+        [
+            _instance("alpha", base_url="http://alpha"),
+            _instance("beta", base_url="http://beta"),
+        ]
+    )
+    respx.get("http://alpha/api/v1/forge/sessions/shared").mock(return_value=Response(404))
+    respx.get("http://beta/api/v1/forge/sessions/shared").mock(
+        return_value=Response(403, json={"detail": "Access denied to session shared"})
+    )
+
+    response = client.get("/api/v1/forge/sessions/shared", headers=_headers())
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == "Access denied to session shared"
+
+
+_SHARED = "b2a2aee6-f8ca-41ea-ae3a-bd9fa392c8e1"
+_TRANSCRIPT_READS = [
+    ("/conversation", {"turns": [{"id": "t1"}]}),
+    ("/conversation/turns/t1", {"id": "t1"}),
+    ("/tool-result/tu1", {"tool_use_id": "tu1", "content": []}),
+    ("/attachments", {"items": []}),
+    ("/read-state", {"is_unread": False}),
+]
+
+
+@respx.mock
+@pytest.mark.parametrize(("suffix", "answer"), _TRANSCRIPT_READS)
+def test_an_invitee_reads_the_transcript_on_the_node_that_refuses_them_the_session(
+    suffix: str, answer: dict
+) -> None:
+    """The node refuses an invitee the session ("read") but opens its transcript on
+    "read_room": the facade must take them to that node, not answer "not found"."""
+    client = _client([_instance("alpha", base_url="http://alpha")])
+    respx.get(f"http://alpha/api/v1/forge/sessions/{_SHARED}").mock(
+        return_value=Response(403, json={"detail": "Access denied"})
+    )
+    route = respx.get(f"http://alpha/api/v1/forge/sessions/{_SHARED}{suffix}").mock(
+        return_value=Response(200, json=answer)
+    )
+
+    response = client.get(f"/api/v1/forge/sessions/{_SHARED}{suffix}", headers=_headers())
+
+    assert response.status_code == 200
+    body = response.json()
+    body.pop("_prep", None)  # the facade's own timings on a conversation page
+    assert body == answer
+    assert route.calls.last.request.headers["authorization"] == "Bearer test-token"
+
+
+@respx.mock
+def test_an_invitees_read_state_change_goes_to_the_node_that_refuses_them_the_session() -> None:
+    client = _client([_instance("alpha", base_url="http://alpha")])
+    respx.get(f"http://alpha/api/v1/forge/sessions/{_SHARED}").mock(
+        return_value=Response(403, json={"detail": "Access denied"})
+    )
+    route = respx.patch(f"http://alpha/api/v1/forge/sessions/{_SHARED}/read-state").mock(
+        return_value=Response(200, json={"is_unread": False})
+    )
+
+    response = client.patch(
+        f"/api/v1/forge/sessions/{_SHARED}/read-state",
+        headers=_headers(),
+        json={"state": "read", "expected_revision": 1, "through_seq": 3},
+    )
+
+    assert response.status_code == 200
+    assert route.called
+
+
+@respx.mock
+def test_the_transcript_node_decides_and_its_refusal_reaches_the_caller() -> None:
+    client = _client([_instance("alpha", base_url="http://alpha")])
+    respx.get(f"http://alpha/api/v1/forge/sessions/{_SHARED}").mock(
+        return_value=Response(403, json={"detail": "Access denied"})
+    )
+    respx.get(f"http://alpha/api/v1/forge/sessions/{_SHARED}/conversation").mock(
+        return_value=Response(403, json={"detail": f"Access denied to session {_SHARED}"})
+    )
+
+    response = client.get(f"/api/v1/forge/sessions/{_SHARED}/conversation", headers=_headers())
+
+    assert response.status_code == 403
+
+
+@respx.mock
+def test_a_node_that_serves_the_session_wins_over_one_that_refuses_it() -> None:
+    client = _client(
+        [
+            _instance("alpha", base_url="http://alpha"),
+            _instance("beta", base_url="http://beta"),
+        ]
+    )
+    respx.get(f"http://alpha/api/v1/forge/sessions/{_SHARED}").mock(
+        return_value=Response(403, json={"detail": "Access denied"})
+    )
+    respx.get(f"http://beta/api/v1/forge/sessions/{_SHARED}").mock(
+        return_value=Response(200, json={"id": _SHARED})
+    )
+    refusing = respx.get(f"http://alpha/api/v1/forge/sessions/{_SHARED}/conversation").mock(
+        return_value=Response(403)
+    )
+    serving = respx.get(f"http://beta/api/v1/forge/sessions/{_SHARED}/conversation").mock(
+        return_value=Response(200, json={"turns": []})
+    )
+
+    response = client.get(f"/api/v1/forge/sessions/{_SHARED}/conversation", headers=_headers())
+
+    assert response.status_code == 200
+    assert serving.called and not refusing.called
 
 
 def test_get_session_rejects_invalid_remote_base_urls() -> None:
@@ -2591,11 +2711,24 @@ def test_a_participants_room_view_is_found_on_the_node_that_refuses_the_full_ses
 
 
 @respx.mock
-def test_a_room_view_no_node_grants_is_not_found() -> None:
+def test_a_room_view_its_node_refuses_is_that_refusal() -> None:
     session_id = "b2a2aee6-f8ca-41ea-ae3a-bd9fa392c8e1"
     client = _client([_instance("alpha", base_url="http://alpha")])
     respx.get(f"http://alpha/api/v1/forge/sessions/{session_id}/room").mock(
         return_value=Response(403, json={"detail": "Access denied"})
+    )
+
+    response = client.get(f"/api/v1/forge/sessions/{session_id}/room", headers=_headers())
+
+    assert response.status_code == 403
+
+
+@respx.mock
+def test_a_room_view_no_node_holds_is_not_found() -> None:
+    session_id = "b2a2aee6-f8ca-41ea-ae3a-bd9fa392c8e1"
+    client = _client([_instance("alpha", base_url="http://alpha")])
+    respx.get(f"http://alpha/api/v1/forge/sessions/{session_id}/room").mock(
+        return_value=Response(404, json={"detail": f"Session not found: {session_id}"})
     )
 
     response = client.get(f"/api/v1/forge/sessions/{session_id}/room", headers=_headers())

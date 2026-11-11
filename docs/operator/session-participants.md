@@ -10,10 +10,19 @@ room as durable participants, with one of two roles:
   operator waits.
 
 A participant opens the session through its room view
-(`GET /api/v1/forge/sessions/{id}/room`) and reads its conversation
-(`GET .../conversation`, `.../conversation/turns/{turn_id}`) on the same
-`read_room` right; every other session route still needs `read` (owner,
-admins, tenant viewers).
+(`GET /api/v1/forge/sessions/{id}/room`) and reads its transcript on the
+same `read_room` right: the conversation (`.../conversation`,
+`.../conversation/turns/{turn_id}`), tool results and their previews
+(`.../tool-result/{id}`, `.../tool-result/{id}/preview`), attachments,
+presented files (`.../files/presented/{id}`) and their own read state
+(`GET`/`PATCH .../read-state`). Every other session route still needs `read`
+(owner, admins, tenant viewers).
+
+Through the Guild facade, those transcript routes go to the node that holds
+the session even when that node refuses the caller the session itself, and
+that node decides. A session whose node refuses the caller is a 403 from the
+facade, never a 404: only the node that holds a session can refuse it, and
+the web client opens the room view on a refusal.
 
 The owner always keeps full control regardless of any grant. Invite, accept,
 and revoke are exposed under `/api/v1/forge/sessions/{id}/participants`; see

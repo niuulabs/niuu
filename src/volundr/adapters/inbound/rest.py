@@ -2587,20 +2587,33 @@ def create_router(
         """
         await session_participant_service.check_room_access(session, principal, action)
 
+    async def _authorize_transcript_read(request: Request, session_id: UUID) -> None:
+        """``_ensure_transcript_access`` by id, before any cached answer is served."""
+        principal = await _optional_principal(request)
+        try:
+            await forge.ensure_transcript_reader(session_id, principal)
+        except SessionNotFoundError:
+            raise HTTPException(
+                status.HTTP_404_NOT_FOUND, f"Session not found: {session_id}"
+            ) from None
+        except PermissionError as exc:
+            raise HTTPException(
+                status.HTTP_401_UNAUTHORIZED, "Authentication is required to read this session"
+            ) from exc
+        except SessionAccessDeniedError as exc:
+            raise HTTPException(
+                status.HTTP_403_FORBIDDEN, f"Access denied to session {session_id}"
+            ) from exc
+
     async def _ensure_transcript_access(session: Session, principal: Principal | None) -> None:
         """Authorize reading a session's conversation: "read", or "read_room".
 
-        The owner, admins and tenant viewers read every session ("read"). Anyone in the
-        session's room (an active participant grant or the session's project) reads its
-        transcript too ("read_room"), the same right that opens the room itself.
+        See ``ForgeService.ensure_transcript_access``: the transcript, tool results,
+        attachments and presented files are open to the people in the session's room
+        as well as to whoever reads the whole session.
         """
         try:
-            await forge.ensure_access(session, principal, "read")
-            return
-        except SessionAccessDeniedError:
-            pass
-        try:
-            await _check_room_access(session, principal, "read_room")
+            await forge.ensure_transcript_access(session, principal)
         except PermissionError as exc:
             raise HTTPException(
                 status.HTTP_401_UNAUTHORIZED, "Authentication is required to read this session"
@@ -4441,22 +4454,14 @@ def create_router(
         """Download a presented file (present-file command) by opaque id.
 
         Forge's durable copy (F2) is served first, so the file still opens after the
-        session stops; otherwise the owning broker's staged copy, while it runs.
+        session stops; otherwise the owning broker's staged copy, while it runs. Both
+        are authorized like the conversation ("read", or "read_room" for the people in
+        the session's room).
         """
+        await _authorize_transcript_read(request, session_id)
         if presented_file_store is not None and is_presented_file_id(file_id):
             stored = await presented_file_store.get(session_id, file_id)
             if stored is not None:
-                session = await forge.get_session(session_id)
-                if session is None:
-                    raise HTTPException(
-                        status_code=status.HTTP_404_NOT_FOUND,
-                        detail=f"Session not found: {session_id}",
-                    )
-                principal = await _optional_principal(request)
-                try:
-                    await forge.ensure_access(session, principal, "read")
-                except SessionAccessDeniedError as exc:
-                    raise HTTPException(403, f"Access denied to session {session_id}") from exc
                 # The store opens the bytes inside its own root; this route never
                 # touches a path.
                 record, chunks = stored
@@ -5570,11 +5575,7 @@ def create_router(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Session not found: {session_id}",
             )
-        principal = await _optional_principal(request)
-        try:
-            await forge.ensure_access(session, principal, "read")
-        except SessionAccessDeniedError as exc:
-            raise HTTPException(403, f"Access denied to session {session_id}") from exc
+        await _ensure_transcript_access(session, await _optional_principal(request))
         started = time.perf_counter()
         try:
             index = await forge.get_attachments(session_id)
@@ -5809,7 +5810,8 @@ def create_router(
         The lazy-load target for a shallow conversation: when a client expands an
         elided placeholder it fetches the full content here. Proxies the live
         session pod; falls back to scanning the durable transcript for
-        stopped/seed-only sessions. 404 when the result is absent.
+        stopped/seed-only sessions. 404 when the result is absent. Authorized like the
+        conversation ("read", or "read_room" for the people in the session's room).
         """
         session = await forge.get_session(session_id)
         if session is None:
@@ -5817,6 +5819,7 @@ def create_router(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Session not found: {session_id}",
             )
+        await _ensure_transcript_access(session, await _optional_principal(request))
         found, _ = await _fetch_full_tool_result(request, session, session_id, tool_use_id)
         if found is not None:
             return found
@@ -5852,7 +5855,8 @@ def create_router(
         ``?max_edge=`` asks for a larger or smaller preview; out of bounds is 422.
         ``X-Preview-Max-Edge`` names the bound served and ``X-Preview-Edge`` the
         JPEG's actual longest edge (smaller when the source image is). Each edge is
-        cached separately, with the same immutable caching and access as before.
+        cached separately. Every request, a cached one too, is authorized like the
+        conversation ("read", or "read_room" for the people in the session's room).
 
         Generated on FIRST request (full envelope resolved via the same
         live-pod → durable-fallback chain as ``get_tool_result``, then
@@ -5873,6 +5877,7 @@ def create_router(
                     f"{preview_cache.max_edge}"
                 ),
             )
+        await _authorize_transcript_read(request, session_id)
         sid = str(session_id)
         # Keep existing first-image cache keys compatible with native clients.
         cache_key = tool_use_id if image_index == 0 else f"{tool_use_id}:image:{image_index}"

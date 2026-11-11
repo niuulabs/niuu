@@ -1760,7 +1760,8 @@ export function buildVolundrHttpAdapter(
    * it ("read") and reads its room view instead ("read_room"): the same entry the list gave
    * them, without the workspace. The list says which kind a session is, so a known shared
    * session goes straight to the room view; otherwise the full read comes first, and a refusal
-   * (403, or the Guild facade's 404 for a node that refused) is answered by the room view.
+   * (403, which the Guild facade passes on from the node that holds the session) is answered by
+   * the room view.
    */
   async function readSessionPayload(
     id: string,
