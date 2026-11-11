@@ -9,6 +9,12 @@ room as durable participants, with one of two roles:
 - **approver** — everything a viewer can, plus answering `ask_user_answer`/`permission_response`
   operator waits.
 
+A participant opens the session through its room view
+(`GET /api/v1/forge/sessions/{id}/room`) and reads its conversation
+(`GET .../conversation`, `.../conversation/turns/{turn_id}`) on the same
+`read_room` right; every other session route still needs `read` (owner,
+admins, tenant viewers).
+
 The owner always keeps full control regardless of any grant. Invite, accept,
 and revoke are exposed under `/api/v1/forge/sessions/{id}/participants`; see
 the OpenAPI schema for the exact request/response shapes.

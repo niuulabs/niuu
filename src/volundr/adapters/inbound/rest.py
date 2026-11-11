@@ -2587,6 +2587,29 @@ def create_router(
         """
         await session_participant_service.check_room_access(session, principal, action)
 
+    async def _ensure_transcript_access(session: Session, principal: Principal | None) -> None:
+        """Authorize reading a session's conversation: "read", or "read_room".
+
+        The owner, admins and tenant viewers read every session ("read"). Anyone in the
+        session's room (an active participant grant or the session's project) reads its
+        transcript too ("read_room"), the same right that opens the room itself.
+        """
+        try:
+            await forge.ensure_access(session, principal, "read")
+            return
+        except SessionAccessDeniedError:
+            pass
+        try:
+            await _check_room_access(session, principal, "read_room")
+        except PermissionError as exc:
+            raise HTTPException(
+                status.HTTP_401_UNAUTHORIZED, "Authentication is required to read this session"
+            ) from exc
+        except SessionAccessDeniedError as exc:
+            raise HTTPException(
+                status.HTTP_403_FORBIDDEN, f"Access denied to session {session.id}"
+            ) from exc
+
     if project_service is not None:
 
         async def project_principal(request: Request):
@@ -5284,10 +5307,7 @@ def create_router(
             )
 
         principal = await _optional_principal(request)
-        try:
-            await forge.ensure_access(session, principal, "read")
-        except SessionAccessDeniedError as exc:
-            raise HTTPException(403, f"Access denied to session {session_id}") from exc
+        await _ensure_transcript_access(session, principal)
 
         # The broker's answer when it holds no turns, kept while the durable rebuild is tried.
         empty_live: tuple[dict, float] | None = None

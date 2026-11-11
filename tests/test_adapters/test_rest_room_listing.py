@@ -263,3 +263,58 @@ def test_room_endpoint_works_for_the_owner_too(wired_app):
     response = client.get(f"/api/v1/forge/sessions/{shared.id}/room", headers=_headers("owner"))
     assert response.status_code == 200
     assert response.json()["room"]["role"] == "owner"
+
+
+async def _shared_session_without_a_broker(session_service, participant_service):
+    from niuu.domain.models import Principal
+
+    shared = Session(name="shared-history", model="m", owner_id="owner", tenant_id="acme")
+    await session_service._repository.create(shared)
+    owner_principal = Principal("owner", "", "acme", ["volundr:developer"])
+    await participant_service.invite(
+        shared, owner_principal, user_id="invitee", role=ParticipantRole.VIEWER, expires_at=None
+    )
+    await participant_service.accept(
+        shared, Principal("invitee", "", "acme", ["volundr:developer"])
+    )
+    return shared
+
+
+@pytest.mark.parametrize(
+    "user, admitted", [("invitee", True), ("owner", True), ("stranger", False)]
+)
+def test_conversation_is_read_on_the_room_right(wired_app, user, admitted):
+    """A participant reads the conversation of the room they joined; a tenant developer
+    who was never invited does not. (This app has no broker or archive behind the
+    route, so an admitted caller gets that 503, not the history.)"""
+    import asyncio
+
+    app, session_service, participant_service = wired_app
+    client = TestClient(app)
+    shared = asyncio.run(_shared_session_without_a_broker(session_service, participant_service))
+
+    response = client.get(
+        f"/api/v1/forge/sessions/{shared.id}/conversation", headers=_headers(user)
+    )
+
+    if admitted:
+        assert response.status_code == 503, response.text
+        assert response.json()["detail"] == "Session archive service not available"
+        return
+    assert response.status_code == 403
+    assert "Access denied" in response.json()["detail"]
+
+
+def test_conversation_without_a_caller_is_refused(wired_app):
+    import asyncio
+
+    app, session_service, participant_service = wired_app
+    client = TestClient(app)
+    shared = asyncio.run(_shared_session_without_a_broker(session_service, participant_service))
+
+    app.state.identity = None  # no identity: the request has no principal at all
+
+    response = client.get(f"/api/v1/forge/sessions/{shared.id}/conversation")
+
+    assert response.status_code == 401, response.text
+    assert "Authentication is required" in response.json()["detail"]
