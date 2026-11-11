@@ -143,7 +143,10 @@ class WebSocketLifecycleMixin:
           participants are not supported on these backends (invites are
           refused with 409), so a missing header simply means owner —
           identical to this pod's behavior before session_participants
-          existed.
+          existed. VM invites are allowed: every browser request reaches a
+          VM broker through Forge's session proxy, which always stamps the
+          header; only Forge's own tunnel and the guest itself reach it
+          without one.
         - "proxy" (rendered only for the process backend): the session proxy
           resolves and stamps the header itself from session_participants
           grants, so trust it — a missing header means viewer, except a

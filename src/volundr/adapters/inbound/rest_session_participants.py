@@ -226,11 +226,19 @@ class EffectiveRoomRoleResponse(BaseModel):
     role: str | None = None
 
 
-# Runtime backends whose pod-level attach authorization ALWAYS consults
-# session_participants grants. Mini-mode's session proxy
-# (niuu.session_proxy.SkuldPortRegistry) resolves the room role from these
-# grants itself (see niuu.room_access), so "process" is safe unconditionally.
-GRANT_HONORING_RUNTIME_BACKENDS = frozenset({"process"})
+# Runtime backends whose browser traffic reaches a session ONLY through Forge's
+# session proxy (niuu.session_proxy.SkuldPortRegistry), which admits a caller
+# by the "attach" decision over session_participants grants and stamps the
+# resolved room role on every request it forwards (see niuu.room_access), so a
+# grant is honoured unconditionally:
+#
+# - "process": the broker listens on the host's loopback, reached through the
+#   proxy (mini mode).
+# - "vm": the guest broker listens on the guest's loopback, or on its slot's
+#   private address, and Forge reaches it only over its own SSH tunnel to the
+#   machine (VmPodManager.session_proxy_target); the chat endpoint it hands the
+#   browser is Forge's /s/{id}/session (VmPodManager.initial_chat_endpoint).
+GRANT_HONORING_RUNTIME_BACKENDS = frozenset({"process", "vm"})
 
 # Runtime backends whose pods route attach through the Kubernetes Gateway's
 # Envoy ext_authz check (charts/skuld/templates/securitypolicy.yaml +
@@ -248,12 +256,30 @@ GRANT_HONORING_RUNTIME_BACKENDS = frozenset({"process"})
 # Limited to "kubernetes" only: it is the sole backend independently verified
 # end-to-end, and the only one WorkloadIdentityContributor projects a
 # niuu-workload service-account token onto — RemoteAuthorizationAdapter has
-# no credential to exchange on "openshell" (owns its own workload identity)
-# or "vm" (no Kubernetes token issuer or projected-volume implementation at
-# all), so including them here would let an invite succeed with no way for
-# the pod to ever honour it. "docker" is excluded for the same underlying
-# reason (not routed through the session proxy, no remote-adapter path).
+# no credential to exchange on "openshell" (owns its own workload identity),
+# so including it here would let an invite succeed with no way for the pod to
+# ever honour it. "docker" is excluded for the same underlying reason (not
+# routed through the session proxy, no remote-adapter path). "vm" needs
+# neither: it is proxied (above).
 REMOTE_CAPABLE_RUNTIME_BACKENDS = frozenset({"kubernetes"})
+
+
+def _invites_unsupported(runtime_backend: str) -> str:
+    """Why this Forge refuses chat invites, and what would make them work."""
+    proxied = ", ".join(sorted(GRANT_HONORING_RUNTIME_BACKENDS))
+    if runtime_backend in REMOTE_CAPABLE_RUNTIME_BACKENDS:
+        return (
+            f"This Forge's {runtime_backend} session pods authorize attach by ownership "
+            "only (Kubernetes Gateway ext_authz), so a participant grant could never be "
+            "used to attach. Set pod_manager.room_role_source: remote (volundr/config.py's "
+            "PodManagerConfig) to deploy its session pods with ws_auth.room_role_source: "
+            f"remote, or run sessions on a proxied backend ({proxied})."
+        )
+    return (
+        f"This Forge's {runtime_backend!r} sessions are not reached through Forge's "
+        "session proxy, so a participant grant could never be used to attach. Chat "
+        f"invites need a proxied session backend ({proxied})."
+    )
 
 
 def create_session_participants_router(
@@ -298,23 +324,7 @@ def create_session_participants_router(
         principal = await extract_principal(request)
         session = await _get_session(session_id)
         if not grants_are_attachable:
-            remedy = (
-                f"session backend whose pod authorization consults "
-                f"session_participants grants (currently: "
-                f"{', '.join(sorted(GRANT_HONORING_RUNTIME_BACKENDS))})"
-            )
-            if runtime_backend in REMOTE_CAPABLE_RUNTIME_BACKENDS:
-                remedy += (
-                    ", or set pod_manager.room_role_source: remote (volundr/config.py's "
-                    "PodManagerConfig) to deploy this backend's session pods with "
-                    "ws_auth.room_role_source: remote"
-                )
-            raise HTTPException(
-                status.HTTP_409_CONFLICT,
-                "This deployment's session pods authorize attach by ownership "
-                "only (Kubernetes Gateway ext_authz), so a participant grant "
-                f"could never be used to attach. Participant invites require a {remedy}.",
-            )
+            raise HTTPException(status.HTTP_409_CONFLICT, _invites_unsupported(runtime_backend))
         try:
             participant = await service.invite(
                 session,

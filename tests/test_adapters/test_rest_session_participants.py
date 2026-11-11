@@ -183,31 +183,54 @@ def test_docker_backend_stays_409_even_with_room_role_source_remote():
     assert response.status_code == 409
 
 
-@pytest.mark.parametrize("backend", ["openshell", "vm"])
-def test_openshell_and_vm_stay_409_even_with_room_role_source_remote(backend):
-    """Neither backend mounts a projected workload-identity token today
-    (WorkloadIdentityContributor skips them), so the pod would have no
-    credential to call the remote role endpoint with — REMOTE_CAPABLE_RUNTIME_BACKENDS
-    is limited to "kubernetes" until that changes."""
+def _invite_on(backend: str, room_role_source: str = "deployment"):
     service, session_service = AsyncMock(), AsyncMock()
     app = FastAPI()
     app.include_router(
         create_session_participants_router(
-            service, session_service, runtime_backend=backend, room_role_source="remote"
+            service,
+            session_service,
+            runtime_backend=backend,
+            room_role_source=room_role_source,
         )
     )
-    sid = uuid4()
     principal = Principal(user_id="owner", email="", tenant_id="acme", roles=["volundr:developer"])
+    session_service.get_session.return_value = object()
+    service.invite.return_value = _participant()
     with patch(
         "volundr.adapters.inbound.rest_session_participants.extract_principal",
         new=AsyncMock(return_value=principal),
     ):
-        session_service.get_session.return_value = object()
         response = TestClient(app).post(
-            f"/api/v1/forge/sessions/{sid}/participants",
+            f"/api/v1/forge/sessions/{uuid4()}/participants",
             json={"user_id": "invitee", "role": "viewer"},
         )
+    return response, service
+
+
+@pytest.mark.parametrize("room_role_source", ["deployment", "remote"])
+def test_openshell_stays_409_even_with_room_role_source_remote(room_role_source):
+    """OpenShell mounts no projected workload-identity token today
+    (WorkloadIdentityContributor skips it), so the pod would have no credential
+    to call the remote role endpoint with, and it is not proxied by Forge."""
+    response, service = _invite_on("openshell", room_role_source)
     assert response.status_code == 409
+    detail = response.json()["detail"]
+    assert "'openshell'" in detail
+    assert "session proxy" in detail
+    assert "process, vm" in detail
+    # The Kubernetes Gateway is not why an OpenShell invite is refused.
+    assert "Gateway" not in detail
+    service.invite.assert_not_awaited()
+
+
+def test_invite_on_vm_backend_is_allowed():
+    """A VM session is reached only through Forge's session proxy (over Forge's
+    own SSH tunnel to the guest), which admits grants and stamps the room role,
+    so an invite there is honoured."""
+    response, service = _invite_on("vm")
+    assert response.status_code == 201
+    service.invite.assert_awaited_once()
 
 
 def test_invite_denied_for_non_owner_is_403(participants_api):

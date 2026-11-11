@@ -276,7 +276,10 @@ async def _effective_room_role(request: Request) -> str | None:
       gates every caller who reaches this pod at all, and participants are
       not supported on these backends (invites are refused with 409), so a
       missing header simply means owner — identical to this pod's behavior
-      before session_participants existed. This is NOT gated on
+      before session_participants existed. VM invites are allowed: every
+      browser request reaches a VM broker through Forge's session proxy,
+      which always stamps the header; only Forge's own tunnel and the guest
+      itself reach it without one. This is NOT gated on
       ``enforce_ownership``: a non-enforced Kubernetes deployment's nginx
       sidecar always sets x-forwarded-for on every request it proxies
       (charts/skuld/templates/nginx-configmap.yaml), so a loopback-based

@@ -13,10 +13,15 @@ The owner always keeps full control regardless of any grant. Invite, accept,
 and revoke are exposed under `/api/v1/forge/sessions/{id}/participants`; see
 the OpenAPI schema for the exact request/response shapes.
 
-## Kubernetes: participants need a `process`-backend session, or `room_role_source: remote`
+## Kubernetes: participants need a proxied backend, or `room_role_source: remote`
 
-**By default, participant grants only take effect on sessions whose pods run
-on the `process` runtime backend (mini mode / local dev).** On a Kubernetes
+**By default, participant grants only take effect on the backends whose
+sessions Forge's session proxy fronts: `process` (mini mode / local dev) and
+`vm` (VMs and registered hosts).** Every browser request to such a session
+goes through Forge's `/s/{id}/session` proxy, which admits a grant and stamps
+the caller's room role on the request; a VM's broker listens only on the
+guest's loopback or its slot's private address, and Forge reaches it over its
+own SSH tunnel. On a Kubernetes
 deployment, a session's WebSocket and HTTP traffic reaches its pod through
 the shared Gateway (`charts/skuld/templates/httproute.yaml` +
 `securitypolicy.yaml`), which forwards straight to the session pod's own
@@ -35,18 +40,17 @@ deployment has opted in:
 ```
 POST /api/v1/forge/sessions/{id}/participants
 409 Conflict
-"This deployment's session pods authorize attach by ownership only
+"This Forge's kubernetes session pods authorize attach by ownership only
 (Kubernetes Gateway ext_authz), so a participant grant could never be used
-to attach. Participant invites require a session backend whose pod
-authorization consults session_participants grants (currently: process), or
-set pod_manager.room_role_source: remote (volundr/config.py's
-PodManagerConfig) to deploy this backend's session pods with
-ws_auth.room_role_source: remote."
+to attach. Set pod_manager.room_role_source: remote (volundr/config.py's
+PodManagerConfig) to deploy its session pods with ws_auth.room_role_source:
+remote, or run sessions on a proxied backend (process, vm)."
 ```
 
 **Remedy — two options:**
 
-1. Run the session you want to share on the `process` backend (mini mode).
+1. Run the session you want to share on a proxied backend: `process` (mini
+   mode) or `vm`.
 2. Set Forge's `pod_manager.room_role_source: remote` (default:
    `deployment`, unchanged), **and** deploy Kubernetes session pods with
    `wsAuth.enforce_ownership: false`. This is a property of the **whole
