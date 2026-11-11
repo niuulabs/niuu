@@ -96,6 +96,16 @@ migrations:
       memory: 128Mi
 
 envoy:
+  # -- Envoy sidecar container securityContext. Set a field to null to drop it (for example runAsUser: null where an
+  # admission policy rejects an explicit UID).
+  securityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    runAsNonRoot: true
+    runAsUser: 1000
+    capabilities:
+      drop:
+        - ALL
   enabled: false
   image:
     repository: envoyproxy/envoy
@@ -284,6 +294,8 @@ guildTransport:
 nodeSelector: {}
 tolerations: []
 affinity: {}
+# -- Pod-level security context. Empty runs as the image's user.
+podSecurityContext: {}
 podAnnotations: {}
 podLabels: {}
 deploymentAnnotations: {}

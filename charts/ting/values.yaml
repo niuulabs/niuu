@@ -407,6 +407,16 @@ workflowMigration:
 
 # Envoy sidecar proxy (JWT validation, header extraction)
 envoy:
+  # -- Envoy sidecar container securityContext. Set a field to null to drop it (for example runAsUser: null where an
+  # admission policy rejects an explicit UID).
+  securityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    runAsNonRoot: true
+    runAsUser: 1000
+    capabilities:
+      drop:
+        - ALL
   # -- Enable Envoy sidecar proxy
   enabled: false
   image:

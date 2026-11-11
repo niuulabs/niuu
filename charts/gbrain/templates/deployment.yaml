@@ -31,11 +31,10 @@ spec:
       {{- if .Values.connection.enabled }}
       serviceAccountName: {{ include "gbrain.name" . }}-connection
       {{- end }}
+      {{- with .Values.podSecurityContext }}
       securityContext:
-        runAsNonRoot: true
-        runAsUser: 1000
-        runAsGroup: 1000
-        fsGroup: 1000
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets: {{ toYaml . | nindent 8 }}
       {{- end }}
@@ -70,10 +69,10 @@ spec:
           livenessProbe:
             httpGet: {path: /health, port: http}
             periodSeconds: 20
+          {{- with .Values.securityContext }}
           securityContext:
-            allowPrivilegeEscalation: false
-            capabilities:
-              drop: [ALL]
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
           resources: {{ toYaml .Values.resources | nindent 12 }}
           volumeMounts:
             {{- if .Values.connection.enabled }}

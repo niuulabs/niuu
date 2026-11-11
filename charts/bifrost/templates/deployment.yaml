@@ -35,11 +35,8 @@ spec:
     spec:
       {{- include "bifrost.imagePullSecrets" . | nindent 6 }}
       serviceAccountName: {{ include "bifrost.serviceAccountName" . }}
-      securityContext:
-        runAsNonRoot: true
-        runAsUser: 1000
-        fsGroup: 1000
       {{- with .Values.podSecurityContext }}
+      securityContext:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       {{- with .Values.priorityClassName }}
@@ -94,13 +91,8 @@ spec:
           command:
             {{- toYaml . | nindent 12 }}
           {{- end }}
-          securityContext:
-            allowPrivilegeEscalation: false
-            readOnlyRootFilesystem: true
-            capabilities:
-              drop:
-                - ALL
           {{- with .Values.securityContext }}
+          securityContext:
             {{- toYaml . | nindent 12 }}
           {{- end }}
           args:

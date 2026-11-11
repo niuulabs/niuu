@@ -21,12 +21,10 @@ spec:
         {{- include "volundr.webNext.labels" . | nindent 8 }}
     spec:
       {{- include "volundr.imagePullSecrets" . | nindent 6 }}
+      {{- with .Values.webNext.podSecurityContext }}
       securityContext:
-        runAsNonRoot: true
-        runAsUser: 1001
-        fsGroup: 1001
-        seccompProfile:
-          type: RuntimeDefault
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       containers:
         - name: web-next
           image: {{ include "volundr.webNext.image" . }}
@@ -49,14 +47,10 @@ spec:
             periodSeconds: 10
           resources:
             {{- toYaml .Values.webNext.resources | nindent 12 }}
+          {{- with .Values.webNext.securityContext }}
           securityContext:
-            allowPrivilegeEscalation: false
-            readOnlyRootFilesystem: true
-            runAsNonRoot: true
-            runAsUser: 1001
-            capabilities:
-              drop:
-                - ALL
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
           volumeMounts:
             - name: config
               mountPath: /usr/share/nginx/html/config.json

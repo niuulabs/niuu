@@ -11,10 +11,10 @@ spec:
     spec:
       restartPolicy: Never
       automountServiceAccountToken: false
+      {{- with .Values.postgres.databaseInit.podSecurityContext }}
       securityContext:
-        runAsNonRoot: true
-        runAsUser: 26
-        runAsGroup: 26
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       containers:
         - name: database-init
           image: {{ .Values.postgres.image | quote }}
@@ -31,10 +31,10 @@ spec:
                 secretKeyRef:
                   name: {{ include "gbrain.name" . }}-db-superuser
                   key: password
+          {{- with .Values.postgres.databaseInit.securityContext }}
           securityContext:
-            allowPrivilegeEscalation: false
-            capabilities:
-              drop: [ALL]
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
           resources:
             requests: {cpu: 50m, memory: 64Mi}
             limits: {memory: 128Mi}
