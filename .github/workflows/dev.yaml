@@ -47,6 +47,16 @@ env:
   REGISTRY: ghcr.io
   CHART_REPO: oci://ghcr.io/${{ github.repository_owner }}/charts
 
+# A newer push supersedes an older run's testing, never its publishing. The
+# run-level group is per commit (it only replaces a re-run of the same commit),
+# because cancelling a whole run would also kill a publish half-way, e.g.
+# :dev moved but no v*-dev.N tag. Instead each test, build and scan job has
+# its own fixed dev-test-<job> group that cancels the older run's job when the
+# newer run's job starts. A run with any cancelled job then stops before
+# publishing: every publish job refuses a cancelled direct need
+# (`!contains(needs.*.result, 'cancelled')`; `failure()` does not count a
+# cancelled job). A run already past its tests is not touched, and publishes
+# ahead of the newer one through the dev-publish queues.
 concurrency:
   group: dev-${{ github.sha }}
   cancel-in-progress: true
@@ -157,6 +167,9 @@ jobs:
     name: Python
     needs: resolve
     if: ${{ !cancelled() && needs.resolve.outputs.promote != 'true' }}
+    concurrency:
+      group: dev-test-python
+      cancel-in-progress: true
     uses: ./.github/workflows/reusable-python-lint-test.yaml
     secrets: inherit
 
@@ -167,6 +180,9 @@ jobs:
     name: "Python: Integration Test Volundr"
     needs: resolve
     if: ${{ !cancelled() && needs.resolve.outputs.promote != 'true' }}
+    concurrency:
+      group: dev-test-python-integration-test-volundr
+      cancel-in-progress: true
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -207,6 +223,9 @@ jobs:
     name: "Python: Integration Test Ting"
     needs: resolve
     if: ${{ !cancelled() && needs.resolve.outputs.promote != 'true' }}
+    concurrency:
+      group: dev-test-python-integration-test-ting
+      cancel-in-progress: true
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -250,6 +269,9 @@ jobs:
     name: web-next
     needs: resolve
     if: ${{ !cancelled() && needs.resolve.outputs.promote != 'true' }}
+    concurrency:
+      group: dev-test-web-next
+      cancel-in-progress: true
     uses: ./.github/workflows/reusable-web-next-lint-test.yaml
     secrets: inherit
 
@@ -260,6 +282,9 @@ jobs:
     name: Helm Lint
     needs: resolve
     if: ${{ !cancelled() && needs.resolve.outputs.promote != 'true' }}
+    concurrency:
+      group: dev-test-helm-lint
+      cancel-in-progress: true
     uses: ./.github/workflows/reusable-helm-lint.yaml
 
   # ---------------------------------------------------------------------------
@@ -271,6 +296,9 @@ jobs:
     name: Containers
     needs: resolve
     if: ${{ !cancelled() && needs.resolve.outputs.promote != 'true' }}
+    concurrency:
+      group: dev-test-containers
+      cancel-in-progress: true
     permissions:
       contents: read
       packages: write
@@ -305,6 +333,9 @@ jobs:
     name: Scan
     needs: [containers, promote]
     if: ${{ !cancelled() && (needs.containers.result == 'success' || needs.promote.result == 'success') }}
+    concurrency:
+      group: dev-test-scan
+      cancel-in-progress: true
     permissions:
       contents: read
       packages: read
@@ -330,7 +361,7 @@ jobs:
       - web-next
       - helm-lint
       - containers
-    if: ${{ !failure() && !cancelled() && needs.resolve.outputs.promote != 'true' }}
+    if: ${{ !contains(needs.*.result, 'cancelled') && !failure() && !cancelled() && needs.resolve.outputs.promote != 'true' }}
     runs-on: ubuntu-latest
     concurrency:
       group: dev-publish-images
@@ -410,7 +441,7 @@ jobs:
   attest:
     name: "Attest ${{ matrix.container }}"
     needs: publish
-    if: ${{ !failure() && !cancelled() && needs.publish.result == 'success' }}
+    if: ${{ !contains(needs.*.result, 'cancelled') && !failure() && !cancelled() && needs.publish.result == 'success' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -455,6 +486,9 @@ jobs:
     name: macOS session bundle
     needs: resolve
     if: ${{ !cancelled() }}
+    concurrency:
+      group: dev-test-darwin-bundle
+      cancel-in-progress: true
     runs-on: macos-15
     permissions:
       contents: read
@@ -522,6 +556,9 @@ jobs:
     name: Scan the macOS session bundle
     needs: darwin-bundle
     if: ${{ !cancelled() && needs.darwin-bundle.result == 'success' }}
+    concurrency:
+      group: dev-test-darwin-bundle-scan
+      cancel-in-progress: true
     runs-on: macos-15
     permissions:
       contents: read
@@ -591,7 +628,7 @@ jobs:
       - python-integration-test-ting
       - web-next
       - helm-lint
-    if: ${{ !failure() && !cancelled() && needs.darwin-bundle.result == 'success' }}
+    if: ${{ !contains(needs.*.result, 'cancelled') && !failure() && !cancelled() && needs.darwin-bundle.result == 'success' }}
     runs-on: ubuntu-latest
     concurrency:
       group: dev-publish-darwin-bundle
@@ -750,8 +787,9 @@ jobs:
       - publish
       - attest
       - promote
+      - darwin-bundle
       - darwin-bundle-publish
-    if: ${{ !failure() && !cancelled() && (needs.publish.result == 'success' || needs.promote.result == 'success') }}
+    if: ${{ !contains(needs.*.result, 'cancelled') && !failure() && !cancelled() && (needs.publish.result == 'success' || needs.promote.result == 'success') }}
     runs-on: ubuntu-latest
     concurrency:
       group: dev-publish
@@ -843,7 +881,7 @@ jobs:
   build-charts:
     name: Build Helm Charts
     needs: [tag, promote]
-    if: ${{ !failure() && !cancelled() && needs.tag.outputs.should_release == 'true' }}
+    if: ${{ !contains(needs.*.result, 'cancelled') && !failure() && !cancelled() && needs.tag.outputs.should_release == 'true' }}
     runs-on: ubuntu-latest
     concurrency:
       group: dev-publish
