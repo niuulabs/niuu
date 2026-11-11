@@ -29,7 +29,7 @@ from volundr.adapters.inbound.rest_compute_hosts import (
     create_compute_hosts_router,
     create_host_join_router,
 )
-from volundr.domain.compute import ComputePoolPolicy
+from volundr.domain.compute import ComputePoolPolicy, ComputeSlot
 from volundr.domain.compute_hosts import HostHealth, HostService
 from volundr.domain.services.compute_hosts import ComputeHostService
 
@@ -49,13 +49,13 @@ class Pool:
         return ComputePoolPolicy(profile="bm", max_machines=4, warm_min=4, reuse_policy="reuse")
 
 
-def _client(*hosts, principal=ADMIN, issuer=None, pin=None):
+def _client(*hosts, principal=ADMIN, issuer=None, pin=None, bindings=None):
     repository = HostRepository(*hosts)
     issuer = issuer or Issuer()
     service = ComputeHostService(
         pool_id=POOL,
         repository=repository,
-        compute_repository=SlotLedger(),
+        compute_repository=SlotLedger(bindings),
         compute_pool=HostPool(repository),
         connectors={"direct-ssh": Connector()},
         inspector=Inspector(),
@@ -89,6 +89,7 @@ class TestAdmin:
         client, *_ = _client(held)
         body = client.get("/api/v1/forge/compute/hosts").json()
         [host] = body["hosts"]
+        assert body["can_manage"] is True
         assert host["state"] == "in_service"
         assert host["runtime"] == "host"
         assert host["connection"]["kind"] == "fake"
@@ -113,9 +114,68 @@ class TestAdmin:
         assert "root daemon" in refused["refusal"]
         assert refused["platforms"] == ["linux"]
 
-    def test_list_needs_admin(self):
-        client, *_ = _client(principal=USER)
-        assert client.get("/api/v1/forge/compute/hosts").status_code == 403
+    def test_a_non_admin_reads_the_list_without_operator_only_detail(self):
+        held = make_host(tags=("gpu",), allocation_id=uuid4())
+        session = ComputeSlot(
+            id=uuid4(),
+            allocation_id=held.allocation_id,
+            slot=0,
+            pool_id=POOL,
+            session_id=uuid4(),
+            tenant_id="tenant",
+            owner_id="someone-else",
+        )
+        client, *_ = _client(held, bindings={held.allocation_id: [session]})
+        client.post(
+            "/api/v1/forge/compute/hosts/pairing-codes",
+            json={"execution": "host@1", "connector": "direct-ssh"},
+        )
+        assert client.get("/api/v1/forge/compute/hosts").json()["pairing_codes"]
+        client.app.dependency_overrides[extract_principal] = lambda: USER
+
+        response = client.get("/api/v1/forge/compute/hosts")
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["can_manage"] is False
+        [host] = body["hosts"]
+        assert host["name"] == held.name
+        assert host["slots_free"] == 3
+        assert body["summary"]["slots_total"] == 4
+        for operator_only in ("pairing_codes", "connectors", "runtimes"):
+            assert operator_only not in body
+        assert "last_error" not in body["summary"]
+        for operator_only in (
+            "findings",
+            "host_key_fingerprint",
+            "registered_by",
+            "suggested_slots",
+        ):
+            assert operator_only not in host
+        assert host["connection"]["kind"] == "fake"
+        assert "target" not in host["connection"]
+        assert "last_error" not in host["connection"]
+        assert host["sessions"] == [{"slot": 0, "state": "starting"}]
+        assert str(session.session_id) not in response.text
+
+    def test_every_mutation_is_refused_for_a_non_admin(self):
+        host = make_host()
+        client, *_ = _client(host, principal=USER)
+        base = "/api/v1/forge/compute/hosts"
+        refused = [
+            client.post(
+                f"{base}/pairing-codes",
+                json={"execution": "host@1", "connector": "direct-ssh"},
+            ),
+            client.delete(f"{base}/pairing-codes/{uuid4()}"),
+            client.patch(f"{base}/{host.id}", json={"tags": ["x"]}),
+            client.post(f"{base}/{host.id}/drain", json={}),
+            client.post(f"{base}/{host.id}/resume"),
+            client.post(f"{base}/{host.id}/reprepare"),
+            client.post(f"{base}/{host.id}/check"),
+            client.delete(f"{base}/{host.id}"),
+        ]
+        assert [response.status_code for response in refused] == [403] * len(refused)
 
     def test_tag_sets_for_targeting(self):
         client, *_ = _client(principal=USER)

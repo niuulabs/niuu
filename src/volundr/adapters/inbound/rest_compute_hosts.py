@@ -1,6 +1,11 @@
-"""REST routes for registered hosts: admin management, and the two routes a joining host calls.
+"""REST routes for registered hosts: the host list, admin management, and the two routes a
+joining host calls.
 
-Admin routes need ``volundr:admin``. ``join.sh`` and ``join`` are authenticated by the
+The list is readable by any authenticated principal who reaches the Forge: who may reach
+a Forge is the Guild's gate (a node's visibility), not this route's. Everything that
+changes a host or mints a code needs ``volundr:admin``, and the list leaves the
+operator-only detail (pairing codes, addresses, host-key fingerprints, audit findings,
+session ids) out of the answer for anyone else. ``join.sh`` and ``join`` are authenticated by the
 host's pairing code: a scoped workload JWT (``compute_host_join``) whose hash must be a
 usable code of this pool, so no route here is open without a credential.
 """
@@ -16,7 +21,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from pydantic import BaseModel, ConfigDict, Field, JsonValue
 
 from niuu.domain.services.token_scope import COMPUTE_HOST_JOIN_SCOPE, require_scope
-from volundr.adapters.inbound.auth import extract_principal, require_role
+from volundr.adapters.inbound.auth import extract_principal
 from volundr.adapters.inbound.host_join_script import render_join_script
 from volundr.domain.compute import ComputeSlot
 from volundr.domain.compute_hosts import RegisteredHost
@@ -146,16 +151,15 @@ def create_host_join_router(service: ComputeHostService) -> APIRouter:
 def create_compute_hosts_router(service: ComputeHostService, pool: ComputePoolService) -> APIRouter:
     """Admin management; the host-facing routes are ``create_host_join_router``."""
     router = APIRouter(prefix=PREFIX, tags=["Compute hosts"])
-    admin = Depends(require_role("volundr:admin"))
 
-    async def view(host: RegisteredHost) -> dict[str, Any]:
+    async def view(host: RegisteredHost, *, manage: bool = True) -> dict[str, Any]:
         sessions = await service.live_sessions(host)
         execution = service.executions.get(host.execution)
         connector = service.connectors.get(host.connector)
         connection = (await connector.status(host)).model_dump(mode="json") if connector else None
         suggestion = service.suggestion(host)
         used = {binding.slot for binding in sessions}
-        return {
+        shown: dict[str, Any] = {
             "id": str(host.id),
             "name": host.name,
             "tags": list(host.tags),
@@ -184,6 +188,7 @@ def create_compute_hosts_router(service: ComputeHostService, pool: ComputePoolSe
             "registered_by": host.registered_by,
             "last_checked_at": host.last_checked_at.isoformat() if host.last_checked_at else None,
         }
+        return shown if manage else _read_only(shown)
 
     def pairing_view(pairing) -> dict[str, Any]:
         return {
@@ -199,10 +204,17 @@ def create_compute_hosts_router(service: ComputeHostService, pool: ComputePoolSe
             ),
         }
 
-    @router.get("", dependencies=[admin])
-    async def list_hosts() -> dict[str, Any]:
+    @router.get("")
+    async def list_hosts(principal: Principal = Depends(extract_principal)) -> dict[str, Any]:
+        """The hosts, pool summary and capacity, for anyone who reaches this Forge.
+
+        ``can_manage`` says whether the caller may change hosts. Only then does the answer
+        carry the pairing codes, the connector and runtime choices of the Add host flow,
+        and each host's address, fingerprint, audit findings and session ids.
+        """
+        manage = service.can_manage(principal)
         hosts = await service.hosts()
-        views = [await view(host) for host in hosts]
+        views = [await view(host, manage=manage) for host in hosts]
         policy = await pool.policy()
         free_by_tags: dict[tuple[str, ...], int] = {}
         for host, shown in zip(hosts, views, strict=True):
@@ -211,8 +223,9 @@ def create_compute_hosts_router(service: ComputeHostService, pool: ComputePoolSe
         for shown in views:
             by_state[shown["state"]] = by_state.get(shown["state"], 0) + 1
         slots_free = sum(shown["slots_free"] for shown in views)
-        return {
+        answer: dict[str, Any] = {
             "pool_id": service.pool_id,
+            "can_manage": manage,
             "hosts": views,
             "summary": {
                 "hosts": len(hosts),
@@ -233,26 +246,29 @@ def create_compute_hosts_router(service: ComputeHostService, pool: ComputePoolSe
                     }
                 ],
                 "capacity_shortfall": pool.capacity_shortfall,
-                "last_error": service.last_error,
             },
-            "connectors": [
-                {"binding_id": binding_id, "kind": connector.kind, "label": connector.label}
-                for binding_id, connector in service.connectors.items()
-            ],
-            "runtimes": [
-                {
-                    "execution": execution.execution,
-                    "runtime": execution.runtime.value if execution.runtime else None,
-                    "label": execution.label,
-                    "exclusive_only": execution.exclusive_only,
-                    "platforms": sorted(execution.platforms),
-                    "allowed": execution.refusal is None,
-                    "refusal": execution.refusal,
-                }
-                for execution in service.executions.values()
-            ],
-            "pairing_codes": [pairing_view(p) for p in await service.pairing_codes()],
         }
+        if not manage:
+            return answer
+        answer["summary"]["last_error"] = service.last_error
+        answer["connectors"] = [
+            {"binding_id": binding_id, "kind": connector.kind, "label": connector.label}
+            for binding_id, connector in service.connectors.items()
+        ]
+        answer["runtimes"] = [
+            {
+                "execution": execution.execution,
+                "runtime": execution.runtime.value if execution.runtime else None,
+                "label": execution.label,
+                "exclusive_only": execution.exclusive_only,
+                "platforms": sorted(execution.platforms),
+                "allowed": execution.refusal is None,
+                "refusal": execution.refusal,
+            }
+            for execution in service.executions.values()
+        ]
+        answer["pairing_codes"] = [pairing_view(p) for p in await service.pairing_codes()]
+        return answer
 
     @router.get("/tag-sets")
     async def tag_sets(_: Principal = Depends(extract_principal)) -> dict[str, Any]:
@@ -373,6 +389,30 @@ def create_compute_hosts_router(service: ComputeHostService, pool: ComputePoolSe
         }
 
     return router
+
+
+# What a host shows someone who may look but not manage: no address, key fingerprint,
+# audit findings, capacity advice, who registered it, or the ids of other people's sessions.
+_OPERATOR_ONLY_HOST_FIELDS = (
+    "suggested_slots",
+    "findings",
+    "host_key_fingerprint",
+    "registered_by",
+)
+
+
+def _read_only(shown: dict[str, Any]) -> dict[str, Any]:
+    """The host without its operator-only detail; the keys are absent, not blanked."""
+    answer = {k: v for k, v in shown.items() if k not in _OPERATOR_ONLY_HOST_FIELDS}
+    connection = shown["connection"]
+    if connection is not None:
+        answer["connection"] = {
+            k: v for k, v in connection.items() if k not in ("target", "last_error")
+        }
+    answer["sessions"] = [
+        {k: v for k, v in session.items() if k != "session_id"} for session in shown["sessions"]
+    ]
+    return answer
 
 
 def _session(binding: ComputeSlot) -> dict[str, Any]:
