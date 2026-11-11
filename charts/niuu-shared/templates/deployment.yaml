@@ -104,6 +104,10 @@ spec:
               value: {{ include "niuu-shared.databasePort" . | quote }}
             - name: DATABASE__NAME
               value: {{ .Values.database.name | quote }}
+            # niuu.service_databases replaces DATABASE__NAME with this
+            # per-service name (service "niuu-shared"), so it must carry database.name.
+            - name: NIUU_DATABASE_NAME_NIUU_SHARED
+              value: {{ .Values.database.name | quote }}
             - name: DATABASE__USER
               valueFrom:
                 secretKeyRef:

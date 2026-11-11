@@ -60,6 +60,10 @@ spec:
               value: {{ include "guild.databasePort" . | quote }}
             - name: DATABASE__NAME
               value: {{ .Values.database.name | quote }}
+            # niuu.service_databases replaces DATABASE__NAME with this
+            # per-service name (service "guild"), so it must carry database.name.
+            - name: NIUU_DATABASE_NAME_GUILD
+              value: {{ .Values.database.name | quote }}
             - name: DATABASE__USER
               valueFrom:
                 secretKeyRef:
