@@ -1,10 +1,10 @@
 # ─── Bifrost config for: kitchen-sink ────────────────────────────────────────
 #
-# Multi-provider with cost-optimised routing + local fallback.
+# Multi-provider with a local provider; each request is served by one provider.
 # ─────────────────────────────────────────────────────────────────────────────
 
 bifrost:
-  routing_strategy: failover
+  routing_strategy: direct
 
   providers:
     # Configure your primary cloud provider
@@ -15,11 +15,11 @@ bifrost:
       timeout: 120
       cost_per_token: 0.0
 
-    # Configure a failover cloud provider (optional)
-    failover:
-      api_key_env: ""                    # env var name for failover provider
+    # Configure a second cloud provider (optional)
+    secondary:
+      api_key_env: ""                    # env var name for secondary provider
       base_url: ""                       # provider API URL
-      models: []                         # list of failover models
+      models: []                         # list of secondary models
       timeout: 120
       cost_per_token: 0.0
 

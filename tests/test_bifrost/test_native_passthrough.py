@@ -307,10 +307,10 @@ class TestPassthroughConfiguration:
         )
         routed = await router.route(AnthropicRequest(model="m", messages=[]))
         assert routed.native_protocol == NativeProtocol.OPENAI_CHAT_COMPLETIONS
-        assert routed.candidates == [("a", "m")]
+        assert routed.target == ("a", "m")
         # Routing is idempotent: the routed request keeps its route.
         again = await router.route(routed.request)
-        assert again.candidates == routed.candidates
+        assert again.target == routed.target
 
 
 # ---------------------------------------------------------------------------

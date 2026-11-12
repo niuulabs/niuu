@@ -4,9 +4,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from bifrost.__main__ import _load_config
 from bifrost.auth import AuthMode
 from bifrost.config import BifrostConfig, ProviderConfig, RoutingStrategy
+
+_FAILOVER_REMOVED = "'failover' was removed.*exactly one provider.*direct"
 
 
 class TestProviderConfig:
@@ -207,7 +211,7 @@ class TestBifrostConfig:
 
     def test_defaults(self):
         cfg = BifrostConfig()
-        assert cfg.routing_strategy == RoutingStrategy.FAILOVER
+        assert cfg.routing_strategy == RoutingStrategy.DIRECT
         assert cfg.host == "0.0.0.0"
         assert cfg.port == 8088
         assert cfg.providers == {}
@@ -216,6 +220,21 @@ class TestBifrostConfig:
     def test_routing_strategy_field(self):
         cfg = BifrostConfig(routing_strategy=RoutingStrategy.ROUND_ROBIN)
         assert cfg.routing_strategy == RoutingStrategy.ROUND_ROBIN
+
+    def test_failover_strategy_is_refused_with_the_removal_message(self):
+        with pytest.raises(
+            ValueError, match="'failover' was removed.*exactly one provider.*direct"
+        ):
+            BifrostConfig.model_validate({"routing_strategy": "failover"})
+
+    def test_failover_in_model_routing_strategies_is_refused(self):
+        with pytest.raises(
+            ValueError, match="'failover' was removed.*exactly one provider.*direct"
+        ):
+            BifrostConfig.model_validate({"model_routing_strategies": {"m1": "failover"}})
+
+    def test_failover_is_not_a_routing_strategy_member(self):
+        assert "failover" not in {strategy.value for strategy in RoutingStrategy}
 
     def test_routing_strategy_from_string(self):
         cfg = BifrostConfig.model_validate({"routing_strategy": "cost_optimised"})
