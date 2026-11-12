@@ -74,7 +74,7 @@ Communication area; Skuld never reads a reply to decide what it means.
 Skuld does not read these messages and puts no limit on how many wait.
 
 With `mesh.enabled`, the session is also a Flokk mesh peer (transport `nng`
-by default) and every message is signed (Security area). With
+by default) and every message is signed with a Forge-issued peer certificate. With
 `workflow_steps.enabled`, a session takes step offers from its run's mesh and closes
 them with `workflow_step_close` (Workflows area).
 
@@ -102,7 +102,7 @@ credential no grant is offered.
 **The credential.** Forge mints a token bound to this session and launch
 (`token_use: forge_session`) and hands it to the broker. Pod managers mount it
 as a file named by `forge_mcp.token_file`. A restart revokes the previous
-launch's token. Details are in the Security area.
+launch's token. Details: [Credentials](../security/credentials.md).
 
 ## Presented files
 
@@ -156,5 +156,5 @@ A quota refusal is logged as an error.
 ## Related
 
 - Communication area: rooms, the Flokk mesh, Sleipnir.
-- Security area: `forge_session` credentials and mesh attestation.
+- [Credentials](../security/credentials.md): the `forge_session` credential. Mesh signing: [the rules](https://github.com/niuulabs/niuu/blob/dev/.claude/rules/architecture.md).
 - Workflows area: how a run hands steps to sessions.
