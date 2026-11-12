@@ -547,11 +547,11 @@ def test_cli_eval_against_fails_on_regression(tmp_path: Path) -> None:
     )
     assert result.exit_code == 0, result.output
 
-    # Artificially break the ranking: the store now holds a page the golden
-    # query "widget assembly" no longer matches by title or body at all.
+    # Artificially break retrieval: the widget page is gone, replaced by one the golden
+    # query "widget assembly" does not match by path, title or body.
     broken = {
-        **WIDGETS,
-        "technical/widgets.md": _page("Sprocket making", "Sprockets are made daily."),
+        "technical/gadgets.md": WIDGETS["technical/gadgets.md"],
+        "technical/sprockets.md": _page("Sprocket making", "Sprockets are made daily."),
     }
     result = runner.invoke(
         app,
