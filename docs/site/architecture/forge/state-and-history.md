@@ -111,5 +111,5 @@ sections 8–10).
 ## Related
 
 - [Forge overview](index.md) — the lifecycle behind the SSE events
-- Skuld area — the broker that writes the log and serves the live socket
+- [Skuld: message path](../skuld/message-path.md) — the broker that writes the log and serves the live socket
 - Communication area — SSE and WebSocket alongside the event bus and rooms

@@ -136,4 +136,4 @@ add; two sources using one mount name for different targets are refused.
 - [Forge overview](index.md) — the lifecycle these workspaces follow
 - [Where sessions run](where-sessions-run.md) — what backs the workspace on each runtime
 - Workflows area — how runs place their members in a project
-- Memory area — Mímir mounts
+- [Memory: mounts and tenants](../memory/mounts-and-tenants.md) — Mímir mounts

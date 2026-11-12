@@ -98,12 +98,12 @@ user (`niuu-slot-<n>`, from `uid_base` 61000), a subnet share of
 `10.249.0.0/16`, and required `cpu`, `memory_mib` and `pids` limits. The guest
 program `vm_slot_supervisor` creates and removes those as root over SSH. Why a
 host-mode slot never gets root, sudo or a container daemon is on the Security
-area's isolation page.
+[isolation](../security/isolation-and-secrets.md) page.
 
 ## Registered hosts
 
 A registered host is a machine you already own that joins a pool with a
-single-use pairing code (the Security area covers the pairing mechanics). Forge
+single-use pairing code (see [machine identities](../security/machine-identities.md)). Forge
 claims, cleans and audits it instead of creating and deleting it. The admin sets
 its pool, execution, connector and slots; the host chooses none of them.
 
@@ -113,7 +113,8 @@ its pool, execution, connector and slots; the host chooses none of them.
 | `ReverseSshConnector` | The host keeps one outbound SSH connection to Forge's connect endpoint and forwards a loopback port to its sshd | The chart's `hostConnect` sidecar, `endpoint`, `endpoint_host_key`, a `port_range` |
 
 Either way the session is an SSH session from Forge pinned to the host's
-registered key; the connect endpoint's limits are a Security area topic.
+registered key; the connect endpoint's limits are in
+[machine identities](../security/machine-identities.md).
 
 ## Levers
 
@@ -166,6 +167,7 @@ registered key; the connect endpoint's limits are a Security area topic.
 ## Related
 
 - [Forge overview](index.md) — the session lifecycle these backends serve
-- Security area — pairing codes, guest metadata identities, the host connect
-  endpoint, rootless slots
-- Deployment modes area — which pod manager each mode configures
+- [Security: machine identities](../security/machine-identities.md) — pairing codes,
+  guest metadata identities, the host connect endpoint
+- [Security: isolation](../security/isolation-and-secrets.md) — rootless slots
+- [Deployment modes](../deployment/index.md) — which pod manager each mode configures

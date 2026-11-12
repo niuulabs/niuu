@@ -114,7 +114,7 @@ Projects, sources and workspaces are on their own page:
 | `storage.adapter` | `…k8s_storage.InMemoryStorageAdapter` | Where workspace volumes come from | Forge config |
 
 The `forge_session` credential is bound to one session and one launch; its
-scopes and enforcement are on the Security area's credentials page.
+scopes and enforcement are on the Security [credentials](../security/credentials.md) page.
 
 ## Tradeoffs
 
@@ -144,5 +144,5 @@ scopes and enforcement are on the Security area's credentials page.
 - [Workspaces and projects](workspaces-and-projects.md) — sources, checkouts, projects, session nesting
 - [State and history](state-and-history.md) — event log, chronicle, SSE, WebSocket, replay
 - [Session orchestrator guide](https://github.com/niuulabs/niuu/blob/dev/docs/forge/openclaw-session-orchestrator-guide.md) — the full API contract for a controller
-- Skuld area — what runs inside the session
-- Security area — `forge_session` credentials and machine identities
+- [Skuld](../skuld/index.md) — what runs inside the session
+- [Security: credentials](../security/credentials.md) and [machine identities](../security/machine-identities.md) — `forge_session` tokens, hosts, guests
