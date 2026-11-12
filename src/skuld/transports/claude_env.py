@@ -56,7 +56,6 @@ import stat
 import sys
 from pathlib import Path
 from typing import get_args
-from urllib.parse import urlsplit
 
 from niuu.observability import get_observability
 from skuld.claude_auth import ClaudeAuthMode
@@ -94,14 +93,6 @@ def _read_oauth_token_file(filename: str) -> str:
         return token.decode("ascii")
     except (OSError, ValueError):
         raise ValueError("Configured Claude OAuth token file is invalid or unreadable") from None
-
-
-def _gateway_host(url: str) -> str:
-    """The scheme, host and port of *url*, without userinfo, path or query."""
-    parts = urlsplit(url)
-    host = parts.hostname or ""
-    port = f":{parts.port}" if parts.port else ""
-    return f"{parts.scheme}://{host}{port}" if parts.scheme else host
 
 
 def claude_spawn_env(
@@ -157,9 +148,9 @@ def claude_spawn_env(
         # unattended session has nobody to ask, so its tools would be refused. 0 keeps auto
         # mode on its built-in classifier, as before 2.1.319; an operator's own value wins.
         env.setdefault(CLAUDE_AUTO_MODE_SERVER_ENV, "0")
-        # Log the gateway's host only: never read it back from env, which holds the token,
-        # and never log a userinfo part a URL might carry.
-        logger.info("Claude CLI routed through the model gateway at %s", _gateway_host(base_url))
+        # Nothing from the gateway settings is logged: the URL is in the session's config,
+        # and the env this was built in also holds the token.
+        logger.info("Claude CLI routed through the configured model gateway")
         env.update(get_observability().inject())
         return env
 

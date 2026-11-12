@@ -399,8 +399,8 @@ class TestOAuthFile:
         assert captured["env"][CLAUDE_OAUTH_TOKEN_FILE_ENV] == str(oauth_file)
 
 
-def test_gateway_log_names_only_the_gateway_host(caplog) -> None:
-    """The routing log line never carries the token or a URL's userinfo."""
+def test_gateway_log_carries_nothing_from_the_gateway_settings(caplog) -> None:
+    """The routing log line never carries the token, the URL or a URL's userinfo."""
     import logging
 
     from skuld.transports.claude_env import claude_spawn_env
@@ -413,7 +413,6 @@ def test_gateway_log_names_only_the_gateway_host(caplog) -> None:
             claude_oauth_token_file=None,
         )
     assert env["ANTHROPIC_AUTH_TOKEN"] == "tok-123"
-    logged = " ".join(r.getMessage() for r in caplog.records)
-    assert "https://gateway.example:8443" in logged
-    assert "secret" not in logged
-    assert "tok-123" not in logged
+    logged = [r.getMessage() for r in caplog.records]
+    assert "Claude CLI routed through the configured model gateway" in logged
+    assert not any("secret" in m or "tok-123" in m or "gateway.example" in m for m in logged)
