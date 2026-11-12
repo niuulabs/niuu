@@ -147,3 +147,4 @@ trace must follow the message.
 - [Communication overview](index.md)
 - [Sleipnir event bus](sleipnir.md): the transports the mesh rides on.
 - [Collaboration rooms](rooms.md): shared conversation, a third path.
+- [Machine identities](../security/machine-identities.md): how mesh certificates fit with other machine credentials.

@@ -148,3 +148,4 @@ sequenceDiagram
 - [Communication overview](index.md)
 - [Sleipnir event bus](sleipnir.md): rooms publish `room.*` and `participant.*`.
 - [Flokk mesh and A2A](mesh-and-a2a.md): mesh peers appear as room participants.
+- [Channels, rooms and Forge tools](../skuld/channels-and-tools.md): the session side of rooms and channels.

@@ -114,3 +114,5 @@ Each page below has the full lever table for its mechanism.
 - [Sleipnir event bus](sleipnir.md)
 - [Collaboration rooms](rooms.md)
 - [Flokk mesh and A2A](mesh-and-a2a.md)
+- [One request end to end](../stack/request-flow.md): these paths in a real request.
+- [Credentials](../security/credentials.md): the bearer tokens behind service APIs and A2A.
