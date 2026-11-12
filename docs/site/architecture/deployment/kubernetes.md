@@ -132,3 +132,4 @@ Everything else is in each chart's `values.yaml`; see the
 - [Deployment modes](index.md) — the full mode matrix
 - [Joined machines](joined-machines.md) — hosts and Platform nodes
 - [Kubernetes deployment guide](../../operations/kubernetes-deployment.md) — render, apply, verify
+- [Security](../security/index.md) — Envoy, Cedar and every credential kind

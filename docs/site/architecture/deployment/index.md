@@ -109,3 +109,5 @@ Installed binaries and wheels carry the same files as `cli/migrations`
 - [Joined machines](joined-machines.md) — registered hosts and Platform nodes
 - [Kubernetes](kubernetes.md) — charts, profiles, GitOps and single-replica rules
 - [Configuration reference](../../reference/configuration.md) — every knob
+- [Config and adapters](../design/config-and-adapters.md) — how a class path in config picks each adapter
+- [Security](../security/index.md) — what allow-all and `oidc` mean at each entry point

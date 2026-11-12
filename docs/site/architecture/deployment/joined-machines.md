@@ -107,3 +107,4 @@ chart); `niuu join` is for hosts that come and go.
 - [Mini and Docker mode](single-host.md) — the hosts pool's home mode
 - [Kubernetes](kubernetes.md) — `computeHosts`, `hostConnect`, `guestMetadata`
 - Operator guide: [compute hosts](https://github.com/niuulabs/niuu/blob/dev/docs/operator/compute-hosts.md)
+- [Machine identities](../security/machine-identities.md) — pairing codes, node signing, the host connect endpoint

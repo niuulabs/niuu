@@ -128,3 +128,4 @@ The full schema is `CLISettings`; see the
 - [Deployment modes](index.md) — the full mode matrix
 - [Joined machines](joined-machines.md) — the hosts pool mini mode turns on
 - [Docker mode guide](../../operations/docker-mode.md) — installer and wizard walkthrough
+- [Security](../security/index.md) — edge auth and identity adapters
