@@ -34,8 +34,8 @@ schema migrations. The application remains non-superuser; CloudNativePG generate
 Use **Inspect → Update** to move a Flux-managed instance to the chart/image
 versions configured by its deployment target, preserving its database and settings.
 
-Flux deployment targets supply the cluster and stable instance identity to both
-charts. Observatory's existing Kubernetes discovery picks them up when its
+Flux deployment targets supply the cluster and stable instance identity to the
+gbrain chart. Observatory's existing Kubernetes discovery picks them up when its
 namespace scope and label selector cover the deployment target. Each instance
 keeps its own identity, health and service endpoint. Managed gbrain databases
 carry the same cluster label and a separate database identity linked from the

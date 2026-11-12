@@ -62,8 +62,7 @@ Free-form synthesis: interpretation, implications, open questions.
 
 **Typed relationships (additive, NIU-1058):** a relationship line may carry a
 machine-readable label using `— rel: <type> —` between the wikilink and the
-description (e.g. `works_at`, `part_of`, `supplies`, `leads`). Typed edges are
-surfaced by `GET /mimir/related?rel=<type>` and the graph API; untyped lines
+description (e.g. `works_at`, `part_of`, `supplies`, `leads`). Untyped lines
 remain fully valid and are treated as unlabeled edges.
 
 **Rules:**

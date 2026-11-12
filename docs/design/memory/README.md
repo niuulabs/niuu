@@ -373,7 +373,8 @@ Mockups come before any of these is built.
 - the registry and the knowledge deployment port with its local and Flux
   adapters;
 - loud fan-out across mounts (`CompositeMimirAdapter`), moved into the gateway;
-- the eval harness, and ranking with its debug breakdown.
+- the eval harness's scoring, comparison and replay, run against a configured
+  memory system.
 
 **Reshaped:**
 
@@ -389,7 +390,9 @@ Mockups come before any of these is built.
 
 **Deleted:**
 
-- the Markdown wiki adapter, its search index, lint and doctor;
+- the Markdown wiki adapter, its search index, ranking, lint and doctor;
+  the Mímir service names its memory system in config instead;
+- the `mimir` (wiki) kind of knowledge deployment; only gbrain is deployed;
 - threads on the port and adapters;
 - `/dreams`, the dream entries in `/activity`, `/ravns/bindings`;
 - `build_mimir_tools`, `MimirQueryTool`, and the unused graph, usage and
@@ -405,8 +408,14 @@ Mockups come before any of these is built.
 
 Each step ends with a live proof, not only tests.
 
+0. **Delete what section 11 lists, first.** Building on a clean slate keeps the
+   new code from growing around the old flows. Things that break stay broken
+   until the step that replaces them. Existing wiki content is not imported
+   yet, so this does not roll out to a cluster with live wiki data before the
+   import exists.
 1. **Gateway, `MemoryBackend`, gbrain backend, org and project layers, the
-   `memory` server.** Proof: a Claude Code session and a Codex session in one
+   `memory` server, and the import of existing wiki content into gbrain.**
+   Proof: a Claude Code session and a Codex session in one
    project both answer "who owns the booking cut-over?" from the project layer
    with a citation; a write outside the write prefixes becomes a proposal for
    both; a session of another org cannot see any of it.
@@ -418,7 +427,6 @@ Each step ends with a live proof, not only tests.
    the compile workflow updates its page, and the timeline row links to the
    ticket.
 4. **Person and resident layers, and the screens.** Mockups first.
-5. **Delete what section 11 lists.**
 
 ## 13. Open questions
 

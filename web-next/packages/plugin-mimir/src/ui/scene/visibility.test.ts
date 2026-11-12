@@ -222,15 +222,6 @@ describe('computeVisibility — path', () => {
   });
 });
 
-describe('computeVisibility — disputedIds', () => {
-  it('flags disputed nodes regardless of other modes', () => {
-    const graph: MimirGraph = { nodes: [node('a'), node('b')], edges: [] };
-    const result = computeVisibility(graph, { disputedIds: ['a'] });
-    expect(result.nodes.get('a')?.disputed).toBe(true);
-    expect(result.nodes.get('b')?.disputed).toBe(false);
-  });
-});
-
 describe('computeVisibility — contradiction edges', () => {
   it('flags contradicts/disagrees_with/conflicts_with as contradiction edges', () => {
     const graph: MimirGraph = {

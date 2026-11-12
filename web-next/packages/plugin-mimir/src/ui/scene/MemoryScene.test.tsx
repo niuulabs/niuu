@@ -77,7 +77,6 @@ function baseProps(overrides: Partial<MemorySceneProps> = {}): MemorySceneProps 
     asOf: null,
     markers: [],
     questions: [],
-    disputedIds: new Set(),
     camera: null,
     onSelectNode: vi.fn(),
     onBackgroundClick: vi.fn(),
@@ -508,14 +507,6 @@ describe('MemoryScene — path', () => {
     render(<MemoryScene {...baseProps({ path: ['/a', '/b'] })} />);
     expect(screen.getByTestId('memory-label-/a')).toBeInTheDocument();
     expect(screen.getByTestId('memory-label-/b')).toBeInTheDocument();
-  });
-});
-
-describe('MemoryScene — disputedIds', () => {
-  it('renders without throwing when a node is disputed', () => {
-    expect(() =>
-      render(<MemoryScene {...baseProps({ disputedIds: new Set(['/a']) })} />),
-    ).not.toThrow();
   });
 });
 

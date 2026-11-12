@@ -129,7 +129,7 @@ imagePullSecrets:
 {{- end }}
 
 {{/*
-Claim name for the wiki data PVC
+Claim name for the state directory PVC
 */}}
 {{- define "mimir.pvcName" -}}
 {{- if .Values.persistence.existingClaim -}}
@@ -147,4 +147,15 @@ checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sh
 {{- if .Values.envoy.enabled }}
 checksum/envoy: {{ include (print $.Template.BasePath "/envoy-configmap.yaml") . | sha256sum }}
 {{- end }}
+{{- end }}
+
+{{/*
+Directory the backend token Secret is mounted at, and the token file inside it
+*/}}
+{{- define "mimir.backendTokenDir" -}}
+/etc/mimir-backend
+{{- end }}
+
+{{- define "mimir.backendTokenFile" -}}
+{{ include "mimir.backendTokenDir" . }}/{{ required "config.backend.apiTokenSecret.key is required" .Values.config.backend.apiTokenSecret.key }}
 {{- end }}

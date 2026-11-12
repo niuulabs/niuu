@@ -33,13 +33,11 @@ export const mimirPlugin = definePlugin({
     { id: 'registry', label: 'Library', path: '/mimir/registry' },
   ],
   routes: (rootRoute) => [
-    ...['health', 'analytics'].map((section) =>
-      createRoute({
-        getParentRoute: () => rootRoute,
-        path: `/mimir/registry/${section}`,
-        component: RegistryWorkspace,
-      }),
-    ),
+    createRoute({
+      getParentRoute: () => rootRoute,
+      path: '/mimir/registry/analytics',
+      component: RegistryWorkspace,
+    }),
 
     createRoute({
       getParentRoute: () => rootRoute,
@@ -62,21 +60,6 @@ export const mimirPlugin = definePlugin({
     }),
     createRoute({
       getParentRoute: () => rootRoute,
-      path: '/mimir/health',
-      component: RegistryWorkspace,
-    }),
-    createRoute({
-      getParentRoute: () => rootRoute,
-      path: '/mimir/lint',
-      component: RegistryWorkspace,
-    }),
-    createRoute({
-      getParentRoute: () => rootRoute,
-      path: '/mimir/doctor',
-      component: RegistryWorkspace,
-    }),
-    createRoute({
-      getParentRoute: () => rootRoute,
       path: '/mimir/analytics',
       component: RegistryWorkspace,
     }),
@@ -93,9 +76,19 @@ export const mimirPlugin = definePlugin({
         });
       },
     }),
-    // Legacy tabs — Pages/Sources/Search/Graph/Ingest/Entities — are all the
-    // one Memory scene now; only the mount scope still carries over.
-    ...['pages', 'sources', 'search', 'graph', 'ingest', 'entities'].map((legacy) =>
+    // Legacy tabs — Pages/Sources/Search/Graph/Ingest/Entities, and the retired
+    // Health/Lint/Doctor — are all the one Memory scene now; only the mount scope still carries over.
+    ...[
+      'pages',
+      'sources',
+      'search',
+      'graph',
+      'ingest',
+      'entities',
+      'health',
+      'lint',
+      'doctor',
+    ].map((legacy) =>
       createRoute({
         getParentRoute: () => rootRoute,
         path: `/mimir/${legacy}`,
@@ -114,7 +107,6 @@ export type {
   IMountAdapter,
   IPageStore,
   IEmbeddingStore,
-  ILintEngine,
   SearchMode,
   EmbeddingSearchResult,
   RecentWrite,
@@ -132,16 +124,11 @@ export type {
   Page,
   SearchResult,
 } from './domain/page';
-export type { LintRule, IssueSeverity, LintIssue, LintReport } from './domain/lint';
-export type { WriteRoutingRule, RouteTestResult } from './domain/routing';
-export { resolveRoute } from './domain/routing';
 export type { Source, OriginType } from './domain/source';
 export type { EntityKind, EntityMeta } from './domain/entity';
 export type { RegistryMount } from './domain/registry';
 export type { EvalMetrics, EvalReport, QueryLogEntry, QueryStats } from './domain/analytics';
 export { zeroResultQueries } from './domain/analytics';
-export type { DoctorStatus, DoctorCheck, DoctorReport } from './domain/doctor';
-export { fixableChecks } from './domain/doctor';
 export type { WikilinkTarget } from './domain';
 export { resolveWikilink, detectBrokenWikilinks } from './domain';
 
@@ -153,5 +140,3 @@ export { PageTypeGlyph } from './ui/components/PageTypeGlyph';
 export { MountChip } from './ui/components/MountChip';
 export { MemoryExploreView } from './ui/memory/MemoryExploreView';
 export { MemoryPagePage } from './ui/memory/MemoryPagePage';
-export { ProofPill } from './ui/memory/ProofPill';
-export type { FactEvidence, EvidenceTrend, RelatedPage, ReviseRequest } from './domain/evidence';

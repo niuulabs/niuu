@@ -220,10 +220,11 @@ extraVolumes: []
 deploymentAnnotations: {}
 
 # ---------------------------------------------------------------------------
-# Persistent storage for the Mímir wiki
+# Persistent storage for the service's own state (mount registry, eval captures).
+# Knowledge lives in the gbrain backend, not here.
 # ---------------------------------------------------------------------------
 persistence:
-  # -- Enable a PersistentVolumeClaim for the wiki data.
+  # -- Enable a PersistentVolumeClaim for the service state directory.
   enabled: true
   # -- Use an existing PVC instead of creating one.
   existingClaim: ""
@@ -265,8 +266,30 @@ config:
   announceUrl: ""
   # -- Category filter for domain-scoped Mímirs. Empty = all categories.
   categories: []
-  # -- Path inside the container where the wiki is stored.
+  # -- Path inside the container for the service's own state: the mount registry and
+  # eval captures. It holds no knowledge.
   dataPath: "/data/mimir"
+  # -- The store this Mímir serves. Required: there is no default store, and the chart
+  # refuses to render without mcpUrl and apiTokenSecret.name.
+  backend:
+    # -- MCP endpoint of the gbrain instance, such as http://gbrain:3131/mcp.
+    mcpUrl: ""
+    # -- Secret holding the gbrain bearer token (`gbrain auth create <name>`). It is
+    # mounted read-only and the service reads the token from the file.
+    apiTokenSecret:
+      name: ""
+      key: token
+    # -- gbrain /ingest endpoint for bulk markdown writes. Empty = not used.
+    ingestUrl: ""
+    # -- Seconds before a call to gbrain times out. Null = the adapter's own default.
+    timeoutSeconds: null
+    # -- Results requested per search. Null = the adapter's own default.
+    searchLimit: null
+    # -- Model gbrain synthesises answers with, as <provider>:<model>. Empty = unset.
+    thinkModel: ""
+    # -- Whether gbrain may rewrite each query into variants before retrieving.
+    # Null = the adapter's own default.
+    queryExpansion: null
   # Record real search traffic for service diagnostics.
   evalCapture: true
   # -- HTTP port the service listens on.

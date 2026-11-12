@@ -364,33 +364,27 @@ class TestSkuldEnv:
 
         assert "SKULD__SESSION__RESUME_SESSION_ID" not in env
 
-    def test_build_env_includes_localized_mcp_servers(self) -> None:
-        spec = SessionSpec(
-            values={
-                "mcpServers": [
-                    {
-                        "name": "mimir-local",
-                        "type": "stdio",
-                        "command": "python3",
-                        "args": ["-m", "mimir", "mcp", "--path", "/mimir/local", "--name", "local"],
-                    }
-                ]
-            },
-            pod_spec=PodSpecAdditions(),
-        )
+    def test_build_env_passes_mcp_servers_through_unchanged(self) -> None:
+        servers = [
+            {
+                "name": "mimir-local",
+                "type": "stdio",
+                "command": "python3",
+                "args": ["-m", "mimir", "mcp", "--name", "local"],
+            }
+        ]
+        spec = SessionSpec(values={"mcpServers": servers}, pod_spec=PodSpecAdditions())
 
         env = LocalProcessPodManager._build_env(spec, Path("/tmp/ws"))
 
-        servers = json.loads(env["SKULD__MCP_SERVERS"])
-        assert servers[0]["args"] == [
-            "-m",
-            "mimir",
-            "mcp",
-            "--path",
-            "/tmp/ws/.mimir-local",
-            "--name",
-            "local",
-        ]
+        assert json.loads(env["SKULD__MCP_SERVERS"]) == servers
+
+    def test_build_env_without_mcp_servers_sets_no_mcp_env(self) -> None:
+        spec = SessionSpec(values={}, pod_spec=PodSpecAdditions())
+
+        env = LocalProcessPodManager._build_env(spec, Path("/tmp/ws"))
+
+        assert "SKULD__MCP_SERVERS" not in env
 
 
 # ------------------------------------------------------------------

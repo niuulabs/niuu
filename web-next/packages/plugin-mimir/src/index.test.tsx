@@ -40,19 +40,25 @@ describe('mimirPlugin', () => {
     expect(mimirPlugin.tabs?.map((t) => t.path)).toEqual(['/mimir', '/mimir/registry']);
   });
 
-  it('keeps /mimir/read and the registry/health/lint/doctor/analytics routes live with their real components', () => {
+  it('keeps /mimir/read and the registry/analytics routes live with their real components', () => {
     const paths = routesOf().map((r) => r.options.path);
     for (const kept of [
       '/mimir/read',
       '/mimir/registry',
-      '/mimir/health',
-      '/mimir/lint',
-      '/mimir/doctor',
+      '/mimir/registry/analytics',
       '/mimir/analytics',
     ]) {
       expect(paths, `missing ${kept}`).toContain(kept);
     }
     expect(routeAt('/mimir/registry').options.component).toBeDefined();
+  });
+
+  it('no longer serves the retired health, lint or doctor views', () => {
+    const paths = routesOf().map((r) => r.options.path);
+    expect(paths).not.toContain('/mimir/registry/health');
+    for (const retired of ['health', 'lint', 'doctor']) {
+      expect(routeAt(`/mimir/${retired}`).options.component).toBeUndefined();
+    }
   });
 
   it('/mimir/ask redirects to /mimir carrying q and mount, answered inline in the scene now', () => {
@@ -66,7 +72,17 @@ describe('mimirPlugin', () => {
     expect(redirected.options.search).toEqual({ q: 'hello' });
   });
 
-  for (const legacy of ['pages', 'sources', 'search', 'graph', 'ingest', 'entities']) {
+  for (const legacy of [
+    'pages',
+    'sources',
+    'search',
+    'graph',
+    'ingest',
+    'entities',
+    'health',
+    'lint',
+    'doctor',
+  ]) {
     it(`legacy /mimir/${legacy} redirects to /mimir, keeping only the mount`, () => {
       const redirected = caughtRedirect(`/mimir/${legacy}`, {
         mount: 'platform',

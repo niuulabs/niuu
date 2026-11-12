@@ -16,10 +16,7 @@ import type { Page, PageMeta, SearchResult } from '../domain/page';
 import type { MimirGraph, LiveActivity } from '../domain/api-types';
 import type { Source } from '../domain/source';
 import type { QueryStats } from '../domain/analytics';
-import type { LintReport } from '../domain/lint';
-import type { FactEvidence, RelatedPage } from '../domain/evidence';
 import { toPageMeta } from '../domain/page';
-import { tallySeverity } from '../domain/lint';
 import { encodeNodeId } from '../domain/graphIndex';
 
 export const FAKE_MOUNTS: Mount[] = [
@@ -33,7 +30,6 @@ export const FAKE_MOUNTS: Mount[] = [
     status: 'healthy',
     pages: 3,
     sources: 6,
-    lintIssues: 1,
     lastWrite: '2026-04-19T14:02:00Z',
     embedding: 'all-minilm-l6-v2',
     sizeKb: 512,
@@ -49,7 +45,6 @@ export const FAKE_MOUNTS: Mount[] = [
     status: 'healthy',
     pages: 2,
     sources: 3,
-    lintIssues: 0,
     lastWrite: '2026-04-18T09:00:00Z',
     embedding: 'all-mpnet-base-v2',
     sizeKb: 256,
@@ -261,72 +256,12 @@ export const FAKE_LIVE_ACTIVITY: LiveActivity[] = [
   },
 ];
 
-export const FAKE_LINT_REPORT: LintReport = {
-  issues: [
-    {
-      id: 'lint-l02-1',
-      rule: 'L02',
-      severity: 'warn',
-      page: '/platform/guilds-gateway',
-      mount: 'platform',
-      autoFix: false,
-      message: '[CONTRADICTION] disagrees with Gateway routing on ymir',
-    },
-  ],
-  pagesChecked: FAKE_PAGES.length,
-  summary: tallySeverity([]),
-  mounts: [],
-};
-
-const FAKE_RELATED: Record<string, RelatedPage[]> = {
-  '/platform/gateway-routing': [
-    { path: '/platform/cedar-authorization', hop: 1, rel: 'depends_on', direction: 'out' },
-    { path: '/platform/guilds-gateway', hop: 1, rel: null, direction: 'out' },
-    { path: '/shared/openbao-policy', hop: 1, rel: 'same_failure', direction: 'out' },
-    { path: '/shared/volundr', hop: 2, rel: 'routes_for', direction: 'out' },
-  ],
-  '/shared/openbao-policy': [
-    { path: '/platform/gateway-routing', hop: 1, rel: 'same_failure', direction: 'in' },
-    { path: '/shared/volundr', hop: 1, rel: 'routes_for', direction: 'out' },
-  ],
-};
-
-const FAKE_EVIDENCE: Record<string, FactEvidence[]> = {
-  '/platform/gateway-routing': [
-    {
-      fact: 'The route tables live in values-cedar.yaml, which wins over values-niuu.yaml.',
-      proofCount: 4,
-      trend: 'stable',
-      latestSupport: '2026-04-19',
-      supportingDates: ['2026-04-19', '2026-03-20'],
-      sourceProofCount: 2,
-    },
-    {
-      fact: 'Helm replaces lists, so the chart defaults must be repeated.',
-      proofCount: 1,
-      trend: 'new',
-      latestSupport: null,
-      supportingDates: [],
-      sourceProofCount: 0,
-    },
-    {
-      fact: 'Guild has no gateway of its own.',
-      proofCount: 1,
-      trend: 'weakening',
-      latestSupport: '2026-03-05',
-      supportingDates: ['2026-03-05'],
-      sourceProofCount: 1,
-    },
-  ],
-};
-
 export interface FakeMimirOverrides {
   pages?: Page[];
   graph?: MimirGraph;
   mounts?: Mount[];
   queryStats?: QueryStats;
   liveActivity?: LiveActivity[];
-  lintReport?: LintReport;
   /** Force ingestUrl/ingestFile to reject, to test the error path. */
   ingestShouldFail?: boolean;
 }
@@ -337,22 +272,12 @@ export function createFakeMimirService(overrides: FakeMimirOverrides = {}): IMim
   const mounts = overrides.mounts ?? FAKE_MOUNTS;
   const queryStats = overrides.queryStats ?? FAKE_QUERY_STATS;
   const liveActivity = overrides.liveActivity ?? FAKE_LIVE_ACTIVITY;
-  const lintReport = overrides.lintReport ?? FAKE_LINT_REPORT;
   let sources = [...FAKE_SOURCES];
 
   return {
     mounts: {
       async listMounts() {
         return mounts;
-      },
-      async listRoutingRules() {
-        return [];
-      },
-      async upsertRoutingRule(rule) {
-        return rule;
-      },
-      async deleteRoutingRule() {
-        // no-op in fake
       },
       async getRecentWrites() {
         return [];
@@ -362,12 +287,6 @@ export function createFakeMimirService(overrides: FakeMimirOverrides = {}): IMim
       },
       async getQueryStats() {
         return queryStats;
-      },
-      async getDoctor() {
-        return null;
-      },
-      async runDoctorFixes() {
-        return null;
       },
     },
     pages: {
@@ -470,31 +389,9 @@ export function createFakeMimirService(overrides: FakeMimirOverrides = {}): IMim
         if (!options?.since) return liveActivity;
         return liveActivity.filter((a) => a.timestamp > options.since!);
       },
-      async getEvidence(path) {
-        return FAKE_EVIDENCE[path] ?? [];
-      },
-      async getRelated(path, depth = 1) {
-        return (FAKE_RELATED[path] ?? []).filter((r) => r.hop <= depth);
-      },
-      async revisePage(request) {
-        const page = pages.find((p) => p.path === request.path);
-        if (!page) throw new Error(`unknown page: ${request.path}`);
-        return page;
-      },
     },
     embeddings: {
       async semanticSearch() {
-        return [];
-      },
-    },
-    lint: {
-      async getLintReport() {
-        return lintReport;
-      },
-      async runAutoFix() {
-        return lintReport;
-      },
-      async getActivityLog() {
         return [];
       },
     },

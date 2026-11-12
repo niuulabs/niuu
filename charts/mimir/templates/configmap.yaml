@@ -17,16 +17,30 @@ data:
   MIMIR_CATEGORIES: {{ .Values.config.categories | join "," | quote }}
   {{- end }}
 
-  {{- if or .Values.knowledgeDeployment .Values.niuu.tenantId .Values.config.observability .Values.config.liveActivity }}
   config.yaml: |
     tenant_id: {{ .Values.niuu.tenantId | default "" | quote }}
+    backend:
+      adapter: mimir.adapters.gbrain.GBrainMimirAdapter
+      mcp_url: {{ required "config.backend.mcpUrl is required: Mímir has no default store; set it to the gbrain /mcp endpoint" .Values.config.backend.mcpUrl | quote }}
+      api_token_file: {{ include "mimir.backendTokenFile" . | quote }}
+      {{- with .Values.config.backend.ingestUrl }}
+      ingest_url: {{ . | quote }}
+      {{- end }}
+      {{- if not (kindIs "invalid" .Values.config.backend.timeoutSeconds) }}
+      timeout_seconds: {{ .Values.config.backend.timeoutSeconds }}
+      {{- end }}
+      {{- if not (kindIs "invalid" .Values.config.backend.searchLimit) }}
+      search_limit: {{ .Values.config.backend.searchLimit }}
+      {{- end }}
+      {{- with .Values.config.backend.thinkModel }}
+      think_model: {{ . | quote }}
+      {{- end }}
+      {{- if not (kindIs "invalid" .Values.config.backend.queryExpansion) }}
+      query_expansion: {{ .Values.config.backend.queryExpansion }}
+      {{- end }}
     {{- if .Values.knowledgeDeployment }}
     deployment:
-      {{- if eq .Values.knowledgeDeployment.adapter "mimir.adapters.flux.FluxKnowledgeDeploymentAdapter" }}
-      {{- toYaml (mergeOverwrite (deepCopy .Values.knowledgeDeployment) (dict "envoy" .Values.envoy)) | nindent 6 }}
-      {{- else }}
       {{- toYaml .Values.knowledgeDeployment | nindent 6 }}
-      {{- end }}
     {{- end }}
     {{- with .Values.config.observability }}
     observability:
@@ -36,4 +50,3 @@ data:
     live_activity:
       {{- toYaml . | nindent 6 }}
     {{- end }}
-  {{- end }}

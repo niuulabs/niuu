@@ -27,7 +27,14 @@ WORKLOAD_KINDS = {"Deployment", "StatefulSet", "Job", "CronJob"}
 CHARTS: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
     "bifrost": (("--set", "envoy.enabled=true"), ("podSecurityContext",)),
     "mimir": (
-        ("--set", "envoy.enabled=true"),
+        (
+            "--set",
+            "envoy.enabled=true",
+            "--set",
+            "config.backend.mcpUrl=http://gbrain:3131/mcp",
+            "--set",
+            "config.backend.apiTokenSecret.name=gbrain-token",
+        ),
         ("podSecurityContext", "envoy.securityContext"),
     ),
     "gbrain": (

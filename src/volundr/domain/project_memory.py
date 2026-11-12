@@ -58,7 +58,7 @@ _WIKI_INSTRUCTIONS = """\
 This session has Mimir memory mounts (the `mimir-*` MCP servers). They hold wiki pages; they \
 do not offer typed-fact tools. Use them:
 
-1. At the start of the work, call `mimir_search` (and `mimir_related` on what it finds) for \
+1. At the start of the work, call `mimir_search` for \
 the subjects the task is about, and read the pages that matter with `mimir_read` before you begin.
 2. Before you re-derive something, search the mounts to see whether it is already written down.
 3. Call `mimir_write` only for outcomes you have checked (a test that passed, a file you \
@@ -157,7 +157,6 @@ class RegistryTarget:
     enabled: bool = True
     role: str = "shared"
     url: str = ""
-    path: str = ""
     adapter: str = ""
     kwargs: dict[str, Any] = field(default_factory=dict)
     secret_kwargs_env: dict[str, str] = field(default_factory=dict)
@@ -165,12 +164,6 @@ class RegistryTarget:
     categories: tuple[str, ...] = ()
     default_read_priority: int = 10
     facts: bool = False
-
-    @property
-    def served_by_forge(self) -> bool:
-        """True when a session reaches this entry through a Mimir server Forge starts for it
-        (a plain path), not through the Mimir that owns it (a url or an adapter)."""
-        return bool(self.path) and not self.url and not self.adapter
 
 
 class ProjectMemoryRepository(ABC):
@@ -242,8 +235,6 @@ def mount_ref(mount: ProjectMemoryMount, target: RegistryTarget) -> dict[str, An
         ref["secret_kwargs_env"] = dict(target.secret_kwargs_env)
     if target.url:
         ref["url"] = target.url
-    if target.path:
-        ref["path"] = target.path
     if target.auth_ref:
         ref["auth_ref"] = target.auth_ref
     if target.categories:
@@ -286,19 +277,16 @@ class ProjectMemoryResolver:
             reason = "does not exist or is not reachable by this owner's organization"
         elif not target.enabled:
             reason = "is disabled in the registry"
-        elif not (target.url or target.path or target.adapter):
-            reason = (
-                "has no url, adapter or path a session can use (a path on another host's "
-                "disk is not one)"
-            )
+        elif not (target.url or target.adapter):
+            reason = "has no url or adapter a session can use"
         else:
-            if mount.restricts and not target.served_by_forge:
+            if mount.restricts:
                 raise MemoryMountUnenforceableError(
-                    f"Project memory mount {mount.name!r} limits writes, but registry entry "
-                    f"{mount.registry_entry_id!r} is served by its own Mimir over a url or "
-                    "adapter, where Forge cannot hold that limit. Mount it with access "
-                    "read_write and no prefixes (that Mimir decides what a session may "
-                    "write), or point the mount at an entry that is a plain path."
+                    f"Project memory mount {mount.name!r} limits writes, but Forge cannot "
+                    f"hold that limit for registry entry {mount.registry_entry_id!r}: it is "
+                    "served by its own Mimir, and limits are not enforceable until the "
+                    "memory gateway lands. Mount it with access read_write and no prefixes "
+                    "(that Mimir decides what a session may write)."
                 )
             return target
         raise MemoryMountUnavailableError(

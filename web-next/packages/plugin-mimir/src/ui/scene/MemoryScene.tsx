@@ -191,7 +191,6 @@ export function MemoryScene(props: MemorySceneProps): React.JSX.Element {
     markers,
     questions,
     showQuestions,
-    disputedIds,
     camera,
     onSelectNode,
     onBackgroundClick,
@@ -210,9 +209,9 @@ export function MemoryScene(props: MemorySceneProps): React.JSX.Element {
     [layout3D, view],
   );
   const visibility = useMemo(
-    () => computeVisibility(graph, { hiddenGroups, focus, answers, path, asOf, disputedIds }),
+    () => computeVisibility(graph, { hiddenGroups, focus, answers, path, asOf }),
 
-    [graph, hiddenGroups, focus, answers, path, asOf, disputedIds],
+    [graph, hiddenGroups, focus, answers, path, asOf],
   );
 
   const nodeById = useMemo(() => new Map(graph.nodes.map((n) => [n.id, n])), [graph]);
@@ -714,8 +713,6 @@ export function MemoryScene(props: MemorySceneProps): React.JSX.Element {
       alphas[i] = LIT_ALPHA[v.litLevel];
       nodeIdByIndex.push(id);
 
-      if (v.disputed)
-        addRing(bag.rings, node.position, sizes[i]! * NODE3D.DISPUTE_RING_SCALE, palette.dispute);
       if (v.bornRing)
         addRing(bag.rings, node.position, sizes[i]! * NODE3D.BORN_RING_SCALE, colourHex);
     });

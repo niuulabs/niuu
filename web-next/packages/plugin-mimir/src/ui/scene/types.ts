@@ -86,8 +86,6 @@ export interface MemorySceneProps {
   asOf: string | null;
   markers: readonly SceneMarker[];
   questions: readonly SceneQuestion[];
-  /** Node ids of pages flagged with a contradiction (lint L02); drawn with an amber ring. */
-  disputedIds: ReadonlySet<string>;
   camera: SceneCameraCommand | null;
   /** Click on a page. `shift` is true for shift-click (trace a path). */
   onSelectNode: (nodeId: string, options: { shift: boolean }) => void;

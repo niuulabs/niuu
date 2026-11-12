@@ -258,10 +258,6 @@
   color: var(--brand-300, var(--color-accent-cyan));
 }
 
-.mm-subnav-btn__glyph--err {
-  color: var(--color-critical, var(--color-accent-red));
-}
-
 .mm-subnav-btn__glyph--warn {
   color: var(--brand-400);
 }
@@ -280,10 +276,6 @@
   font-size: 10px;
   color: var(--color-text-faint, var(--color-text-muted));
   flex-shrink: 0;
-}
-
-.mm-subnav-btn__count--red {
-  color: var(--color-critical, var(--color-accent-red));
 }
 
 .mm-subnav-btn__initials {

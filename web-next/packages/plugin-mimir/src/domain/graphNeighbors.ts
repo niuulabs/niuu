@@ -1,10 +1,8 @@
 /**
  * Pure BFS over `MimirGraph.edges` for the Focus panel's "Links" list.
  *
- * `IPageStore.getRelated` takes no mount and 404s for a page kept on a
- * mount other than the serving instance's own — it cannot be used to walk
- * links for an arbitrary focused node. The graph already has every edge
- * (both directions), scoped correctly, so BFS over it is used instead.
+ * The graph already has every edge (both directions), scoped correctly, so
+ * BFS over it walks the links of an arbitrary focused node.
  */
 import type { GraphNode, MimirGraph } from './api-types';
 import { relationLabel } from './relationLabel';

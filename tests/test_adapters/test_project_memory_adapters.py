@@ -153,8 +153,8 @@ async def test_the_directory_reads_entries_for_a_tenant(tmp_path):
             default_read_priority=3,
             facts=True,
         ),
-        MimirRegistryEntry(id="e-other", name="other", tenant_id="globex", path="/o"),
-        MimirRegistryEntry(id="e-global", name="shared", path="/g", enabled=False),
+        MimirRegistryEntry(id="e-other", name="other", tenant_id="globex", url="https://o.example"),
+        MimirRegistryEntry(id="e-global", name="shared", url="https://g.example", enabled=False),
     )
     directory = MimirRegistryFileDirectory(registry_path=str(path))
 
@@ -173,7 +173,9 @@ async def test_the_directory_reads_entries_for_a_tenant(tmp_path):
     assert (
         await directory.resolve("e-global", tenant_id="acme", owner_id="alice")
     ).enabled is False
-    assert (await directory.resolve("e-global", tenant_id="", owner_id="")).path == "/g"
+    assert (
+        await directory.resolve("e-global", tenant_id="", owner_id="")
+    ).url == "https://g.example"
 
 
 async def test_a_registry_that_cannot_be_read_raises(tmp_path):
@@ -219,7 +221,7 @@ def test_an_adapter_of_the_wrong_type_is_fatal_at_startup():
 
 
 def test_the_registry_file_round_trips_as_json(tmp_path):
-    path = registry(tmp_path, MimirRegistryEntry(id="x", name="n", path="/p"))
+    path = registry(tmp_path, MimirRegistryEntry(id="x", name="n", url="https://p.example"))
     assert json.loads(path.read_text())[0]["id"] == "x"
 
 

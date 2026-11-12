@@ -43,7 +43,6 @@ const validMount = {
   status: 'healthy',
   pages: 120,
   sources: 45,
-  lintIssues: 3,
   lastWrite: '2026-04-18T10:00:00Z',
   embedding: 'sentence-transformers/all-MiniLM-L6-v2',
   sizeKb: 2048,
@@ -81,10 +80,6 @@ describe('mountSchema', () => {
     expect(() => mountSchema.parse({ ...validMount, sources: -1 })).toThrow();
   });
 
-  it('rejects negative lintIssues count', () => {
-    expect(() => mountSchema.parse({ ...validMount, lintIssues: -1 })).toThrow();
-  });
-
   it('rejects negative sizeKb', () => {
     expect(() => mountSchema.parse({ ...validMount, sizeKb: -1 })).toThrow();
   });
@@ -112,7 +107,7 @@ describe('mountSchema', () => {
   });
 
   it('accepts zero pages and sources', () => {
-    const result = mountSchema.parse({ ...validMount, pages: 0, sources: 0, lintIssues: 0 });
+    const result = mountSchema.parse({ ...validMount, pages: 0, sources: 0 });
     expect(result.pages).toBe(0);
   });
 

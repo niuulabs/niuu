@@ -1,7 +1,7 @@
-"""Unit tests for MimirRouter — all nine HTTP endpoints.
+"""Unit tests for MimirRouter's HTTP endpoints.
 
-Tests use a real MarkdownMimirAdapter backed by a tmp_path and the HTTPX
-test client, so no network is involved.
+Tests use an in-memory MimirPort and the HTTPX test client, so no network is
+involved.
 """
 
 from __future__ import annotations
@@ -19,11 +19,11 @@ from identity.adapters.identity import (
     EnvoyHeaderAuthenticationAdapter,
 )
 from mimir.adapters.composite import CompositeMimirAdapter
-from mimir.adapters.markdown import MarkdownMimirAdapter
 from mimir.domain import MimirMount, WriteRouting
 from mimir.registry import MimirRegistryStore
 from mimir.router import MimirRouter
 from niuu.domain.mimir import compute_source_id
+from tests.test_mimir.unit.fakes import InMemoryMimirAdapter
 
 #: Headers satisfying both _require_write_auth (tenant + WRITE_ROLES) and
 #: _require_deploy_auth for the default EnvoyHeaderAuthenticationAdapter fixture
@@ -42,7 +42,7 @@ _ADMIN_HEADERS = {
 
 
 def _make_app(tmp_path: Path) -> FastAPI:
-    adapter = MarkdownMimirAdapter(root=tmp_path / "mimir")
+    adapter = InMemoryMimirAdapter()
     router = MimirRouter(
         adapter=adapter, name="test", role="local", auth=EnvoyHeaderAuthenticationAdapter()
     )
@@ -52,8 +52,8 @@ def _make_app(tmp_path: Path) -> FastAPI:
 
 
 def _make_composite_app(tmp_path: Path) -> FastAPI:
-    local = MarkdownMimirAdapter(root=tmp_path / "local")
-    shared = MarkdownMimirAdapter(root=tmp_path / "shared")
+    local = InMemoryMimirAdapter()
+    shared = InMemoryMimirAdapter()
     adapter = CompositeMimirAdapter(
         mounts=[
             MimirMount(name="local", port=local, role="local", read_priority=0),
@@ -76,7 +76,7 @@ def _make_composite_app(tmp_path: Path) -> FastAPI:
 
 
 def _make_registry_app(tmp_path: Path) -> FastAPI:
-    adapter = MarkdownMimirAdapter(root=tmp_path / "mimir")
+    adapter = InMemoryMimirAdapter()
     registry_store = MimirRegistryStore(tmp_path / "mimir" / ".mimir-registry.json")
     router = MimirRouter(
         adapter=adapter,
@@ -99,7 +99,7 @@ def _make_none_mode_registry_app(tmp_path: Path) -> FastAPI:
     _require_write_auth's write-role requirement, and a tenant-scoped
     caller is correctly refused a local mount by _validate_registry_write.
     """
-    adapter = MarkdownMimirAdapter(root=tmp_path / "mimir")
+    adapter = InMemoryMimirAdapter()
     registry_store = MimirRegistryStore(tmp_path / "mimir" / ".mimir-registry.json")
     router = MimirRouter(
         adapter=adapter,
@@ -122,7 +122,7 @@ def client(tmp_path: Path) -> TestClient:
 @pytest.fixture()
 def client_with_page(tmp_path: Path) -> TestClient:
     """Build a TestClient pre-populated with one wiki page."""
-    adapter = MarkdownMimirAdapter(root=tmp_path / "mimir")
+    adapter = InMemoryMimirAdapter()
     # Populate via the HTTP client itself — avoids direct asyncio.run()
     router = MimirRouter(
         adapter=adapter, name="test", role="local", auth=EnvoyHeaderAuthenticationAdapter()
@@ -156,7 +156,7 @@ def client_with_page(tmp_path: Path) -> TestClient:
 
 @pytest.fixture()
 def client_with_sourced_page(tmp_path: Path) -> TestClient:
-    adapter = MarkdownMimirAdapter(root=tmp_path / "mimir")
+    adapter = InMemoryMimirAdapter()
     router = MimirRouter(
         adapter=adapter, name="test", role="local", auth=EnvoyHeaderAuthenticationAdapter()
     )
@@ -185,7 +185,7 @@ def client_with_sourced_page(tmp_path: Path) -> TestClient:
 
 @pytest.fixture()
 def client_with_compiled_truth_page(tmp_path: Path) -> TestClient:
-    adapter = MarkdownMimirAdapter(root=tmp_path / "mimir")
+    adapter = InMemoryMimirAdapter()
     router = MimirRouter(
         adapter=adapter, name="test", role="local", auth=EnvoyHeaderAuthenticationAdapter()
     )
@@ -278,7 +278,7 @@ def test_stats_with_page(client_with_page: TestClient) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_summary_reports_counts_without_linting(client_with_page: TestClient) -> None:
+def test_summary_reports_counts_in_one_call(client_with_page: TestClient) -> None:
     """Remote mounts summarise in one call instead of shipping the whole corpus."""
     resp = client_with_page.get("/mimir/summary")
     assert resp.status_code == 200
@@ -287,9 +287,6 @@ def test_summary_reports_counts_without_linting(client_with_page: TestClient) ->
     assert data["source_count"] == 1
     assert "technical" in data["categories"]
     assert data["last_write"] != ""
-    # Lint has not run, so the count is unknown rather than a clean bill.
-    assert data["lint_issues"] == 0
-    assert data["lint_checked_at"] == ""
 
 
 def test_summary_of_empty_wiki(client: TestClient) -> None:
@@ -299,14 +296,6 @@ def test_summary_of_empty_wiki(client: TestClient) -> None:
     assert data["page_count"] == 0
     assert data["source_count"] == 0
     assert data["last_write"] == ""
-
-
-def test_summary_reports_lint_once_it_has_run(client_with_page: TestClient) -> None:
-    client_with_page.get("/mimir/lint")
-
-    data = client_with_page.get("/mimir/summary").json()
-
-    assert data["lint_checked_at"] != ""
 
 
 def test_summary_rejects_an_unknown_mount(client: TestClient) -> None:
@@ -496,8 +485,8 @@ def test_list_pages_category_filter(client_with_page: TestClient) -> None:
     assert len(resp2.json()) == 0
 
 
-def test_list_pages_prefix_filter(tmp_path: Path) -> None:
-    adapter = MarkdownMimirAdapter(root=tmp_path / "mimir")
+def test_list_pages_prefix_filter() -> None:
+    adapter = InMemoryMimirAdapter()
     router = MimirRouter(
         adapter=adapter, name="test", role="local", auth=EnvoyHeaderAuthenticationAdapter()
     )
@@ -579,68 +568,6 @@ def test_registry_mount_crud(registry_client: TestClient) -> None:
     assert all(item["id"] != created["id"] for item in remaining.json())
 
 
-def test_registry_local_mount_is_browsable_without_http_server(
-    tmp_path: Path,
-) -> None:
-    registry_client = TestClient(_make_none_mode_registry_app(tmp_path))
-    external_root = tmp_path / "mimir-test"
-    external = MarkdownMimirAdapter(root=external_root)
-    asyncio.run(
-        external.upsert_page(
-            "technical/external.md",
-            "# External Memory\nBrowsable local mount page.\n<!-- sources: src_external -->",
-        )
-    )
-
-    create = registry_client.post(
-        "/mimir/registry/mounts",
-        json={
-            "name": "mimir-test",
-            "kind": "local",
-            "lifecycle": "registered",
-            "role": "local",
-            "url": "",
-            "path": str(external_root),
-            "categories": ["technical"],
-            "default_read_priority": 4,
-            "enabled": True,
-            "health_status": "unknown",
-            "health_message": "",
-            "desc": "tmp local mount",
-        },
-    )
-    assert create.status_code == 200
-
-    mounts = registry_client.get("/mimir/mounts")
-    assert mounts.status_code == 200
-    mount = next(item for item in mounts.json() if item["name"] == "mimir-test")
-    assert mount["pages"] == 1
-    assert mount["status"] == "healthy"
-
-    pages = registry_client.get("/mimir/pages", params={"mount": "mimir-test"})
-    assert pages.status_code == 200
-    listed_pages = pages.json()
-    assert len(listed_pages) == 1
-    assert listed_pages[0]["path"] == "technical/external.md"
-    assert listed_pages[0]["title"] == "External Memory"
-    assert listed_pages[0]["summary"] == "Browsable local mount page."
-    assert listed_pages[0]["mounts"] == ["mimir-test"]
-
-    read_page = registry_client.get(
-        "/mimir/page",
-        params={"mount": "mimir-test", "path": "technical/external.md"},
-    )
-    assert read_page.status_code == 200
-    assert "External Memory" in read_page.json()["content"]
-
-    search = registry_client.get(
-        "/mimir/search",
-        params={"mount": "mimir-test", "q": "browsable local"},
-    )
-    assert search.status_code == 200
-    assert [item["path"] for item in search.json()] == ["technical/external.md"]
-
-
 # ---------------------------------------------------------------------------
 # GET /mimir/page
 # ---------------------------------------------------------------------------
@@ -696,10 +623,8 @@ def test_read_page_returns_explicit_zones(client_with_compiled_truth_page: TestC
     ]
 
 
-def test_read_page_falls_back_to_assessment_for_legacy_compiled_truth(
-    tmp_path: Path,
-) -> None:
-    adapter = MarkdownMimirAdapter(root=tmp_path / "mimir")
+def test_read_page_falls_back_to_assessment_for_legacy_compiled_truth() -> None:
+    adapter = InMemoryMimirAdapter()
     router = MimirRouter(
         adapter=adapter, name="test", role="local", auth=EnvoyHeaderAuthenticationAdapter()
     )
@@ -807,48 +732,6 @@ def test_search_no_results(client_with_page: TestClient) -> None:
 
 
 # ---------------------------------------------------------------------------
-# GET /mimir/lint
-# ---------------------------------------------------------------------------
-
-
-def test_lint_empty_wiki(client: TestClient) -> None:
-    resp = client.get("/mimir/lint")
-    assert resp.status_code == 200
-    data = resp.json()
-    assert data["pages_checked"] == 0
-    assert data["issues_found"] is False
-    assert data["issues"] == []
-    assert "summary" in data
-
-
-def test_lint_finds_issues_with_page(client_with_page: TestClient) -> None:
-    # The page exists and is indexed; new structural checks (e.g. L12) may fire
-    resp = client_with_page.get("/mimir/lint")
-    assert resp.status_code == 200
-    data = resp.json()
-    assert "pages_checked" in data
-    assert data["pages_checked"] >= 1
-    assert "issues" in data
-    assert "summary" in data
-    # Every issue must have the required fields
-    for issue in data["issues"]:
-        assert "id" in issue
-        assert "severity" in issue
-        assert issue["severity"] in ("error", "warning", "info")
-        assert "message" in issue
-        assert "page_path" in issue
-        assert "auto_fixable" in issue
-
-
-def test_lint_fix_endpoint(client_with_page: TestClient) -> None:
-    resp = client_with_page.post("/mimir/lint/fix")
-    assert resp.status_code == 200
-    data = resp.json()
-    assert "issues" in data
-    assert "summary" in data
-
-
-# ---------------------------------------------------------------------------
 # GET /mimir/graph
 # ---------------------------------------------------------------------------
 
@@ -947,78 +830,12 @@ def test_ingest_source(client: TestClient) -> None:
     assert data["source_id"] == compute_source_id(payload["content"])
 
 
-# ---------------------------------------------------------------------------
-# GET /mimir/log
-# ---------------------------------------------------------------------------
-
-
-def test_log_after_ingest(client: TestClient) -> None:
-    client.post(
-        "/mimir/ingest",
-        json={"title": "Log Test", "content": "log test content"},
-    )
-    resp = client.get("/mimir/log")
-    assert resp.status_code == 200
-    data = resp.json()
-    assert "entries" in data
-
-
-def test_mounts_and_routing_rules_for_composite_adapter(composite_client: TestClient) -> None:
+def test_mounts_for_composite_adapter(composite_client: TestClient) -> None:
     mounts = composite_client.get("/mimir/mounts")
     assert mounts.status_code == 200
     data = mounts.json()
     assert [mount["name"] for mount in data] == ["local", "shared"]
     assert {mount["pages"] for mount in data} == {1}
-
-    rules = composite_client.get("/mimir/routing/rules")
-    assert rules.status_code == 200
-    assert rules.json() == [
-        {
-            "id": "rule-1",
-            "prefix": "self/",
-            "mountName": "local",
-            "priority": 0,
-            "active": True,
-            "desc": None,
-        },
-        {
-            "id": "rule-2",
-            "prefix": "projects/",
-            "mountName": "shared",
-            "priority": 1,
-            "active": True,
-            "desc": None,
-        },
-    ]
-
-
-def test_upserting_routing_rule_changes_write_target(composite_client: TestClient) -> None:
-    update = composite_client.put(
-        "/mimir/routing/rules/rule-2",
-        json={
-            "id": "rule-2",
-            "prefix": "projects/",
-            "mountName": "local",
-            "priority": 1,
-            "active": True,
-            "desc": "route projects locally",
-        },
-    )
-    assert update.status_code == 200
-
-    write = composite_client.put(
-        "/mimir/page",
-        json={
-            "path": "projects/roadmap/local-now.md",
-            "content": "# Local Project\nRouted locally.",
-        },
-    )
-    assert write.status_code == 204
-
-    local_pages = composite_client.get("/mimir/pages", params={"mount": "local"}).json()
-    shared_pages = composite_client.get("/mimir/pages", params={"mount": "shared"}).json()
-    assert "projects/roadmap/local-now.md" in [page["path"] for page in local_pages]
-    assert "projects/roadmap/local-now.md" not in [page["path"] for page in shared_pages]
 
 
 def test_recent_writes_and_activity_include_real_events(composite_client: TestClient) -> None:
@@ -1177,19 +994,6 @@ def test_embedding_search_falls_back_to_page_search(client_with_page: TestClient
     assert result["mount_name"] == "test"
 
 
-def test_lint_reassign_route_is_gone(client_with_page: TestClient) -> None:
-    resp = client_with_page.post(
-        "/mimir/lint/reassign", json={"issue_ids": [], "assignee": "ravn-a"}
-    )
-    assert resp.status_code in {404, 405}
-
-
-def test_lint_issues_carry_no_assignee(client_with_page: TestClient) -> None:
-    issues = client_with_page.get("/mimir/lint").json()["issues"]
-    assert issues
-    assert all("assignee" not in issue for issue in issues)
-
-
 def test_file_ingest_endpoint_returns_source_shape(client: TestClient) -> None:
     resp = client.post(
         "/mimir/sources/ingest/file",
@@ -1262,35 +1066,6 @@ def test_url_ingest_rejects_path_traversal(client: TestClient) -> None:
     assert "Invalid URL path" in resp.json()["detail"]
 
 
-def test_dreams_endpoint_parses_dream_cycle_entries(tmp_path: Path) -> None:
-    app = _make_app(tmp_path)
-    log_path = tmp_path / "mimir" / "wiki" / "log.md"
-    log_path.write_text(
-        (
-            "# Mímir — activity log\n\n"
-            "## [2026-04-20] dream | dream cycle complete\n"
-            "ravn=ravn-fjolnir pages_updated=4 entities_created=2 lint_fixes=1 duration_ms=3000\n"
-        ),
-        encoding="utf-8",
-    )
-    client = TestClient(app, headers=_ADMIN_HEADERS)
-
-    resp = client.get("/mimir/dreams")
-    assert resp.status_code == 200
-    assert resp.json() == [
-        {
-            "id": resp.json()[0]["id"],
-            "timestamp": "2026-04-20T00:00:00+00:00",
-            "ravn": "ravn-fjolnir",
-            "mounts": ["test"],
-            "pages_updated": 4,
-            "entities_created": 2,
-            "lint_fixes": 1,
-            "duration_ms": 3000,
-        }
-    ]
-
-
 def test_unknown_mount_returns_404_for_single_and_composite(
     client: TestClient,
     composite_client: TestClient,
@@ -1299,40 +1074,14 @@ def test_unknown_mount_returns_404_for_single_and_composite(
     assert composite_client.get("/mimir/stats", params={"mount": "missing"}).status_code == 404
 
 
-def test_empty_ravn_bindings_and_routing_rule_lifecycle(composite_client: TestClient) -> None:
-    bindings = composite_client.get("/mimir/ravns/bindings")
-    assert bindings.status_code == 200
-    assert bindings.json() == []
-
-    create = composite_client.put(
-        "/mimir/routing/rules/rule-3",
-        json={
-            "id": "rule-3",
-            "prefix": "directives/",
-            "mountName": "shared",
-            "priority": 2,
-            "active": False,
-            "desc": "disabled rule",
-        },
-    )
-    assert create.status_code == 200
-    rules = composite_client.get("/mimir/routing/rules").json()
-    assert any(rule["id"] == "rule-3" for rule in rules)
-
-    delete = composite_client.delete("/mimir/routing/rules/rule-3")
-    assert delete.status_code == 204
-    rules_after = composite_client.get("/mimir/routing/rules").json()
-    assert all(rule["id"] != "rule-3" for rule in rules_after)
-
-
-def test_sources_unprocessed_excludes_operational_exhaust(tmp_path: Path) -> None:
+def test_sources_unprocessed_excludes_operational_exhaust() -> None:
     """The API's backlog definition must match the adapter's: exhaust stored
     before the ingest gate existed is never pending synthesis."""
     from datetime import UTC, datetime
 
     from niuu.domain.mimir import MimirSource, compute_content_hash
 
-    adapter = MarkdownMimirAdapter(root=tmp_path / "mimir")
+    adapter = InMemoryMimirAdapter()
     router = MimirRouter(
         adapter=adapter, name="test", role="local", auth=EnvoyHeaderAuthenticationAdapter()
     )
@@ -1346,14 +1095,16 @@ def test_sources_unprocessed_excludes_operational_exhaust(tmp_path: Path) -> Non
     )
     # Ingest refuses operational types now, so plant one the way it actually
     # got there: written before the gate existed.
-    adapter._write_raw_source(
-        MimirSource(
-            source_id="src-tool",
-            title="Probe output",
-            content="exit 0",
-            source_type="tool_output",
-            ingested_at=datetime.now(UTC),
-            content_hash=compute_content_hash("exit 0"),
+    asyncio.run(
+        adapter.ingest(
+            MimirSource(
+                source_id="src-tool",
+                title="Probe output",
+                content="exit 0",
+                source_type="tool_output",
+                ingested_at=datetime.now(UTC),
+                content_hash=compute_content_hash("exit 0"),
+            )
         )
     )
 
@@ -1503,38 +1254,6 @@ def test_graph_edges_entity_filters_and_type_inference(client: TestClient) -> No
     assert {"person", "project", "component", "technology", "concept"} <= kinds
 
 
-def test_activity_recent_writes_and_dreams_cover_log_variants(tmp_path: Path) -> None:
-    app = _make_composite_app(tmp_path)
-    (tmp_path / "local" / "wiki" / "log.md").write_text(
-        (
-            "# Mímir — activity log\n\n"
-            "## [2026-04-21] query | architecture\n"
-            "ravn=ravn-fjolnir page=technical/test.md\n"
-            "## [invalid-date] dream | dream cycle complete\n"
-            "pages_updated 3 entities_created 1 lint_fixes 2\n"
-        ),
-        encoding="utf-8",
-    )
-    client = TestClient(app, headers=_ADMIN_HEADERS)
-    client.post(
-        "/mimir/ingest",
-        json={"title": "Recent Source", "content": "recent content", "source_type": "document"},
-    )
-
-    writes = client.get("/mimir/mounts/recent-writes").json()
-    assert any(entry["kind"] == "compile" for entry in writes)
-    assert any(entry["kind"] == "dream" for entry in writes)
-
-    activity = client.get("/mimir/activity").json()
-    assert any(entry["kind"] == "query" for entry in activity)
-    assert any(entry["kind"] == "dream" for entry in activity)
-
-    dreams = client.get("/mimir/dreams").json()
-    assert dreams[0]["pages_updated"] == 3
-    assert dreams[0]["entities_created"] == 1
-    assert dreams[0]["lint_fixes"] == 2
-
-
 def test_mounts_support_remote_http_host_metadata(tmp_path: Path) -> None:
     app = _make_app(tmp_path / "hosted")
     from mimir.adapters.http import HttpMimirAdapter
@@ -1574,63 +1293,6 @@ def test_url_ingest_failure_returns_bad_gateway(client: TestClient, respx_mock) 
 # ---------------------------------------------------------------------------
 # Page reads must not walk the corpus to decorate one page
 # ---------------------------------------------------------------------------
-
-
-def _count_page_reads(client: TestClient, call) -> int:
-    """Run *call* and count how many wiki files get read off disk."""
-    reads: list[str] = []
-    original_read_text = Path.read_text
-
-    def _tracking(self: Path, *args: object, **kwargs: object) -> str:
-        if self.suffix == ".md":
-            reads.append(self.name)
-        return original_read_text(self, *args, **kwargs)  # type: ignore[arg-type]
-
-    Path.read_text = _tracking  # type: ignore[method-assign]
-    try:
-        call()
-    finally:
-        Path.read_text = original_read_text  # type: ignore[method-assign]
-    return len(reads)
-
-
-def _seed_pages(client: TestClient, count: int) -> None:
-    for i in range(count):
-        client.put(
-            "/mimir/page",
-            json={"path": f"technical/bulk-{i}.md", "content": f"# Bulk {i}\nfiller."},
-        )
-
-
-def test_reading_one_page_does_not_walk_the_corpus(client: TestClient) -> None:
-    """Decorating a page with its mounts used to re-read every page in the wiki.
-
-    Ting reads ~10 pages per research campaign and one page view loads 18
-    campaigns, so this turned a page view into ~180 full-corpus walks.
-    """
-    client.put("/mimir/page", json={"path": "research/campaigns/x/final.md", "content": "# F\nx."})
-    _seed_pages(client, 30)
-
-    reads = _count_page_reads(
-        client,
-        lambda: client.get("/mimir/page", params={"path": "research/campaigns/x/final.md"}),
-    )
-
-    # The page itself, plus its scoped mount lookup — not the whole wiki.
-    assert reads <= 4, f"reading one page touched {reads} files"
-
-
-def test_listing_pages_by_prefix_does_not_walk_the_corpus(client: TestClient) -> None:
-    client.put("/mimir/page", json={"path": "research/campaigns/x/final.md", "content": "# F\nx."})
-    client.put("/mimir/page", json={"path": "research/campaigns/x/plan.md", "content": "# P\nx."})
-    _seed_pages(client, 30)
-
-    reads = _count_page_reads(
-        client,
-        lambda: client.get("/mimir/pages", params={"prefix": "research/campaigns/x/"}),
-    )
-
-    assert reads <= 6, f"prefixed listing touched {reads} files"
 
 
 def test_page_response_still_reports_its_mount(client: TestClient) -> None:
@@ -1706,7 +1368,7 @@ def test_remote_registry_connection_becomes_a_routable_mount(tmp_path):
     store = MimirRegistryStore(tmp_path / "registry.json")
     entry = store.save_entry(MimirRegistryEntry(name="ymir", url="http://ymir.test"))
     router = MimirRouter(
-        MarkdownMimirAdapter(root=tmp_path / "local"),
+        InMemoryMimirAdapter(),
         registry_store=store,
         auth=EnvoyHeaderAuthenticationAdapter(),
     )
@@ -1726,11 +1388,7 @@ def test_federation_diagnostics_read_configured_capture_directory(tmp_path):
     from mimir.domain import MimirMount
 
     adapter = CompositeMimirAdapter(
-        mounts=[
-            MimirMount(
-                name="notes", port=MarkdownMimirAdapter(root=tmp_path / "notes"), role="local"
-            )
-        ]
+        mounts=[MimirMount(name="notes", port=InMemoryMimirAdapter(), role="local")]
     )
     app = FastAPI()
     app.include_router(
@@ -1751,19 +1409,12 @@ def test_federation_diagnostics_read_configured_capture_directory(tmp_path):
         assert client.get("/eval/latest").json() == {"query_count": 2}
 
 
-def test_doctor_can_check_a_selected_filesystem_mount_in_a_federation(tmp_path):
-    client = TestClient(_make_composite_app(tmp_path), headers=_ADMIN_HEADERS)
-    response = client.get("/mimir/doctor", params={"mount": "local"})
-    assert response.status_code == 200
-    assert len(response.json()["checks"]) == 8
-
-
 def test_registry_mounts_preserve_named_service_write_destination(tmp_path):
     from mimir.registry import MimirRegistryEntry
 
     store = MimirRegistryStore(tmp_path / "registry.json")
     store.save_entry(MimirRegistryEntry(name="remote", url="https://mimir.example"))
-    adapter = MarkdownMimirAdapter(root=tmp_path / "shared")
+    adapter = InMemoryMimirAdapter()
     router = MimirRouter(
         adapter,
         name="shared",
@@ -1782,6 +1433,4 @@ def test_registry_mounts_preserve_named_service_write_destination(tmp_path):
             },
         )
     assert response.status_code == 204
-    assert (
-        tmp_path / "shared/wiki/deliveries/test/10-implementation.md"
-    ).read_text() == "# Delivery\nVerified."
+    assert adapter.pages["deliveries/test/10-implementation.md"][0] == "# Delivery\nVerified."

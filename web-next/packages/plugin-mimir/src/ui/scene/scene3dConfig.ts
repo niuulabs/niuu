@@ -60,7 +60,6 @@ export const NODE3D = {
   MAX_RADIUS: 2.4,
   /** Degree at/above which a node reaches MAX_RADIUS. */
   DEGREE_FOR_MAX_RADIUS: 24,
-  DISPUTE_RING_SCALE: 1.6,
   BORN_RING_SCALE: 2.2,
 } as const;
 

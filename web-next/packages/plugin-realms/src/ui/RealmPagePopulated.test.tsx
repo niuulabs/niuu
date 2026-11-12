@@ -124,7 +124,6 @@ describe('RealmPage of a populated workspace', () => {
     await user.click(screen.getByTestId('realm-delete-confirm'));
     await waitFor(() => expect(log.calls).toContain('deleteRealm:valhalla'));
     await waitFor(() => expect(router.state.location.pathname).toBe('/realms'));
-    expect(log.calls).toContain('deleteRoutingRule:realm-valhalla');
     expect(log.calls.some((call) => call.startsWith('deleteResident'))).toBe(false);
   });
 

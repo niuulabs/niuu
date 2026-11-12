@@ -20,13 +20,10 @@ an SSE ``data:`` frame, so responses are parsed for both. Markdown ingest goes
 to ``/ingest`` when configured, which is the path gbrain documents for bulk
 content.
 
-What this adapter deliberately does not do
-------------------------------------------
+Raw sources
+-----------
 Raw sources are stored as source pages with a lossless JSON payload so
-GBrain markdown normalization cannot alter the evidence. The lint method raises: an operator
-who points a workflow at a brain that cannot lint should be told so, not
-handed a clean report over an unlinted corpus. See
-``.claude/rules/no-fallbacks.md``.
+GBrain markdown normalization cannot alter the evidence.
 """
 
 from __future__ import annotations
@@ -42,7 +39,6 @@ import yaml
 
 from niuu.domain.mimir import (
     EntityType,
-    MimirLintReport,
     MimirMountSummary,
     MimirPage,
     MimirPageMeta,
@@ -57,10 +53,6 @@ from niuu.ports.mimir import MimirPort
 
 _DEFAULT_TIMEOUT = 30.0
 _DEFAULT_SEARCH_LIMIT = 10
-_UNSUPPORTED = (
-    "gbrain has no equivalent for {op}. Mímir-specific operations are not "
-    "emulated — point this workflow at a Mímir mount, or drop the call."
-)
 
 
 class GBrainMimirAdapter(MimirPort):
@@ -324,11 +316,8 @@ class GBrainMimirAdapter(MimirPort):
         return [slug]
 
     # ------------------------------------------------------------------
-    # Mímir-specific surface gbrain does not have
+    # Sources
     # ------------------------------------------------------------------
-
-    async def lint(self, fix: bool = False) -> MimirLintReport:
-        raise NotImplementedError(_UNSUPPORTED.format(op="lint"))
 
     async def read_source(self, source_id: str) -> MimirSource | None:
         try:

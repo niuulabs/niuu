@@ -4,26 +4,15 @@ import userEvent from '@testing-library/user-event';
 import { AskAnswerCard } from './AskAnswerCard';
 import { FAKE_PAGES, fakeNodeId } from '../../testing/fakeMimirService';
 import type { QuotedFact } from '../../domain/quoteFacts';
-import type { FactEvidence } from '../../domain/evidence';
 
 const PAGE = FAKE_PAGES.find((p) => p.path === '/platform/gateway-routing')!;
 const NODE_ID = fakeNodeId('platform', '/platform/gateway-routing');
 
-const EVIDENCE: FactEvidence = {
-  fact: 'The route tables live in values-cedar.yaml, which wins over values-niuu.yaml.',
-  proofCount: 2,
-  trend: 'stable',
-  latestSupport: '2026-01-01',
-  supportingDates: ['2026-01-01'],
-  sourceProofCount: 1,
-};
-
 const QUOTED: QuotedFact[] = [
   {
     page: PAGE,
-    fact: EVIDENCE.fact,
+    fact: 'The route tables live in values-cedar.yaml, which wins over values-niuu.yaml.',
     position: 1,
-    evidence: EVIDENCE,
   },
 ];
 
@@ -58,7 +47,7 @@ describe('AskAnswerCard', () => {
     expect(props.onAsk).toHaveBeenCalledWith('cedar authorization');
   });
 
-  it('shows the quoted fact, its rank badge, and proof', () => {
+  it('shows the quoted fact, its rank badge', () => {
     setup();
     expect(
       screen.getByText(
@@ -66,7 +55,6 @@ describe('AskAnswerCard', () => {
       ),
     ).toBeInTheDocument();
     expect(screen.getByText('[1]')).toBeInTheDocument();
-    expect(screen.getByTestId('proof-pill')).toBeInTheDocument();
   });
 
   it('focuses the answering page by its graph node id on click', async () => {

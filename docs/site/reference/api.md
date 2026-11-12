@@ -24,7 +24,7 @@ may require authentication for these reads; use its normal identity flow.
 | Forge | `/api/v1/forge` | Sessions and workspace operations |
 | Runtime definitions | `/api/v1/volundr/session-definitions` | Launch runtime catalog |
 | Ting | `/api/v1/ting` | Workflows, sagas, runs, and review |
-| Mímir | `/api/v1/mimir` | Knowledge, sources, search, and curation |
+| Mímir | `/api/v1/mimir` | Knowledge, sources, and search |
 | Bifröst | `/api/v1/bifrost` | Catalog and inference gateway |
 | Guild | `/api/v1/niuu/instances`, `/api/v1/niuu/targets/volundr` | Instance discovery and target selection |
 | Setup | `/api/v1/niuu/setup` | First-launch wizard: progress (`GET`, `PUT /steps/{step}`, `POST /complete`, `POST /reset`) and host report (`GET /system`). Writes need `volundr:admin`; `enabled` is `false` unless the host set `NIUU_SETUP_ENABLED`. |

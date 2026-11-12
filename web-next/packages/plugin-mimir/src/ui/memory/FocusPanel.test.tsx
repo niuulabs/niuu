@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { screen, waitFor } from '@testing-library/react';
+import { screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { renderWithMimir } from '../../testing/renderWithMimir';
 import {
@@ -13,7 +13,6 @@ import { FocusPanel } from './FocusPanel';
 const PAGE = FAKE_PAGES.find((p) => p.path === '/platform/gateway-routing')!;
 const GATEWAY = fakeNodeId('platform', '/platform/gateway-routing');
 const CEDAR = fakeNodeId('platform', '/platform/cedar-authorization');
-const GUILDS = fakeNodeId('platform', '/platform/guilds-gateway');
 const VOLUNDR = fakeNodeId('shared', '/shared/volundr');
 
 function setup(overrides: Partial<React.ComponentProps<typeof FocusPanel>> = {}) {
@@ -24,7 +23,6 @@ function setup(overrides: Partial<React.ComponentProps<typeof FocusPanel>> = {})
     isError: false,
     graph: FAKE_GRAPH,
     depth: 1,
-    disputedIds: new Set<string>(),
     onDepthChange: vi.fn(),
     onClearFocus: vi.fn(),
     onFocusPage: vi.fn(),
@@ -55,14 +53,13 @@ describe('FocusPanel', () => {
     expect(screen.getByText(/3 facts · 3 links · rewritten/)).toBeInTheDocument();
   });
 
-  it('renders every key fact and quotes proof for the facts with evidence', async () => {
+  it('renders every key fact', () => {
     setup();
     expect(
       screen.getByText(
         'The route tables live in values-cedar.yaml, which wins over values-niuu.yaml.',
       ),
     ).toBeInTheDocument();
-    await waitFor(() => expect(screen.getAllByTestId('proof-pill')).toHaveLength(3));
   });
 
   it('calls onReadPage / onAskAbout from the action buttons', async () => {
@@ -79,13 +76,6 @@ describe('FocusPanel', () => {
     expect(screen.getByText('Cedar authorization').closest('button')).toHaveTextContent(
       'depends on',
     );
-  });
-
-  it('marks a disputed linked page (by graph node id) with the dispute style', () => {
-    setup({ disputedIds: new Set([GUILDS]) });
-    const row = screen.getByText("Guild's gateway").closest('button')!;
-    expect(row).toHaveTextContent('disputed');
-    expect(row.querySelector('.memory-dispute')).not.toBeNull();
   });
 
   it('changes depth via the segmented control', async () => {

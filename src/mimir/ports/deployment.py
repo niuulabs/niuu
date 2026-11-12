@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field
 class DeploymentRequest(BaseModel):
     tenant_id: str = Field(default="", exclude=True)
     name: str = Field(pattern=r"^[a-z][a-z0-9-]{0,39}$")
-    backend: Literal["mimir", "gbrain"]
+    backend: Literal["gbrain"]
     target: str = ""
     secret: str = Field(default="", pattern=r"^([a-z0-9][a-z0-9.-]*)?$")
 

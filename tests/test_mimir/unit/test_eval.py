@@ -3,7 +3,7 @@
 Covers:
 - Metric math: precision@5, recall@10, MRR
 - Golden-set loading and validation (malformed files, missing corpus paths)
-- run_eval end-to-end against the committed fixture corpus
+- run_eval scores an already-populated store named by a dynamic-adapter spec
 - compare_reports flags an artificially-broken ranking
 - Query capture: JSONL writing, default-on, router integration
 - Replay: ranking drift detection against a capture file
@@ -13,6 +13,7 @@ Covers:
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -44,6 +45,8 @@ from mimir.eval import (
     run_eval,
     validate_golden_paths,
 )
+from mimir.exceptions import MimirConfigurationError
+from tests.test_mimir.unit.fakes import InMemoryMimirAdapter
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 CORPUS_DIR = REPO_ROOT / "tests" / "test_mimir" / "evals" / "corpus"
@@ -71,17 +74,38 @@ confidence: high
 """
 
 
-def _write_page(corpus: Path, rel: str, title: str, body: str) -> None:
-    page = corpus / rel
-    page.parent.mkdir(parents=True, exist_ok=True)
-    page.write_text(PAGE_TEMPLATE.format(title=title, body=body), encoding="utf-8")
+def _page(title: str, body: str) -> str:
+    return PAGE_TEMPLATE.format(title=title, body=body)
 
 
-def _small_corpus(tmp_path: Path) -> tuple[Path, Path]:
-    """A two-page corpus and matching golden set for fast CLI tests."""
-    corpus = tmp_path / "corpus"
-    _write_page(corpus, "technical/widgets.md", "Widget assembly", "Widgets are assembled daily.")
-    _write_page(corpus, "technical/gadgets.md", "Gadget repair", "Gadgets are repaired weekly.")
+WIDGETS = {
+    "technical/widgets.md": _page("Widget assembly", "Widgets are assembled daily."),
+    "technical/gadgets.md": _page("Gadget repair", "Gadgets are repaired weekly."),
+}
+
+
+class SeededStore(InMemoryMimirAdapter):
+    """A populated store a ``--backend`` spec can name: pages arrive as constructor kwargs."""
+
+    def __init__(self, pages: dict[str, str]) -> None:
+        super().__init__()
+        for path, content in pages.items():
+            self.pages[path] = (content, datetime.now(UTC))
+
+
+SEEDED = "tests.test_mimir.unit.test_eval.SeededStore"
+
+
+def _spec(pages: dict[str, str]) -> dict:
+    return {"adapter": SEEDED, "pages": pages}
+
+
+def _backend_json(pages: dict[str, str]) -> str:
+    return json.dumps(_spec(pages))
+
+
+def _golden(tmp_path: Path) -> Path:
+    """A golden set matching ``WIDGETS``."""
     golden = tmp_path / "golden.yaml"
     golden.write_text(
         yaml.safe_dump(
@@ -102,7 +126,7 @@ def _small_corpus(tmp_path: Path) -> tuple[Path, Path]:
         ),
         encoding="utf-8",
     )
-    return corpus, golden
+    return golden
 
 
 def _query_eval(query: str, precision: float, recall: float = 1.0, rr: float = 1.0) -> QueryEval:
@@ -207,41 +231,38 @@ def test_validate_golden_paths_reports_missing(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-async def test_run_eval_on_committed_corpus() -> None:
-    report = await run_eval(CORPUS_DIR, GOLDEN_PATH)
+async def test_run_eval_scores_the_store_the_backend_spec_names(tmp_path: Path) -> None:
+    report = await run_eval(_spec(WIDGETS), _golden(tmp_path))
 
-    assert len(report.queries) >= 50
-    assert report.embedding_model is None
-    # FTS-only baseline: exact-vocabulary queries must retrieve well.
-    assert report.by_category["keyword"]["precision_at_5"] > 0.8
-    # Sanity: metrics are bounded.
+    assert len(report.queries) == 2
+    assert report.corpus == SEEDED
+    assert report.overall["precision_at_5"] == 1.0
     for metrics in (report.overall, *report.by_category.values()):
         for value in metrics.values():
             assert 0.0 <= value <= 1.0
 
 
-async def test_run_eval_rejects_golden_referencing_missing_pages(tmp_path: Path) -> None:
-    corpus, golden = _small_corpus(tmp_path)
-    golden.write_text(
-        yaml.safe_dump(
-            {
-                "queries": [
-                    {"query": "q", "category": "keyword", "expected": ["not/there.md"]},
-                ]
-            }
-        ),
-        encoding="utf-8",
-    )
-    with pytest.raises(GoldenSetError, match="missing from corpus"):
-        await run_eval(corpus, golden)
+async def test_run_eval_without_a_backend_is_a_configuration_error(tmp_path: Path) -> None:
+    with pytest.raises(MimirConfigurationError, match="--backend is not set"):
+        await run_eval({}, _golden(tmp_path))
+
+
+async def test_run_eval_refuses_a_backend_that_is_not_a_mimir_port(tmp_path: Path) -> None:
+    with pytest.raises(MimirConfigurationError, match="not a MimirPort"):
+        await run_eval({"adapter": "builtins.dict"}, _golden(tmp_path))
+
+
+async def test_run_eval_rejects_a_missing_golden_set(tmp_path: Path) -> None:
+    with pytest.raises(GoldenSetError, match="Golden set not found"):
+        await run_eval(_spec(WIDGETS), tmp_path / "nope.yaml")
 
 
 async def test_run_eval_report_round_trips_via_json(tmp_path: Path) -> None:
-    corpus, golden = _small_corpus(tmp_path)
-    report = await run_eval(corpus, golden)
+    report = await run_eval(_spec(WIDGETS), _golden(tmp_path))
     restored = EvalReport.from_dict(json.loads(json.dumps(report.to_dict())))
     assert restored.overall == report.overall
     assert [q.query for q in restored.queries] == [q.query for q in report.queries]
+    assert "embedding_model" not in report.to_dict()
 
 
 # ---------------------------------------------------------------------------
@@ -289,12 +310,10 @@ async def test_evaluate_adapter_scores_a_store_that_returns_slugs() -> None:
         _StubStore({"oidc": ["technical/auth-oidc", "projects/other"]}),
         queries,
         corpus="stub",
-        embedding_model="stub-model",
     )
 
     assert report.overall["precision_at_5"] == 1.0
     assert report.overall["mrr"] == 1.0
-    assert report.embedding_model == "stub-model"
     assert report.corpus == "stub"
 
 
@@ -322,14 +341,12 @@ def test_compare_flags_broken_ranking() -> None:
     baseline = EvalReport(
         generated_at="t0",
         corpus="c",
-        embedding_model=None,
         queries=[_query_eval("q1", 1.0), _query_eval("q2", 1.0)],
     )
     # Artificially break the ranking: every query loses its hits.
     broken = EvalReport(
         generated_at="t1",
         corpus="c",
-        embedding_model=None,
         queries=[
             _query_eval("q1", 0.0, recall=0.0, rr=0.0),
             _query_eval("q2", 0.0, recall=0.0, rr=0.0),
@@ -346,13 +363,11 @@ def test_compare_ignores_unmatched_queries_and_finds_improvements() -> None:
     baseline = EvalReport(
         generated_at="t0",
         corpus="c",
-        embedding_model=None,
         queries=[_query_eval("shared", 0.5, rr=0.5), _query_eval("baseline-only", 1.0)],
     )
     current = EvalReport(
         generated_at="t1",
         corpus="c",
-        embedding_model=None,
         queries=[_query_eval("shared", 1.0), _query_eval("current-only", 0.0)],
     )
     comparison = compare_reports(current, baseline)
@@ -365,7 +380,6 @@ def test_compare_no_changes_formats_cleanly() -> None:
     report = EvalReport(
         generated_at="t",
         corpus="c",
-        embedding_model=None,
         queries=[_query_eval("q", 1.0)],
     )
     comparison = compare_reports(report, report)
@@ -410,20 +424,18 @@ def test_append_capture_survives_unwritable_dir(tmp_path: Path) -> None:
 
 
 def test_capture_file_for_uses_iso_week(tmp_path: Path) -> None:
-    from datetime import UTC, datetime
-
     moment = datetime(2026, 1, 1, tzinfo=UTC)  # ISO week 2026-W01
     assert capture_file_for(tmp_path, moment).name == "queries-2026-W01.jsonl"
 
 
 def _capture_app(tmp_path: Path, capture_dir: Path | None) -> TestClient:
-    from mimir.adapters.markdown import MarkdownMimirAdapter
     from mimir.router import MimirRouter
 
-    adapter = MarkdownMimirAdapter(root=tmp_path / "mimir")
-    page = tmp_path / "mimir" / "wiki" / "technical" / "widgets.md"
-    page.parent.mkdir(parents=True, exist_ok=True)
-    page.write_text("# Widget assembly\n\nWidgets are assembled daily.\n", encoding="utf-8")
+    adapter = InMemoryMimirAdapter()
+    adapter.pages["technical/widgets.md"] = (
+        "# Widget assembly\n\nWidgets are assembled daily.\n",
+        datetime.now(UTC),
+    )
 
     router = MimirRouter(
         adapter=adapter, eval_capture_dir=capture_dir, auth=EnvoyHeaderAuthenticationAdapter()
@@ -459,9 +471,8 @@ def test_router_search_does_not_capture_by_default(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-async def test_replay_detects_ranking_drift(tmp_path: Path) -> None:
-    root = tmp_path / "mimir"
-    _write_page(root / "wiki", "technical/widgets.md", "Widget assembly", "Widgets daily.")
+async def test_replay_detects_ranking_drift() -> None:
+    store = SeededStore({"technical/widgets.md": _page("Widget assembly", "Widgets daily.")})
 
     captures = [
         # Captured when a now-deleted page ranked first.
@@ -469,7 +480,7 @@ async def test_replay_detects_ranking_drift(tmp_path: Path) -> None:
         # Captured results matching current state exactly.
         CapturedQuery(ts="t", query="assembly", result_paths=["technical/widgets.md"]),
     ]
-    report = await replay_capture(root, captures)
+    report = await replay_capture(store, captures, backend="seeded")
 
     drifted = {entry.query: entry for entry in report.entries}
     assert drifted["widgets"].overlap == 0.0
@@ -481,13 +492,7 @@ async def test_replay_detects_ranking_drift(tmp_path: Path) -> None:
     assert 0.0 < report.mean_overlap < 1.0
     assert "ranking drift" in report.format_text()
     assert report.to_dict()["query_count"] == 2
-
-
-async def test_replay_never_touches_live_search_db(tmp_path: Path) -> None:
-    root = tmp_path / "mimir"
-    _write_page(root / "wiki", "technical/widgets.md", "Widget assembly", "Widgets daily.")
-    await replay_capture(root, [CapturedQuery(ts="t", query="widgets", result_paths=[])])
-    assert not (root / "search.db").exists()
+    assert report.to_dict()["backend"] == "seeded"
 
 
 # ---------------------------------------------------------------------------
@@ -498,12 +503,13 @@ async def test_replay_never_touches_live_search_db(tmp_path: Path) -> None:
 def test_cli_eval_json_and_out(tmp_path: Path) -> None:
     from mimir.__main__ import app
 
-    corpus, golden = _small_corpus(tmp_path)
+    golden = _golden(tmp_path)
     out = tmp_path / "report.json"
     runner = CliRunner()
     result = runner.invoke(
         app,
-        ["eval", "--corpus", str(corpus), "--golden", str(golden), "--json", "--out", str(out)],
+        ["eval", "--backend", _backend_json(WIDGETS), "--golden", str(golden)]
+        + ["--json", "--out", str(out)],
     )
     assert result.exit_code == 0, result.output
     payload = json.loads(out.read_text(encoding="utf-8"))
@@ -511,34 +517,46 @@ def test_cli_eval_json_and_out(tmp_path: Path) -> None:
     assert json.loads(result.output)["overall"]["precision_at_5"] == 1.0
 
 
+def test_cli_eval_requires_a_backend(tmp_path: Path) -> None:
+    from mimir.__main__ import app
+
+    result = CliRunner().invoke(app, ["eval", "--golden", str(_golden(tmp_path))])
+    assert result.exit_code != 0
+
+
+def test_cli_eval_rejects_a_backend_that_is_not_json_object(tmp_path: Path) -> None:
+    from mimir.__main__ import app
+
+    golden = _golden(tmp_path)
+    runner = CliRunner()
+    for bad in ("not json", "[1, 2]"):
+        result = runner.invoke(app, ["eval", "--backend", bad, "--golden", str(golden)])
+        assert result.exit_code != 0
+
+
 def test_cli_eval_against_fails_on_regression(tmp_path: Path) -> None:
     from mimir.__main__ import app
 
-    corpus, golden = _small_corpus(tmp_path)
+    golden = _golden(tmp_path)
     baseline_path = tmp_path / "baseline.json"
     runner = CliRunner()
     result = runner.invoke(
         app,
-        ["eval", "--corpus", str(corpus), "--golden", str(golden), "--out", str(baseline_path)],
+        ["eval", "--backend", _backend_json(WIDGETS), "--golden", str(golden)]
+        + ["--out", str(baseline_path)],
     )
     assert result.exit_code == 0, result.output
 
-    # Artificially break the ranking: rewrite the page so the golden query
-    # "widget assembly" no longer matches its title or body at all.
-    _write_page(corpus, "technical/widgets.md", "Sprocket making", "Sprockets are made daily.")
-
+    # Artificially break the ranking: the store now holds a page the golden
+    # query "widget assembly" no longer matches by title or body at all.
+    broken = {
+        **WIDGETS,
+        "technical/widgets.md": _page("Sprocket making", "Sprockets are made daily."),
+    }
     result = runner.invoke(
         app,
-        [
-            "eval",
-            "--corpus",
-            str(corpus),
-            "--golden",
-            str(golden),
-            "--against",
-            str(baseline_path),
-            "--fail-on-regression",
-        ],
+        ["eval", "--backend", _backend_json(broken), "--golden", str(golden)]
+        + ["--against", str(baseline_path), "--fail-on-regression"],
     )
     assert result.exit_code == 1, result.output
     assert "regressed queries" in result.output
@@ -547,25 +565,18 @@ def test_cli_eval_against_fails_on_regression(tmp_path: Path) -> None:
 def test_cli_eval_against_passes_without_regression(tmp_path: Path) -> None:
     from mimir.__main__ import app
 
-    corpus, golden = _small_corpus(tmp_path)
+    golden = _golden(tmp_path)
     baseline_path = tmp_path / "baseline.json"
     runner = CliRunner()
     runner.invoke(
         app,
-        ["eval", "--corpus", str(corpus), "--golden", str(golden), "--out", str(baseline_path)],
+        ["eval", "--backend", _backend_json(WIDGETS), "--golden", str(golden)]
+        + ["--out", str(baseline_path)],
     )
     result = runner.invoke(
         app,
-        [
-            "eval",
-            "--corpus",
-            str(corpus),
-            "--golden",
-            str(golden),
-            "--against",
-            str(baseline_path),
-            "--fail-on-regression",
-        ],
+        ["eval", "--backend", _backend_json(WIDGETS), "--golden", str(golden)]
+        + ["--against", str(baseline_path), "--fail-on-regression"],
     )
     assert result.exit_code == 0, result.output
 
@@ -573,8 +584,6 @@ def test_cli_eval_against_passes_without_regression(tmp_path: Path) -> None:
 def test_cli_replay(tmp_path: Path) -> None:
     from mimir.__main__ import app
 
-    root = tmp_path / "mimir"
-    _write_page(root / "wiki", "technical/widgets.md", "Widget assembly", "Widgets daily.")
     capture_path = tmp_path / "capture.jsonl"
     capture_path.write_text(
         json.dumps({"ts": "t", "query": "widgets", "result_paths": ["technical/widgets.md"]})
@@ -584,11 +593,13 @@ def test_cli_replay(tmp_path: Path) -> None:
     runner = CliRunner()
     result = runner.invoke(
         app,
-        ["eval", "replay", "--capture", str(capture_path), "--path", str(root), "--json"],
+        ["eval", "replay", "--capture", str(capture_path)]
+        + ["--backend", _backend_json(WIDGETS), "--json"],
     )
     assert result.exit_code == 0, result.output
     payload = json.loads(result.output)
     assert payload["mean_overlap"] == 1.0
+    assert payload["backend"] == SEEDED
 
 
 def test_cli_replay_empty_capture_exits_nonzero(tmp_path: Path) -> None:
@@ -599,6 +610,6 @@ def test_cli_replay_empty_capture_exits_nonzero(tmp_path: Path) -> None:
     runner = CliRunner()
     result = runner.invoke(
         app,
-        ["eval", "replay", "--capture", str(capture_path), "--path", str(tmp_path)],
+        ["eval", "replay", "--capture", str(capture_path), "--backend", _backend_json(WIDGETS)],
     )
     assert result.exit_code == 1

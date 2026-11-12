@@ -249,7 +249,7 @@ class TestSubprocessTransport:
                 {
                     "name": "mimir-local",
                     "command": "python3",
-                    "args": ["-m", "mimir", "mcp", "--path", "/tmp/mimir"],
+                    "args": ["-m", "mimir", "mcp"],
                 }
             ],
         )
@@ -668,7 +668,7 @@ class TestSubprocessTransport:
                 {
                     "name": "mimir-local",
                     "command": "python3",
-                    "args": ["-m", "mimir", "mcp", "--path", "/tmp/mimir"],
+                    "args": ["-m", "mimir", "mcp"],
                 }
             ],
         )
@@ -1490,7 +1490,7 @@ class TestSdkWebSocketTransport:
                 {
                     "name": "mimir-local",
                     "command": "python3",
-                    "args": ["-m", "mimir", "mcp", "--path", "/tmp/mimir"],
+                    "args": ["-m", "mimir", "mcp"],
                 }
             ],
         )
@@ -1711,7 +1711,7 @@ class TestCodexSubprocessTransport:
                 {
                     "name": "mimir-local",
                     "command": "python3",
-                    "args": ["-m", "mimir", "mcp", "--path", "/tmp/mimir"],
+                    "args": ["-m", "mimir", "mcp"],
                 }
             ],
         )

@@ -9,9 +9,8 @@ Ting refreshes backend settings from its configured registry when that entry exi
 Ravn sessions receive the existing `mimir_search`, `mimir_read`, `mimir_write`,
 `mimir_query`, and ingestion tools backed by the selected adapter. Generated session
 instructions explain search-before-write, named write targets, source attribution,
-and backend limits. gbrain does not implement Mimir raw-source retrieval or Mimir
-lint; its native dream scheduler belongs to the gbrain deployment. Query synthesis
-requires a model configured on gbrain.
+and backend limits. gbrain's native dream scheduler belongs to the gbrain
+deployment. Query synthesis requires a model configured on gbrain.
 
 Operator-managed gbrain entries use the existing dynamic adapter configuration:
 

@@ -83,21 +83,6 @@ describe('MemoryExploreView', () => {
     expect(screen.queryByRole('region', { name: 'What Niuu knows' })).not.toBeInTheDocument();
   });
 
-  it('marks a lint L02 (contradiction) issue as disputed by its graph node id, from the graph, not the page path', async () => {
-    renderView();
-    await waitFor(() => expect(lastSceneProps).not.toBeNull());
-    expect(lastSceneProps?.disputedIds.has(GUILDS)).toBe(true);
-    expect(lastSceneProps?.disputedIds.has('/platform/guilds-gateway')).toBe(false);
-    expect(lastSceneProps?.disputedIds.size).toBe(1);
-  });
-
-  it('shows the disputed linked page in the Focus inspector, proving disputedIds reaches it correctly', async () => {
-    renderView({ focus: GATEWAY });
-    await waitFor(() => screen.getByText("Guild's gateway"));
-    const row = screen.getByText("Guild's gateway").closest('button')!;
-    expect(row).toHaveTextContent('disputed');
-  });
-
   it('focusing a page from the scene navigates via URL (focus param, node id)', async () => {
     renderView();
     await waitFor(() => expect(lastSceneProps).not.toBeNull());

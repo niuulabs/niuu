@@ -35,23 +35,6 @@ export interface MimirSearchResult {
   category: string;
 }
 
-export type LintSeverity = 'error' | 'warning' | 'info';
-
-export interface LintIssueHttp {
-  id: string;
-  severity: LintSeverity;
-  message: string;
-  pagePath: string;
-  autoFixable: boolean;
-}
-
-export interface MimirLintReport {
-  issues: LintIssueHttp[];
-  pagesChecked: number;
-  issuesFound: boolean;
-  summary: { error: number; warning: number; info: number };
-}
-
 export interface MimirLogEntry {
   raw: string;
   entries: string[];

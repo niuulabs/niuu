@@ -1,18 +1,13 @@
 /**
  * FocusPanel — left inspector shown when a node is focused: breadcrumb,
- * eyebrow, title, counts, summary, Key Facts (with `ProofPill`), actions,
+ * eyebrow, title, counts, summary, Key Facts, actions,
  * and the depth-controlled Links list.
  *
- * Links come from a pure BFS over the graph (`domain/graphNeighbors.ts`),
- * not `IPageStore.getRelated` — that port takes no mount and 404s for a
- * page kept on a mount other than the serving instance's own, so it cannot
- * walk links for an arbitrary focused node.
+ * Links come from a pure BFS over the graph (`domain/graphNeighbors.ts`).
  */
 import { relTime, LoadingState, ErrorState, SegmentedFilter } from '@niuulabs/ui';
 import { getZoneByKind } from '../../domain/page';
 import { neighborsWithinDepth } from '../../domain/graphNeighbors';
-import { useEvidence } from '../../application/useMemory';
-import { ProofPill } from './ProofPill';
 import './MemoryLegend.css';
 import type { Page } from '../../domain/page';
 import type { MimirGraph } from '../../domain/api-types';
@@ -26,7 +21,6 @@ export interface FocusPanelProps {
   isError: boolean;
   graph: MimirGraph;
   depth: FocusDepth;
-  disputedIds: ReadonlySet<string>;
   onDepthChange: (depth: FocusDepth) => void;
   onClearFocus: () => void;
   onFocusPage: (id: string) => void;
@@ -41,15 +35,12 @@ export function FocusPanel({
   isError,
   graph,
   depth,
-  disputedIds,
   onDepthChange,
   onClearFocus,
   onFocusPage,
   onReadPage,
   onAskAbout,
 }: FocusPanelProps) {
-  const evidence = useEvidence(page?.path ?? null);
-
   if (isLoading) {
     return (
       <section
@@ -80,7 +71,6 @@ export function FocusPanel({
   }
 
   const facts = getZoneByKind(page.zones ?? [], 'key-facts')?.items ?? [];
-  const evidenceByFact = new Map((evidence.data ?? []).map((row) => [row.fact, row]));
   const links = neighborsWithinDepth(graph, focusId, depth);
   const linkCount = links.length;
   const mount = page.mounts[0] ?? '';
@@ -118,22 +108,14 @@ export function FocusPanel({
 
       {facts.length > 0 && (
         <ul className="niuu:flex niuu:flex-col niuu:gap-2 niuu:m-0 niuu:p-0 niuu:list-none">
-          {facts.map((fact, i) => {
-            const row = evidenceByFact.get(fact);
-            return (
-              <li
-                key={i}
-                className="niuu:pb-2 niuu:border-b niuu:border-border-subtle niuu:last:border-b-0"
-              >
-                <p className="niuu:text-sm niuu:text-text-secondary niuu:m-0">{fact}</p>
-                {row && (
-                  <div className="niuu:mt-1">
-                    <ProofPill evidence={row} />
-                  </div>
-                )}
-              </li>
-            );
-          })}
+          {facts.map((fact, i) => (
+            <li
+              key={i}
+              className="niuu:pb-2 niuu:border-b niuu:border-border-subtle niuu:last:border-b-0"
+            >
+              <p className="niuu:text-sm niuu:text-text-secondary niuu:m-0">{fact}</p>
+            </li>
+          ))}
         </ul>
       )}
 
@@ -174,31 +156,22 @@ export function FocusPanel({
           <p className="niuu:text-xs niuu:text-text-muted niuu:italic niuu:m-0">No linked pages.</p>
         )}
         <ul className="niuu:flex niuu:flex-col niuu:gap-0.5 niuu:m-0 niuu:p-0 niuu:list-none">
-          {links.map(({ node, relation }) => {
-            const disputed = disputedIds.has(node.id);
-            return (
-              <li key={node.id}>
-                <button
-                  type="button"
-                  onClick={() => onFocusPage(node.id)}
-                  className="niuu:w-full niuu:flex niuu:items-center niuu:justify-between niuu:px-2 niuu:py-1 niuu:rounded-sm niuu:text-sm niuu:hover:bg-bg-tertiary"
-                >
-                  <span className="niuu:truncate niuu:text-text-secondary">{node.title}</span>
-                  {(relation || disputed) && (
-                    <span
-                      className={
-                        disputed
-                          ? 'memory-dispute niuu:text-xs niuu:flex-shrink-0 niuu:ml-2'
-                          : 'niuu:text-xs niuu:text-text-muted niuu:flex-shrink-0 niuu:ml-2'
-                      }
-                    >
-                      {disputed ? 'disputed' : relation}
-                    </span>
-                  )}
-                </button>
-              </li>
-            );
-          })}
+          {links.map(({ node, relation }) => (
+            <li key={node.id}>
+              <button
+                type="button"
+                onClick={() => onFocusPage(node.id)}
+                className="niuu:w-full niuu:flex niuu:items-center niuu:justify-between niuu:px-2 niuu:py-1 niuu:rounded-sm niuu:text-sm niuu:hover:bg-bg-tertiary"
+              >
+                <span className="niuu:truncate niuu:text-text-secondary">{node.title}</span>
+                {relation && (
+                  <span className="niuu:text-xs niuu:text-text-muted niuu:flex-shrink-0 niuu:ml-2">
+                    {relation}
+                  </span>
+                )}
+              </button>
+            </li>
+          ))}
         </ul>
       </div>
     </section>

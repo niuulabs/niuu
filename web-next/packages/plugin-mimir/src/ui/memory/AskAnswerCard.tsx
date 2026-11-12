@@ -2,14 +2,13 @@
  * AskAnswerCard — the bottom answer card for Ask mode: the ask bar (still
  * live for re-asking) and, below it, the verbatim Key Facts the answering
  * pages carry, each numbered to match the scene's answer badges (grouped by
- * the page they came from, ranked 1..N), with proof and a page title that
+ * the page they came from, ranked 1..N), with a page title that
  * focuses that page. A question with no matching page shows "Memory has
  * nothing on <q>." instead — the scene still draws it as an unanswered
  * question (`SceneQuestion` with `nearNodeId: null`), this card just says so.
  */
 import { LoadingState } from '@niuulabs/ui';
 import { AskBox } from './AskBox';
-import { ProofPill } from './ProofPill';
 import type { QuotedFact } from '../../domain/quoteFacts';
 
 export interface AskAnswerCardProps {
@@ -87,7 +86,6 @@ export function AskAnswerCard({
                           {entry.page.title}
                         </span>
                       )}
-                      {entry.evidence && <ProofPill evidence={entry.evidence} />}
                     </div>
                   </div>
                 </li>

@@ -1,10 +1,10 @@
 """Configuration models for the Mímir client side.
 
 ``MimirConfig`` describes how a runtime mounts one or more Mímir instances
-(a local markdown store, remote HTTP services, or a custom ``MimirPort``
-adapter), how writes are routed between them, and the reflex settings that go
-with them. Runtimes embed it in their own settings; ``mimir.client_settings``
-loads it standalone.
+(remote HTTP services, or a ``MimirPort`` adapter such as gbrain), how writes
+are routed between them (each write goes to exactly one instance), and the
+reflex settings that go with them. Runtimes embed it in their own settings;
+``mimir.client_settings`` loads it standalone.
 """
 
 from __future__ import annotations
@@ -12,15 +12,6 @@ from __future__ import annotations
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
-
-
-class MimirSearchConfig(BaseModel):
-    """Mímir search backend configuration."""
-
-    backend: Literal["fts", "vector"] = Field(
-        default="fts",
-        description="Search backend: 'fts' (full-text search) or 'vector' (embedding-based).",
-    )
 
 
 class MimirAuthConfig(BaseModel):
@@ -69,17 +60,13 @@ class MimirAuthConfig(BaseModel):
 class MimirInstanceConfig(BaseModel):
     """Configuration for a single Mímir instance in the composite adapter.
 
-    Either ``path`` (local filesystem) or ``url`` (HTTP service) must be set.
+    Either ``adapter`` (a ``MimirPort`` class) or ``url`` (HTTP service) must be set.
     """
 
     name: str = Field(description="Logical name, e.g. 'local', 'shared', 'kanuck'.")
     role: Literal["shared", "local", "domain"] = Field(
         default="local",
         description="Instance role.",
-    )
-    path: str | None = Field(
-        default=None,
-        description="Filesystem root for a local MarkdownMimirAdapter.",
     )
     url: str | None = Field(
         default=None,
@@ -96,10 +83,9 @@ class MimirInstanceConfig(BaseModel):
     adapter: str = Field(
         default="",
         description=(
-            "Fully-qualified MimirPort class for backends other than the built-in "
-            "markdown/HTTP pair, e.g. "
+            "Fully-qualified MimirPort class, e.g. "
             "'mimir.adapters.gbrain.GBrainMimirAdapter'. Takes precedence "
-            "over path/url; constructor arguments come from kwargs."
+            "over url; constructor arguments come from kwargs."
         ),
     )
     kwargs: dict[str, Any] = Field(
@@ -162,14 +148,15 @@ class MimirReadRetryConfig(BaseModel):
 class MimirWriteRoutingConfig(BaseModel):
     """Config-driven write routing for the CompositeMimirAdapter.
 
+    Every rule and the default must name exactly one mount: a write goes to one
+    mount, and a selection of none or several raises when the write is made.
+
     Example YAML::
 
         write_routing:
           rules:
             - prefix: "self/"
               mounts: ["local"]
-            - prefix: "technical/"
-              mounts: ["local", "shared"]
             - prefix: "household/"
               mounts: ["shared"]
           default: ["local"]
@@ -181,7 +168,7 @@ class MimirWriteRoutingConfig(BaseModel):
     )
     default: list[str] = Field(
         default_factory=lambda: ["local"],
-        description="Default mount(s) when no prefix matches.",
+        description="The one mount a write goes to when no prefix matches.",
     )
 
 
@@ -223,34 +210,25 @@ class MimirReflexConfig(BaseModel):
 class MimirConfig(BaseModel):
     """Mímir persistent compounding knowledge base configuration (NIU-540).
 
-    Mímir maintains a filesystem-backed wiki under ``path/wiki/`` and stores
-    raw immutable sources under ``path/raw/``.  The schema file ``MIMIR.md``
-    is seeded on first run if it does not exist.
+    The knowledge lives in the stores named by ``instances``. There is no
+    implicit local store: ``enabled: true`` with no instances is a
+    configuration error, and ``enabled: false`` is the operator's choice to run
+    without Mímir.
     """
 
     enabled: bool = Field(
         default=True,
-        description="Enable the Mímir knowledge base.",
-    )
-    path: str = Field(
-        default="~/.ravn/mimir",
-        description="Root directory for the Mímir knowledge base.",
-    )
-    categories: list[str] = Field(
-        default_factory=lambda: ["technical", "projects", "research", "household", "self"],
-        description="Top-level wiki categories.",
-    )
-    search: MimirSearchConfig = Field(
-        default_factory=MimirSearchConfig,
-        description="Search backend configuration.",
+        description=(
+            "Enable the Mímir knowledge base. When true, `instances` must name at "
+            "least one; set false to run without Mímir."
+        ),
     )
     instances: list[MimirInstanceConfig] = Field(
         default_factory=list,
         description=(
-            "Multi-Mímir instances for CompositeMimirAdapter. "
-            "When empty, a single local MarkdownMimirAdapter is used (path=mimir.path). "
-            "Each entry is either a local filesystem adapter (path=) "
-            "or a remote HTTP adapter (url=)."
+            "The Mímir instances to mount (CompositeMimirAdapter). Required when "
+            "`enabled` is true. Each entry is a MimirPort adapter (adapter=) or a "
+            "remote HTTP service (url=)."
         ),
     )
     write_routing: MimirWriteRoutingConfig = Field(

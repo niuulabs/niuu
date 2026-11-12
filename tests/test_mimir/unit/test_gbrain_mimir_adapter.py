@@ -414,20 +414,6 @@ class TestFailuresAreLoud:
             await adapter.search("anything")
         await adapter.close()
 
-    @pytest.mark.parametrize("op", ["lint"])
-    async def test_unsupported_operations_raise_rather_than_look_empty(self, op: str) -> None:
-        """gbrain cannot lint or enumerate raw sources.
-
-        Returning a clean report over an unlinted corpus, or an empty source
-        list, would read as success. Per .claude/rules/no-fallbacks.md these
-        say so instead.
-        """
-        adapter = _adapter()
-
-        with pytest.raises(NotImplementedError, match="no equivalent"):
-            await getattr(adapter, op)()
-        await adapter.close()
-
 
 class TestTransportQuirks:
     @respx.mock
@@ -506,6 +492,28 @@ class TestConfigWiring:
 
         assert built is not None
 
+    def test_enabled_with_no_instances_raises_naming_the_remedy(self) -> None:
+        """There is no implicit local store to fall back to."""
+        from mimir.builders import build_mimir
+        from mimir.client_settings import MimirClientSettings as Settings
+        from mimir.exceptions import MimirConfigurationError
+
+        settings = Settings()
+        settings.mimir.enabled = True
+        settings.mimir.instances = []
+
+        with pytest.raises(MimirConfigurationError, match="mimir.instances.*mimir.enabled: false"):
+            build_mimir(settings)
+
+    def test_disabled_builds_nothing(self) -> None:
+        from mimir.builders import build_mimir
+        from mimir.client_settings import MimirClientSettings as Settings
+
+        settings = Settings()
+        settings.mimir.enabled = False
+
+        assert build_mimir(settings) is None
+
     def test_an_instance_with_no_backend_raises_instead_of_being_skipped(self) -> None:
         """It used to warn and continue, leaving the mount silently absent."""
         from mimir.builders import build_mimir
@@ -516,7 +524,7 @@ class TestConfigWiring:
         settings.mimir.enabled = True
         settings.mimir.instances = [MimirInstanceConfig(name="nowhere", role="local")]
 
-        with pytest.raises(ValueError, match="no adapter, path or url"):
+        with pytest.raises(ValueError, match="no adapter or url"):
             build_mimir(settings)
 
 

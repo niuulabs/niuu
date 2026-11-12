@@ -2,7 +2,7 @@
  * Pure visibility/lighting rules for the memory scene.
  *
  * Turns a graph plus the scene's mode props (hidden groups, focus, answers,
- * path, the `asOf` replay cursor, disputed ids) into a per-node and
+ * path, the `asOf` replay cursor) into a per-node and
  * per-edge description of what to draw and how lit it is. Nothing here
  * touches three.js or the DOM — `MemoryScene` reads this to build meshes
  * and overlays, and every rule is exercised directly in tests.
@@ -22,7 +22,6 @@ export interface NodeVisibility {
   litLevel: LitLevel;
   bornRing: boolean;
   answerNumber: number | null;
-  disputed: boolean;
 }
 
 export interface EdgeVisibility {
@@ -51,7 +50,6 @@ export interface VisibilityInput {
   answers?: readonly SceneAnswer[];
   path?: readonly string[] | null;
   asOf?: string | null;
-  disputedIds?: ReadonlySet<string> | readonly string[];
 }
 
 function buildAdjacency(
@@ -119,7 +117,6 @@ function isBornRing(node: GraphNode, asOfMs: number | null): boolean {
 export function computeVisibility(graph: MimirGraph, input: VisibilityInput): SceneVisibility {
   const hiddenGroups = new Set(input.hiddenGroups ?? []);
   const asOfMs = input.asOf ? Date.parse(input.asOf) : null;
-  const disputedIds = new Set(input.disputedIds ?? []);
   const answerByNode = new Map((input.answers ?? []).map((a) => [a.nodeId, a.n]));
   const path = input.path ?? [];
   const pathSet = new Set(path);
@@ -136,7 +133,6 @@ export function computeVisibility(graph: MimirGraph, input: VisibilityInput): Sc
       litLevel: 'normal',
       bornRing: !hidden && isBornRing(node, asOfMs),
       answerNumber: answerByNode.get(node.id) ?? null,
-      disputed: disputedIds.has(node.id),
     });
   }
 

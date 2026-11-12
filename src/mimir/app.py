@@ -10,7 +10,11 @@ Usage (standalone)::
     from mimir.config import MimirServiceConfig
     import uvicorn
 
-    config = MimirServiceConfig(path="~/.ravn/mimir", name="shared", role="shared")
+    config = MimirServiceConfig(
+        backend={"adapter": "mimir.adapters.gbrain.GBrainMimirAdapter", "mcp_url": "..."},
+        name="shared",
+        role="shared",
+    )
     app = create_app(config)
     uvicorn.run(app, host=config.host, port=config.port)
 """
@@ -26,7 +30,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from identity.adapters.jwks import JwksBearerAuthenticationAdapter
-from mimir.adapters.markdown import MarkdownMimirAdapter
+from mimir.backend import build_backend
 from mimir.config import MimirServiceConfig
 from mimir.facts import FactCallerResolver, FactService
 from mimir.live_activity import LiveActivityRecorder
@@ -45,65 +49,20 @@ from niuu.settings_schema import (
 logger = logging.getLogger(__name__)
 
 
-def _build_embed_fn(model_name: str, *, base_url: str = "", api_key: str = ""):  # type: ignore[return]
-    """Return an async embed function, or raise if the request cannot be met.
-
-    Two backends. With *base_url* the vectors come from an OpenAI-compatible
-    endpoint over httpx — no heavy dependency, and it works against the same
-    model production uses. Without one, sentence-transformers is loaded
-    in-process.
-
-    Asking for embeddings and quietly getting keyword-only search is the
-    failure this must not have: it is invisible, and it drops semantic recall
-    to zero while every other signal looks healthy. Pass embedding_model=None
-    to choose FTS-only deliberately. See .claude/rules/no-fallbacks.md.
-    """
-    if base_url:
-        from niuu.adapters.embedding.openai import OpenAIEmbeddingAdapter
-
-        adapter = OpenAIEmbeddingAdapter(api_key, model=model_name, base_url=base_url)
-
-        async def _embed_remote(text: str) -> list[float]:
-            return await adapter.embed(text)
-
-        return _embed_remote
-
-    try:
-        from sentence_transformers import SentenceTransformer  # type: ignore[import]
-    except ImportError as exc:
-        raise RuntimeError(
-            f"embedding_model={model_name!r} is configured but sentence-transformers "
-            f"is not installed. Set embedding_base_url to use an OpenAI-compatible "
-            f"endpoint instead, install the dependency, or set embedding_model=null "
-            f"to run FTS-only on purpose — search will not silently drop to "
-            f"keyword-only."
-        ) from exc
-
-    _model: SentenceTransformer | None = None
-
-    async def _embed(text: str) -> list[float]:
-        nonlocal _model
-        import asyncio
-
-        if _model is None:
-            _model = await asyncio.to_thread(SentenceTransformer, model_name)
-        vector = await asyncio.to_thread(_model.encode, text, normalize_embeddings=True)
-        return vector.tolist()
-
-    return _embed
-
-
 def create_app(config: MimirServiceConfig) -> FastAPI:
     """Create the standalone Mímir FastAPI application.
 
     Args:
-        config: Service configuration (path, host, port, name, role).
+        config: Service configuration (backend, host, port, name, role).
 
     Returns:
         A configured FastAPI application with the Mímir router mounted at
         ``/mimir``.
+
+    Raises:
+        MimirConfigurationError: ``config.backend`` is missing or does not name a
+            ``MimirPort``. There is no default store.
     """
-    from niuu.adapters.search.sqlite import SqliteSearchAdapter
     from niuu.service_runtime import _get_auth_mode, _validate_identity_adapter_class
     from niuu.utils import import_class
 
@@ -128,30 +87,12 @@ def create_app(config: MimirServiceConfig) -> FastAPI:
     _validate_identity_adapter_class(identity_cls, auth_mode)
     identity_adapter = identity_cls(**config.identity_kwargs)
 
-    search_db = config.search_db or str(Path(config.path).expanduser() / "search.db")
-    embed_fn = (
-        _build_embed_fn(
-            config.embedding_model,
-            base_url=config.embedding_base_url,
-            api_key=config.embedding_api_key,
-        )
-        if config.embedding_model
-        else None
-    )
-    search_port = SqliteSearchAdapter(path=search_db, embed_fn=embed_fn)
-
-    adapter = MarkdownMimirAdapter(
-        root=config.path,
-        search_port=search_port,
-        ranking_config=config.ranking,
-        evidence_config=config.evidence,
-    )
+    adapter = build_backend(config.backend, setting="MIMIR__BACKEND (backend:)")
     registry_store = MimirRegistryStore(Path(config.path).expanduser() / ".mimir-registry.json")
     registry_store.ensure_entry(
         name=config.name,
         role=config.role,
         kind="local" if not config.announce_url else "remote",
-        path=str(Path(config.path).expanduser()),
         url=config.announce_url or "",
         categories=config.categories,
         default_read_priority=0,
@@ -218,15 +159,6 @@ def create_app(config: MimirServiceConfig) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         try:
-            if await search_port.has_documents():
-                logger.info("mimir[%s]: using persisted search index", config.name)
-            else:
-                n = await adapter.rebuild_search_index()
-                logger.info("mimir[%s]: search index ready (%d pages)", config.name, n)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("mimir[%s]: search index rebuild failed: %s", config.name, exc)
-
-        try:
             yield
         finally:
             if deployment is not None:
@@ -234,6 +166,9 @@ def create_app(config: MimirServiceConfig) -> FastAPI:
             close_facts = getattr(fact_port, "close", None)
             if close_facts is not None:
                 await close_facts()
+            close_backend = getattr(adapter, "close", None)
+            if close_backend is not None:
+                await close_backend()
 
     app = FastAPI(
         title=f"Mímir — {config.name}",
@@ -388,10 +323,10 @@ def create_app(config: MimirServiceConfig) -> FastAPI:
                             read_only=True,
                         ),
                         SettingsFieldSchema(
-                            key="knowledge_path",
-                            label="Knowledge Path",
+                            key="backend",
+                            label="Backend",
                             type="text",
-                            value=config.path,
+                            value=str(config.backend["adapter"]),
                             read_only=True,
                         ),
                         SettingsFieldSchema(
@@ -399,13 +334,6 @@ def create_app(config: MimirServiceConfig) -> FastAPI:
                             label="Category Scope",
                             type="text",
                             value=categories,
-                            read_only=True,
-                        ),
-                        SettingsFieldSchema(
-                            key="embedding_model",
-                            label="Embedding Model",
-                            type="text",
-                            value=config.embedding_model or "fts-only",
                             read_only=True,
                         ),
                         SettingsFieldSchema(

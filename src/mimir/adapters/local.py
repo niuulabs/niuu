@@ -133,7 +133,7 @@ class LocalKnowledgeDeploymentAdapter(KnowledgeDeploymentPort):
             "cluster": "This computer",
             "namespace": "local",
             "target": "local",
-            "backends": ["mimir", *(["gbrain"] if self.gbrain_command else [])],
+            "backends": ["gbrain"] if self.gbrain_command else [],
             "releases": [
                 await self._view(r) for r in self._records() if r.get("tenant_id", "") == tenant_id
             ],
@@ -204,7 +204,7 @@ class LocalKnowledgeDeploymentAdapter(KnowledgeDeploymentPort):
             "name": request.name,
             "backend": request.backend,
             "url": url,
-            "health_url": url + ("/mimir/health" if request.backend == "mimir" else "/health"),
+            "health_url": url + "/health",
             "initialized": False,
         }
         config_file = directory / "deployment.json"
@@ -221,79 +221,58 @@ class LocalKnowledgeDeploymentAdapter(KnowledgeDeploymentPort):
                     listen_password=secrets.token_urlsafe(32),
                 )
         try:
-            if request.backend == "mimir":
-                data = directory / "data"
-                record["mount"] = {
-                    "adapter": "mimir.adapters.markdown.MarkdownMimirAdapter",
-                    "kwargs": {"root": str(data)},
-                }
-                command = [
-                    sys.executable,
-                    "-m",
-                    "mimir",
-                    "serve",
-                    "--path",
-                    str(data),
-                    "--host",
-                    "127.0.0.1",
-                    "--port",
-                    str(port),
-                    "--name",
-                    request.name,
-                ]
-            else:
-                env = {**self.environment, "GBRAIN_HOME": str(directory)}
-                if self.database:
-                    from mimir.local_runtime import start_database
+            env = {**self.environment, "GBRAIN_HOME": str(directory)}
+            if self.database:
+                from mimir.local_runtime import start_database
 
-                    database, database_url = await start_database(database_config, directory)
-                    env["GBRAIN_DATABASE_URL"] = database_url
-                # Templates select a separate database for each named instance.
-                env = {
-                    key: value.replace("{name}", request.name.replace("-", "_"))
-                    for key, value in env.items()
-                }
-                prefix = self.gbrain_command
-                await self._run(
-                    *prefix,
-                    "init",
-                    *(["--non-interactive"] if env.get("GBRAIN_DATABASE_URL") else ["--pglite"]),
-                    "--no-embedding",
-                    env={**os.environ, **env},
+                database, database_url = await start_database(database_config, directory)
+                env["GBRAIN_DATABASE_URL"] = database_url
+            # Templates select a separate database for each named instance.
+            env = {
+                key: value.replace("{name}", request.name.replace("-", "_"))
+                for key, value in env.items()
+            }
+            prefix = self.gbrain_command
+            await self._run(
+                *prefix,
+                "init",
+                *(["--non-interactive"] if env.get("GBRAIN_DATABASE_URL") else ["--pglite"]),
+                "--no-embedding",
+                env={**os.environ, **env},
+            )
+            # The native local MCP listener is loopback-only. Reuse a configured scoped token.
+            token_output = await self._run(
+                *prefix,
+                "auth",
+                "create",
+                "niuu-" + request.name,
+                "--scopes",
+                "read,write",
+                env={**os.environ, **env},
+            )
+            match = re.search(r"(?m)^\s+(gbrain_[A-Za-z0-9_-]+)\s*$", token_output)
+            if match is None:
+                raise RuntimeError("gbrain did not return its scoped access token")
+            token = match.group(1)
+            kwargs = {"mcp_url": url + "/mcp", "api_token": token, "query_expansion": False}
+            record["mount"] = {
+                "adapter": "mimir.adapters.gbrain.GBrainMimirAdapter",
+                "kwargs": kwargs,
+            }
+            # Keep environment secrets in the private runner config.
+            runner = directory / "runtime.json"
+            runner.write_text(
+                json.dumps(
+                    {
+                        "database": database_config,
+                        "command": self.gbrain_command,
+                        "environment": env,
+                        "port": port,
+                    }
                 )
-                # The native local MCP listener is loopback-only. Reuse a configured scoped token.
-                token_output = await self._run(
-                    *prefix,
-                    "auth",
-                    "create",
-                    "niuu-" + request.name,
-                    "--scopes",
-                    "read,write",
-                    env={**os.environ, **env},
-                )
-                match = re.search(r"(?m)^\s+(gbrain_[A-Za-z0-9_-]+)\s*$", token_output)
-                if match is None:
-                    raise RuntimeError("gbrain did not return its scoped access token")
-                token = match.group(1)
-                kwargs = {"mcp_url": url + "/mcp", "api_token": token, "query_expansion": False}
-                record["mount"] = {
-                    "adapter": "mimir.adapters.gbrain.GBrainMimirAdapter",
-                    "kwargs": kwargs,
-                }
-                # Keep environment secrets in the private runner config.
-                runner = directory / "runtime.json"
-                runner.write_text(
-                    json.dumps(
-                        {
-                            "database": database_config,
-                            "command": self.gbrain_command,
-                            "environment": env,
-                            "port": port,
-                        }
-                    )
-                )
-                runner.chmod(0o600)
-                command = [sys.executable, "-m", "mimir.local_runtime", str(runner)]
+            )
+            runner.chmod(0o600)
+            command = [sys.executable, "-m", "mimir.local_runtime", str(runner)]
             if database is not None:
                 await database.stop()
                 database = None

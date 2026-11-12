@@ -19,7 +19,6 @@ import { useMemoryUrl } from '../../application/useMemoryUrl';
 import { useMemoryGraph } from '../../application/useMemoryGraph';
 import { useLiveActivity } from '../../application/useLiveActivity';
 import { useQueryStats } from '../../application/useAnalytics';
-import { useLint } from '../../application/useLint';
 import { useMemoryAsk } from '../../application/useMemoryAsk';
 import { useMimirPage } from '../useMimirPages';
 import { MemoryScene } from '../scene/MemoryScene';
@@ -95,7 +94,6 @@ export function MemoryExploreView() {
   const graphQuery = useMemoryGraph(mountName);
   const liveActivityQuery = useLiveActivity();
   const queryStatsQuery = useQueryStats();
-  const lintQuery = useLint(mountName);
 
   const graph = graphQuery.data;
   const index = useMemo(() => nodeIndex(graph ?? EMPTY_GRAPH), [graph]);
@@ -160,18 +158,6 @@ export function MemoryExploreView() {
     }, REPLAY_TICK_MS);
     return () => window.clearInterval(id);
   }, [replayMode, isPlaying, graph, asOf, speed, setAsOf]);
-
-  /** Node ids of pages flagged with a contradiction (lint L02) — looked up by (mount, path), never by path alone. */
-  const disputedIds = useMemo(() => {
-    if (!graph) return new Set<string>();
-    const ids = new Set<string>();
-    for (const issue of lintQuery.issues) {
-      if (issue.rule !== 'L02') continue;
-      const node = index.byMountPath(issue.mount, issue.page);
-      if (node) ids.add(node.id);
-    }
-    return ids;
-  }, [lintQuery.issues, graph, index]);
 
   const trimmedQuestion = question?.trim() ?? '';
 
@@ -296,7 +282,6 @@ export function MemoryExploreView() {
           asOf={asOf === null ? null : endOfReplayDay(asOf)}
           markers={markers}
           questions={questions}
-          disputedIds={disputedIds}
           camera={camera}
           onSelectNode={(id, options) => handleSelectNode(id, { shift: options.shift })}
           onBackgroundClick={handleBackgroundClick}
@@ -415,7 +400,6 @@ export function MemoryExploreView() {
                 isError={focusPageQuery.isError}
                 graph={graph}
                 depth={depth}
-                disputedIds={disputedIds}
                 onDepthChange={setDepth}
                 onClearFocus={() => focusAndClearPath(null)}
                 onFocusPage={focusAndClearPath}

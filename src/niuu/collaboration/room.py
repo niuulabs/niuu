@@ -411,7 +411,6 @@ class CollaborationRoom:
         signal_refs: Iterable[str] | None = None,
         judgment_refs: Iterable[str] | None = None,
         action_refs: Iterable[str] | None = None,
-        transcript_targets: Iterable[str] | None = None,
         participants: Iterable[str] | None = None,
     ) -> dict[str, Any]:
         """Open a replayable room scoped to an environment."""
@@ -450,7 +449,6 @@ class CollaborationRoom:
             signal_refs=list(signal_refs or ()),
             judgment_refs=list(judgment_refs or ()),
             action_refs=list(action_refs or ()),
-            transcript_targets=list(transcript_targets or ("mimir",)),
             participant_ids=participant_ids,
         )
         return opened
@@ -466,7 +464,6 @@ class CollaborationRoom:
         judgment_refs: list[str],
         action_refs: list[str],
         participant_ids: list[str],
-        transcript_targets: list[str],
     ) -> dict[str, Any]:
         """Record context needed by late room joiners."""
         snapshot = {
@@ -479,7 +476,6 @@ class CollaborationRoom:
             "judgmentRefs": list(judgment_refs),
             "actionRefs": list(action_refs),
             "participantIds": list(participant_ids),
-            "transcriptTargets": list(transcript_targets),
         }
         self._room_context_snapshots[room_id] = snapshot
         self._append_huddle_event(room_id, snapshot)
@@ -495,7 +491,6 @@ class CollaborationRoom:
                     "judgment_refs": list(judgment_refs),
                     "action_refs": list(action_refs),
                     "participant_ids": list(participant_ids),
-                    "transcript_targets": list(transcript_targets),
                 },
                 root_correlation_id,
             )

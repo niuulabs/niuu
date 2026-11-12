@@ -199,16 +199,6 @@ class TestSearchPortCompliance:
         adapter = PostgresSearchAdapter(dsn="postgresql://localhost/test")
         assert isinstance(adapter, SearchPort)
 
-    def test_sqlite_is_search_port(self) -> None:
-        import tempfile
-
-        from niuu.adapters.search.sqlite import SqliteSearchAdapter
-        from niuu.ports.search import SearchPort
-
-        with tempfile.NamedTemporaryFile(suffix=".db") as f:
-            adapter = SqliteSearchAdapter(path=f.name)
-            assert isinstance(adapter, SearchPort)
-
 
 # ---------------------------------------------------------------------------
 # Pool sharing

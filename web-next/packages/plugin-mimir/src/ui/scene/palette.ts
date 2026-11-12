@@ -30,7 +30,6 @@ const KIND_VARS: Record<KindGroup, string> = {
   preference: '--color-memory-kind-preference',
   goal: '--color-memory-kind-goal',
   observation: '--color-memory-kind-observation',
-  thread: '--color-memory-kind-thread',
   page: '--color-memory-kind-page',
 };
 
