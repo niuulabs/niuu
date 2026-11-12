@@ -2553,3 +2553,54 @@ def test_forge_keeps_its_private_files_private_across_restarts():
     assert deployment["spec"]["template"]["spec"]["securityContext"]["fsGroupChangePolicy"] == (
         "OnRootMismatch"
     )
+
+
+@pytest.mark.skipif(shutil.which("helm") is None, reason="Helm is required")
+class TestProjectMemoryDirectory:
+    """Where a project's memory mounts are resolved: the file in mini mode, the hosted Mimir."""
+
+    def test_without_a_hosted_mimir_the_file_directory_is_left_to_the_default(self):
+        from volundr.config import ProjectsConfig
+
+        config = _rendered_configmap()
+        memory = ProjectsConfig.model_validate(config["projects"]).memory
+        assert memory.directory_adapter.endswith("MimirRegistryFileDirectory")
+        assert "mimir" not in config["workload_identity"]["audiences"]
+
+    def test_a_hosted_mimir_makes_the_http_directory_the_default(self):
+        from volundr.config import ProjectsConfig
+
+        config = _rendered_configmap(
+            "--set", "projectMemory.mimirUrl=https://mimir.example.com", *WORKLOAD_SIGNING_KEY
+        )
+        memory = ProjectsConfig.model_validate(config["projects"]).memory
+        assert memory.directory_adapter.endswith("MimirRegistryHttpDirectory")
+        assert memory.directory_kwargs == {
+            "base_url": "https://mimir.example.com",
+            "audience": "mimir",
+        }
+        assert config["workload_identity"]["audiences"] == ["volundr-api", "mimir"]
+
+    def test_the_audience_is_not_listed_twice(self):
+        config = _rendered_configmap(
+            "--set",
+            "projectMemory.mimirUrl=https://mimir.example.com",
+            "--set-json",
+            'workloadIdentity.audiences=["volundr-api","mimir"]',
+            *WORKLOAD_SIGNING_KEY,
+        )
+        assert config["workload_identity"]["audiences"] == ["volundr-api", "mimir"]
+
+    def test_a_hosted_mimir_without_workload_identity_refuses_to_render(self):
+        command = [
+            "helm",
+            "template",
+            "test",
+            str(CHART_DIR),
+            *BIFROST_URL,
+            "--set",
+            "projectMemory.mimirUrl=https://mimir.example.com",
+        ]
+        result = subprocess.run(command, capture_output=True, text=True)
+        assert result.returncode != 0
+        assert "projectMemory.mimirUrl asks the hosted Mimir with a workload token" in result.stderr

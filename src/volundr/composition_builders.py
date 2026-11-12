@@ -25,6 +25,7 @@ from niuu.mesh.platform_events import SigningBus
 from niuu.mesh.platform_identity import start_platform_signer
 from niuu.ports.credentials import CredentialRefreshLockPort
 from niuu.ports.http_auth import HttpAuthPort
+from niuu.ports.workload_identity import WorkloadTokenIssuer
 from niuu.utils import import_class, resolve_secret_kwargs
 from volundr.adapters.inbound.host_join_listener import (
     HostJoinListenerError,
@@ -55,6 +56,11 @@ from volundr.domain.ports import (
     SessionContributor,
 )
 from volundr.domain.presented_files import PresentedFileStore
+from volundr.domain.project_memory import (
+    MemoryMountDirectory,
+    ProjectMemoryRepository,
+    ProjectMemoryResolver,
+)
 from volundr.domain.services.client_credentials import ClientCredentialsMinter
 from volundr.domain.services.integration_registry import IntegrationRegistry
 from volundr.domain.services.mesh_identity import ForgeMeshCertificateSource
@@ -92,6 +98,31 @@ class HostPairingSignerUnavailableError(RuntimeError):
 
 #: Issuer and kid of pairing codes signed with ``compute.hosts.pairing_signing_key_file``.
 HOST_PAIRING_ISSUER = "niuu-forge-host-pairing"
+
+
+def create_project_memory(
+    settings: Settings, pool: Any, token_issuer: WorkloadTokenIssuer | None = None
+) -> tuple[ProjectMemoryRepository | None, ProjectMemoryResolver | None]:
+    """The store of the Mimir mounts projects own and the resolver launches use.
+
+    ``(None, None)`` when projects are off. An adapter that is not of its port's type, or a
+    directory that cannot be built, is fatal here, at startup, rather than at a launch.
+    """
+    if not settings.projects.enabled:
+        return None, None
+    config = settings.projects.memory
+    repository = import_class(config.repository_adapter)(pool=pool, **config.repository_kwargs)
+    if not isinstance(repository, ProjectMemoryRepository):
+        raise TypeError("projects.memory.repository_adapter must implement ProjectMemoryRepository")
+    directory_class = import_class(config.directory_adapter)
+    kwargs = dict(config.directory_kwargs)
+    if "token_issuer" in inspect.signature(directory_class).parameters:
+        # The directory asks the hosted Mimir with a workload token Forge mints.
+        kwargs["token_issuer"] = token_issuer
+    directory = directory_class(**kwargs)
+    if not isinstance(directory, MemoryMountDirectory):
+        raise TypeError("projects.memory.directory_adapter must implement MemoryMountDirectory")
+    return repository, ProjectMemoryResolver(repository, directory)
 
 
 def _create_forge_session_tokens(

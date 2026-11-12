@@ -1145,6 +1145,18 @@ guild:
   # -- This Forge's instance slug in that Guild (required with url)
   instanceSlug: ""
 
+# Memory a project owns (see docs/operator/project-memory.md). Its mounts are resolved
+# against a Mimir registry when they are added and at every launch.
+projectMemory:
+  # -- Origin of the hosted Mimir whose registry the mounts are resolved against, such as
+  # https://mimir.example.com. Set: Forge asks it over HTTP with a workload token for the
+  # session's owner (audience below), and workloadIdentity must be enabled. Unset: Forge
+  # reads the registry file in `config.projects.memory.directory_kwargs`, which only works
+  # where Forge shares a disk with Mimir (mini mode).
+  mimirUrl: ""
+  # -- Audience of that workload token; added to workloadIdentity.audiences when set.
+  audience: mimir
+
 workloadIdentity:
   enabled: false
   issuer: ""

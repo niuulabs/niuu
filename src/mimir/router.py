@@ -348,6 +348,7 @@ class RegistryMountRequest(BaseModel):
     auth_ref: str | None = None
     default_read_priority: int = 10
     enabled: bool = True
+    facts: bool = False
     health_status: str = "unknown"
     health_message: str = ""
     desc: str = ""
@@ -369,6 +370,7 @@ class RegistryMountResponse(BaseModel):
     auth_ref: str | None = None
     default_read_priority: int
     enabled: bool
+    facts: bool = False
     health_status: str
     health_message: str
     desc: str

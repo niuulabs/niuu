@@ -193,6 +193,7 @@ from volundr.composition_builders import (  # noqa: F401
     _validate_remote_room_role_config,
     create_oauth_client_registry,
     create_presented_file_store,
+    create_project_memory,
     integration_database_pool,
     require_presented_file_uploads,
     with_oauth_device_runner,
@@ -1578,6 +1579,10 @@ def create_app(
             )
             app.state.secret_request_service = secret_request_service
 
+            project_memory_repository, project_memory_resolver = create_project_memory(
+                settings, pool, workload_identity_service
+            )
+
             session_service = SessionService(
                 repository,
                 pod_manager,
@@ -1608,6 +1613,7 @@ def create_app(
                 forge_session_projection=_create_forge_session_projection(settings),
                 secret_cleanup=secret_request_service,
                 mesh_identity=mesh_identity_service,
+                project_memory=project_memory_resolver,
             )
             # A workflow run's unit starts its members with it: every pod manager that hosts
             # one resolves their launches (each member's own spec and credential) from here.
@@ -1930,6 +1936,7 @@ def create_app(
             # Projects add durable coordination metadata to ordinary Forge sessions.
             project_service = None
             project_integration_service = None
+            project_memory_service = None
             if settings.projects.enabled:
                 from volundr.domain.project_ports import ProjectRepository, ProjectWorkspace
                 from volundr.domain.services.projects import ProjectService
@@ -1981,6 +1988,12 @@ def create_app(
                     usage_page_size=project_config.team_usage_page_size,
                 )
                 app.state.project_integration_service = project_integration_service
+                from volundr.domain.services.project_memory import ProjectMemoryService
+
+                project_memory_service = ProjectMemoryService(
+                    project_service, project_memory_repository, project_memory_resolver
+                )
+                app.state.project_memory_service = project_memory_service
 
             # Create and include routers
             forge_router = create_router(
@@ -2008,6 +2021,7 @@ def create_app(
                 preview_edge_limit=settings.tool_result_preview.max_edge,
                 project_service=project_service,
                 project_integration_service=project_integration_service,
+                project_memory_service=project_memory_service,
                 runtime_build=build_identity()
                 if pod_manager.runtime_backend == "process"
                 else None,

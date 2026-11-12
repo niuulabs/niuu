@@ -43,6 +43,7 @@ import yaml
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 
+from mimir.exceptions import MimirWriteRefusedError
 from mimir.fact_tools import FACT_TOOLS, run_fact_tool
 from mimir.facts import FactCallerResolver, FactService
 from mimir.live_activity import LiveActivityRecorder
@@ -554,7 +555,11 @@ class MimirMcpServer:
                 arguments = params.get("arguments") or {}
                 if name in FACT_TOOLS:
                     return await self._call_fact_tool(name, arguments, request)
-                content = await self._call_tool(name, arguments, request)
+                try:
+                    content = await self._call_tool(name, arguments, request)
+                except MimirWriteRefusedError as exc:
+                    logger.warning("write refused: %s", _sanitize_log(exc))
+                    return {"content": [{"type": "text", "text": str(exc)}], "isError": True}
                 return {"content": content}
             case "ping":
                 return {}

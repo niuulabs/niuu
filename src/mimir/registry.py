@@ -32,6 +32,13 @@ class MimirRegistryEntry(BaseModel):
     auth_ref: str | None = None
     default_read_priority: int = 10
     enabled: bool = True
+    facts: bool = Field(
+        default=False,
+        description=(
+            "The Mímir behind this entry serves the typed-fact tools (mimir_fact_*). "
+            "Sessions are told to use them only for mounts that say so."
+        ),
+    )
     health_status: RegistryMountHealth = "unknown"
     health_message: str = ""
     desc: str = ""

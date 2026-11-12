@@ -39,7 +39,14 @@ data:
     server_public_host: {{ .Values.config.serverPublicHost | default "127.0.0.1" | quote }}
     server_port: {{ .Values.service.targetPort | default 8080 }}
     projects:
-      {{- .Values.config.projects | toYaml | nindent 6 }}
+      {{- $projects := deepCopy .Values.config.projects }}
+      {{- if .Values.projectMemory.mimirUrl }}
+      {{- if not .Values.workloadIdentity.enabled }}
+      {{- fail "projectMemory.mimirUrl asks the hosted Mimir with a workload token: set workloadIdentity.enabled (with a signing key), or clear projectMemory.mimirUrl to use the registry file" }}
+      {{- end }}
+      {{- $_ := set $projects "memory" (dict "directory_adapter" "volundr.adapters.outbound.mimir_registry_http_directory.MimirRegistryHttpDirectory" "directory_kwargs" (dict "base_url" .Values.projectMemory.mimirUrl "audience" .Values.projectMemory.audience)) }}
+      {{- end }}
+      {{- $projects | toYaml | nindent 6 }}
     session_usage:
       {{- .Values.sessionUsage | toYaml | nindent 6 }}
     conversation_recent_max_turns: {{ .Values.config.conversationRecentMaxTurns | default 15 }}
@@ -593,9 +600,13 @@ data:
     workload_identity:
       enabled: {{ .Values.workloadIdentity.enabled | default false }}
       issuer: {{ .Values.workloadIdentity.issuer | default "" | quote }}
-      {{- if .Values.workloadIdentity.audiences }}
+      {{- $audiences := .Values.workloadIdentity.audiences | default list }}
+      {{- if and .Values.projectMemory.mimirUrl (not (has .Values.projectMemory.audience $audiences)) }}
+      {{- $audiences = append $audiences .Values.projectMemory.audience }}
+      {{- end }}
+      {{- if $audiences }}
       audiences:
-        {{- range .Values.workloadIdentity.audiences }}
+        {{- range $audiences }}
         - {{ . | quote }}
         {{- end }}
       {{- else }}
