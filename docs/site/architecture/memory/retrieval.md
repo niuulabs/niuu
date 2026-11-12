@@ -130,4 +130,5 @@ with `MIMIR__EMBEDDING_*` variables through the chart's `envFrom`.
 ## Related
 
 - [Memory overview](index.md)
+- [Fail loud](../design/fail-loud.md) — why embeddings configured but missing stop startup
 - [Agent access](agent-access.md) — a session's local mount searches differently (see there)

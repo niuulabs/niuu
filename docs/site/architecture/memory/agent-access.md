@@ -159,3 +159,4 @@ runs without it.
 
 - [Memory overview](index.md)
 - [Mounts, tenants and hosting](mounts-and-tenants.md)
+- [Channels, rooms and Forge tools](../skuld/channels-and-tools.md) — the other tools a session gets

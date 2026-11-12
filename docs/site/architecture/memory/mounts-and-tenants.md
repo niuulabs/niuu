@@ -164,3 +164,5 @@ caller's own bearer only.
 
 - [Memory overview](index.md)
 - [Agent access](agent-access.md)
+- [Credentials](../security/credentials.md) — workload tokens and scoped tokens Mímir accepts or refuses
+- [Kubernetes](../deployment/kubernetes.md) — how the Mímir chart sits among the other releases
