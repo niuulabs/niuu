@@ -149,4 +149,5 @@ host's own login.
 - [Services and channels](services.md)
 - [Product and implementation names](names.md)
 - [Security](../security/index.md) — edge auth and every credential on this path.
-- The Forge, Skuld and Models areas go deeper on each hop.
+- [Skuld](../skuld/index.md) — runtimes and the message path inside a session.
+- The Forge and Models areas go deeper on the other hops.
