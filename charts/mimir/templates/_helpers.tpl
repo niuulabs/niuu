@@ -159,3 +159,10 @@ Directory the backend token Secret is mounted at, and the token file inside it
 {{- define "mimir.backendTokenFile" -}}
 {{ include "mimir.backendTokenDir" . }}/{{ required "config.backend.apiTokenSecret.key is required" .Values.config.backend.apiTokenSecret.key }}
 {{- end }}
+
+{{/*
+Where each memory system's token and signing key are mounted: <dir>/<system name>/.
+*/}}
+{{- define "mimir.memorySecretsDir" -}}
+/etc/mimir-memory
+{{- end }}

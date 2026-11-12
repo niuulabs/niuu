@@ -131,6 +131,13 @@ spec:
               mountPath: {{ .Values.config.dataPath | default "/data/mimir" }}
             - name: tmp
               mountPath: /tmp
+            {{- if .Values.config.memory.enabled }}
+            {{- range $index, $system := .Values.config.memory.systems }}
+            - name: memory-system-{{ $index }}
+              mountPath: {{ printf "%s/%s" (include "mimir.memorySecretsDir" $) $system.name }}
+              readOnly: true
+            {{- end }}
+            {{- end }}
             {{- with .Values.extraVolumeMounts }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
@@ -182,6 +189,24 @@ spec:
           {{- end }}
         - name: tmp
           emptyDir: {}
+        {{- if .Values.config.memory.enabled }}
+        {{- range $index, $system := .Values.config.memory.systems }}
+        - name: memory-system-{{ $index }}
+          projected:
+            defaultMode: 0440
+            sources:
+              - secret:
+                  name: {{ required (printf "config.memory.systems[%s].apiTokenSecret.name is required: the gbrain bearer token" $system.name) ($system.apiTokenSecret).name }}
+                  items:
+                    - key: {{ ($system.apiTokenSecret).key | default "token" }}
+                      path: token
+              - secret:
+                  name: {{ required (printf "config.memory.systems[%s].signingKeySecret.name is required: the key that seals trust and layer" $system.name) ($system.signingKeySecret).name }}
+                  items:
+                    - key: {{ ($system.signingKeySecret).key | default "key" }}
+                      path: signing-key
+        {{- end }}
+        {{- end }}
         {{- if .Values.envoy.enabled }}
         - name: envoy-config
           configMap:

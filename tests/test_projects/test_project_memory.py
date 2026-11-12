@@ -266,7 +266,7 @@ async def test_a_name_is_taken_once_per_project(world):
 
 async def test_access_and_prefixes_must_agree(world):
     with pytest.raises(ValueError, match="no write prefixes"):
-        await world.mount(write_prefixes=("project/",))
+        await world.mount(access=MemoryAccess.READ, write_prefixes=("project/",))
     with pytest.raises(ValueError, match="relative page path"):
         await world.mount(access=MemoryAccess.READ_WRITE, write_prefixes=("../x",))
     with pytest.raises(ValueError, match="relative page path"):

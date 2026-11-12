@@ -222,6 +222,74 @@ facts:
 Omit `facts` to serve no fact tools. With `facts` set, a backend that cannot be
 built stops startup. Limits that apply are in [limits.md](limits.md).
 
+## Memory gateway (`memory:`)
+
+The memory gateway serves a Forge session's `memory` tools over its layers:
+`org`, `project:<id>` when the session has a project, and `session:<id>`
+([design](../design/memory/README.md), step 1). It is off unless
+`memory.enabled`.
+
+```yaml
+memory:
+  enabled: true
+  forge_base_url: http://volundr:8080        # asked about the session on every call
+  forge_timeout_seconds: 10
+  systems:                                   # one gbrain per org
+    - name: acme-brain
+      adapter: mimir.backends.gbrain.GBrainBackend
+      mcp_url: http://acme-brain:3131/mcp
+      api_token_file: /etc/mimir-memory/acme-brain/token
+      signing_key_file: /etc/mimir-memory/acme-brain/signing-key
+  tenants:
+    acme: acme-brain                         # tenant id -> system name
+```
+
+In the chart these come from `config.memory` (`forgeBaseUrl`, `systems[]` with
+`mcpUrl`, `apiTokenSecret`, `signingKeySecret`, and `tenants`); each system's
+two secrets are mounted under `/etc/mimir-memory/<name>/`. Startup fails on a
+system that cannot be built, a tenant naming a missing system, or a system
+lacking a capability its layers need. A session whose org is not in `tenants`
+gets a 503 naming `memory.tenants`.
+
+**Routes.** `GET {base}/memory/tools` (instructions and tool definitions) and
+`POST {base}/memory/tools/{name}` (one call, an MCP `CallToolResult`), on
+`/mimir` and `/api/v1/mimir`. The caller sends the session's `forge_session`
+credential; the gateway reads `workload_session_id` from it and asks Forge
+(`GET /api/v1/forge/sessions/{id}/memory-context`, scope `forge:memory`) with
+the same token. Anything but Forge's 200 is a 401. Mímir's own identity checks
+skip exactly these two routes and nothing else.
+
+**Write rules.** An agent writes the session layer; writes project pages and
+timeline rows only under the project's write prefixes; everything else for the
+project, and everything for the org, is recorded as a proposal for the layer's
+owner. A refused write (a layer the session does not have, tool output as a
+source, a proposal for something it may write, a fact replacing one in another
+layer) is a tool error naming the rule and is counted as
+`memory.write_rules.<rule>` on the cap counter. Sessions write at `agent` trust.
+
+**On gbrain**, each layer is a slug namespace in the org's one source
+(`l/org/…`, `l/project-<id>/…`, `l/session-<id>/…`), proposals are pages under
+`l/_proposals/<layer>/<id>`, and every page, timeline row, source and fact
+carries its author, trust, evidence and layer sealed with `signing_key_file`. A
+record written to gbrain directly reads as unattested, at the lowest trust; a
+fact without a seal belongs to no layer and is never returned. `think` is never
+called. Reads page through gbrain with `offset` until the caller's count is met;
+`recall_limit` (gbrain's 100 rows per call) and `timeline_limit` are reported
+and counted when reached (`memory.systems[].recall_limit`, `.timeline_limit`).
+
+**Operator commands.**
+
+```bash
+# Import a retired Markdown wiki (wiki/, raw/) into a layer at operator trust.
+python -m mimir import-wiki --root /data/old-wiki --tenant acme --layer project:<id> --operator jozef
+# Pending proposals for a layer (approval comes in step 2).
+python -m mimir list-proposals --tenant acme --layer org --limit 50
+```
+
+The import stops at the first page it cannot import, naming the file; files
+that are not pages and tool-output sources are listed as not imported. Running
+it again skips pages already imported unchanged.
+
 ## 6. Deployment options
 
 1. **Inside the platform (default)** — the `mimir` plugin mounts on the niuu

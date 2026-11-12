@@ -258,10 +258,15 @@ starts from a local path:
   (`mimir/router.py:1698-1719`).
 
 Sessions authenticate with their Forge session credential and a new scope,
-`forge:memory`, added to `FORGE_SESSION_SCOPES` and the Forge session route
-allow-list, with `require_scope("forge:memory")` on the gateway's routes. The
-gateway checks the credential against the live session, as Forge does today,
-so a stopped session's memory access ends with it. People use their own login.
+`forge:memory`, added to `FORGE_SESSION_SCOPES`. The credential never reaches
+the agent: the `memory` server runs inside the session like the `forge`
+server, a stdio process that forwards to the session's broker, and the broker
+calls the gateway with the credential. The gateway asks Forge about the
+session on every call (`GET /api/v1/forge/sessions/{id}/memory-context`, scope
+`forge:memory`, the session's own only), so Forge's live-session check holds
+and a stopped session's memory access ends with it. The answer names the
+owner, org, project, run and the project's write prefixes. People use their
+own login.
 
 ## 7. Memory systems behind the gateway
 
@@ -299,9 +304,7 @@ memory:
 above, and it publishes its interface as a frozen protocol (memory verbs v1)
 with a conformance runner. Pin its version; run its conformance suite and our
 eval before each upgrade. Today's `GBrainMimirAdapter` and `GBrainFactAdapter`
-are the starting point. Phase 1 must prove that gbrain can remove a whole
-source, which ephemeral layers need; if it cannot, ephemeral layers run on a
-short-lived gbrain of their own.
+are the starting point.
 
 **Another system** plugs in by implementing `MemoryBackend` and passing the
 same contract tests. Hindsight is the first candidate, on one real job. The
@@ -312,11 +315,21 @@ Markdown wiki adapter is retired; its content imports into gbrain.
 - **One gbrain per org**, with its own database and credentials, deployed
   through the existing knowledge deployment port (local and Flux adapters).
   Two orgs never share a memory system instance.
-- **Each layer is a namespace** inside its org's system: a gbrain source per
-  layer (`org`, `project/<id>`, `run/<id>`, `session/<id>`, `person/<id>`,
-  `resident/<id>`). gbrain warns that sources share credentials and are not
-  hard isolation; the gateway is the only caller, so its rules are the
-  boundary inside an org.
+- **Each layer is a namespace** inside its org's system. On gbrain that is a
+  slug prefix in one source (`l/org/…`, `l/project-<id>/…`, `l/run-<id>/…`,
+  `l/session-<id>/…`, `l/person-<id>/…`, `l/resident-<id>/…`), and each fact
+  carries its layer in the provenance the gateway seals. It is not a gbrain
+  source per layer: gbrain sends every remote write to the one source its
+  client is bound to, and a client is registered with gbrain's command line on
+  the gbrain host, so a source per project or session would need host access
+  for every launch. Creating a namespace costs nothing; deleting one removes
+  its pages and withdraws its facts.
+- The gateway is the only caller of an org's system, so its rules are the
+  boundary inside an org. It filters every read to the caller's layers;
+  gbrain's `think` is never used, because it would read across all of them.
+- Proposals are pages in a reserved namespace of the target layer's system
+  (`l/_proposals/…`), so they stay inside the org and the gateway keeps no
+  database of its own.
 - An `attached` memory may live elsewhere: another project's layer, or a
   separate system an operator registered on the Platform.
 
@@ -413,16 +426,21 @@ Each step ends with a live proof, not only tests.
    until the step that replaces them. Existing wiki content is not imported
    yet, so this does not roll out to a cluster with live wiki data before the
    import exists.
-1. **Gateway, `MemoryBackend`, gbrain backend, org and project layers, the
-   `memory` server, and the import of existing wiki content into gbrain.**
-   Proof: a Claude Code session and a Codex session in one
-   project both answer "who owns the booking cut-over?" from the project layer
-   with a citation; a write outside the write prefixes becomes a proposal for
-   both; a session of another org cannot see any of it.
-2. **Run and session layers, proposals, promotion.** Proof: the implementer of
-   a workflow run reads the planner's decision from the run layer; a person
-   promotes one finding to the project, an owner approves it, and it lands at
-   `operator` level with its evidence; the run layer is gone after retention.
+1. **Gateway, `MemoryBackend`, gbrain backend, the org, project and session
+   layers, recorded proposals, the `memory` server, and the import of existing
+   wiki content into gbrain.** Proof: a Claude Code session and a Codex
+   session in one project both answer "who owns the booking cut-over?" from
+   the project layer with a citation; a write outside the write prefixes
+   becomes a proposal for both; a session of another org cannot see any of it.
+   Not in this step: `memory_ask` (it needs answer model calls through
+   Bifröst), the context pack at launch, and folding attached memories into
+   the `memory` server; they come with step 2.
+2. **Run layer, approving proposals, promotion, retention, `memory_ask`, the
+   context pack, attached memories in the `memory` server.** Proof: the
+   implementer of a workflow run reads the planner's decision from the run
+   layer; a person promotes one finding to the project, an owner approves it,
+   and it lands at `operator` level with its evidence; the run and session
+   layers are gone after retention.
 3. **Connectors and compiling.** Proof: a Linear ticket arrives as a source,
    the compile workflow updates its page, and the timeline row links to the
    ticket.

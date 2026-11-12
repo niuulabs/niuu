@@ -208,6 +208,15 @@ data:
     {{- $_ := set $forgeMcp "session_tokens" $sessionTokens }}
 
     forge_mcp: {{ toJson $forgeMcp }}
+    {{- if .Values.memory.gatewayUrl }}
+    {{- if not $tokensOn }}
+    {{- fail "memory.gatewayUrl needs Forge session credentials (a session's memory server authenticates to the gateway with them): enable workloadIdentity with signingKey.existingSecret, or set forgeMcp.session_tokens.signing_key_file. Or clear memory.gatewayUrl to run sessions without a memory server" }}
+    {{- end }}
+
+    # Every session runs Skuld's memory server against this gateway.
+    memory:
+      gateway_url: {{ tpl .Values.memory.gatewayUrl . | quote }}
+    {{- end }}
     {{- $attestation := dict }}
     {{- range $key, $value := ((.Values.mesh | default dict).attestation | default dict) }}
     {{- if not (kindIs "invalid" $value) }}

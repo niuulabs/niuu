@@ -305,6 +305,29 @@ config:
   # (buffer_size: 2000, window_seconds: 900). Fields match
   # mimir.config.LiveActivityConfig.
   liveActivity: {}
+  # The memory gateway (docs/design/memory): the `memory` tools Forge sessions call
+  # (GET/POST /memory/tools), over the org, project and session layers held in one
+  # gbrain per org. Off by default. The service checks every part at startup.
+  memory:
+    # -- Serve the memory tools.
+    enabled: false
+    # -- Forge's base URL, e.g. http://volundr:8080. The gateway asks Forge who each
+    # session is on every call. Required when enabled.
+    forgeBaseUrl: ""
+    # -- Seconds before a call to Forge times out. Null = the service default (10).
+    forgeTimeoutSeconds: null
+    # -- Results a list read returns when the caller names no limit (a default, not a
+    # cap). Null = the service default (10).
+    defaultResultCount: null
+    # -- One gbrain per org. Each entry:
+    #   name: acme-brain                 # referenced by `tenants`
+    #   mcpUrl: http://acme-brain:3131/mcp
+    #   apiTokenSecret: {name: acme-brain-token, key: token}        # gbrain auth create
+    #   signingKeySecret: {name: acme-memory-seal, key: key}        # seals trust and layer
+    #   timeoutSeconds / pageSize / recallLimit / timelineLimit: optional, null = default
+    systems: []
+    # -- Tenant id -> the `name` of the system holding that org's layers.
+    tenants: {}
 
 # Optional dynamic Flux deployment adapter configuration. Disabled by default.
 # Supply namespace, source_name, chart_versions, images and cluster in this map.

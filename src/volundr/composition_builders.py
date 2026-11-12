@@ -395,6 +395,33 @@ def require_presented_file_uploads(
     )
 
 
+def require_memory_credentials(settings: Settings, *, delivers_session_credential: bool) -> None:
+    """Refuse a memory gateway that no session broker could authenticate to.
+
+    A session's memory server calls the gateway with the session's own Forge credential
+    (scope ``forge:memory``), which the gateway checks with Forge. Sessions that hold no
+    credential would start a memory server that every call of fails, so the combination is
+    refused at startup.
+    """
+    if not settings.memory.gateway_url:
+        return
+    if not settings.forge_mcp.session_tokens.enabled:
+        raise RuntimeError(
+            "memory.gateway_url is set, but forge_mcp.session_tokens.enabled is false: the "
+            "memory server authenticates to the gateway with the session's Forge credential. "
+            "Enable forge_mcp.session_tokens, or clear memory.gateway_url to run sessions "
+            "without a memory server"
+        )
+    if delivers_session_credential:
+        return
+    raise RuntimeError(
+        "memory.gateway_url is set, but this pod manager does not hand session brokers "
+        "their Forge credential. For pod managers that do not deliver it themselves (Flux, "
+        "Kubernetes) set forge_mcp.session_tokens.projection_adapter, or clear "
+        "memory.gateway_url to run sessions without a memory server"
+    )
+
+
 def _create_workflow_execution_credential_service(
     settings: Settings,
     *,
@@ -984,6 +1011,15 @@ def _create_contributors(
             )
         )
         logger.info("Session contributor: model_gateway (auto-wired)")
+
+    # Every session runs Skuld's memory server when Forge is given the memory gateway.
+    if not _has_contributor("memory_server") and settings.memory.gateway_url:
+        from volundr.adapters.outbound.contributors.memory_server import (
+            MemoryServerContributor,
+        )
+
+        contributors.append(MemoryServerContributor(gateway_url=settings.memory.gateway_url))
+        logger.info("Session contributor: memory_server (auto-wired)")
 
     # Auto-wire LocalMountContributor from local_mounts config
     lm = settings.local_mounts

@@ -50,3 +50,45 @@ data:
     live_activity:
       {{- toYaml . | nindent 6 }}
     {{- end }}
+    {{- with .Values.config.memory }}
+    {{- if .enabled }}
+    memory:
+      enabled: true
+      forge_base_url: {{ required "config.memory.forgeBaseUrl is required when config.memory.enabled: the gateway asks Forge who each session is" .forgeBaseUrl | quote }}
+      {{- if not (kindIs "invalid" .forgeTimeoutSeconds) }}
+      forge_timeout_seconds: {{ .forgeTimeoutSeconds }}
+      {{- end }}
+      {{- if not (kindIs "invalid" .defaultResultCount) }}
+      default_result_count: {{ .defaultResultCount }}
+      {{- end }}
+      {{- if not .systems }}
+      {{- fail "config.memory.systems needs at least one memory system when config.memory.enabled" }}
+      {{- end }}
+      systems:
+        {{- range $system := .systems }}
+        {{- $name := required "config.memory.systems[].name is required" $system.name }}
+        - name: {{ $name | quote }}
+          adapter: mimir.backends.gbrain.GBrainBackend
+          mcp_url: {{ required (printf "config.memory.systems[%s].mcpUrl is required" $name) $system.mcpUrl | quote }}
+          api_token_file: {{ printf "%s/%s/token" (include "mimir.memorySecretsDir" $) $name | quote }}
+          signing_key_file: {{ printf "%s/%s/signing-key" (include "mimir.memorySecretsDir" $) $name | quote }}
+          {{- if not (kindIs "invalid" $system.timeoutSeconds) }}
+          timeout_seconds: {{ $system.timeoutSeconds }}
+          {{- end }}
+          {{- if not (kindIs "invalid" $system.pageSize) }}
+          page_size: {{ $system.pageSize }}
+          {{- end }}
+          {{- if not (kindIs "invalid" $system.recallLimit) }}
+          recall_limit: {{ $system.recallLimit }}
+          {{- end }}
+          {{- if not (kindIs "invalid" $system.timelineLimit) }}
+          timeline_limit: {{ $system.timelineLimit }}
+          {{- end }}
+        {{- end }}
+      tenants:
+        {{- range $tenant, $system := .tenants }}
+        {{ $tenant | quote }}: {{ $system | quote }}
+        {{- else }} {}
+        {{- end }}
+    {{- end }}
+    {{- end }}

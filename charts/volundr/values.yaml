@@ -1157,6 +1157,17 @@ projectMemory:
   # -- Audience of that workload token; added to workloadIdentity.audiences when set.
   audience: mimir
 
+# The memory gateway (the Mimir service) every session's memory server calls. See
+# docs/operator/project-memory.md.
+memory:
+  # -- Base URL of the memory gateway as reachable from a session pod, such as
+  # http://niuu-mimir.volundr.svc.cluster.local/api/v1/mimir; rendered with tpl. Set: every
+  # session gets Skuld `memory.enabled: true` and `memory.gateway_url`, and Forge session
+  # credentials must be on (the render refuses otherwise), because the session's broker
+  # authenticates to the gateway with its own credential. Empty runs sessions without a
+  # memory server.
+  gatewayUrl: ""
+
 workloadIdentity:
   enabled: false
   issuer: ""

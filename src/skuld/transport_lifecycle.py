@@ -561,3 +561,4 @@ class TransportLifecycleMixin:
         if self._session_http_client:
             await self._session_http_client.aclose()
             self._session_http_client = None
+        await self._close_memory_gateway()

@@ -109,6 +109,23 @@ class MemoryAccess(StrEnum):
 MOUNT_NAME_PATTERN = r"^[a-z0-9][a-z0-9_-]{0,62}$"
 
 
+def validate_write_prefixes(value: tuple[str, ...]) -> tuple[str, ...]:
+    """Trimmed write prefixes; each a relative page path, none repeated.
+
+    One rule for every list of prefixes a project sets: its mounts' and its own memory
+    layer's (``ForgeProject.memory_write_prefixes``).
+    """
+    cleaned = tuple(prefix.strip() for prefix in value)
+    for prefix in cleaned:
+        if not prefix or prefix.startswith("/") or ".." in prefix.split("/"):
+            raise ValueError(
+                f"Write prefix {prefix!r} must be a relative page path such as 'project/'"
+            )
+    if len(set(cleaned)) != len(cleaned):
+        raise ValueError("Write prefixes must be unique")
+    return cleaned
+
+
 class ProjectMemoryMount(BaseModel):
     """One mount a project owns."""
 
@@ -126,15 +143,7 @@ class ProjectMemoryMount(BaseModel):
     @field_validator("write_prefixes")
     @classmethod
     def _prefixes(cls, value: tuple[str, ...]) -> tuple[str, ...]:
-        cleaned = tuple(prefix.strip() for prefix in value)
-        for prefix in cleaned:
-            if not prefix or prefix.startswith("/") or ".." in prefix.split("/"):
-                raise ValueError(
-                    f"Write prefix {prefix!r} must be a relative page path such as 'project/'"
-                )
-        if len(set(cleaned)) != len(cleaned):
-            raise ValueError("Write prefixes must be unique")
-        return cleaned
+        return validate_write_prefixes(value)
 
     @model_validator(mode="after")
     def _access_matches_prefixes(self) -> ProjectMemoryMount:

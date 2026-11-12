@@ -597,6 +597,7 @@ class Broker(
         self._session_runtime_cache = None
         self._session_tools_cache = None
         self._forge_mcp_toolbox_cache = None
+        self._memory_gateway_cache = None
         # What the session's persona was projected into on this start (id, revision, engine,
         # projected arguments and the gaps stated as notes); empty without a persona.
         self._persona_status: dict[str, object] = {}

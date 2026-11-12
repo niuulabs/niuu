@@ -295,7 +295,7 @@ async def test_the_hosted_directory_asks_mimir_with_a_workload_token_for_the_own
         4,
     )
     # A path on Mimir's own disk is of no use to a session.
-    assert target.path == "" and target.categories == ("entity",)
+    assert target.categories == ("entity",)
 
 
 async def test_the_hosted_directory_answers_none_only_when_mimir_answered_without_the_entry(

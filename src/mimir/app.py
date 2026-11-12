@@ -30,6 +30,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from identity.adapters.jwks import JwksBearerAuthenticationAdapter
+from mimir.adapters.memory_rest import MemoryRouter, is_memory_tool_route
 from mimir.backend import build_backend
 from mimir.config import MimirServiceConfig
 from mimir.facts import FactCallerResolver, FactService
@@ -145,6 +146,7 @@ def create_app(config: MimirServiceConfig) -> FastAPI:
         fact_callers = FactCallerResolver(
             config.facts.trust.role_levels, config.facts.trust.scope_levels
         )
+    memory_router = _build_memory_router(config)
     mcp_server = MimirMcpServer(
         adapter=adapter,
         name=config.name,
@@ -169,6 +171,8 @@ def create_app(config: MimirServiceConfig) -> FastAPI:
             close_backend = getattr(adapter, "close", None)
             if close_backend is not None:
                 await close_backend()
+            if memory_router is not None:
+                await memory_router.close()
 
     app = FastAPI(
         title=f"Mímir — {config.name}",
@@ -234,6 +238,11 @@ def create_app(config: MimirServiceConfig) -> FastAPI:
         """
         if request.url.path in health_paths:
             return await call_next(request)
+        if memory_router is not None and is_memory_tool_route(request.method, request.url.path):
+            # The memory tools authenticate every call through Forge with the session's
+            # own credential (mimir.adapters.memory_rest), never anonymously; the OIDC
+            # and credential_allows_route checks below are for Mímir's own callers.
+            return await call_next(request)
         if auth_mode != "oidc" and not config.tenant_id:
             return await call_next(request)
 
@@ -270,6 +279,10 @@ def create_app(config: MimirServiceConfig) -> FastAPI:
             )
         return await call_next(request)
 
+    if memory_router is not None:
+        memory_routes = memory_router.router()
+        app.include_router(memory_routes, prefix="/mimir")
+        app.include_router(memory_routes, prefix="/api/v1/mimir", include_in_schema=False)
     app.include_router(mimir_router.router, prefix="/mimir")
     app.include_router(mimir_router.router, prefix="/api/v1/mimir", include_in_schema=False)
     app.include_router(mcp_server.router(), prefix="/mcp")
@@ -357,3 +370,27 @@ def create_app(config: MimirServiceConfig) -> FastAPI:
     app.add_middleware(SSESafeGZipMiddleware, minimum_size=4096)
 
     return app
+
+
+def _build_memory_router(config: MimirServiceConfig) -> MemoryRouter | None:
+    """The memory gateway's routes, or None when ``memory.enabled`` is off.
+
+    Enabled means every part must be buildable now: Forge's URL, each memory
+    system, every tenant's system and the capabilities its layers need.
+    """
+    memory = config.memory
+    if not memory.enabled:
+        return None
+    from mimir.adapters.forge_directory import ForgeSessionDirectory
+    from mimir.memory.gateway import MemoryGateway
+    from mimir.memory.systems import MemorySystems
+
+    directory = ForgeSessionDirectory(
+        memory.forge_base_url, timeout_seconds=memory.forge_timeout_seconds
+    )
+    systems = MemorySystems.from_config(memory.systems, memory.tenants)
+    gateway = MemoryGateway(
+        systems,
+        default_result_count=memory.default_result_count,
+    )
+    return MemoryRouter(gateway, directory, tenant_id=config.tenant_id, systems=systems)

@@ -454,6 +454,103 @@ async def _run_mimir_ingest(
     typer.echo("The source is stored; write its wiki pages with mimir_write.")
 
 
+def _memory_system(tenant: str):
+    """The configured memory systems and the one holding *tenant*'s layers."""
+    from mimir.memory.systems import MemorySystems, TenantNotConfiguredError
+
+    config = MimirServiceConfig()
+    systems = MemorySystems.from_config(config.memory.systems, config.memory.tenants)
+    try:
+        _, backend = systems.for_tenant(tenant)
+    except TenantNotConfiguredError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from exc
+    return systems, backend
+
+
+def _target_layer(layer: str):
+    from mimir.memory.models import Layer, LayerKind, MemoryValidationError
+
+    try:
+        target = Layer.parse(layer)
+    except MemoryValidationError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    if target.kind is LayerKind.SESSION:
+        raise typer.BadParameter("name the org layer (org) or a project layer (project:<id>)")
+    return target
+
+
+@app.command("import-wiki")
+def import_wiki_command(
+    root: Path = typer.Option(..., "--root", help="The old wiki root, holding wiki/ and raw/."),
+    tenant: str = typer.Option(..., "--tenant", help="The org whose memory system receives it."),
+    layer: str = typer.Option(..., "--layer", help="org, or project:<project id>."),
+    operator: str = typer.Option(
+        "wiki-import",
+        "--operator",
+        help="Who runs the import; its records are attributed to operator:<this>.",
+    ),
+) -> None:
+    """Import a retired Markdown wiki into a memory layer at operator trust.
+
+    Uses the `memory:` section of the service configuration. A page that cannot be
+    imported stops the import, naming the file.
+    """
+    from mimir.memory.importer import WikiImportError, import_wiki
+    from niuu.domain.mimir_facts import AuthorKind, FactAuthor, FactCaller
+
+    target = _target_layer(layer)
+    systems, backend = _memory_system(tenant)
+    caller = FactCaller(FactAuthor(AuthorKind.OPERATOR, operator))
+
+    async def _run():
+        try:
+            return await import_wiki(backend, root.expanduser(), target, caller)
+        finally:
+            await systems.close()
+
+    try:
+        report = asyncio.run(_run())
+    except WikiImportError as exc:
+        typer.echo(f"import failed: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    typer.echo(f"Imported into {target.id} of tenant {tenant}: {report.summary()}")
+    for path, reason in report.not_imported:
+        typer.echo(f"  not imported: {path} ({reason})")
+
+
+@app.command("list-proposals")
+def list_proposals_command(
+    tenant: str = typer.Option(..., "--tenant", help="The org whose memory system holds them."),
+    layer: str = typer.Option(..., "--layer", help="org, or project:<project id>."),
+    limit: int = typer.Option(..., "--limit", min=1, help="How many proposals to list."),
+) -> None:
+    """List the pending proposals for a layer, for its owner (approval comes later)."""
+    from mimir.memory.gateway import list_proposals
+
+    target = _target_layer(layer)
+    systems, backend = _memory_system(tenant)
+
+    async def _run():
+        try:
+            return await list_proposals(backend, target, limit=limit)
+        finally:
+            await systems.close()
+
+    proposals = asyncio.run(_run())
+    if not proposals:
+        typer.echo(f"No pending proposals for {target.id}.")
+    for proposal in proposals:
+        flag = "" if proposal.attested else " [UNATTESTED: not written by the gateway]"
+        typer.echo(
+            f"{proposal.id}  {proposal.action.value}  from session {proposal.proposer_session} "
+            f"(owner {proposal.session_owner}) at {proposal.created_at.isoformat()}{flag}\n"
+            f"    why: {proposal.reason}\n"
+            f"    change: {json.dumps(proposal.change, ensure_ascii=False)}\n"
+            f"    evidence: {', '.join(e.ref for e in proposal.evidence)}"
+        )
+
+
 def main() -> None:
     app()
 

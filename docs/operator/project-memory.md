@@ -133,3 +133,32 @@ projects:
 
 Point `directory_adapter` at another `MemoryMountDirectory` to look entries up
 elsewhere. A project without mounts never asks.
+
+## The memory server and the project layer
+
+Besides its mounts, a project owns a **memory layer** of its own, reached through the
+memory server that every session runs once Forge is told where the memory gateway (the
+Mímir service) is.
+
+| Setting | Meaning |
+|---|---|
+| `memory.gateway_url` (chart: `memory.gatewayUrl`) | Base URL of the gateway as a session reaches it, e.g. `http://127.0.0.1:8080/api/v1/mimir`. Set: every session gets Skuld `memory.enabled: true` and `memory.gateway_url`, whichever pod manager starts it. Empty (default): no session runs a memory server. |
+| `memory_write_prefixes` on a project | Page path prefixes, relative (`decisions/`, `runbooks/`), under which sessions of the project write straight into the project layer. Any other write to it becomes a proposal. Empty (default): every write is a proposal. |
+
+A project **owner** sets the prefixes with `PATCH /api/v1/forge/projects/{id}` (body
+`{"revision": n, "memory_write_prefixes": ["decisions/"]}`; the list replaces the old one) and anyone on
+the project reads them with `GET`. A contributor changing anything else on the project
+cannot change them (403). They follow the same rules as a mount's write prefixes: no
+leading `/`, no `..`, no repeats.
+
+The memory server authenticates to the gateway with the session's own Forge credential
+(scope `forge:memory`, granted to every session). The gateway asks Forge on every call
+(`GET /api/v1/forge/sessions/{id}/memory-context`) for the session's owner, tenant,
+project, workflow run and the project's write prefixes. That route answers only to the
+session's own credential; a person, a PAT or another session is refused (403), and a
+stopped, archived or restarted session is refused (401), which ends its memory access.
+
+Forge refuses to start with `memory.gateway_url` set while `forge_mcp.session_tokens` is
+off or no pod manager can hand the broker its credential, and the chart refuses to render
+`memory.gatewayUrl` without session credentials: name the fix in the message and either
+enable them or clear the URL.

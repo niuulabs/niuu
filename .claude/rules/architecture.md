@@ -168,9 +168,9 @@ principal for "this one session".
   key file (`forge_mcp.session_tokens`). Enabled with no usable key is fatal at
   startup, never "mint nothing".
 - Its `scopes` are bounded to its own family, `FORGE_SESSION_SCOPES`:
-  `forge:notify`, `forge:session:read` and `forge:session:secret` (ask the session's own
-  owner for a secret and claim it once; supplying or declining a request stays the owner's
-  alone and is closed to every scoped token) for every session, plus
+  `forge:notify`, `forge:session:read`, `forge:memory` and `forge:session:secret` (ask the
+  session's own owner for a secret and claim it once; supplying or declining a request stays
+  the owner's alone and is closed to every scoped token) for every session, plus
   `forge:session:message` / `forge:session:lifecycle` only through an operator
   grant. The family is part of `KNOWN_WORKLOAD_SCOPES` and keyed by
   `SCOPES_BY_TOKEN_USE` (`src/niuu/domain/services/token_scope.py`) — a
@@ -202,6 +202,16 @@ Volundr chart turns `session_tokens` and this projection on wherever Forge has a
 (workload identity with `signingKey.existingSecret`, or `forge_mcp.session_tokens.signing_key_file`);
 enabling them without one fails the render. When adding a NEW Forge route a session broker may call, add it
 to the allow-list and give it a `require_scope(...)` naming a `forge:*` scope.
+
+The memory gateway (the Mímir service, `docs/design/memory/README.md`) is the one
+non-Forge service that accepts this credential, on exactly two routes:
+`GET …/memory/tools` and `POST …/memory/tools/{name}`. It does not verify the token
+itself. It reads the unverified `workload_session_id` only to address
+`GET /api/v1/forge/sessions/{id}/memory-context` (scope `forge:memory`, the session's own
+only), presents the same token there, and treats Forge's 200 as the verification; any
+other answer is a 401. The broker makes these calls; the `memory` stdio server the agent
+runs only reaches the broker's loopback routes, so the credential stays out of the agent.
+Do not admit the credential on any other Mímir route.
 
 ### Exception: mesh sender attestation (`mesh_peer` certificates)
 

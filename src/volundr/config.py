@@ -3450,6 +3450,33 @@ class ArtifactsConfig(BaseModel):
     type_names: dict[str, str] = Field(default_factory=_default_artifact_type_names)
 
 
+class MemoryConfig(BaseModel):
+    """How sessions reach the memory gateway (the Mimir service) for their memory server."""
+
+    gateway_url: str = Field(
+        default="",
+        description=(
+            "Base URL of the memory gateway as reachable from a session, e.g. "
+            "http://127.0.0.1:8080/api/v1/mimir. When set, every session gets Skuld "
+            "memory.enabled: true and memory.gateway_url, and Forge requires session "
+            "credentials (forge_mcp.session_tokens) so the broker can authenticate to the "
+            "gateway. Empty runs sessions without a memory server."
+        ),
+    )
+
+    @field_validator("gateway_url")
+    @classmethod
+    def _http_url(cls, value: str) -> str:
+        url = value.strip()
+        if url and not url.startswith(("http://", "https://")):
+            raise ValueError(
+                f"memory.gateway_url must be an http(s) URL such as "
+                f"http://127.0.0.1:8080/api/v1/mimir, got {value!r}; leave it empty to run "
+                "sessions without a memory server"
+            )
+        return url.rstrip("/")
+
+
 class ProjectMemoryConfig(BaseModel):
     """The memory a project owns: where its mounts are stored and looked up."""
 
@@ -3722,6 +3749,7 @@ class Settings(BaseSettings):
     artifacts: ArtifactsConfig = Field(default_factory=ArtifactsConfig)
     host_identity: HostIdentityConfig = Field(default_factory=HostIdentityConfig)
     forge_mcp: ForgeMcpConfig = Field(default_factory=ForgeMcpConfig)
+    memory: MemoryConfig = Field(default_factory=MemoryConfig)
     mesh: MeshSettings = Field(default_factory=MeshSettings)
     identity: IdentityConfig = Field(default_factory=IdentityConfig)
     authorization: AuthorizationConfig = Field(default_factory=AuthorizationConfig)

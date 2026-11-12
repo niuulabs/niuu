@@ -131,6 +131,58 @@ class MimirFactsConfig(BaseModel):
     )
 
 
+class MemoryGatewayConfig(BaseModel):
+    """The memory gateway (docs/design/memory): sessions' ``memory`` tools over their layers.
+
+    Off unless ``enabled``. When enabled, every setting below is checked at startup:
+    a system that cannot be built, a tenant naming a system that does not exist, or
+    a system lacking a capability its layers need stops the service.
+    """
+
+    enabled: bool = Field(
+        default=False,
+        description="Serve GET/POST /memory/tools on the Mímir API prefixes.",
+    )
+    forge_base_url: str = Field(
+        default="",
+        description=(
+            "Forge's base URL. The gateway asks Forge who each session is on every call "
+            "(GET /api/v1/forge/sessions/{id}/memory-context) with the session's own "
+            "credential. Required when enabled."
+        ),
+    )
+    forge_timeout_seconds: float = Field(
+        default=10.0,
+        gt=0,
+        description="Timeout of each memory-context call to Forge; a timeout is a 401.",
+    )
+    systems: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description=(
+            "Memory systems, each a dynamic adapter with a gateway-local `name`: "
+            "{name: acme-brain, adapter: mimir.backends.gbrain.GBrainBackend, mcp_url: ..., "
+            "api_token_file: ..., signing_key_file: ...}. `name` is not passed to the "
+            "constructor; the other keys are."
+        ),
+    )
+    tenants: dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "Tenant id -> the name of the system that holds that org's layers (one memory "
+            "system per org). A session whose tenant is not listed is refused, naming this "
+            "setting."
+        ),
+    )
+    default_result_count: int = Field(
+        default=10,
+        ge=1,
+        description=(
+            "How many results memory_search and list reads return when the caller names no "
+            "`limit`. A default, not a cap: a caller may ask for more."
+        ),
+    )
+
+
 class MimirServiceConfig(BaseSettings):
     """Configuration for a Mímir service instance (standalone or plugin).
 
@@ -273,6 +325,10 @@ class MimirServiceConfig(BaseSettings):
             "None serves no fact tools: an operator's choice to run without them. When set "
             "and the backend cannot be built, startup fails."
         ),
+    )
+    memory: MemoryGatewayConfig = Field(
+        default_factory=MemoryGatewayConfig,
+        description="The memory gateway: layered memory tools for Forge sessions.",
     )
     live_activity: LiveActivityConfig = Field(
         default_factory=LiveActivityConfig,
