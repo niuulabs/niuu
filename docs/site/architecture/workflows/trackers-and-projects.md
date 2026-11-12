@@ -126,3 +126,4 @@ so a repeated event cannot start two runs.
 
 - [Workflows overview](index.md)
 - [Runs, steps and gates](runs.md)
+- [Credentials](../security/credentials.md) — tracker and Forge credentials

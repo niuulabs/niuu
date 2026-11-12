@@ -133,3 +133,7 @@ Run-level knobs (deadlines, pickup grace, stuck sweep) are on
 - [Runs, steps and gates](runs.md) — offers, joins, rework, gates, stuck steps, version pinning
 - [Trackers and projects](trackers-and-projects.md) — tickets, boards, projects
 - [Personas](personas.md) — what a stage member is
+- [Stack map](../index.md) — where Ting sits among the services
+- [Skuld — the session gateway](../skuld/index.md) — the root and member sessions a run runs on
+- [Credentials](../security/credentials.md) — the Forge credential and workload tokens Ting uses
+- Forge — session lifecycle and projects (its own architecture area)

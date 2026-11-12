@@ -182,3 +182,4 @@ uses the new head. Project boards pin a version per workflow too.
 ## Related
 
 - [Workflows overview](index.md)
+- [Skuld — the session gateway](../skuld/index.md) — how a member takes an offer and closes a step
