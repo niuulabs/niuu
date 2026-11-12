@@ -179,8 +179,7 @@ def fact_disagreements(facts: Sequence[LabelledFact]) -> list[Disagreement]:
                 first.layer == second.layer
                 or first.fact.subject != second.fact.subject
                 or first.fact.kind != second.fact.kind
-                or " ".join(first.fact.statement.split())
-                == " ".join(second.fact.statement.split())
+                or " ".join(first.fact.statement.split()) == " ".join(second.fact.statement.split())
             ):
                 continue
             found.append(

@@ -12,6 +12,7 @@ from fastapi.testclient import TestClient
 
 from niuu.domain.services.forge_session_token import LAUNCH_ID_CLAIM, SESSION_ID_CLAIM
 from niuu.domain.services.token_scope import (
+    FORGE_MEMORY_SCOPE,
     FORGE_MESH_IDENTITY_SCOPE,
     FORGE_NOTIFY_SCOPE,
     FORGE_SESSION_LIFECYCLE_SCOPE,
@@ -201,6 +202,7 @@ class TestPolicyTable:
             FORGE_SESSION_MESSAGE_SCOPE,
             FORGE_SESSION_LIFECYCLE_SCOPE,
             FORGE_MESH_IDENTITY_SCOPE,
+            FORGE_MEMORY_SCOPE,
             None,
         }
         assert {policy.scope for policy in ROUTE_POLICIES} <= scopes

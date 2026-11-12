@@ -2019,6 +2019,37 @@ def test_mesh_identity_refusals_pass_through_with_their_status() -> None:
 
 
 @respx.mock
+def test_memory_context_reaches_the_session_owner_and_is_never_cached() -> None:
+    """The memory gateway asks the root about a session; the Forge that owns it answers."""
+    client = _client([_instance("alpha", base_url="http://alpha")])
+    respx.get("http://alpha/api/v1/forge/sessions/s1").mock(
+        return_value=Response(200, json={"id": "s1"})
+    )
+    path = "/api/v1/forge/sessions/s1/memory-context"
+    respx.get(f"http://alpha{path}").mock(
+        return_value=Response(200, json={"session_id": "s1"}, headers={"cache-control": "no-store"})
+    )
+    response = client.get(path, headers=_headers())
+    assert response.status_code == 200
+    assert response.json() == {"session_id": "s1"}
+    assert response.headers["cache-control"] == "no-store"
+
+
+@respx.mock
+def test_memory_context_refusals_pass_through_with_their_status() -> None:
+    client = _client([_instance("alpha", base_url="http://alpha")])
+    respx.get("http://alpha/api/v1/forge/sessions/s1").mock(
+        return_value=Response(200, json={"id": "s1"})
+    )
+    respx.get("http://alpha/api/v1/forge/sessions/s1/memory-context").mock(
+        return_value=Response(403, json={"detail": "not the session's own credential"})
+    )
+    response = client.get("/api/v1/forge/sessions/s1/memory-context", headers=_headers())
+    assert response.status_code == 403
+    assert response.json() == {"detail": "not the session's own credential"}
+
+
+@respx.mock
 def test_playability_is_answered_by_the_forge_a_session_create_would_use() -> None:
     """A mini-mode launch asks the root whether each member can play; the target Forge answers."""
     client = _client([_instance("alpha", base_url="http://alpha")])

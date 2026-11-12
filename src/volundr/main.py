@@ -1626,7 +1626,8 @@ def create_app(
                     settings, delivers_session_credential=session_service.delivers_forge_session
                 )
             require_memory_credentials(
-                settings, delivers_session_credential=session_service.delivers_forge_session
+                settings,
+                delivers_session_credential=session_service.delivers_forge_session_somewhere,
             )
             # Local-process brokers notify the session service when they exit so
             # the DB row is reconciled promptly (pod-status authoritative) rather

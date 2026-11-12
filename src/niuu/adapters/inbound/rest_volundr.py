@@ -5761,6 +5761,38 @@ def create_volundr_router(
             headers=headers,
         )
 
+    @router.get("/sessions/{session_id}/memory-context", operation_id="get_session_memory_context")
+    async def memory_context(
+        request: Request,
+        session_id: str,
+        principal: Principal = Depends(extract_principal),
+    ) -> Response:
+        """A session's memory layers, from the Forge node that owns the session.
+
+        Asked by the memory gateway with the session's own Forge credential. Forge's status
+        and its ``Cache-Control: no-store`` go through unchanged.
+        """
+        instance, _ = await _find_session_owner(
+            service, principal, request, session_id, embedded_app=embedded_forge_app
+        )
+        upstream = await _request_remote(
+            instance,
+            request,
+            method="GET",
+            path=f"/sessions/{session_id}/memory-context",
+            params=None,
+            embedded_app=embedded_forge_app,
+        )
+        headers: dict[str, str] = {}
+        if cache := upstream.headers.get("cache-control"):
+            headers["cache-control"] = cache
+        return Response(
+            content=upstream.content,
+            status_code=upstream.status_code,
+            media_type=upstream.headers.get("content-type"),
+            headers=headers,
+        )
+
     @router.get("/sessions/{session_id}/logs")
     async def get_logs(
         request: Request,

@@ -2141,6 +2141,23 @@ class SessionService:
             return True
         return self._forge_session_projection is not None
 
+    @property
+    def delivers_forge_session_somewhere(self) -> bool:
+        """Whether some launch can give its broker the session credential.
+
+        A placement manager runs sessions on several runtimes. A feature that needs the
+        credential is possible when one of them delivers it; a session placed on one that
+        does not finds out at its own start, where Skuld refuses the feature by name.
+        """
+        if self._forge_session_tokens is None:
+            return False
+        if self._forge_session_projection is not None:
+            return True
+        somewhere = getattr(self._pod_manager, "delivers_forge_session_token_somewhere", None)
+        if somewhere is not None:
+            return bool(somewhere)
+        return bool(getattr(self._pod_manager, "delivers_forge_session_token", False))
+
     def _delivers_forge_session_to(self, session: Session) -> bool:
         """Whether the pod manager that runs *session* hands its broker the credential.
 

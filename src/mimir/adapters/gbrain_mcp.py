@@ -72,7 +72,12 @@ def text_result(result: dict[str, Any]) -> str:
 def result_payload(result: dict[str, Any]) -> Any:
     """The JSON a tool answered with: structured content, else its text block parsed.
 
-    Returns ``None`` when the result carries neither (or text that is not JSON).
+    gbrain puts the JSON value first and may follow it with a line for people (an empty
+    ``query`` page answers ``[]`` and then ``0 results. retrieved 0 before trimming…``),
+    so the leading JSON value is the answer and the note after it is not.
+
+    Returns ``None`` when the result carries neither (or text that does not start with
+    JSON).
     """
     structured = result.get("structuredContent")
     if structured is not None:
@@ -81,9 +86,14 @@ def result_payload(result: dict[str, Any]) -> Any:
     if not text:
         return None
     try:
-        return json.loads(text)
+        value, end = json.JSONDecoder().raw_decode(text)
     except json.JSONDecodeError:
         return None
+    rest = text[end:]
+    if rest and not rest.startswith("\n"):
+        # Prose that merely starts like JSON ("3 pages found"), not a JSON answer.
+        return None
+    return value
 
 
 class GBrainMcpClient:
