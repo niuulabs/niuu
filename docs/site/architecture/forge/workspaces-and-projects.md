@@ -14,7 +14,7 @@ sessions and gives them shared context and memory.
   do not nest; sessions nest inside a project through a parent session.
 - At every launch, a project adds its brief, its context revision and its memory
   mounts to the session.
-- A session workspace is not the **Workspaces** product (Realms), which is the
+- A session workspace is not the **Workspaces** product, which is the
   environment a resident keeps.
 
 ## How it fits
@@ -30,7 +30,7 @@ flowchart TD
     SRC[Git repo / local folder] --> W1
     SRC --> W2
     SRC --> W3
-    P -.->|Mímir mounts| S1
+    P -.->|Memory mounts| S1
     P -.-> S2
     P -.-> S3
 ```
@@ -90,7 +90,7 @@ accept its claims.
 
 **Members** have a role ladder `viewer < contributor < approver < owner`.
 
-**Project memory** is a set of named Mímir mounts. At every launch they are
+**Project memory** is a set of named Memory mounts. At every launch they are
 merged with what the launch spec and the session's own `workload_config.mimir`
 add; two sources using one mount name for different targets are refused.
 
@@ -136,4 +136,4 @@ add; two sources using one mount name for different targets are refused.
 - [Forge overview](index.md) — the lifecycle these workspaces follow
 - [Where sessions run](where-sessions-run.md) — what backs the workspace on each runtime
 - [Workflows: runs](../workflows/runs.md) — how runs place their members in a project
-- [Memory: mounts and tenants](../memory/mounts-and-tenants.md) — Mímir mounts
+- [Memory: mounts and tenants](../memory/mounts-and-tenants.md) — Memory mounts

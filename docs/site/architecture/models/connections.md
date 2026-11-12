@@ -14,7 +14,7 @@ is authenticated to its model.
 - Subscription sign-ins run the vendor's official CLI login in a short-lived,
   isolated worker; API keys are pasted and probed against the vendor.
 - At launch Forge writes a **secret manifest**: which env vars and files the
-  session gets from which credential. Skuld turns it into the runtime's
+  session gets from which credential. The session gateway turns it into the runtime's
   environment at boot.
 - Codex is the exception: its ChatGPT refresh token never leaves Forge. The
   session asks Forge's broker for short-lived access tokens.
@@ -27,7 +27,7 @@ sequenceDiagram
     participant F as Forge
     participant W as Login worker<br/>(Job / container)
     participant S as Credential store
-    participant K as Session (Skuld)
+    participant K as Session (session gateway)
     U->>F: POST /api/v1/integrations/enrollments (claude-code, codex, grok-build)
     F->>W: run the vendor CLI login
     W-->>U: URL / device code
@@ -100,8 +100,8 @@ device-flow runner); each enrollment goes to the first that implements its metho
 |---|---|
 | Broker | `POST /api/v1/internal/credentials/codex/tokens` refreshes the stored ChatGPT credential and returns an access token, account id, plan and expiry |
 | Session side | `skuld.codex_auth.VolundrCodexAuthProvider`, set by the Kubernetes, Flux, Docker and OpenShell pod managers |
-| Host side | `HostCodexAuthProvider` (Skuld's default) keeps the machine's own Codex login |
-| Bifröst side | The `ChatGPTSubscriptionAdapter` uses the same broker with Bifröst's workload identity, to serve GPT models over a subscription to platform callers |
+| Host side | `HostCodexAuthProvider` (the session gateway's default) keeps the machine's own Codex login |
+| Model gateway side | The `ChatGPTSubscriptionAdapter` uses the same broker with the model gateway's workload identity, to serve GPT models over a subscription to platform callers |
 
 ## Levers
 
@@ -109,7 +109,7 @@ device-flow runner); each enrollment goes to the first that implements its metho
 |---|---|---|---|
 | `credential_store.adapter` | `MemoryCredentialStore` | Where secrets live: OpenBao, Infisical, file or memory | Forge config |
 | `credential_enrollment_runner` | `UnsupportedCredentialEnrollmentRunner` | Which runner performs sign-ins | Forge config |
-| `codex_auth.adapter` (Skuld) | `HostCodexAuthProvider` | Host login versus Forge broker | Set per session by the pod manager |
+| `codex_auth.adapter` (session gateway) | `HostCodexAuthProvider` | Host login versus Forge broker | Set per session by the pod manager |
 | `SKULD__CLAUDE_AUTH` | `subscription` | Subscription login or API key for Claude | Set by `IntegrationContributor` |
 | Integration definitions | built in | Which vendors can be connected and how they are delivered | Forge config (integration catalog) |
 
@@ -134,7 +134,7 @@ device-flow runner); each enrollment goes to the first that implements its metho
 | Boot-time env and files | [`src/skuld/session_secrets.py`](https://github.com/niuulabs/niuu/blob/dev/src/skuld/session_secrets.py) |
 | Claude auth selection | [`src/skuld/transports/claude_env.py`](https://github.com/niuulabs/niuu/blob/dev/src/skuld/transports/claude_env.py) |
 | Codex broker | [`rest_codex_credentials.py`](https://github.com/niuulabs/niuu/blob/dev/src/volundr/adapters/inbound/rest_codex_credentials.py), [`src/skuld/codex_auth.py`](https://github.com/niuulabs/niuu/blob/dev/src/skuld/codex_auth.py), [`brokered_credentials.py`](https://github.com/niuulabs/niuu/blob/dev/src/volundr/adapters/outbound/brokered_credentials.py) |
-| Bifröst over a ChatGPT subscription | [`src/bifrost/adapters/chatgpt_subscription.py`](https://github.com/niuulabs/niuu/blob/dev/src/bifrost/adapters/chatgpt_subscription.py) |
+| Model gateway over a ChatGPT subscription | [`src/bifrost/adapters/chatgpt_subscription.py`](https://github.com/niuulabs/niuu/blob/dev/src/bifrost/adapters/chatgpt_subscription.py) |
 
 ## Related
 
@@ -143,4 +143,4 @@ device-flow runner); each enrollment goes to the first that implements its metho
 - [Routing](routing.md)
 - [Isolation and secrets](../security/isolation-and-secrets.md): how secret files reach a session
 - [Credentials](../security/credentials.md): every credential kind the platform accepts
-- [Skuld runtimes](../skuld/runtimes.md)
+- [Session gateway runtimes](../session-gateway/runtimes.md)

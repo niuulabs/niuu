@@ -2,15 +2,15 @@
 
 A collaboration room is the shared conversation that people and agents join together: who
 is here, who is listening, what was said, and where an answer goes. The mechanics live in a
-shared library; Skuld (the runtime session gateway) hosts a room per session and shows it on
+shared library; the session gateway hosts a room per session and shows it on
 the browser and Telegram.
 
 ## In one minute
 
 - `niuu.collaboration.CollaborationRoom` owns membership, presence, routing and the huddle
-  log. It imports neither Ravn nor Skuld; every effect (broadcast, publish, deliver) is a
+  log. It imports neither the agent runtime nor the session gateway; every effect (broadcast, publish, deliver) is a
   callback.
-- A session's Skuld hosts the room. Browser WebSockets and Telegram are **channels**, not
+- The session gateway hosts each session's room. Browser WebSockets and Telegram are **channels**, not
   the room.
 - The join route is for people **and** agents from other sessions. Joining grants no
   authority; what you may do is your room role.
@@ -24,17 +24,17 @@ the browser and Telegram.
 flowchart LR
   browser[Browser<br/>WebSocket /session] <--> ch[ChannelRegistry]
   tg[Telegram] <--> ch
-  ch <--> host[Skuld room host<br/>collaboration_adapter]
+  ch <--> host[Session gateway room host<br/>collaboration_adapter]
   host <--> room[CollaborationRoom<br/>niuu.collaboration]
-  room -- "participant.* / room.*" --> bus[(Sleipnir)]
+  room -- "participant.* / room.*" --> bus[(Event bus)]
   bus -- "verified mesh events" --> host
   bus -- "ObservationRelay" --> host
-  host -- "deliver to member session" --> forge[Forge room routes] --> other[Member session's Skuld]
+  host -- "deliver to member session" --> forge[Forge room routes] --> other[Member session's gateway]
   host -- "every frame" --> log[(Forge session_event_log)]
 ```
 
 The room is in memory. The durable record is the hosting session's event log in Forge, which
-is why a restarted Skuld can rebuild its conversation and re-seat members.
+is why a restarted session gateway can rebuild its conversation and re-seat members.
 
 ## Membership
 
@@ -53,7 +53,7 @@ is why a restarted Skuld can rebuild its conversation and re-seat members.
 | Leave is explicit | `leave_environment` removes the seat and drops any pending reply context; only a person or a session member may leave by role |
 
 **Room roles.** Viewer routes: `room/message`, `room/direct`, `GET room/participants`.
-Join, leave, heartbeat and any unlisted route need `owner`. Skuld resolves the role from
+Join, leave, heartbeat and any unlisted route need `owner`. The session gateway resolves the role from
 the deployment, a trusted proxy header (`x-niuu-room-role`), or by asking Forge
 (`room_role_source: remote`); a failed lookup denies.
 
@@ -77,8 +77,8 @@ messages, and on close a Markdown transcript published as `room.transcript.recor
 | Record | Where | Survives a restart |
 |---|---|---|
 | Huddle events, sequence numbers | In memory in `CollaborationRoom` | No |
-| Conversation turns, `room_member` seats | Forge `session_event_log`, appended by Skuld | Yes |
-| `room.*`, `participant.*` events | Sleipnir (and the audit log when on) | Per transport |
+| Conversation turns, `room_member` seats | Forge `session_event_log`, appended by the session gateway | Yes |
+| `room.*`, `participant.*` events | Event bus (and the audit log when on) | Per transport |
 | Live presence frames (`participant_joined`, …) | Broadcast to channels only | No |
 
 A reconnecting browser gets a `conversation_history` snapshot and the current room state on
@@ -89,7 +89,7 @@ connect; older history is read by cursor from Forge (`GET /api/v1/forge/sessions
 ```mermaid
 sequenceDiagram
   participant A as Agent (waiting case)
-  participant R as Room (Skuld)
+  participant R as Room (session gateway)
   participant C as Channel (browser / Telegram)
   participant P as Person
   A->>R: help request + replyContext (opaque)
@@ -102,7 +102,7 @@ sequenceDiagram
 ```
 
 - The context carries what the agent needs to resume: correlation and root correlation ids,
-  workflow node, session and task ids, trace context. Skuld never reads inside it.
+  workflow node, session and task ids, trace context. The session gateway never reads inside it.
 - Only an `approver` or above may consume a pending reply context. Callers below `owner`
   cannot inject `reply_context`, `participant_id` or `source` into metadata.
 - On Telegram, a reply to a bot message finds its target through the remembered
@@ -113,15 +113,15 @@ sequenceDiagram
 
 | Knob | Default | What it changes | Where it is set |
 |---|---|---|---|
-| `room.enabled` | `false` | Hosts a room in this session. An ordinary session pays nothing for it | Skuld settings |
-| `room.environment_id` | `local` | Environment the room belongs to | Skuld settings |
-| `room.presence_sweep_interval_s` | `30` | How often quiet participants are marked away; `0` turns the sweep off | Skuld settings |
-| `room.default_target_peer_id` | empty | The resident a message goes to when none is named | Skuld settings |
-| `observation_relay.enabled` / `event_patterns` | `true` / `["*"]` | Projects verified bus events to the room's resident | Skuld settings |
-| `ws_auth.room_role_source` | `deployment` | Where the room role comes from: `deployment`, `proxy`, `remote` | Skuld settings |
-| `telegram.enabled` / `topic_mode` | `false` / `topic_per_session` | Telegram channel and how chats map to sessions | Skuld settings |
-| `event_log_enabled` | `true` | The durable log that rebuilds the room after a restart | Skuld settings |
-| `history_hydration_enabled` | `true` | Rebuild conversation and seats from Forge on start | Skuld settings |
+| `room.enabled` | `false` | Hosts a room in this session. An ordinary session pays nothing for it | Session gateway settings |
+| `room.environment_id` | `local` | Environment the room belongs to | Session gateway settings |
+| `room.presence_sweep_interval_s` | `30` | How often quiet participants are marked away; `0` turns the sweep off | Session gateway settings |
+| `room.default_target_peer_id` | empty | The resident a message goes to when none is named | Session gateway settings |
+| `observation_relay.enabled` / `event_patterns` | `true` / `["*"]` | Projects verified bus events to the room's resident | Session gateway settings |
+| `ws_auth.room_role_source` | `deployment` | Where the room role comes from: `deployment`, `proxy`, `remote` | Session gateway settings |
+| `telegram.enabled` / `topic_mode` | `false` / `topic_per_session` | Telegram channel and how chats map to sessions | Session gateway settings |
+| `event_log_enabled` | `true` | The durable log that rebuilds the room after a restart | Session gateway settings |
+| `history_hydration_enabled` | `true` | Rebuild conversation and seats from Forge on start | Session gateway settings |
 
 ## Tradeoffs
 
@@ -138,7 +138,7 @@ sequenceDiagram
 | Room mechanics | [`niuu/collaboration/room.py`](https://github.com/niuulabs/niuu/blob/dev/src/niuu/collaboration/room.py), [`niuu/collaboration/models.py`](https://github.com/niuulabs/niuu/blob/dev/src/niuu/collaboration/models.py) |
 | Mesh → room bridge, observation relay | [`niuu/collaboration/mesh.py`](https://github.com/niuulabs/niuu/blob/dev/src/niuu/collaboration/mesh.py), [`niuu/collaboration/observation_relay.py`](https://github.com/niuulabs/niuu/blob/dev/src/niuu/collaboration/observation_relay.py) |
 | Room roles | [`niuu/room_access.py`](https://github.com/niuulabs/niuu/blob/dev/src/niuu/room_access.py), [`skuld/room_role_port.py`](https://github.com/niuulabs/niuu/blob/dev/src/skuld/room_role_port.py) |
-| Skuld room host and routes | [`skuld/collaboration_adapter.py`](https://github.com/niuulabs/niuu/blob/dev/src/skuld/collaboration_adapter.py), [`skuld/broker_api.py`](https://github.com/niuulabs/niuu/blob/dev/src/skuld/broker_api.py), [`skuld/room_delivery.py`](https://github.com/niuulabs/niuu/blob/dev/src/skuld/room_delivery.py) |
+| Session gateway room host and routes | [`skuld/collaboration_adapter.py`](https://github.com/niuulabs/niuu/blob/dev/src/skuld/collaboration_adapter.py), [`skuld/broker_api.py`](https://github.com/niuulabs/niuu/blob/dev/src/skuld/broker_api.py), [`skuld/room_delivery.py`](https://github.com/niuulabs/niuu/blob/dev/src/skuld/room_delivery.py) |
 | Channels | [`skuld/channels.py`](https://github.com/niuulabs/niuu/blob/dev/src/skuld/channels.py) |
 | Durable log and hydration | [`skuld/event_log.py`](https://github.com/niuulabs/niuu/blob/dev/src/skuld/event_log.py), [`skuld/history_hydration.py`](https://github.com/niuulabs/niuu/blob/dev/src/skuld/history_hydration.py), [`volundr/adapters/inbound/rest_session_log.py`](https://github.com/niuulabs/niuu/blob/dev/src/volundr/adapters/inbound/rest_session_log.py) |
 | Settings | [`skuld/config.py`](https://github.com/niuulabs/niuu/blob/dev/src/skuld/config.py) |
@@ -146,6 +146,6 @@ sequenceDiagram
 ## Related
 
 - [Communication overview](index.md)
-- [Sleipnir event bus](sleipnir.md): rooms publish `room.*` and `participant.*`.
-- [Flokk mesh and A2A](mesh-and-a2a.md): mesh peers appear as room participants.
-- [Channels, rooms and Forge tools](../skuld/channels-and-tools.md): the session side of rooms and channels.
+- [Event bus](event-bus.md): rooms publish `room.*` and `participant.*`.
+- [Flock mesh and A2A](mesh-and-a2a.md): mesh peers appear as room participants.
+- [Channels, rooms and Forge tools](../session-gateway/channels-and-tools.md): the session side of rooms and channels.

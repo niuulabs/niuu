@@ -6,8 +6,8 @@ transport, collaboration, and agent decisions are separate layers.
 ## Follow the owner of the event
 
 Session lifecycle belongs to Forge and its runtime gateway. Workflow progression
-belongs to Ting. Knowledge changes belong to Mímir. Ravn owns its decisions and
-case continuation. Sleipnir supplies transport abstractions for configured event
+belongs to the workflow engine. Knowledge changes belong to Memory. The agent runtime owns its decisions and
+case continuation. The event bus supplies transport abstractions for configured event
 backbones; choosing a transport does not define the meaning of an event.
 
 ## Three communication paths

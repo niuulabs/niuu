@@ -7,8 +7,8 @@ workload.
 ## In one minute
 
 - `charts/niuu` is an **umbrella chart**: Forge (`volundr`), Workflows (`ting`), the
-  shared APIs (`niuu-shared`), Platform (`guild`), `bifrost`, `observatory` and a
-  shared Mímir (`mimir-shared`) are on by default; each is also a chart of its own.
+  shared APIs (`niuu-shared`), Platform (`guild`), the model gateway (`bifrost`),
+  `observatory` and a shared Memory (`mimir-shared`) are on by default; each is also a chart of its own.
 - Sessions are **not** part of that release. With the default `FluxPodManager`, Forge
   writes one Flux `HelmRelease` of the `skuld` chart per session and Flux's
   helm-controller makes it real.
@@ -33,7 +33,7 @@ flowchart LR
   F --> DB[("PostgreSQL<br/>per-chart database")]
   T --> DB
   F -- "HelmRelease CR" --> FX["Flux helm-controller"]
-  FX --> S["session pod<br/>(skuld chart)"]
+  FX --> S["session pod<br/>(session gateway chart)"]
   F -. "VMs / registered hosts" .-> C["compute pool"]
   F --> OB["OpenBao"]
 ```
@@ -45,7 +45,7 @@ reconcile.
 
 ## What each mode-defining value picks
 
-| Concern | Chart value (volundr unless noted) | Default | Production profile |
+| Concern | Chart value (`volundr` unless noted) | Default | Production profile |
 |---|---|---|---|
 | Edge identity | `envoy.enabled`, `envoy.jwt.enabled` | off | on, via `values-cedar.yaml` |
 | Identity adapter | `identity.adapter` | `AllowAllIdentityAdapter` | `EnvoyHeaderIdentityAdapter` |
@@ -98,9 +98,9 @@ secrets, database or IdP it names exist.
 | `<chart>.enabled` | see umbrella `values.yaml` | Whether a service is deployed | `charts/niuu` values |
 | `global.image.registry` | `ghcr.io/niuulabs` | Where every image is pulled from | umbrella values |
 | `ingress.routeSets`, `ingress.hosts`, `ingress.tls` | off | Path routing to services | umbrella values |
-| `replicaCount`, `autoscaling.*`, `strategy` | `1`, off, `RollingUpdate` | Forge pods and rollout | volundr values |
+| `replicaCount`, `autoscaling.*`, `strategy` | `1`, off, `RollingUpdate` | Forge pods and rollout | `volundr` values |
 | `migrations.enabled` | `true` | Run the migrate init containers | each chart |
-| `mesh.attestation.required` | `null` (true) | `false` runs the mesh unauthenticated, reported on `/health` | volundr values |
+| `mesh.attestation.required` | `null` (true) | `false` runs the mesh unauthenticated, reported on `/health` | `volundr` values |
 
 Everything else is in each chart's `values.yaml`; see the
 [configuration reference](../../reference/configuration.md) and the

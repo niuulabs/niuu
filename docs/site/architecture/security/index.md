@@ -42,10 +42,10 @@ authenticate inside the route; see [Machine identities](machine-identities.md).
 | Principal | Example | Proves itself with | Page |
 |---|---|---|---|
 | Person | You, in the web app or the `niuu` CLI | OIDC token from the identity provider | [Credentials](credentials.md) |
-| Person's automation | Ting's dispatcher acting as you | Personal access token (a sanctioned exception) | [Credentials](credentials.md) |
-| Workload | A resident, a Skuld gateway, a workflow step | A provider proof (e.g. a Kubernetes ServiceAccount token) exchanged for a short-lived workload token | [Credentials](credentials.md) |
+| Person's automation | The workflow engine's dispatcher acting as you | Personal access token (a sanctioned exception) | [Credentials](credentials.md) |
+| Workload | A resident, a session gateway, a workflow step | A provider proof (e.g. a Kubernetes ServiceAccount token) exchanged for a short-lived workload token | [Credentials](credentials.md) |
 | Session | One Forge session's broker, calling the Forge MCP | `forge_session` token bound to that session's launch | [Credentials](credentials.md) |
-| Platform service | Forge, Ting signing bus events | A `service` mesh certificate signed with the platform key | [Communication area](../communication/index.md) |
+| Platform service | Forge and the workflow engine signing bus events | A `service` mesh certificate signed with the platform key | [Communication area](../communication/index.md) |
 | Machine | A joined node, a VM guest, a registered host | Ed25519 key, provider attestation or SPIFFE SVID | [Machine identities](machine-identities.md) |
 
 ## The edge
@@ -86,7 +86,7 @@ config), so no service code knows which identity provider is in use.
 | Admission | Cedar sidecar | `CedarAuthorizationAdapter` | Allow-all |
 | PAT revocation, scoped-route checks | Yes | Yes | Skipped (`PATRevocationMiddleware` is off with allow-all) |
 | Session credentials | Verified | Verified | Verified |
-| Startup refusals | Missing keys | Bifröst plugin enabled; HS256 PAT issuer | — |
+| Startup refusals | Missing keys | Model gateway plugin enabled; HS256 PAT issuer | — |
 
 The Forge chart's defaults are the permissive ones (`envoy.enabled`, `envoy.jwt.enabled`,
 `envoy.authorization.enabled` all `false`, allow-all identity and authorization adapters).

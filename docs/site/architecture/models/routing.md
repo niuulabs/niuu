@@ -1,6 +1,6 @@
 # Routing
 
-How Bifröst turns one request for a model name into a call to one provider:
+How the model gateway turns one request for a model name into a call to one provider:
 access and quota checks, rules, model selection, provider order, and the protocol
 the call is made in.
 
@@ -13,8 +13,8 @@ the call is made in.
 - The routing strategy orders those providers; the default, `failover`, tries the
   next one on 429 or 5xx.
 - `passthrough: true` on a provider skips the translation for callers that already
-  speak its protocol. Bifröst still authenticates, routes, meters and audits.
-- Bifröst does not compact context itself. It carries a provider's own compaction
+  speak its protocol. The model gateway still authenticates, routes, meters and audits.
+- The model gateway does not compact context itself. It carries a provider's own compaction
   where the path allows it, and refuses the request where it does not.
 
 ## How it fits
@@ -100,7 +100,7 @@ Runtimes that compact on their own (Claude Code, Codex) need neither.
 
 ## Per-runtime paths
 
-| Runtime | Calls | Path through Bifröst |
+| Runtime | Calls | Path through the model gateway |
 |---|---|---|
 | Claude Code | `/v1/messages` | Canonical; translated to the self-hosted server's Chat Completions |
 | Codex | `/v1/responses` | Translated to canonical and on to the server; Codex's hosted tools are turned off |
@@ -122,7 +122,7 @@ Runtimes that compact on their own (Claude Code, Codex) need neither.
 | `latency_ewma_alpha` | `0.2` | Weight of recent latency |
 | `cache.mode` | `disabled` | `memory` or `redis` exact-response cache (non-streaming); `default_ttl` 300 s |
 
-All are keys of Bifröst's config (`bifrost.yaml`; the chart's `config` value).
+All are keys of the model gateway's config (`bifrost.yaml`; the chart's `config` value).
 
 ## Tradeoffs
 

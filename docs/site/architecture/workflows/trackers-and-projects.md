@@ -1,12 +1,12 @@
 # Trackers, projects and boards
 
-A project links tracker tickets to workflows: drop a ticket on a board column and Ting starts
+A project links tracker tickets to workflows: drop a ticket on a board column and the workflow engine starts
 that column's workflow as a run of the ticket, inside the project on Forge.
 
 ## In one minute
 
-- A **tracker** is where tickets live: Linear, Jira, or **native** (Ting's own Postgres, always
-  available). Each is a `TrackerPort` adapter bound to one connection.
+- A **tracker** is where tickets live: Linear, Jira, or **native** (the workflow engine's own Postgres,
+  always available). Each is a `TrackerPort` adapter bound to one connection.
 - A **project** in Work is a linked tracker project with repositories and one or more
   workflows. Its runs join the matching **Forge project**, so sessions nest under it.
 - A workflow may declare **board columns** (`graph.board`). A project's board puts its workflows
@@ -36,7 +36,7 @@ flowchart LR
 |---|---|---|
 | `LinearTrackerAdapter` | Linear project → project, milestone → phase, issue → ticket | API key or OAuth token; optional `team_id` |
 | `JiraTrackerAdapter` | Jira Cloud (REST v3) | API token + email, or OAuth |
-| `NativeTrackerAdapter` | Rows in Ting's database | none; bound as connection `native` |
+| `NativeTrackerAdapter` | Rows in the workflow engine's database | none; bound as connection `native` |
 
 - Connections are rows in `integration_connections` of type `issue_tracker`: an `adapter` class
   path, a `credential_name` and `config`. The factory imports the class, passes credential and
@@ -60,7 +60,7 @@ holds its repositories, base branch, its workflow or ordered `board_workflows`, 
 share one Forge project.
 
 A ticket's run joins that Forge project: the root joins as the run room, each member as its
-alias with the root as parent session. Ting reads and writes Forge projects only over
+alias with the root as parent session. The workflow engine reads and writes Forge projects only over
 `/api/v1/forge/projects`.
 
 ## Boards and tickets
@@ -95,9 +95,9 @@ so a repeated event cannot start two runs.
 
 | Knob | Default | What it changes | Where it is set |
 |---|---|---|---|
-| `tracker.cache_ttl_seconds` | `30` | How long tracker reads are cached | Ting config |
-| `tracker.rate_limit_max_retries` | `3` | Retries on a tracker's rate-limit answer | Ting config |
-| `linear.api_key` / `linear.team_id` | empty | Seeds one Linear connection at startup | Ting config |
+| `tracker.cache_ttl_seconds` | `30` | How long tracker reads are cached | Workflow engine config |
+| `tracker.rate_limit_max_retries` | `3` | Retries on a tracker's rate-limit answer | Workflow engine config |
+| `linear.api_key` / `linear.team_id` | empty | Seeds one Linear connection at startup | Workflow engine config |
 | `board_workflows` | empty (the project's one workflow) | Which workflows the board runs, in order, each pinned to a version | Project settings in Work |
 | `graph.board` | absent (no board) | The columns a workflow contributes | Workflow document |
 

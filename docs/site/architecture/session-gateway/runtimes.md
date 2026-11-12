@@ -1,13 +1,13 @@
 # Runtimes
 
-A runtime is the agent program a session runs (Claude Code, Codex, …). Skuld
-drives it through a **transport**: one adapter class per runtime and protocol,
+A runtime is the agent program a session runs (Claude Code, Codex, …). The
+session gateway drives it through a **transport**: one adapter class per runtime and protocol,
 all implementing the same `CLITransport` port.
 
 ## In one minute
 
 - The session definition the user picks in Forge names the transport class
-  (`broker.transportAdapter`). Skuld imports it and passes only the constructor
+  (`broker.transportAdapter`). The session gateway imports it and passes only the constructor
   arguments that class accepts.
 - Every transport normalizes its runtime's events into the same Claude-shaped
   frames (`assistant`, `user`, `content_block_delta`, `result`, …), so the
@@ -30,7 +30,7 @@ flowchart LR
   T -- "Claude-shaped frames" --> BR[Broker]
 ```
 
-If the session has a pinned persona, Skuld projects it onto the transport's
+If the session has a pinned persona, the session gateway projects it onto the transport's
 arguments first. If the transport cannot enforce something the persona states,
 the session refuses to start (`PersonaProjectionError`). It never drops the
 setting silently.
@@ -50,7 +50,7 @@ Forge offers these as session definitions (`src/niuu/config_models.py`).
 | PI | `pi.PiRpcTransport` | PI's JSONL RPC over stdio | yes | yes | native |
 | OpenCode | `opencode.OpenCodeHttpTransport` | `opencode serve`: REST for commands, SSE for events | yes | yes | no |
 | DeepSeek Harness | `dsh.DshJsonRpcTransport` | dsh SDK JSON-RPC over stdio | **no** | **no** | no |
-| Claude Remote Control | `remote_control.RemoteControlTransport` | `claude remote-control`; Skuld only supervises | — | — | — (the native app drives) |
+| Claude Remote Control | `remote_control.RemoteControlTransport` | `claude remote-control`; the session gateway only supervises | — | — | — (the native app drives) |
 
 Transports still in code but not offered as a session definition:
 
@@ -61,25 +61,25 @@ Transports still in code but not offered as a session definition:
 | `sdk_websocket.SdkWebSocketTransport` | Deprecated Claude `--sdk-url` bridge; the CLI connects back to `/ws/cli/{session_id}` |
 | `codex.CodexSubprocessTransport` | One `codex exec` per message (`cli_type: codex`); no resume, no interrupt |
 
-Ravn has no transport on this branch. A Ravn joins a session as a room
-participant instead (see [Channels, rooms and Forge tools](channels-and-tools.md)).
+The agent runtime has no transport on this branch. An agent runtime joins a session as a
+room participant instead (see [Channels, rooms and Forge tools](channels-and-tools.md)).
 
 ## Model auth
 
 | Runtime | Default credential | Alternatives |
 |---|---|---|
-| Claude (all Claude transports) | The host's claude.ai subscription login in `~/.claude`. Skuld strips `ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN` from the child env | `SKULD__CLAUDE_AUTH=api_key` keeps the platform key; `SKULD__CLAUDE_OAUTH_TOKEN_FILE` (a 0400 file) for direct subscription inference; the model gateway |
+| Claude (all Claude transports) | The host's claude.ai subscription login in `~/.claude`. The session gateway strips `ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN` from the child env | `SKULD__CLAUDE_AUTH=api_key` keeps the platform key; `SKULD__CLAUDE_OAUTH_TOKEN_FILE` (a 0400 file) for direct subscription inference; the model gateway |
 | Codex | `HostCodexAuthProvider`: the host's own Codex login (`CODEX_HOME`, default `~/.codex`) | `VolundrCodexAuthProvider`: ChatGPT access tokens fetched from Forge (`/api/v1/internal/credentials/codex/tokens`); the model gateway |
 | Grok | The `grok` CLI's login (`XAI_API_KEY` or its cached `auth.json`) | — |
 | Muse | `META_API_KEY`, else a stored key, else a browser login | — |
 | PI | PI's own provider login; none is a startup error | — |
 | OpenCode | OpenCode's own provider config | — |
-| DeepSeek Harness | `dsh.base_url` + `dsh.api_key` (any OpenAI-compatible endpoint) | Point `base_url` at Bifröst or a local server |
+| DeepSeek Harness | `dsh.base_url` + `dsh.api_key` (any OpenAI-compatible endpoint) | Point `base_url` at the model gateway or a local server |
 | Remote Control | claude.ai OAuth (`~/.claude/.credentials.json`) | — |
 
 **Model gateway.** When Forge launches a session with the model server
 provider, it sets `model_gateway.url` (and a token). The Claude SDK, persistent
-subprocess and tmux transports then point the CLI at Bifröst
+subprocess and tmux transports then point the CLI at the model gateway
 (`ANTHROPIC_BASE_URL` + `ANTHROPIC_AUTH_TOKEN`), and Codex app-server does the
 same in its dialect. A gateway URL with a blank token is refused. Sending `""`
 would make the CLI fall back to the user's real subscription token.
@@ -90,7 +90,7 @@ would make the CLI fall back to the user's real subscription token.
 |---|---|---|
 | Claude Code (SDK) | A mid-turn message interrupts and restarts the turn, which drops the partial reply | SDK semantics; the interactive transport steers natively |
 | DeepSeek Harness | No resume, no cancel; `interrupt()` raises | The dsh SDK protocol has no cancel method and cannot resume a session in a fresh process, so the process *is* the session |
-| Claude Remote Control | Skuld cannot send turns (`send_message=False`); it re-shows the pairing link | The claude.ai app owns the conversation |
+| Claude Remote Control | The session gateway cannot send turns (`send_message=False`); it re-shows the pairing link | The claude.ai app owns the conversation |
 | Codex Remote Control | Not wired; it posts a notice | Launch/pairing path not built |
 | OpenCode, Muse, PI, dsh, Remote Control | No `forge` MCP tools | Their transports take no MCP configuration |
 | Grok | No model switch or approval prompts over ACP | Not in the ACP surface the transport uses |
@@ -103,13 +103,13 @@ would make the CLI fall back to the user's real subscription token.
 | `session.model` | per definition (e.g. `gpt-6-astra` for Codex, `grok-4.7` for Grok) | Model the runtime starts with | Session create request |
 | `skip_permissions` | `true` | No interactive tool approvals | Session definition |
 | `claude_permission_mode` | `auto` | Claude mode when approvals are skipped (`auto`, `bypassPermissions`, `acceptEdits`) | Forge node config |
-| `ask_user_question_enabled` | `false` | Route Claude tool permissions over the control protocol so questions reach a person | Skuld config |
+| `ask_user_question_enabled` | `false` | Route Claude tool permissions over the control protocol so questions reach a person | Session gateway config |
 | `agent_teams` | `true` | Claude tmux sessions start with agent teams | Session definition |
 | `codex_auth.adapter` | `skuld.codex_auth.HostCodexAuthProvider` | Where Codex gets its ChatGPT tokens | Pod manager |
-| `model_gateway.url` / `.token` | empty | Route Claude and Codex through Bifröst | Forge, per launch |
-| `acp_prompt_timeout_s` | `300` | Turn timeout for Grok and Muse | Skuld config |
-| `pi.turn_timeout_s` | `1800` | PI turn timeout | Skuld config |
-| `dsh.prompt_timeout_s` | `600` | dsh turn timeout | Skuld config |
+| `model_gateway.url` / `.token` | empty | Route Claude and Codex through the model gateway | Forge, per launch |
+| `acp_prompt_timeout_s` | `300` | Turn timeout for Grok and Muse | Session gateway config |
+| `pi.turn_timeout_s` | `1800` | PI turn timeout | Session gateway config |
+| `dsh.prompt_timeout_s` | `600` | dsh turn timeout | Session gateway config |
 
 ## Tradeoffs
 
@@ -136,4 +136,4 @@ would make the CLI fall back to the user's real subscription token.
 ## Related
 
 - [A message's path](message-path.md): how steering modes and `send_runs_turn` change delivery.
-- [Models area](../models/index.md): Bifröst and provider connections.
+- [Models area](../models/index.md): the model gateway and provider connections.

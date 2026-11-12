@@ -1,18 +1,18 @@
 # Workflows
 
-Workflows (Ting, shown as **Work** in the UI) turn a repeatable process — implement, review,
+Workflows (run by the workflow engine, shown as **Work** in the UI) turn a repeatable process — implement, review,
 approve, merge — into a graph that runs on Forge sessions, with people deciding at gates.
 
 ## In one minute
 
 - A **workflow** is a versioned graph of nodes joined by event-labelled edges. A **run** is one
   execution of it; its **steps** are what each node did, kept in a per-run ledger.
-- A run is **one Forge unit**: a root session (the run's room, a Skuld with no agent) plus one
+- A run is **one Forge unit**: a root session (the run's room, a session gateway with no agent) plus one
   session per stage member, created and started together in one pod, VM or VM slot.
 - Each stage member is a **persona** with a model. Work is offered on the run's mesh; members
   pick it up by the event types their persona consumes. A team is just a workflow.
 - **Gates** wait for a person; only `automated_approval` gates accept an agent's answer.
-- Ting reaches Forge only over HTTP as the run's owner. It never imports Forge (Völundr) code.
+- The workflow engine reaches Forge only over HTTP as the run's owner. It never imports Forge code.
 
 ## How it fits
 
@@ -21,8 +21,8 @@ flowchart LR
     U[Person in Work UI] -->|launch| T
     TK[Tracker ticket on a board] -->|drop on a column| T
     A2A[A2A caller] -->|task| T
-    T[Ting step engine + ledger] -->|create unit, as owner| F[Forge]
-    F --> R[Run root: Skuld, no agent]
+    T[Workflow engine: step engine + ledger] -->|create unit, as owner| F[Forge]
+    F --> R[Run root: session gateway, no agent]
     F --> M1[Member: coder]
     F --> M2[Member: reviewer]
     T -->|signed offer| R
@@ -34,8 +34,8 @@ flowchart LR
     T -->|gate open| U
 ```
 
-Solid arrows are calls; dotted arrows are reports. Ting decides what is offered next from the
-ledger; the members' Skulds decide whether an offer is theirs and report back through Forge.
+Solid arrows are calls; dotted arrows are reports. The workflow engine decides what is offered next from the
+ledger; the members' session gateways decide whether an offer is theirs and report back through Forge.
 
 ## The model
 
@@ -73,25 +73,25 @@ reviewer and the gate.
 
 1. A launch (Work UI, a ticket dropped on a board column, or A2A) creates the run record with
    the pinned workflow snapshot.
-2. Ting resolves the owner's Forge connection: a Forge instance registered in the Platform
-   (Guild) registry, and the owner's (or tenant's) stored credential bound to it, sent as a
+2. The workflow engine resolves the owner's Forge connection: a Forge instance registered in
+   the Platform registry, and the owner's (or tenant's) stored credential bound to it, sent as a
    bearer token. Mini mode uses the one local Forge with no credential.
-3. Ting creates the root (`wf-<run>`) and one member session per stage member
+3. The workflow engine creates the root (`wf-<run>`) and one member session per stage member
    (`wf-<run>-<member>`), each tagged `workflow:<run>`, inside the run's Forge project when the
    run has one, then starts the root, which starts the whole unit.
 4. Each member session gets its persona document, model and the event topics it consumes.
-5. Ting signs each offer and hands it to the root, which publishes it on the run's mesh.
+5. The workflow engine signs each offer and hands it to the root, which publishes it on the run's mesh.
 
-Forge is the record of which sessions belong to a run: Ting finds them by name and tag, so a
+Forge is the record of which sessions belong to a run: the workflow engine finds them by name and tag, so a
 restart cannot lose or duplicate one. Reassigning a step restarts that member's harness in place.
 The task prompt is not put on the sessions; it reaches members as the offer's inputs.
 
-Offers are signed with Ting's platform service certificate, so a member can verify them.
+Offers are signed with the workflow engine's platform service certificate, so a member can verify them.
 Workload-identity credentials are used only by durable execution, for child workflows.
 
 **Legacy paths** still wired: the ticket dispatcher's one-session-per-ticket spawn
 (`dispatch_service.py`, for projects without a workflow), the tracker-run review engine
-(`review_engine.py`; confidence scoring is gone) and Sleipnir event triggers that create
+(`review_engine.py`; confidence scoring is gone) and event-bus triggers that create
 projects from templates (`event_triggers.enabled`, off by default). New work goes through the
 step engine.
 
@@ -99,12 +99,12 @@ step engine.
 
 | Knob | Default | What it changes | Where it is set |
 |---|---|---|---|
-| `workflow_steps.sessions.adapter` | `ting.adapters.forge_step_sessions.ForgeStepSessions` | What creates a run's sessions | Ting config / chart `workflowSteps.sessions` |
-| `workflow_steps.sessions.kwargs.default_model` | `dispatch.default_model` | Model for a member whose stage names none | Ting config |
-| `dispatch.default_model` | `claude-sonnet-4-6` | Fallback model for dispatched sessions | Ting config |
-| `workflow_repository.adapter` | `ting.adapters.filesystem_workflows.FilesystemWorkflowRepository` | Where workflow documents are stored | Ting config |
-| `volundr.url` / `volundr.auth` | `http://localhost:8080` / no auth header | Forge endpoint and service auth header | Ting config |
-| `guild_registry.base_url` | empty (required outside anonymous local mode) | Where Ting finds the owner's Forge instances | Ting config |
+| `workflow_steps.sessions.adapter` | `ting.adapters.forge_step_sessions.ForgeStepSessions` | What creates a run's sessions | Workflow engine config / chart `workflowSteps.sessions` |
+| `workflow_steps.sessions.kwargs.default_model` | `dispatch.default_model` | Model for a member whose stage names none | Workflow engine config |
+| `dispatch.default_model` | `claude-sonnet-4-6` | Fallback model for dispatched sessions | Workflow engine config |
+| `workflow_repository.adapter` | `ting.adapters.filesystem_workflows.FilesystemWorkflowRepository` | Where workflow documents are stored | Workflow engine config |
+| `volundr.url` / `volundr.auth` | `http://localhost:8080` / no auth header | Forge endpoint and service auth header | Workflow engine config |
+| `guild_registry.base_url` | empty (required outside anonymous local mode) | Where the workflow engine finds the owner's Forge instances | Workflow engine config |
 
 Run-level knobs (deadlines, pickup grace, stuck sweep) are on
 [Runs, steps and gates](runs.md#levers).
@@ -113,7 +113,7 @@ Run-level knobs (deadlines, pickup grace, stuck sweep) are on
 
 | Choice | Gains | Costs |
 |---|---|---|
-| Ting talks to Forge only over HTTP | Ting deploys on its own; no import cycle with Forge | Every session action is a network call that can fail and must be reported |
+| The workflow engine talks to Forge only over HTTP | It deploys on its own; no import cycle with Forge | Every session action is a network call that can fail and must be reported |
 | Forge is the record of a run's sessions | Restarts cannot lose or duplicate a session | Session names are fixed (`wf-…`); a clash with another session is refused |
 | Personas pinned per run | A run behaves the same after a persona edit | Fixing a persona does not fix a run already going |
 
@@ -133,7 +133,7 @@ Run-level knobs (deadlines, pickup grace, stuck sweep) are on
 - [Runs, steps and gates](runs.md) — offers, joins, rework, gates, stuck steps, version pinning
 - [Trackers and projects](trackers-and-projects.md) — tickets, boards, projects
 - [Personas](personas.md) — what a stage member is
-- [Stack map](../index.md) — where Ting sits among the services
-- [Skuld — the session gateway](../skuld/index.md) — the root and member sessions a run runs on
-- [Credentials](../security/credentials.md) — the Forge credential and workload tokens Ting uses
+- [Stack map](../index.md) — where the workflow engine sits among the services
+- [Session gateway](../session-gateway/index.md) — the root and member sessions a run runs on
+- [Credentials](../security/credentials.md) — the Forge credential and workload tokens the workflow engine uses
 - Forge — session lifecycle and projects (its own architecture area)

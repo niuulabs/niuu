@@ -126,9 +126,9 @@ niuu [OPTIONS] COMMAND [ARGS]...
 | [`context`](#niuu-context) | Manage server contexts (named Niuu hosts). |
 | [`doctor`](#niuu-doctor) | Check this host can run the platform in the configured mode. |
 | [`down`](#niuu-down) | Stop the platform. Same as `niuu platform down`. |
-| [`guild`](#niuu-guild) | Administer a Guild instance registry. |
-| [`join`](#niuu-join) | Join this machine to a Guild using a pairing code from an operator. |
-| [`leave`](#niuu-leave) | Remove this machine from the Guild it previously joined. |
+| [`guild`](#niuu-guild) | Administer a Platform instance registry. |
+| [`join`](#niuu-join) | Join this machine to a Platform using a pairing code from an operator. |
+| [`leave`](#niuu-leave) | Remove this machine from the Platform it previously joined. |
 | [`login`](#niuu-login) | Authenticate with the Niuu platform. |
 | [`logout`](#niuu-logout) | Clear stored credentials. |
 | [`platform`](#niuu-platform) | Manage the platform (up, down, status, init). `niuu up\|down\|status` are shortcuts for these with default flags. |
@@ -267,7 +267,7 @@ niuu down [OPTIONS]
 
 #### `niuu guild`
 
-Administer a Guild instance registry.
+Administer a Platform instance registry.
 
 ```bash
 niuu guild [OPTIONS] COMMAND [ARGS]...
@@ -275,12 +275,12 @@ niuu guild [OPTIONS] COMMAND [ARGS]...
 
 | Subcommand | Description |
 | --- | --- |
-| [`heartbeat`](#niuu-guild-heartbeat) | Send this host's signed presence heartbeat to the Guild it joined. |
+| [`heartbeat`](#niuu-guild-heartbeat) | Send this host's signed presence heartbeat to the Platform it joined. |
 | [`pair`](#niuu-guild-pair) | Mint a single-use pairing code for `niuu join` on another machine. |
 
 ##### `niuu guild heartbeat`
 
-Send this host's signed presence heartbeat to the Guild it joined.
+Send this host's signed presence heartbeat to the Platform it joined.
 
 ```bash
 niuu guild heartbeat [OPTIONS]
@@ -302,16 +302,16 @@ niuu guild pair [OPTIONS] {guild_url}
 
 | Argument | Required | Description |
 | --- | --- | --- |
-| `GUILD_URL` | yes | Base URL of the Guild to pair a new machine into. |
+| `GUILD_URL` | yes | Base URL of the Platform to pair a new machine into. |
 
 | Option | Type | Default | Description |
 | --- | --- | --- | --- |
 | `--allow-plaintext` | flag |  | Let the joining node register a plaintext (http://) instance URL. |
-| `--allow-untrusted-node-auth` | flag |  | Let a node with host_auth.mode: none join even though this Guild runs host_auth.mode: oidc (Guild would forward real user bearer tokens to it). |
+| `--allow-untrusted-node-auth` | flag |  | Let a node with host_auth.mode: none join even though this Platform runs host_auth.mode: oidc (the Platform would forward real user bearer tokens to it). |
 
 #### `niuu join`
 
-Join this machine to a Guild using a pairing code from an operator.
+Join this machine to a Platform using a pairing code from an operator.
 
 ```bash
 niuu join [OPTIONS] {guild_url}
@@ -319,16 +319,16 @@ niuu join [OPTIONS] {guild_url}
 
 | Argument | Required | Description |
 | --- | --- | --- |
-| `GUILD_URL` | yes | Base URL of the Guild to join. |
+| `GUILD_URL` | yes | Base URL of the Platform to join. |
 
 | Option | Type | Default | Description |
 | --- | --- | --- | --- |
-| `--code` | STR |  | Pairing code from 'niuu guild pair'. **Required.** |
+| `--code` | STR |  | Pairing code from `niuu guild pair`. **Required.** |
 | `--name` | STR |  | Display name for this node (default: this host's hostname). |
 
 #### `niuu leave`
 
-Remove this machine from the Guild it previously joined.
+Remove this machine from the Platform it previously joined.
 
 ```bash
 niuu leave [OPTIONS]
@@ -427,19 +427,19 @@ niuu platform up [OPTIONS]
 | `--mounts` | STR |  | Comma-separated route domains to mount instead of the profile default. |
 | `--workspaces-dir` | STR |  | Directory for session workspaces. Mini mode only. |
 | `--audit`, `--no-audit` | flag |  | Force the audit service on or off — Audit log query service. |
-| `--bifrost`, `--no-bifrost` | flag |  | Force the bifrost service on or off — Anthropic-compatible LLM proxy. |
+| `--bifrost`, `--no-bifrost` | flag |  | Force the `bifrost` service (model gateway) on or off — Anthropic-compatible LLM proxy. |
 | `--credentials`, `--no-credentials` | flag |  | Force the credentials service on or off — Credential, secret, and MCP metadata service. |
 | `--features`, `--no-features` | flag |  | Force the features service on or off — Feature catalog and preference service. |
-| `--guild`, `--no-guild` | flag |  | Force the guild service on or off — Shared instance registry and aggregate service. |
+| `--guild`, `--no-guild` | flag |  | Force the `guild` service (Platform) on or off — Shared instance registry and aggregate service. |
 | `--identity`, `--no-identity` | flag |  | Force the identity service on or off — Identity, tenancy, and token service. |
 | `--integrations`, `--no-integrations` | flag |  | Force the integrations service on or off — Integration connection and OAuth service. |
-| `--mimir`, `--no-mimir` | flag |  | Force the mimir service on or off — Knowledge service. |
+| `--mimir`, `--no-mimir` | flag |  | Force the `mimir` service (Memory) on or off — Knowledge service. |
 | `--niuu`, `--no-niuu` | flag |  | Force the niuu service on or off — Shared platform services. |
 | `--observatory`, `--no-observatory` | flag |  | Force the observatory service on or off — Observatory registry and live streams. |
 | `--personas`, `--no-personas` | flag |  | Force the personas service on or off — Canonical persona registry service. |
-| `--ting`, `--no-ting` | flag |  | Force the ting service on or off — Autonomous saga coordinator. |
+| `--ting`, `--no-ting` | flag |  | Force the `ting` service (workflow engine) on or off — Autonomous saga coordinator. |
 | `--tracker`, `--no-tracker` | flag |  | Force the tracker service on or off — Tracker issue, status, and repo mapping service. |
-| `--volundr`, `--no-volundr` | flag |  | Force the volundr service on or off — AI-native development platform. |
+| `--volundr`, `--no-volundr` | flag |  | Force the `volundr` service (Forge) on or off — AI-native development platform. |
 
 #### `niuu remote`
 

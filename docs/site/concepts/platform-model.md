@@ -42,30 +42,30 @@ stable: a product name never changes a route, a config key, or a command.
 
 | Moving part | Responsibility | Product | Implementation name |
 | --- | --- | --- | --- |
-| Agent runtime | Judgment, learning, capability evolution, continuation, and A2A | Agents | Ravn |
-| Resident environments | Environments kept by residents, their charter, trust, and memory | Workspaces | Realms |
-| Workflows and teams | Definitions, dispatch, stages, review gates, and runs | Work | Ting |
-| Sessions and execution | Session lifecycle, launch configuration, and review surfaces | Forge | Völundr |
-| Session gateway | Runtime processes, authentication, transcripts, and channel adaptation | Forge | Skuld |
-| Shared memory and knowledge | Durable sources, knowledge pages, retrieval, and curation | Memory | Mímir |
-| Model gateway | Model catalog, providers, routing, and usage | AI models | Bifröst |
-| Service discovery | Instance registration, discovery, and routing | Platform | Guild |
-| Event bus | Event transport between local and distributed services | Platform | Sleipnir |
-| Observability | Topology, activity, and relationships across the system | Observatory | Observatory |
+| Agent runtime | Judgment, learning, capability evolution, continuation, and A2A | Agents | `ravn` |
+| Resident environments | Environments kept by residents, their charter, trust, and memory | Workspaces | `realms` |
+| Workflows and teams | Definitions, dispatch, stages, review gates, and runs | Work | `ting` |
+| Sessions and execution | Session lifecycle, launch configuration, and review surfaces | Forge | `volundr` |
+| Session gateway | Runtime processes, authentication, transcripts, and channel adaptation | Forge | `skuld` |
+| Shared memory and knowledge | Durable sources, knowledge pages, retrieval, and curation | Memory | `mimir` |
+| Model gateway | Model catalog, providers, routing, and usage | AI models | `bifrost` |
+| Service discovery | Instance registration, discovery, and routing | Platform | `guild` |
+| Event bus | Event transport between local and distributed services | Platform | `sleipnir` |
+| Observability | Topology, activity, and relationships across the system | Observatory | `observatory` |
 
 Choose the services required by your workload. The
 [local quick start](../get-started/first-local-stack.md) is one small entry point.
 
 ## Agent runtimes and the session gateway
 
-Ravn, Claude Code, Codex, and OpenCode can execute agent work. The session gateway connects
+The Niuu agent runtime, Claude Code, Codex, and OpenCode can execute agent work. The session gateway connects
 supported runtimes to Niuu's session interfaces. It handles the communication
 and lifecycle around that work; it does not replace the runtime's reasoning.
 
-Ravn can also run directly. Its distinctive responsibilities include judgment,
+The Niuu agent runtime can also run directly. Its distinctive responsibilities include judgment,
 learning, capability evolution, and maintaining the state needed to continue
-work after waiting for input. Making Ravn a resident adds autonomous stewardship
-of an environment. Ordinary Ravn conversations do not require residency.
+work after waiting for input. Making it a resident lets it keep an environment
+autonomously. Ordinary conversations with it do not require residency.
 
 ## Shared collaboration
 

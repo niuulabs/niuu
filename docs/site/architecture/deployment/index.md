@@ -15,7 +15,7 @@ can join any of them to add compute.
   umbrella chart. Sessions are pods (by default a Flux `HelmRelease` each).
 - **Joined machines** add to any mode: `niuu remote join` turns a Linux machine or
   Mac into a *registered host* of a Forge; `niuu join` registers a whole Niuu host
-  with a Platform (Guild).
+  with a Platform.
 - What changes between modes is **which adapter fills each port** — the domain code
   is identical. The CLI picks adapters for mini and Docker; chart values pick them on
   Kubernetes.
@@ -25,7 +25,7 @@ can join any of them to add compute.
 ```mermaid
 flowchart LR
   subgraph mini["Mini mode: one process"]
-    RS["Root server :8080<br/>Forge, Workflows, Platform,<br/>Bifröst, Mímir, web UI"]
+    RS["Root server :8080<br/>Forge, Workflows, Platform,<br/>model gateway, Memory, web UI"]
     PG[("embedded<br/>PostgreSQL")]
     S1["session processes"]
   end
@@ -52,10 +52,10 @@ Platform.
 
 | | Mini | Docker | Kubernetes |
 |---|---|---|---|
-| **What runs where** | One process: root server mounts every service as a route domain | `niuu` container (mini mode) + `postgres` (+ optional `vllm`) | One Deployment per enabled chart: Forge, Workflows, shared APIs, Platform, Bifröst, Observatory, Mímir |
+| **What runs where** | One process: root server mounts every service as a route domain | `niuu` container (mini mode) + `postgres` (+ optional `vllm`) | One Deployment per enabled chart: Forge, Workflows, shared APIs, Platform, model gateway, Observatory, Memory |
 | **Database** | Embedded PostgreSQL, data in `~/.niuu/pgdata`; one database per service | `pgvector/pgvector:pg17` container, data under `docker.data_dir` | External PostgreSQL per chart (`database.external.*` + a Secret) |
 | **Identity / edge** | `host_auth.mode: none` (allow-all, every caller admin) by default; `oidc` verifies JWTs in process | Same switch as mini | Envoy sidecar (`jwt_authn`) + identity adapter + Cedar, from the `values-cedar.yaml` / `values-central-identity.yaml` profiles; chart defaults are allow-all |
-| **Event transport** | Sleipnir off; session mesh off until `mesh.enabled: true`, then nng with peers found through `~/.niuu/mesh/peers.json` | Same as mini | `sleipnir.adapter` (in-process by default; NATS, RabbitMQ, nng, Redis Streams available) |
+| **Event transport** | Event bus off; session mesh off until `mesh.enabled: true`, then nng with peers found through `~/.niuu/mesh/peers.json` | Same as mini | `sleipnir.adapter` (in-process by default; NATS, RabbitMQ, nng, Redis Streams available) |
 | **Session runtime** | `LocalProcessPodManager`, wrapped by `PlacementPodManager` when the hosts pool is on | `DockerContainerPodManager` (sibling containers via the Docker socket) | `podManager.adapter`: `FluxPodManager` by default; `DirectK8sPodManager`, `OpenShellGatewayPodManager`, `VmPodManager` |
 | **Secrets** | `FileCredentialStore` under `~/.niuu/credentials` (no encryption key set) | `FileCredentialStore`, Fernet-encrypted with `NIUU_CREDENTIAL_KEY` from `secrets.env`; per-session files bind-mounted read-only | `credentialStore.adapter` (in-memory by default; OpenBao via `charts/niuu/values-openbao.yaml`), Kubernetes Secrets |
 | **Scaling** | One machine; registered hosts add capacity | One machine; registered hosts or a `compute:` pool add capacity | `replicaCount` / `autoscaling` per chart, session pods spread over the cluster, VM pools and registered hosts |

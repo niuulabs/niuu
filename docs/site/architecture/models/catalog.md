@@ -1,12 +1,12 @@
 # Model catalog
 
-The model catalog is Bifröst's list of every model the platform offers: what it
+The model catalog is the model gateway's list of every model the platform offers: what it
 is called, who serves it, whether it is hosted or self-hosted, and what a session
 can ask of it.
 
 ## In one minute
 
-- One catalog, owned by Bifröst config (`models` + `additional_models`). Forge,
+- One catalog, owned by the model gateway's config (`models` + `additional_models`). Forge,
   the setup wizard and every model picker read it over HTTP.
 - The release ships a default catalog; a host adds or replaces entries with
   `additional_models`, matched by `id`.
@@ -28,7 +28,7 @@ flowchart LR
     CAT -- "GET /api/v1/bifrost/models" --> FORGE[Forge]
     FORGE --> UI[Model pickers]
     FORGE --> GW[Gateway decision<br/>at launch]
-    CAT --> ROUTER[Bifröst router<br/>supports_thinking]
+    CAT --> ROUTER[Model gateway router<br/>supports_thinking]
 ```
 
 Forge re-reads the catalog every `catalog_refresh_interval_seconds`. A failed read
@@ -52,7 +52,7 @@ until a read succeeds.
 | `enabled` | `true` | Whether operators and consumers see the model |
 
 Each catalog response also carries `aliases` (names that point at the model) and
-`provider_keys` (the Bifröst providers that serve it).
+`provider_keys` (the model gateway providers that serve it).
 
 **Synthetic entries.** A model a provider lists without a catalog entry still
 appears, with defaults: tier `balanced`, tools and thinking on, and `provider:
@@ -62,7 +62,7 @@ local` when the provider key is `local`, `ollama` or `vllm`, or the id contains
 ## Output limits and context windows
 
 The no-hidden-limits rule says an output cap comes from the model, not from a
-number in code. Bifröst follows it per provider, not through the catalog:
+number in code. The model gateway follows it per provider, not through the catalog:
 
 | Provider adapter | Request sent without `max_tokens` |
 |---|---|
@@ -77,7 +77,7 @@ The runtimes learn the window from their vendor (Codex reports
 
 | Step | Where | Needed when |
 |---|---|---|
-| 1. Add a `ManagedModelConfig` | `_default_models()` in `src/bifrost/config.py` for every install, or `additional_models` in one host's Bifröst config | Always |
+| 1. Add a `ManagedModelConfig` | `_default_models()` in `src/bifrost/config.py` for every install, or `additional_models` in one host's model gateway config | Always |
 | 2. List the id under a provider's `models` | `providers.<name>.models` | The gateway should serve it (self-hosted models, platform callers) |
 | 3. Add effort levels | `MODEL_EFFORTS` in `src/niuu/domain/reasoning.py` | The model has native effort levels |
 | 4. Add a price | `BUILTIN_PRICING` in `src/bifrost/pricing.py`, or `pricing` / `pricing_file` | Cost accounting should be right |
@@ -91,11 +91,11 @@ says what exists, not that a provider accepts it: test with a real request.
 
 | Knob | Default | What it changes | Where it is set |
 |---|---|---|---|
-| `models` | release defaults | Replaces the whole catalog | Bifröst config |
-| `additional_models` | `[]` | Adds or replaces entries by `id` | Bifröst config |
-| `aliases` | `{}` | Alias → canonical model id | Bifröst config |
-| `pricing` | `{}` | Per-model USD per million tokens; beats `pricing_file` and the built-in table | Bifröst config |
-| `pricing_file` | `""` | YAML price table merged over the built-in one | Bifröst config |
+| `models` | release defaults | Replaces the whole catalog | Model gateway config |
+| `additional_models` | `[]` | Adds or replaces entries by `id` | Model gateway config |
+| `aliases` | `{}` | Alias → canonical model id | Model gateway config |
+| `pricing` | `{}` | Per-model USD per million tokens; beats `pricing_file` and the built-in table | Model gateway config |
+| `pricing_file` | `""` | YAML price table merged over the built-in one | Model gateway config |
 | `bifrost.catalog_refresh_interval_seconds` | `60` | Forge re-read interval | Forge config |
 | `bifrost.catalog_retry_initial_seconds` / `_max_seconds` | `0.1` / `5.0` | Retry backoff for a failed read | Forge config |
 

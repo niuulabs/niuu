@@ -1,14 +1,14 @@
 # Forge
 
-Forge (Völundr, `src/volundr/`) is the session control plane: it records every
+Forge (`src/volundr/`) is the session control plane: it records every
 agent session, starts and stops it on the configured backend, and keeps its
 durable history.
 
 ## In one minute
 
-- A **session** is one run of an agent runtime (Claude Code, Codex, Ravn, …)
-  with its own workspace. Forge owns the row and its lifecycle; Skuld runs
-  inside the session and talks to the agent.
+- A **session** is one run of an agent runtime (Claude Code, Codex, Niuu's own agent runtime, …)
+  with its own workspace. Forge owns the row and its lifecycle; the session
+  gateway runs inside the session and talks to the agent.
 - Starting a session is three steps: **contributors** assemble the launch spec
   (git, storage, secrets, persona, MCP, …), the **pod manager** starts it, and a
   **readiness poll** moves it to `running`.
@@ -28,14 +28,14 @@ flowchart LR
     SS --> CT[Session contributors]
     SS --> PM[Pod manager]
     SS --> DB[(Postgres:<br/>sessions, event log,<br/>projects, leases)]
-    PM --> SK[Skuld in the session]
+    PM --> SK[Session gateway in the session]
     SK --> AG[Agent runtime]
     SK -->|appends frames| DB
     C -.->|live WebSocket via Forge| SK
 ```
 
-Clients only ever talk to Forge. Forge proxies the live chat socket to Skuld at
-`/s/{id}/session`, and Skuld writes every frame back to Forge's event log. The
+Clients only ever talk to Forge. Forge proxies the live chat socket to the session
+gateway at `/s/{id}/session`, and the gateway writes every frame back to Forge's event log. The
 backend behind the pod manager is a configuration choice; see
 [where sessions run](where-sessions-run.md).
 
@@ -48,7 +48,7 @@ stateDiagram-v2
     starting --> provisioning: contributors done, pod_manager.start
     provisioning --> running: wait_for_ready
     starting --> failed: start raised
-    provisioning --> failed: not ready / Skuld reports startup_failed
+    provisioning --> failed: not ready / session gateway reports startup_failed
     running --> stopping: stop
     stopping --> stopped: pod_manager.stop
     stopped --> starting: start (restart)
@@ -68,7 +68,7 @@ if that fails, so the delete can be retried.
 | create | Checks capacity, writes the row as `created`, then starts it | `ForgeService.create_and_start_session` → `SessionService` |
 | start | Sets `starting` and returns at once. A background task mints a launch id, runs the contributors, calls `pod_manager.start` and sets `provisioning`. Any error sets `failed` and calls `pod_manager.stop` | `SessionService.start_session` |
 | ready | Waits `provisioning.initial_delay_seconds`, then `pod_manager.wait_for_ready` up to `provisioning.timeout_seconds`; publishes `session.started` | `SessionService._poll_readiness` |
-| startup failure | Skuld reports `startup_failed` in its activity report while the session is still starting | Skuld → `SessionService` |
+| startup failure | The session gateway reports `startup_failed` in its activity report while the session is still starting | Session gateway → `SessionService` |
 | stop | `stopping`, then `pod_manager.stop`, then `stopped`. Clears endpoints, cancels open secret requests, retires the mesh identity, runs contributor cleanup | `SessionService.stop_session` |
 | restart | `POST /sessions/{id}/start` on a stopped or failed session. Reuses the stored definition, workspace and project context; mints a new launch id | `SessionService.start_session` |
 | archive | Stops a live session first, then sets `archived` and `archived_at` | `SessionService.archive_session` |
@@ -144,5 +144,5 @@ scopes and enforcement are on the Security [credentials](../security/credentials
 - [Workspaces and projects](workspaces-and-projects.md) — sources, checkouts, projects, session nesting
 - [State and history](state-and-history.md) — event log, chronicle, SSE, WebSocket, replay
 - [Session orchestrator guide](https://github.com/niuulabs/niuu/blob/dev/docs/forge/openclaw-session-orchestrator-guide.md) — the full API contract for a controller
-- [Skuld](../skuld/index.md) — what runs inside the session
+- [Session gateway](../session-gateway/index.md) — what runs inside the session
 - [Security: credentials](../security/credentials.md) and [machine identities](../security/machine-identities.md) — `forge_session` tokens, hosts, guests

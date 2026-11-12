@@ -1,7 +1,7 @@
 # Retrieval
 
 How `mimir_search` turns a question into a ranked list of pages: keyword
-search, optional embeddings, fused, then re-ranked with what Mímir knows about
+search, optional embeddings, fused, then re-ranked with what Memory knows about
 each page.
 
 ## In one minute
@@ -103,7 +103,7 @@ FTS's implicit AND drops.
 | `ranking.*` boosts | see table above | Individual multipliers | same; `MIMIR__RANKING__TITLE_MATCH_BOOST=…` |
 | `eval_capture` | `true` | Query capture for replay | same; chart `config.evalCapture` |
 
-The Mímir Helm chart has no named value for the embedding settings; set them
+The Memory Helm chart has no named value for the embedding settings; set them
 with `MIMIR__EMBEDDING_*` variables through the chart's `envFrom`.
 
 ## Tradeoffs

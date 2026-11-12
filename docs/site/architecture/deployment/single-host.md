@@ -7,8 +7,8 @@ session containers.
 ## In one minute
 
 - `niuu platform up` starts **one process** on one port (`server.port`, 8080). Every
-  service is a plugin mounted as a route domain: Forge (Völundr), Workflows (Ting),
-  Platform (Guild), Bifröst, Mímir, Observatory, the shared APIs, the web UI.
+  service is a plugin mounted as a route domain: Forge, Workflows, Platform,
+  the model gateway, Memory, Observatory, the shared APIs, the web UI.
 - It starts an **embedded PostgreSQL** first, creates one database per service and
   applies the migrations, then serves.
 - `./start-dev` is a contributor wrapper: it builds everything from the checkout and
@@ -30,7 +30,7 @@ flowchart TB
   RS --> F["Forge"]
   RS --> T["Workflows"]
   RS --> G["Platform"]
-  RS --> B["Bifröst / Mímir / …"]
+  RS --> B["Model gateway / Memory / …"]
   RS --> UI["web UI"]
   F --> PM["PlacementPodManager"]
   PM --> LP["LocalProcessPodManager<br/>sessions on this machine"]
@@ -46,7 +46,7 @@ serves every API from one ASGI app. Forge's pod manager decides where a session 
 |---|---|---|
 | Choose services | Plugin defaults, then `service_overrides.<name>.enabled`, then `--<service>/--no-<service>`, then `--all` | `_resolve_enabled_services` |
 | Preflight | Claude binary, ports, workspace dir, database binaries, git, disk, Xcode on macOS | `cli/services/preflight.py` |
-| Adapter wiring | The CLI writes env for Forge: pod manager, credential store, identity adapters, Mímir deployment, workload identity off | `_resolve_local_pod_manager_env` |
+| Adapter wiring | The CLI writes env for Forge: pod manager, credential store, identity adapters, Memory deployment, workload identity off | `_resolve_local_pod_manager_env` |
 | Database | `database.mode: embedded` runs bundled `initdb`/`pg_ctl` (found via `NIUU_PG_BIN_DIR`, the binary bundle, or `build/pginstall`); `external` uses `DATABASE__HOST` | `EmbeddedPostgresDatabase`, `RootServer._start_embedded_db` |
 | Migrations | `migrations/` and `migrations/ting/` on the Forge database; bootstrap SQL for shared, Platform, Observatory | `RootServer._run_migrations` |
 | Serve | Route domains from `--host-profile` (`full`, or `api` without the web UI) or `--mounts` | `niuu.app.HOST_PROFILES` |
@@ -89,7 +89,7 @@ Changes made in the setup wizard land in `stack-overrides.yaml` and win over
 | `host_auth.mode` | `none` | `oidc`: every service verifies bearer tokens against `host_auth.oidc.issuers` (JWKS) and authorizes with Cedar; refused while the `bifrost` plugin is enabled | config file |
 | `pod_manager.adapter` | `LocalProcessPodManager` | Where sessions run; Docker mode sets `DockerContainerPodManager` | config file |
 | `pod_manager.max_concurrent` | unset (no limit) | Refuses a launch over the limit, naming the key | config file |
-| `mesh.enabled` | unset (Skuld: off) | Session mesh on nng; `mesh.attestation.required` stays on | config file |
+| `mesh.enabled` | unset (session gateway: off) | Session mesh on nng; `mesh.attestation.required` stays on | config file |
 | `hosts.enabled` | on in mini without `compute:` | Registered-hosts pool next to local sessions | config file |
 | `--host-profile`, `--mounts`, `--no-web` | `full` | Which route domains the root server mounts | `niuu platform up` flags |
 | `docker.data_dir` / `docker.compose_dir` | `~/.niuu/data` / `~/.niuu/docker` | Where state and the bundle live | config file, `NIUU_DOCKER__*` |

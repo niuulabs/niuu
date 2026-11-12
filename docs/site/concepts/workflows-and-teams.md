@@ -5,7 +5,7 @@ connect those contributions into repeatable processes, including work commission
 by another agent. A resident can request a tool build; specialists can research,
 implement, and review it; the result returns to the resident for adoption.
 
-The workflow service (Work in the UI, Ting in configuration) represents repeatable
+The workflow service (Work in the UI, `ting` in configuration) represents repeatable
 work as definitions and tracks executions as
 runs. Use it when the relationship between stages matters: for example, implement
 a change, collect a review, and wait for approval before proceeding.
@@ -23,10 +23,10 @@ session may be waiting for input while its workflow is blocked at a gate.
 ## Placing a workflow on a machine
 
 The whole environment is the computer: laptops, DGX Sparks, and Kubernetes
-clusters can all join one Guild, and a workflow team should run on the
+clusters can all join one Platform, and a workflow team should run on the
 hardware suited to it. A definition can declare `placement` on its graph to
 pin the whole team to a tagged class of machine or to one exact instance,
-resolved against the Guild targets visible to whoever launches it. A
+resolved against the Platform targets visible to whoever launches it. A
 definition without `placement` launches exactly as before: balanced across
 the visible targets, not pinned to any one of them. Placing individual
 stages on different machines is a later capability; today placement moves

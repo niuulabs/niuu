@@ -9,11 +9,11 @@ symptom to the service that owns the work.
 | --- | --- | --- |
 | Platform does not start | Foreground output or platform log | Preflight, database, migrations |
 | Session does not start | Forge session state and backend logs | Local process, sandbox, or pod |
-| Running session has no answer | Skuld/runtime logs | Provider auth, model request, stream |
-| Workflow is stuck | Ting run and stage state | Executor, output condition, gate |
-| Resident waits without progressing | Ravn case and requested input | Delivery and exact continuation context |
-| Knowledge is missing | Mímir mount, source, page, and search | Write routing, synthesis, index |
-| Target is missing | Guild instance and target records | Registration, reachability, profile eligibility |
+| Running session has no answer | Session gateway and runtime logs | Provider auth, model request, stream |
+| Workflow is stuck | Workflow run and stage state | Executor, output condition, gate |
+| Resident waits without progressing | Agent runtime case and requested input | Delivery and exact continuation context |
+| Knowledge is missing | Memory mount, source, page, and search | Write routing, synthesis, index |
+| Target is missing | Platform instance and target records | Registration, reachability, profile eligibility |
 
 ## Local logs
 
@@ -68,22 +68,22 @@ data after pointing a service at it.
 
 A single W3C trace id follows one piece of work end to end:
 
-1. **Resident judgment (Ravn)** — the case/run span, tool calls, and each
+1. **Resident judgment (agent runtime)** — the case/run span, tool calls, and each
    model request. The model adapters inject the
    active `traceparent`/`tracestate` onto every model HTTP request.
-2. **Bifröst** — once the gateway's own FastAPI app is instrumented
+2. **Model gateway** — once the gateway's own FastAPI app is instrumented
    (`niuu.observability.instrument_fastapi_app`), the inbound completion
    request is a child span carrying `gen_ai.*` attributes: requested
    model/alias, chosen provider, `bifrost.failover_attempts`,
    `bifrost.cache_hit`, and token usage (`src/bifrost/router.py`).
-3. **Völundr → Skuld → Claude Code** — Völundr's `CoreSessionContributor`
+3. **Forge → session gateway → Claude Code** — Forge's `CoreSessionContributor`
    (`src/volundr/adapters/outbound/contributors/core.py`) carries the trace
    context active when a session is created into that session's own pod/
    process env as `TRACEPARENT`/`TRACESTATE`, for every pod type (via
    `LocalProcessPodManager._session_env`).
-   Skuld, running as that pod/process, inherits those env vars and forwards
+   The session gateway, running as that pod/process, inherits those env vars and forwards
    them onto the Claude CLI/SDK env it spawns
-   (`src/skuld/transports/claude_env.py`); Skuld also attaches them as its
+   (`src/skuld/transports/claude_env.py`); the session gateway also attaches them as its
    own ambient context at startup (`src/skuld/broker_api.py`), so its own
    spans nest under the same trace. Claude Code itself reads
    `TRACEPARENT`/`TRACESTATE` in Agent SDK and non-interactive (`-p`)
@@ -91,7 +91,7 @@ A single W3C trace id follows one piece of work end to end:
    [Claude Code's OpenTelemetry docs](https://code.claude.com/docs/en/agent-sdk/observability).
    Interactive sessions ignore inbound `TRACEPARENT` by design, so this link
    only closes for non-interactive/Agent-SDK-driven sessions today.
-4. **Ting and Völundr** — every inbound request to either service's own
+4. **Workflow engine and Forge** — every inbound request to either service's own
    FastAPI app (session/workflow REST calls) is a span in the same trace,
    once each composition root's `instrument_fastapi_app` call is active.
 5. **Forge session spans** — the existing Postgres-backed trace shown on a
@@ -103,9 +103,9 @@ A single W3C trace id follows one piece of work end to end:
    cross-referenced with the OTLP trace above by pasting `w3c_trace_id` into
    your trace backend's search.
 
-## Völundr's two OTel pipelines
+## Forge's two OTel pipelines
 
-Völundr has two independent OTel exporters, each answering a different
+Forge has two independent OTel exporters, each answering a different
 question — not consolidated, see `volundr.config.OtelConfig`'s docstring for
 why:
 
@@ -121,8 +121,8 @@ Known gaps (not yet closed): Codex has no confirmed, documented mechanism for
 accepting inbound trace context, so nothing is injected into its env — only
 `OTEL_EXPORTER_OTLP_ENDPOINT`-style config in its own `config.toml` `[otel]`
 section is documented, and that was not wired here to avoid guessing at an
-unconfirmed contract. Mímir and Observatory get server spans on their own
-FastAPI apps, but calls between Mímir and the resident/gateway that queries it
+unconfirmed contract. Memory and Observatory get server spans on their own
+FastAPI apps, but calls between Memory and the resident/gateway that queries it
 are not yet threaded with explicit trace-context propagation.
 
 ## OTLP export failing to start with an ImportError on `InstrumentationScope`

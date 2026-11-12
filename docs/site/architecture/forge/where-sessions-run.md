@@ -40,7 +40,7 @@ flowchart TD
 
 Everything left of `Placement` is one session = one unit of the backend.
 Everything under `VmPodManager` shares machines: Forge leases a machine, binds
-the session to a slot, and the runtime starts Skuld there over SSH.
+the session to a slot, and the runtime starts the session gateway there over SSH.
 
 ## Pick a runtime
 
@@ -48,10 +48,10 @@ the session to a slot, and the runtime starts Skuld there over SSH.
 |---|---|---|---|---|
 | `LocalProcessPodManager` | None: your OS user and filesystem | Lowest (a subprocess) | The runtime CLI on the host | Local mini mode, one trusted user |
 | `DockerContainerPodManager` | A container per session on the host daemon | Low (container start) | A Docker daemon Forge can drive | Single-host Docker mode |
-| `FluxPodManager` (default) | A pod per session | Pod scheduling and image pull | Kubernetes with Flux and the `skuld` chart | Shared cluster deployments |
+| `FluxPodManager` (default) | A pod per session | Pod scheduling and image pull | Kubernetes with Flux and the session gateway chart (`charts/skuld`) | Shared cluster deployments |
 | `DirectK8sPodManager` | A pod per session | As Flux, no reconcile hop | Kubernetes (k3s/k3d) without Flux | Small clusters without Flux |
 | `OpenShellGatewayPodManager` | An OpenShell sandbox | Sandbox create | An OpenShell gateway and OIDC client credentials | You want the sandbox boundary |
-| `VmPodManager` + `SshContainerVmRuntime` | A VM per machine; Skuld in Docker on it | VM boot, unless a warm slot is free | `compute` config, a machine provider, SSH | Sessions that need a whole VM or root in their container |
+| `VmPodManager` + `SshContainerVmRuntime` | A VM per machine; the session gateway in Docker on it | VM boot, unless a warm slot is free | `compute` config, a machine provider, SSH | Sessions that need a whole VM or root in their container |
 | `VmPodManager` + `SshHostVmRuntime` | Slot user, network namespace, cgroup, rootless Podman | No container to start; images unpacked once per digest per machine | `slot_isolation`, systemd, SSH | Many sessions per machine, or registered hosts |
 
 Other VM runtimes exist for narrower cases: `SshDarwinHostRuntime` (a Mac host,

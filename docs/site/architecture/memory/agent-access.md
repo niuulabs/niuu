@@ -1,7 +1,7 @@
 # Agent access
 
-How sessions, residents and workflow runs get Mímir, which tools they call,
-and which writes Mímir refuses.
+How sessions, residents and workflow runs get Memory, which tools they call,
+and which writes Memory refuses.
 
 ## In one minute
 
@@ -9,7 +9,7 @@ and which writes Mímir refuses.
   builds that list at each launch from the **project's memory**, the launch
   spec and the session's own `workload_config.mimir`.
 - A mount on a plain path runs as a stdio server inside the session
-  (`python -m mimir mcp`); a mount with a URL is the hosted Mímir's `/mcp`
+  (`python -m mimir mcp`); a mount with a URL is the hosted memory service's `/mcp`
   over HTTP.
 - Core tools: `mimir_search`, `mimir_read`, `mimir_write`, `mimir_ingest`,
   `mimir_read_source`, `mimir_related`, `mimir_lint`, `mimir_stats`. Typed
@@ -24,10 +24,10 @@ flowchart LR
     P[Forge project<br/>memory mounts] --> M[merge at launch]
     LS[launch spec mimir] --> M
     WC[session workload_config.mimir] --> M
-    REG[Mímir registry] -. resolves entries .-> M
+    REG[Memory registry] -. resolves entries .-> M
     M --> SV{each mount}
     SV -- path --> ST[stdio: python -m mimir mcp<br/>--read-only / --write-prefix]
-    SV -- url --> HT[http: hosted Mímir /mcp]
+    SV -- url --> HT[http: hosted Memory /mcp]
     ST --> H[harness<br/>Claude Code, Codex, …]
     HT --> H
     H -- shell runtimes --> BR[mimir.bridge<br/>tool shims]
@@ -41,9 +41,9 @@ naming the mount; neither wins silently.
 | Consumer | How it gets memory |
 |---|---|
 | Forge session | `mimir-*` MCP servers from project memory, launch spec and `workload_config.mimir`; plus a memory section in the system prompt (fact or wiki variant) |
-| Workflow run (Ting) | Its sessions inherit the project's mounts the same way; Ting resolves a workflow's knowledge mounts against `dispatch.mimir.hosted_url` and the registry |
-| Skuld retrieval reflex | Before forwarding a user message, prefixes up to 5 pointers to known entity pages (from `GET /mimir/entities/index`, cached 300 s); never page bodies |
-| Shell-driven runtimes | Skuld adds `mimir_*` shell shims that call `mimir.bridge` when the session has a Mímir mount |
+| Workflow run | Its sessions inherit the project's mounts the same way; the workflow engine resolves a workflow's knowledge mounts against `dispatch.mimir.hosted_url` and the registry |
+| Session gateway retrieval reflex | Before forwarding a user message, prefixes up to 5 pointers to known entity pages (from `GET /mimir/entities/index`, cached 300 s); never page bodies |
+| Shell-driven runtimes | The session gateway adds `mimir_*` shell shims that call `mimir.bridge` when the session has a Memory mount |
 | Web UI and API clients | The REST routes under `/api/v1/mimir` |
 
 ## Project memory
@@ -61,7 +61,7 @@ A Forge project owns named mounts: `GET/POST /projects/{id}/memory`,
 A limit (`read`, or prefixes) can only be held on a mount Forge serves itself,
 a plain path, by starting the stdio server with `--read-only` or
 `--write-prefix`. On a URL or adapter mount the limit **refuses the launch**
-(`MemoryMountUnenforceableError`): that Mímir decides what the session may
+(`MemoryMountUnenforceableError`): that memory service decides what the session may
 write. A missing or disabled entry also fails the launch, naming the fix.
 
 Session-local mounts (`ephemeral_locals`) live at `/mimir/local/<mount>`; the
@@ -79,7 +79,7 @@ first one also receives writes under `self/`.
 | `mimir_write` | yes | Create or replace a page |
 | `mimir_ingest` | yes | Store a raw source |
 
-With `facts` configured on the Mímir (default backend gbrain) and the registry
+With `facts` configured on the memory service (default backend gbrain) and the registry
 entry marked `facts: true`, seven more tools appear:
 
 | Tool | Writes? | Does |
@@ -125,20 +125,20 @@ Not refused, only reported: editing a page's Timeline instead of appending
 | `facts` | unset | Serve the `mimir_fact_*` tools | `MimirServiceConfig.facts` |
 | `facts.trust.role_levels` / `scope_levels` | see above / `{}` | Who earns which trust | same |
 | `facts.chars_per_token` | `4` | How context packs count a token budget | same |
-| Skuld `reflex.enabled` | `true` | Entity pointers on forwarded messages | `SkuldSettings.reflex` |
+| Session gateway `reflex.enabled` | `true` | Entity pointers on forwarded messages | `SkuldSettings.reflex` |
 | `reflex.max_pointers` / `cache_ttl_seconds` | `5` / `300` | Pointers per message; entity index cache | same |
-| `dispatch.mimir.hosted_url` | `""` | Where Ting resolves workflow knowledge mounts | Ting config |
+| `dispatch.mimir.hosted_url` | `""` | Where the workflow engine resolves workflow knowledge mounts | Workflow engine config |
 
 ## Tradeoffs
 
 | Choice | Gains | Costs |
 |---|---|---|
 | One MCP server per mount | The model sees which store it reads and writes | More servers in the harness; search across mounts is the model's job |
-| Limits held by the server Forge starts | Holds whatever the model tries | Only on path mounts; a hosted mount needs its own Mímir's rules |
+| Limits held by the server Forge starts | Holds whatever the model tries | Only on path mounts; a hosted mount needs its own memory service's rules |
 | Trust from identity | An agent cannot launder its claims into "confirmed" | A person must curate to raise trust |
 | Reflex pointers, not bodies | Cheap, no prompt bloat | The agent still has to call `mimir_read` |
 
-If the reflex is enabled but no Mímir URL resolves, Skuld logs a warning and
+If the reflex is enabled but no Memory URL resolves, the session gateway logs a warning and
 runs without it.
 
 ## Code map
@@ -159,4 +159,4 @@ runs without it.
 
 - [Memory overview](index.md)
 - [Mounts, tenants and hosting](mounts-and-tenants.md)
-- [Channels, rooms and Forge tools](../skuld/channels-and-tools.md) — the other tools a session gets
+- [Channels, rooms and Forge tools](../session-gateway/channels-and-tools.md) — the other tools a session gets

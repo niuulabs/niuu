@@ -66,7 +66,7 @@ nav:
       - Stack map:
           - Services and channels: architecture/stack/services.md
           - One request end to end: architecture/stack/request-flow.md
-          - Product and implementation names: architecture/stack/names.md
+          - Product and code names: architecture/stack/names.md
       - Design principles:
           - Overview: architecture/design/index.md
           - Layers and boundaries: architecture/design/layers.md
@@ -77,11 +77,11 @@ nav:
           - Where sessions run: architecture/forge/where-sessions-run.md
           - Workspaces and projects: architecture/forge/workspaces-and-projects.md
           - State and history: architecture/forge/state-and-history.md
-      - Skuld:
-          - Overview: architecture/skuld/index.md
-          - Runtimes: architecture/skuld/runtimes.md
-          - Message path: architecture/skuld/message-path.md
-          - Channels and tools: architecture/skuld/channels-and-tools.md
+      - Session gateway:
+          - Overview: architecture/session-gateway/index.md
+          - Runtimes: architecture/session-gateway/runtimes.md
+          - Message path: architecture/session-gateway/message-path.md
+          - Channels and tools: architecture/session-gateway/channels-and-tools.md
       - Workflows:
           - Overview: architecture/workflows/index.md
           - Runs, gates and reviews: architecture/workflows/runs.md
@@ -94,7 +94,7 @@ nav:
           - Isolation and secrets: architecture/security/isolation-and-secrets.md
       - Communication:
           - Overview: architecture/communication/index.md
-          - Sleipnir events: architecture/communication/sleipnir.md
+          - Event bus: architecture/communication/event-bus.md
           - Collaboration rooms: architecture/communication/rooms.md
           - Mesh and A2A: architecture/communication/mesh-and-a2a.md
       - Models:

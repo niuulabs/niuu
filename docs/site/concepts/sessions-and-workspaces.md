@@ -12,7 +12,7 @@ sessions, each with its own session workspace.
 
 A launch supplies a source, runtime, model, target, and optional persona,
 credentials, and resources. Forge records the session and asks the configured
-backend to start it. Skuld starts the runtime and connects its messages and
+backend to start it. The session gateway starts the runtime and connects its messages and
 workspace interfaces to the platform.
 
 A session that is running has a live process. That does not prove its model

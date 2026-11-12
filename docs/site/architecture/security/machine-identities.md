@@ -48,7 +48,7 @@ back through it.
 | Replay | `UPDATE … WHERE last_request_at IS NULL OR last_request_at < $ts` (`try_advance_watermark`): one atomic statement |
 | Skew | `niuu.node_join.clock_skew_seconds`, default 30 s |
 | Rejection | The same 401 for unknown or malformed id, missing headers, bad signature, stale timestamp or replay |
-| Enforcement points | The route dependency; `PATRevocationMiddleware`'s exemption; the Platform (Guild) chart's Envoy `jwt_authn` bypass, an exact `safe_regex` |
+| Enforcement points | The route dependency; `PATRevocationMiddleware`'s exemption; the Platform chart's (`charts/guild`) Envoy `jwt_authn` bypass, an exact `safe_regex` |
 
 ## VM guests (metadata credentials)
 

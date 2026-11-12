@@ -25,7 +25,7 @@ flowchart LR
     S --> W[Workflow save:<br/>pin id + revision + digest]
     W --> SN[Run snapshot:<br/>persona_definitions]
     SN --> F[Forge session create:<br/>persona_definition + model]
-    F --> SK[Skuld: instructions + permission mode<br/>applied to the harness]
+    F --> SK[Session gateway: instructions + permission mode<br/>applied to the harness]
 ```
 
 The pin is what makes a run reproducible: editing a persona changes the next launch, never a
@@ -76,7 +76,7 @@ Personas once shipped for planning, research and delivery are archived (listed i
 | Save | Every `personaId` must be declared in `persona_dependencies`; each is pinned to `{id, revision, digest}` |
 | Launch | The run's snapshot carries the full document per alias (`persona_definitions`); a member with no pin is refused |
 | Session | Forge gets `persona_definition`, `model` (stage → launch → `dispatch.default_model`), the alias, event filters and topics; an optional `systemPromptExtra` is appended |
-| Offer | The member's Skuld reads the same contract to decide if an offer is its own |
+| Offer | The member's session gateway reads the same contract to decide if an offer is its own |
 
 ## Levers
 
@@ -112,4 +112,4 @@ Personas once shipped for planning, research and delivery are archived (listed i
 
 - [Workflows overview](index.md)
 - [Runs, steps and gates](runs.md)
-- [Skuld runtimes](../skuld/runtimes.md) — the harness a persona runs on
+- [Session gateway runtimes](../session-gateway/runtimes.md) — the harness a persona runs on

@@ -103,7 +103,7 @@ Nothing else changes: no registry, no factory branch. The class can even live ou
 
 ## No magic numbers
 
-A timeout, threshold or count in business logic is a config field with a default and a description that says what bounds it. A real example from Skuld ([`src/skuld/config.py`](https://github.com/niuulabs/niuu/blob/dev/src/skuld/config.py)):
+A timeout, threshold or count in business logic is a config field with a default and a description that says what bounds it. A real example from the session gateway ([`src/skuld/config.py`](https://github.com/niuulabs/niuu/blob/dev/src/skuld/config.py)):
 
 ```python
 class AskConfig(BaseModel):
@@ -114,7 +114,7 @@ class AskConfig(BaseModel):
     )
 ```
 
-A model validator on `SkuldSettings` refuses to start if `ask.wait_max_s` is not shorter than both engine timeouts, naming the knob to lower or raise. The bound is checked once, at startup, instead of discovered when a call is cut off.
+A model validator on the session gateway's settings (`SkuldSettings`) refuses to start if `ask.wait_max_s` is not shorter than both engine timeouts, naming the knob to lower or raise. The bound is checked once, at startup, instead of discovered when a call is cut off.
 
 Allowed literals: loop indices, identity values like `0.0` and `1.0`, test fixtures, log text.
 
@@ -136,7 +136,7 @@ Allowed literals: loop indices, identity values like `0.0` and `1.0`, test fixtu
 | Plain kwargs | Adapters are testable and portable | The root must translate settings to kwargs |
 | Env overrides YAML | Quick operator fix without a chart change | Two places to look; prefer the file for anything durable |
 
-Existing adapters that predate the pattern keep their wiring. One compatibility map remains: Ting rewrites stored Forge tracker class paths to its own (`_resolve_tracker_adapter` in `ting/adapters/tracker_factory.py`).
+Existing adapters that predate the pattern keep their wiring. One compatibility map remains: the workflow engine rewrites stored Forge tracker class paths to its own (`_resolve_tracker_adapter` in `ting/adapters/tracker_factory.py`).
 
 ## Code map
 

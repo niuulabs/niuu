@@ -1,19 +1,19 @@
 # Channels, rooms and Forge tools
 
 How a session reaches people and other agents, and what Forge gives the agent
-to act with. Skuld *adapts* each surface to the session; the room and mesh
+to act with. The session gateway *adapts* each surface to the session; the room and mesh
 mechanics themselves live in `niuu`.
 
 ## In one minute
 
 - **Channels** are output fan-out: every runtime frame goes to every registered
   channel. Today there are two, the browser WebSocket and Telegram.
-- **Rooms** let several people and agents share one conversation. Skuld hosts
-  a room over the shared `niuu.collaboration` library; a Ravn joins as a
-  participant.
+- **Rooms** let several people and agents share one conversation. The session
+  gateway hosts a room over the shared `niuu.collaboration` library; an agent
+  runtime joins as a participant.
 - **Other agents' messages** (a Forge session, a room, a mesh peer) land in the
   **peer inbox** and reach the runtime only at a turn boundary.
-- The **`forge` MCP server** gives the runtime Forge's tools. Skuld hosts it
+- The **`forge` MCP server** gives the runtime Forge's tools. The session gateway hosts it
   and calls Forge with a credential bound to this one session.
 - **Presented files** (`present-file`) are staged by the broker and uploaded to
   Forge's durable store, so they outlive the session.
@@ -53,14 +53,14 @@ Telegram can post into one shared chat, a fixed topic, or a topic per session
 | Knob | Effect |
 |---|---|
 | `room.enabled` | This broker hosts a collaboration room: participants, presence, directed messages, replay |
-| `room.default_target_peer_id` | Untargeted chat goes to this participant. Forge sets it for resident sessions, so any client can talk to the one Ravn behind the room |
+| `room.default_target_peer_id` | Untargeted chat goes to this participant. Forge sets it for resident sessions, so any client can talk to the one resident behind the room |
 | `room.routed` | The broker owns **no runtime** of its own and only hosts the room. A workflow run's root session runs this way |
 | `room.realm_room` | The room shows everything its mesh realm publishes, so a run's room shows every member |
 
 Participants join, beat and leave over `/api/room/*`; a participant past its
 heartbeat with no live WebSocket shows as away but stays a member. Room
 semantics (membership, routing, opaque reply context) belong to the
-[Communication area](../communication/index.md); Skuld never reads a reply to decide what it means.
+[Communication area](../communication/index.md); the session gateway never reads a reply to decide what it means.
 
 ## Messages from other agents
 
@@ -71,9 +71,9 @@ semantics (membership, routing, opaque reply context) belong to the
 | Asked | While the `ask` tool waits for a reply, that reply goes to the tool, not to the next turn |
 | Restart | The inbox is rebuilt from the log; nothing already handed over is handed over again |
 
-Skuld does not read these messages and puts no limit on how many wait.
+The session gateway does not read these messages and puts no limit on how many wait.
 
-With `mesh.enabled`, the session is also a Flokk mesh peer (transport `nng`
+With `mesh.enabled`, the session is also a flock mesh peer (transport `nng`
 by default) and every message is signed with a Forge-issued peer certificate. With
 `workflow_steps.enabled`, a session takes step offers from its run's mesh and closes
 them with `workflow_step_close` ([Workflows area](../workflows/index.md)).
@@ -118,18 +118,18 @@ A quota refusal is logged as an error.
 
 | Knob | Default | What it changes | Where it is set |
 |---|---|---|---|
-| `forge_mcp.enabled` | `true` | Offer the `forge` MCP server | Skuld config |
+| `forge_mcp.enabled` | `true` | Offer the `forge` MCP server | Session gateway config |
 | `forge_mcp.grants` | unset (token's grants) | Narrow the grants | Session create / launch spec |
 | `forge_mcp.token_file` | empty | Path of the session credential | Pod manager |
-| `forge_mcp.tool_timeout_s` | `120` | Engine-side tool call timeout (Codex) | Skuld config |
-| `forge_mcp.output_max_chars` | `24000` | Largest tool result text | Skuld config |
-| `ask.wait_max_s` / `secret_requests.wait_max_s` | `50` | How long one call waits for an answer; must be below the tool timeouts (checked at start) | Skuld config |
+| `forge_mcp.tool_timeout_s` | `120` | Engine-side tool call timeout (Codex) | Session gateway config |
+| `forge_mcp.output_max_chars` | `24000` | Largest tool result text | Session gateway config |
+| `ask.wait_max_s` / `secret_requests.wait_max_s` | `50` | How long one call waits for an answer; must be below the tool timeouts (checked at start) | Session gateway config |
 | `room.enabled` / `room.routed` | `false` / `false` | Host a room; host it with no runtime | Forge, per session kind |
-| `room.presence_sweep_interval_s` | `30` | Away detection (0 turns it off) | Skuld config |
+| `room.presence_sweep_interval_s` | `30` | Away detection (0 turns it off) | Session gateway config |
 | `mesh.enabled` / `mesh.transport` | `false` / `nng` | Be a mesh peer | Forge, per session kind |
-| `telegram.enabled` / `telegram.topic_mode` | `false` / `topic_per_session` | Telegram channel | Skuld config |
-| `max_presented_file_bytes` | `52428800` (50 MiB) | Largest presented file | Skuld config |
-| `presented_durable.retry_attempts` | `6` | Background upload retries | Skuld config |
+| `telegram.enabled` / `telegram.topic_mode` | `false` / `topic_per_session` | Telegram channel | Session gateway config |
+| `max_presented_file_bytes` | `52428800` (50 MiB) | Largest presented file | Session gateway config |
+| `presented_durable.retry_attempts` | `6` | Background upload retries | Session gateway config |
 
 ## Tradeoffs
 
@@ -155,6 +155,6 @@ A quota refusal is logged as an error.
 
 ## Related
 
-- [Communication area](../communication/index.md): rooms, the Flokk mesh, Sleipnir.
+- [Communication area](../communication/index.md): rooms, the flock mesh, the event bus.
 - [Credentials](../security/credentials.md): the `forge_session` credential. Mesh signing: [the rules](https://github.com/niuulabs/niuu/blob/dev/.claude/rules/architecture.md).
 - [Workflows area](../workflows/index.md): how a run hands steps to sessions.

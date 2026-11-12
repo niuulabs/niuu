@@ -2,7 +2,7 @@
 
 Two different joins add machines to a deployment: a **registered host** gives a
 Forge somewhere else to run sessions, and a **Platform node** offers a whole Niuu
-host's Forge to a Platform (Guild).
+host's Forge to a Platform.
 
 ## In one minute
 
@@ -10,7 +10,7 @@ host's Forge to a Platform (Guild).
 |---|---|---|
 | Command | `niuu remote join <ssh destination>` (or **Add host** in the UI), run from the operator's machine | `niuu join <platform url> --code <code>`, run on the Niuu host |
 | Joins | One Forge's compute pool | A Platform's instance registry |
-| The machine runs | Sessions only (Skuld from the release's session image or macOS bundle) | Its own full Niuu stack (mini or Docker) |
+| The machine runs | Sessions only (the session gateway from the release's session image or macOS bundle) | Its own full Niuu stack (mini or Docker) |
 | Proof of identity | Its sshd Ed25519 key, registered with a single-use `compute_host_join` code | An Ed25519 node key in `~/.niuu`, used to sign heartbeats |
 | Who connects to whom | Forge connects to the host over SSH (directly, or through the NAT endpoint) | The node sends signed heartbeats; the Platform proxies to the Forge URL it offered |
 | Leave | `niuu remote leave` drains sessions, then Forge forgets the host | `niuu leave` |
@@ -23,8 +23,8 @@ flowchart LR
   OP -- "ssh: run join.sh" --> H["registered host"]
   H -- "POST compute/hosts/join<br/>(code + sshd key)" --> F
   F -- "SSH, pinned key<br/>audit, slots, sessions" --> H
-  N["Niuu host"] -- "niuu join<br/>(code + node key)" --> P["Platform (Guild)"]
-  N -- "niuu guild heartbeat<br/>(Ed25519-signed)" --> P
+  N["Niuu host"] -- "niuu join<br/>(code + node key)" --> P["Platform"]
+  N -- "signed heartbeat<br/>(Ed25519)" --> P
   P -- "proxies API calls" --> NF["that host's Forge"]
 ```
 
@@ -63,7 +63,7 @@ Forge's metadata route, authenticated by the host's own key.
 | Adopt identity | When the Platform verifies identity (Envoy or OIDC), the node merges the Platform's issuers into `host_auth` and switches to `oidc`. It never downgrades an `oidc` host to `none`; a refused adoption is printed as a warning |
 | Stay present | `niuu guild heartbeat` (run it under a supervisor) signs method, path, timestamp and body hash every `guild.heartbeat_interval_seconds` (60 s) |
 
-A Platform can also list instances statically (`registry.instances` in the guild
+A Platform can also list instances statically (`registry.instances` in the `guild`
 chart); `niuu join` is for hosts that come and go.
 
 ## Levers
@@ -75,8 +75,8 @@ chart); `niuu join` is for hosts that come and go.
 | `hosts.max_hosts` | `16` | Hosts the pool may hold; one beyond waits ready and unclaimed | config file |
 | `hosts.allowed_sources` | `[]` (any) | `from=` networks on Forge's key on each host | config file |
 | `hosts.session_images.linux` / `.darwin` | `ghcr.io/niuulabs/openshell:dev`, `ghcr.io/niuulabs/skuld-darwin:dev` | What hosts run; tags are pinned by digest at Forge start | config file |
-| `computeHosts.*` | `enabled: false` | The same pool on Kubernetes (`joinUrl`, `maxHosts`, `slot`, `platforms`) | volundr chart values |
-| `hostConnect.enabled` | `false` | NAT endpoint; requires `replicaCount: 1`, `strategy.type: Recreate`, no autoscaling, a host-key Secret | volundr chart values |
+| `computeHosts.*` | `enabled: false` | The same pool on Kubernetes (`joinUrl`, `maxHosts`, `slot`, `platforms`) | `volundr` chart values |
+| `hostConnect.enabled` | `false` | NAT endpoint; requires `replicaCount: 1`, `strategy.type: Recreate`, no autoscaling, a host-key Secret | `volundr` chart values |
 | `--slots`, `--isolation`, `--tag`, `--execution`, `--connector` | Forge's defaults | Fixed into the pairing code | `niuu remote join` flags |
 | `server.external_host` | empty | The Forge URL a Platform node offers | config file |
 | `guild.heartbeat_interval_seconds` | `60` | How often presence is re-signed | config file |

@@ -1,11 +1,11 @@
 # Mounts, tenants and hosting
 
-Where Mímir runs, how one client reads several stores as one, and how an
+Where Memory runs, how one client reads several stores as one, and how an
 instance decides which org may see which store.
 
 ## In one minute
 
-- One Mímir process serves one store directory. Three ways to run it: inside
+- One Memory process serves one store directory. Three ways to run it: inside
   the **Platform host** (default on), as its **own Helm release**, or as a
   **stdio MCP server** Forge starts in a session for a local mount.
 - A **mount** is a named store a client can reach: a local path, a remote URL,
@@ -24,11 +24,11 @@ instance decides which org may see which store.
 
 ```mermaid
 flowchart LR
-    subgraph Client["Client (session, resident, Ting)"]
+    subgraph Client["Client (session, resident, workflow engine)"]
       C[Composite mount<br/>read priority + write routing]
     end
     C -- path --> L[(local store<br/>own process)]
-    C -- url --> H[Hosted Mímir<br/>Platform host or Helm]
+    C -- url --> H[Hosted Memory<br/>Platform host or Helm]
     C -- adapter --> G[gbrain brain]
     H --> REG[registry<br/>.mimir-registry.json]
     H --> OWN[(instance's own store)]
@@ -51,7 +51,7 @@ caller's org may see; a deployment adds entries to that registry.
 | Session-local | Forge adds `python -m mimir mcp --path /mimir/local/<mount>` as a stdio MCP server | That directory | **Keyword counting only**, no FTS or embeddings |
 | Local knowledge deployment | Mini mode creates `python -m mimir serve` under launchd/systemd on `127.0.0.1:<free port>` | `<knowledge root>/<name>/data` | Full pipeline |
 
-Mímir is one uvicorn worker. Keep the Helm release at one replica unless the
+Memory is one uvicorn worker. Keep the Helm release at one replica unless the
 PVC is `ReadWriteMany`: the files and `search.db` assume one writer.
 
 ## Reading and writing across mounts
@@ -118,7 +118,7 @@ never chosen at runtime:
 | `FluxKnowledgeDeploymentAdapter` | A Flux HelmRelease of `charts/mimir` (or gbrain) in a namespace |
 | `KnowledgeDeploymentTargets` | Several named targets of the above |
 
-The Platform (Guild) forwards deployment calls to a registered Mímir with the
+The Platform forwards deployment calls to a registered memory service with the
 caller's own bearer only.
 
 ## Levers
@@ -140,10 +140,10 @@ caller's own bearer only.
 
 | Choice | Gains | Costs |
 |---|---|---|
-| Hosted shared Mímir | One place every session and resident learns into | A restart is a gap for everyone (the read retry exists for it); one worker serialises requests |
+| Hosted shared Memory | One place every session and resident learns into | A restart is a gap for everyone (the read retry exists for it); one worker serialises requests |
 | Session-local mount | Private, no network, gone with the session | Keyword search only; nothing survives unless written to another mount |
 | Many mounts per client | Separate ownership, per-mount write limits | Search fans out serially; one failing mount fails the whole read |
-| Write limits held by the Mímir server | The limit holds whatever the agent tries | Only enforceable on a mount Forge serves itself (a path); see [agent access](agent-access.md) |
+| Write limits held by the memory server | The limit holds whatever the agent tries | Only enforceable on a mount Forge serves itself (a path); see [agent access](agent-access.md) |
 
 ## Code map
 
@@ -164,5 +164,5 @@ caller's own bearer only.
 
 - [Memory overview](index.md)
 - [Agent access](agent-access.md)
-- [Credentials](../security/credentials.md) — workload tokens and scoped tokens Mímir accepts or refuses
-- [Kubernetes](../deployment/kubernetes.md) — how the Mímir chart sits among the other releases
+- [Credentials](../security/credentials.md) — workload tokens and scoped tokens Memory accepts or refuses
+- [Kubernetes](../deployment/kubernetes.md) — how the Memory chart sits among the other releases

@@ -1,8 +1,8 @@
-# Sleipnir event bus
+# Event bus
 
-Sleipnir is the platform's event bus: services announce what happened ("session
-started", "run needs approval", "page written") and whoever cares subscribes. It
-moves facts; it never decides what they mean.
+The event bus is how services announce what happened ("session started", "run
+needs approval", "page written") so whoever cares can subscribe. It moves
+facts; it never decides what they mean.
 
 ## In one minute
 
@@ -21,14 +21,14 @@ moves facts; it never decides what they mean.
 
 ```mermaid
 flowchart LR
-  forge[Forge<br/>SleipnirEventSink] --> sign1[SigningBus]
-  ting[Ting<br/>TingSleipnirBridge] --> sign2[SigningBus]
-  mimir[Mímir / Bifröst] --> sign3[SigningBus]
+  forge[Forge<br/>event sink] --> sign1[SigningBus]
+  wf[Workflow engine<br/>event bridge] --> sign2[SigningBus]
+  mem[Memory / model gateway] --> sign3[SigningBus]
   sign1 & sign2 & sign3 --> bus[(Transport<br/>NATS JetStream / nng / in-process …)]
-  bus --> audit[AuditSubscriber<br/>sleipnir_events table]
-  bus --> triggers[Ting event triggers]
+  bus --> audit[AuditSubscriber<br/>audit table]
+  bus --> triggers[Workflow engine event triggers]
   bus --> relay[ObservationRelay → rooms]
-  bus --> mesh[Flokk mesh traffic<br/>mesh.* events]
+  bus --> mesh[Flock mesh traffic<br/>mesh.* events]
 ```
 
 Publishers wrap their bus in `SigningBus`. Consumers that act on an event verify it with
@@ -58,17 +58,17 @@ constant, never the string.
 
 | Producer | How | Typical types |
 |---|---|---|
-| Forge (Völundr) | `SleipnirEventSink` in the session event pipeline maps session events to bus events | `volundr.session.*`, `volundr.git.*`, `volundr.tool.use`, `volundr.token.usage` |
+| Forge | `SleipnirEventSink` in the session event pipeline maps session events to bus events | `volundr.session.*`, `volundr.git.*`, `volundr.tool.use`, `volundr.token.usage` |
 | Forge | Session stop/restart revocations, signed with its `authority` certificate | `mesh.revocation` |
-| Ting | `TingSleipnirBridge` republishes Ting's internal events | `ting.run.*`, `ting.task.*`, `ting.run.needs_approval` |
-| Mímir, Bifröst | Their adapters, when wired | `mimir.page.written`, `bifrost.*` |
+| Workflow engine | `TingSleipnirBridge` republishes the workflow engine's internal events | `ting.run.*`, `ting.task.*`, `ting.run.needs_approval` |
+| Memory, model gateway | Their adapters, when wired | `mimir.page.written`, `bifrost.*` |
 | Rooms | `participant.*` and `room.*` from the collaboration library | `room.message.recorded`, `room.transcript.recorded` |
 | Mesh peers | Mesh traffic rides the bus under `mesh.*` (`mesh.realm_<id>.*` for an isolated Workspace mesh), signed by each peer | `mesh.announce` |
 
 | Consumer | What it does with them |
 |---|---|
 | `AuditSubscriber` (Forge, or the standalone audit service) | Subscribes to `*` and writes every event to `sleipnir_events`; read at `GET /api/v1/audit/events` |
-| Ting event triggers | Starts a run from a saga template when a verified event matches a rule (`event_triggers.rules`); `auto_start: false` creates it pending and emits `ting.run.needs_approval` |
+| Workflow engine event triggers | Starts a run from a saga template when a verified event matches a rule (`event_triggers.rules`); `auto_start: false` creates it pending and emits `ting.run.needs_approval` |
 | `ObservationRelay` | Projects verified events into collaboration rooms |
 
 ## Transports and guarantees
@@ -101,17 +101,17 @@ cannot sign and, with `mesh.attestation.required: true`, fails at startup.
 
 | Knob | Default | What it changes | Where it is set |
 |---|---|---|---|
-| `sleipnir.enabled` | `false` | Turns the bus on for Forge or Ting. Enabled but unable to start is fatal | Forge and Ting settings |
-| `sleipnir.adapter` | `sleipnir.adapters.in_process.InProcessBus` | Transport class (dynamic adapter) | Forge and Ting settings |
-| `sleipnir.kwargs` / `secret_kwargs_env` | `{}` | Constructor arguments; secrets read from named env vars | Forge settings (Ting has `kwargs`) |
-| `mesh.nats.stream_name` / `subject_prefix` | `ravn_environment` / `ravn.environment` (the transport class itself defaults to `sleipnir` / `sleipnir`) | Which JetStream stream and subjects | Mesh settings of Skuld (and any mesh peer) |
+| `sleipnir.enabled` | `false` | Turns the bus on for Forge or the workflow engine. Enabled but unable to start is fatal | Forge and workflow engine settings |
+| `sleipnir.adapter` | `sleipnir.adapters.in_process.InProcessBus` | Transport class (dynamic adapter) | Forge and workflow engine settings |
+| `sleipnir.kwargs` / `secret_kwargs_env` | `{}` | Constructor arguments; secrets read from named env vars | Forge settings (the workflow engine has `kwargs`) |
+| `mesh.nats.stream_name` / `subject_prefix` | `ravn_environment` / `ravn.environment` (the transport class itself defaults to `sleipnir` / `sleipnir`) | Which JetStream stream and subjects | Mesh settings of the session gateway (and any mesh peer) |
 | `mesh.nats.max_age_seconds` / `max_bytes` | 7 days / 1 GiB | Stream retention, hence the replay window | Mesh settings |
 | `mesh.nats.max_deliver` | `5` | Deliveries before dead-lettering | Mesh settings |
 | `mesh.nats.ack_wait_s` / `ack_progress_interval_s` | `30` / `10` | Redelivery after silence; in-progress pings while a handler runs | Mesh settings |
 | `mesh.nats.nak_backoff_s` | `[1, 5, 30, 60]` | Redelivery delays after a handler raises; the last repeats | Mesh settings |
 | `mesh.nats.ring_buffer_depth` | `1000` | Events queued per subscription before acks are withheld | Mesh settings |
 | `mesh.nats.consumer_group` | empty | Share one durable consumer across replicas | Mesh settings |
-| `event_triggers.enabled` / `rules` | `false` / `[]` | Map an event pattern (plus payload `filter`) to a saga template | Ting settings |
+| `event_triggers.enabled` / `rules` | `false` / `[]` | Map an event pattern (plus payload `filter`) to a saga template | Workflow engine settings |
 | `mesh.attestation.required` | `true` | Sign and verify; `false` is an explicit choice to run unauthenticated | Every platform service |
 | `mesh.attestation.event_max_age_s` | `3600` | Oldest event accepted; must exceed the redelivery window | Every platform service |
 
@@ -135,7 +135,7 @@ cannot sign and, with `mesh.attestation.required: true`, fails at startup.
 | Transports | [`sleipnir/adapters/`](https://github.com/niuulabs/niuu/blob/dev/src/sleipnir/adapters) |
 | Transport aliases and NATS kwargs | [`niuu/mesh/transport_builder.py`](https://github.com/niuulabs/niuu/blob/dev/src/niuu/mesh/transport_builder.py), [`niuu/mesh/config.py`](https://github.com/niuulabs/niuu/blob/dev/src/niuu/mesh/config.py) |
 | Forge bus start and sink | [`volundr/composition_builders.py`](https://github.com/niuulabs/niuu/blob/dev/src/volundr/composition_builders.py), [`volundr/adapters/outbound/sleipnir_event_sink.py`](https://github.com/niuulabs/niuu/blob/dev/src/volundr/adapters/outbound/sleipnir_event_sink.py) |
-| Ting bridge and triggers | [`ting/adapters/sleipnir_event_bridge.py`](https://github.com/niuulabs/niuu/blob/dev/src/ting/adapters/sleipnir_event_bridge.py), [`ting/config.py`](https://github.com/niuulabs/niuu/blob/dev/src/ting/config.py) |
+| Workflow engine bridge and triggers | [`ting/adapters/sleipnir_event_bridge.py`](https://github.com/niuulabs/niuu/blob/dev/src/ting/adapters/sleipnir_event_bridge.py), [`ting/config.py`](https://github.com/niuulabs/niuu/blob/dev/src/ting/config.py) |
 | Signed platform events | [`niuu/mesh/platform_events.py`](https://github.com/niuulabs/niuu/blob/dev/src/niuu/mesh/platform_events.py), [`niuu/mesh/platform_identity.py`](https://github.com/niuulabs/niuu/blob/dev/src/niuu/mesh/platform_identity.py) |
 | Audit log | [`sleipnir/adapters/audit_subscriber.py`](https://github.com/niuulabs/niuu/blob/dev/src/sleipnir/adapters/audit_subscriber.py), [`sleipnir/adapters/audit_postgres.py`](https://github.com/niuulabs/niuu/blob/dev/src/sleipnir/adapters/audit_postgres.py) |
 
@@ -143,4 +143,4 @@ cannot sign and, with `mesh.attestation.required: true`, fails at startup.
 
 - [Communication overview](index.md): how the bus differs from rooms, the mesh and A2A.
 - [Collaboration rooms](rooms.md): rooms publish `room.*` and `participant.*` here.
-- [Flokk mesh and A2A](mesh-and-a2a.md): mesh traffic rides this bus, signed per peer.
+- [Flock mesh and A2A](mesh-and-a2a.md): mesh traffic rides this bus, signed per peer.

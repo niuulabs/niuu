@@ -34,10 +34,10 @@ Yes. APIs and channels can be used by agents as well as people. The session gate
 runtime communication to those interfaces; shared Niuu libraries provide room
 and mesh mechanics. See [architecture](../concepts/platform-model.md).
 
-## Is Ravn required to run Claude Code or Codex?
+## Is Niuu's agent runtime required to run Claude Code or Codex?
 
-Ravn is one agent runtime. Skuld supports other runtimes, including Claude Code
-and Codex. Ordinary sessions do not need to become Ravn residents. Ravn adds its
+Niuu's agent runtime is one runtime among several. The session gateway supports other runtimes, including Claude Code
+and Codex. Ordinary sessions do not need to become residents. The agent runtime adds its
 own judgment, learning, and resident behavior when you choose to use it.
 
 ## Does self-hosted mean no data leaves my machine?

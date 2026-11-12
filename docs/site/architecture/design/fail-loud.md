@@ -51,7 +51,7 @@ A fallback turns a one-line failure into a data problem that takes weeks to find
 | Identity vs auth mode ([`service_runtime.py`](https://github.com/niuulabs/niuu/blob/dev/src/niuu/service_runtime.py)) | `auth_mode: oidc` or `none` with an adapter that trusts Envoy headers | Pick the mode that matches the adapter |
 | Mesh transport ([`transport_builder.py`](https://github.com/niuulabs/niuu/blob/dev/src/niuu/mesh/transport_builder.py)) | A transport that cannot be imported or constructed → `TransportBuildError` | Install the package, or configure another transport |
 | Mesh attestation ([`niuu/mesh/config.py`](https://github.com/niuulabs/niuu/blob/dev/src/niuu/mesh/config.py)) | A peer that cannot get a certificate does not start its mesh | Fix identity, or set `mesh.attestation.required: false` (a decision) |
-| Skuld waits ([`skuld/config.py`](https://github.com/niuulabs/niuu/blob/dev/src/skuld/config.py)) | `ask.wait_max_s` not shorter than the engine's MCP timeouts → startup fails | Lower the wait or raise the timeout |
+| Session gateway waits ([`skuld/config.py`](https://github.com/niuulabs/niuu/blob/dev/src/skuld/config.py)) | `ask.wait_max_s` not shorter than the engine's MCP timeouts → startup fails | Lower the wait or raise the timeout |
 
 ## Recording a hit: `niuu.cap_telemetry`
 
@@ -86,7 +86,7 @@ One module, one set of counters. Do not add a parallel counter or log format.
 | Prometheus | `ravn_cap_hits_total` and friends, via the process's OTLP pipeline |
 | Health snapshot shape | `health_counts()` → `cap_hits_total`, `cap_hits.<knob>`, `degraded_total`, `degraded.<path>`, `retries_total` |
 
-Not built yet: no service health endpoint serves `health_counts()` today; the resident health surface that carried it goes with the Ravn rebuild.
+Not built yet: no service health endpoint serves `health_counts()` today; the resident health surface that carried it goes with the agent runtime rebuild.
 
 Every cap that remains is listed with its real bound and decision in the limits registers: [`docs/operator/limits.md`](https://github.com/niuulabs/niuu/blob/dev/docs/operator/limits.md) (shared and non-Forge) and [`docs/operator/forge-limits.md`](https://github.com/niuulabs/niuu/blob/dev/docs/operator/forge-limits.md). Add a row when you add or keep a cap.
 
@@ -104,7 +104,7 @@ Every cap that remains is listed with its real bound and decision in the limits 
 | Knob | Default | What it changes | Where it is set |
 |---|---|---|---|
 | `forge_mcp.session_tokens.enabled` | `true` | `false` runs sessions without scoped Forge credentials, by decision | Forge config |
-| `mesh.attestation.required` | `true` | `false` runs an unauthenticated mesh, by decision | Forge / Skuld mesh config |
+| `mesh.attestation.required` | `true` | `false` runs an unauthenticated mesh, by decision | Forge / session gateway mesh config |
 | Each cap's own knob | see the limits registers | The bound itself | Per component config |
 
 ## In review: reject on sight

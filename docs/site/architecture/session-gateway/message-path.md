@@ -1,7 +1,7 @@
 # A message's path
 
 What happens between a person pressing send and the agent's reply on screen.
-In short: Skuld accepts the message as `pending`, delivers it to the runtime
+In short: the session gateway accepts the message as `pending`, delivers it to the runtime
 with retries, and turns it `active` once the runtime consumes it (`failed` if
 it never does). Every frame the runtime emits is logged to Forge before any
 client sees it.
@@ -24,7 +24,7 @@ client sees it.
 ```mermaid
 sequenceDiagram
   participant C as Client
-  participant S as Skuld broker
+  participant S as Session gateway broker
   participant F as Forge
   participant T as Transport
   participant R as Runtime
@@ -51,7 +51,7 @@ through the peer inbox instead (see [Channels, rooms and Forge tools](channels-a
 ## Who may send what
 
 Each WebSocket connection has a room role. The edge proxy has already checked
-the caller's token. Skuld reads the identity headers and resolves the role
+the caller's token. The session gateway reads the identity headers and resolves the role
 (`ws_auth.room_role_source`).
 
 | Role | May send |
@@ -97,7 +97,7 @@ While a request or question is open, the session's activity is
 
 ## Session activity
 
-Skuld reports the session's state to Forge (debounced) and a heartbeat every
+The session gateway reports the session's state to Forge (debounced) and a heartbeat every
 `activity_heartbeat.interval_seconds`:
 
 ```mermaid
@@ -136,15 +136,15 @@ permanent rejection by Forge (bad session, bad credential) raises
 
 | Knob | Default | What it changes | Where it is set |
 |---|---|---|---|
-| `delivery.max_attempts` | `4` | Tries per inbound message (1 disables retry) | Skuld config |
-| `delivery.attempt_timeout_seconds` | `10` | Bound on one send; not applied when the send runs the whole turn | Skuld config |
-| `delivery.initial_backoff_seconds` / `backoff_multiplier` / `max_backoff_seconds` | `0.5` / `2.0` / `5.0` | Retry spacing | Skuld config |
-| `event_log_batch_size` | `100` | Frames per POST to Forge | Skuld config |
-| `event_log_flush_interval_ms` | `500` | Flush cadence | Skuld config |
-| `event_log_max_buffer` | `50000` | Frames held while Forge is unreachable | Skuld config |
-| `history_hydration_enabled` | `true` | Rebuild history from Forge on start | Skuld config |
-| `conversation_snapshot_max_bytes` | `921600` (900 KiB) | Largest connect snapshot | Skuld config |
-| `activity_heartbeat.interval_seconds` | `30` | Heartbeat to Forge | Skuld config |
+| `delivery.max_attempts` | `4` | Tries per inbound message (1 disables retry) | Session gateway config |
+| `delivery.attempt_timeout_seconds` | `10` | Bound on one send; not applied when the send runs the whole turn | Session gateway config |
+| `delivery.initial_backoff_seconds` / `backoff_multiplier` / `max_backoff_seconds` | `0.5` / `2.0` / `5.0` | Retry spacing | Session gateway config |
+| `event_log_batch_size` | `100` | Frames per POST to Forge | Session gateway config |
+| `event_log_flush_interval_ms` | `500` | Flush cadence | Session gateway config |
+| `event_log_max_buffer` | `50000` | Frames held while Forge is unreachable | Session gateway config |
+| `history_hydration_enabled` | `true` | Rebuild history from Forge on start | Session gateway config |
+| `conversation_snapshot_max_bytes` | `921600` (900 KiB) | Largest connect snapshot | Session gateway config |
+| `activity_heartbeat.interval_seconds` | `30` | Heartbeat to Forge | Session gateway config |
 | `ws_auth.room_role_source` | `deployment` | Where a connection's room role comes from (`proxy`, `deployment`, `remote`) | Pod manager |
 
 ## Tradeoffs

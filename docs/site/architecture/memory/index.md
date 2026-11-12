@@ -1,19 +1,19 @@
-# Memory (Mímir)
+# Memory
 
-Mímir is Niuu's knowledge service: a file-backed wiki of **sources** (what was
+Memory is Niuu's knowledge service: a file-backed wiki of **sources** (what was
 read) and **pages** (what is known), searchable by every session, resident and
 workflow that mounts it.
 
 ## In one minute
 
-- A Mímir store is a directory: immutable raw **sources** in `raw/`, rewritable
+- A Memory store is a directory: immutable raw **sources** in `raw/`, rewritable
   markdown **pages** in `wiki/`. The files are the durable data; the search
   index next to them is rebuilt from them.
-- Mímir does no thinking. Ingest stores a source; an agent reads it and writes
+- Memory does no thinking. Ingest stores a source; an agent reads it and writes
   pages with `mimir_write`. Nothing turns sources into pages on its own.
 - A page keeps **Compiled Truth** (current belief, rewritten) apart from a
   **Timeline** (evidence, append-only).
-- Agents reach Mímir through MCP tools (`mimir_search`, `mimir_read`,
+- Agents reach Memory through MCP tools (`mimir_search`, `mimir_read`,
   `mimir_write`, `mimir_ingest`, …). A session can mount several stores; each
   one is a **mount** with its own write rules.
 - One process serves one store. It runs inside the Platform host, as its own
@@ -47,7 +47,7 @@ and loads the pages. [Retrieval](retrieval.md) covers the right-hand side.
 |---|---|---|
 | `raw/<source_id>.json` | One ingested source: title, content, type, origin URL, content hash | No — back it up |
 | `wiki/<category>/<page>.md` | A page: YAML frontmatter + Compiled Truth + Timeline | No — back it up |
-| `wiki/index.md`, `wiki/log.md` | Content catalogue and append-only activity log, kept by Mímir | Index: yes (lint fix) |
+| `wiki/index.md`, `wiki/log.md` | Content catalogue and append-only activity log, kept by Memory | Index: yes (lint fix) |
 | `threads/` | Thread pages (queued work items with state, weight, owner) | No |
 | `MIMIR.md` | Schema and conventions, seeded on first run | Yes |
 | `search.db` | SQLite FTS5 index, plus embeddings when configured | Yes — rebuilt at start when empty |
@@ -78,10 +78,10 @@ The default root is `~/.ravn/mimir`; the Helm chart uses `/data/mimir` on a PVC.
 type: entity            # directive | decision | goal | preference | observation | entity | topic
 confidence: medium
 entity_type: technology
-related_entities: [skuld, forge]
+related_entities: [postgres, forge]
 source_ids: [src_abc123]
 ---
-# Mímir
+# Event bus
 ## Compiled Truth
 ### Key Facts
 - ...
@@ -135,8 +135,8 @@ source_ids: [src_abc123]
 ## Related
 
 - [Retrieval](retrieval.md) — how search finds pages, and embeddings
-- [Mounts, tenants and hosting](mounts-and-tenants.md) — where Mímir runs and who may read what
+- [Mounts, tenants and hosting](mounts-and-tenants.md) — where Memory runs and who may read what
 - [Agent access](agent-access.md) — tools, project memory, and what is refused
 
-Not built yet: nothing synthesises pages from sources on its own; the Ravn
+Not built yet: nothing synthesises pages from sources on its own; the agent
 runtime that did is being rebuilt.
