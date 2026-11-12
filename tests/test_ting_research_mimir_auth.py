@@ -87,7 +87,7 @@ def test_unresolved_well_does_not_read_the_hosted_default() -> None:
     settings.dispatch.mimir.hosted_url = "https://wrong-store.test/api/v1"
     campaign = _campaign()
     campaign.workflow_snapshot["mimir"]["registry_refs"] = [{"mount_name": "mimir-yggdrasil"}]
-    with pytest.raises(ValueError, match="no adapter, path or url"):
+    with pytest.raises(ValueError, match="no adapter, url or path"):
         research._campaign_knowledge(campaign, settings)
 
 

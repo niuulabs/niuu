@@ -1580,7 +1580,7 @@ def create_app(
             app.state.secret_request_service = secret_request_service
 
             project_memory_repository, project_memory_resolver = create_project_memory(
-                settings, pool
+                settings, pool, workload_identity_service
             )
 
             session_service = SessionService(

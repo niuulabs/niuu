@@ -281,3 +281,83 @@ class TestMimirHelpers:
         assert {"prefix": "project/", "mounts": ["hosted"]} in routing["rules"]
         assert {"prefix": "entity/", "mounts": ["hosted"]} in routing["rules"]
         assert routing["default"] == ["hosted"]
+
+
+def _enforced(name, access, prefixes=(), **ref):
+    return {
+        "registry_refs": [{"mount_name": name, **ref}],
+        "bindings": [
+            {
+                "mount_name": name,
+                "access": access,
+                "write_prefixes": list(prefixes),
+                "enforce": True,
+            }
+        ],
+    }
+
+
+class TestEnforcedAccessLimits:
+    def test_a_read_only_path_mount_is_started_read_only(self):
+        instances, _ = _resolve_mimir_runtime(_enforced("a", "read", path="/m/a"))
+        assert instances[0]["read_only"] is True
+
+    def test_write_prefixes_are_held_and_unioned(self):
+        config = _enforced("a", "read_write", ["x/"], path="/m/a")
+        config["bindings"].append(
+            {"mount_name": "a", "access": "read_write", "write_prefixes": ["y/"], "enforce": True}
+        )
+        instances, _ = _resolve_mimir_runtime(config)
+        assert instances[0]["write_prefixes"] == ["x/", "y/"]
+        assert "read_only" not in instances[0]
+
+    def test_unrestricted_write_access_holds_nothing(self):
+        instances, _ = _resolve_mimir_runtime(_enforced("a", "read_write", url="https://m"))
+        assert "read_only" not in instances[0] and "write_prefixes" not in instances[0]
+
+    def test_a_binding_that_only_describes_holds_nothing(self):
+        config = _enforced("a", "read", url="https://m")
+        config["bindings"][0].pop("enforce")
+        instances, _ = _resolve_mimir_runtime(config)
+        assert "read_only" not in instances[0]
+
+    @pytest.mark.parametrize(("access", "prefixes"), [("read", ()), ("read_write", ("x/",))])
+    def test_a_limit_on_a_mount_served_elsewhere_raises(self, access, prefixes):
+        with pytest.raises(MimirMountConfigError, match="'a' limits writes.*cannot be held"):
+            _resolve_mimir_runtime(_enforced("a", access, prefixes, url="https://m"))
+
+    def test_read_only_and_prefixes_on_one_mount_raise(self):
+        config = _enforced("a", "read", path="/m/a")
+        config["bindings"].append(
+            {"mount_name": "a", "access": "read_write", "write_prefixes": ["x/"], "enforce": True}
+        )
+        with pytest.raises(MimirMountConfigError, match="both read-only and write-limited"):
+            _resolve_mimir_runtime(config)
+        config["bindings"].reverse()
+        with pytest.raises(MimirMountConfigError, match="both read-only and write-limited"):
+            _resolve_mimir_runtime(config)
+
+    async def test_the_server_is_started_with_the_flags(self, session):
+        contributor = SessionMCPContributor()
+        config = _enforced("a", "read", path="/m/a")
+        config["registry_refs"].append({"mount_name": "b", "path": "/m/b"})
+        config["bindings"].append(
+            {"mount_name": "b", "access": "read_write", "write_prefixes": ["x/"], "enforce": True}
+        )
+        result = await contributor.contribute(
+            session, SessionContext(workload_config={"mimir": config})
+        )
+        args = {s["name"]: s["args"] for s in result.values["mcpServers"]}
+        assert args["mimir-a"][-1] == "--read-only"
+        assert args["mimir-b"][-2:] == ["--write-prefix", "x/"]
+
+    async def test_an_adapter_only_mount_has_no_endpoint_and_raises(self, session):
+        config = {
+            "registry_refs": [
+                {"mount_name": "g", "adapter": "mimir.adapters.gbrain.GBrainMimirAdapter"}
+            ]
+        }
+        with pytest.raises(MimirMountConfigError, match="'g' is reached through an adapter"):
+            await SessionMCPContributor().contribute(
+                session, SessionContext(workload_config={"mimir": config})
+            )

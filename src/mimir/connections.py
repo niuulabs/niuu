@@ -70,22 +70,24 @@ def resolve_mimir_registry_refs(
     """
     normalized = copy.deepcopy(raw) if isinstance(raw, dict) else {}
     registry_refs = normalized.get("registry_refs")
-    if not isinstance(registry_refs, list) or not registry_refs or not registry_path.strip():
+    if not isinstance(registry_refs, list) or not registry_refs:
         return normalized
 
-    registry_file = Path(registry_path).expanduser()
-    store = MimirRegistryStore(registry_file)
-    entries = store.list_entries()
-    if not entries:
-        return normalized
-
+    entries = (
+        MimirRegistryStore(Path(registry_path).expanduser()).list_entries()
+        if registry_path.strip()
+        else []
+    )
     by_id = {entry.id: entry for entry in entries}
     by_name = {entry.name: entry for entry in entries}
 
     resolved_refs: list[dict[str, Any]] = []
-    for raw_ref in registry_refs:
+    for index, raw_ref in enumerate(registry_refs):
         if not isinstance(raw_ref, dict):
-            continue
+            raise ValueError(
+                f"registry_refs[{index}] must be an object naming a memory well, not "
+                f"{type(raw_ref).__name__}; fix or remove it"
+            )
         resolved = dict(raw_ref)
         lookup_key = str(
             raw_ref.get("registry_entry_id")
@@ -96,6 +98,16 @@ def resolve_mimir_registry_refs(
         ).strip()
         entry = by_id.get(lookup_key) or by_name.get(lookup_key)
         if entry is None:
+            if not (resolved.get("adapter") or resolved.get("url") or resolved.get("path")):
+                where = (
+                    f"the Mimir registry at {registry_path}"
+                    if registry_path.strip()
+                    else "a Mimir registry (none is configured: set registry_path)"
+                )
+                raise ValueError(
+                    f"Memory well {lookup_key!r} has no adapter, url or path and is not in "
+                    f"{where}. Register it there, or give the ref its own connection"
+                )
             resolved_refs.append(resolved)
             continue
 
@@ -115,6 +127,8 @@ def resolve_mimir_registry_refs(
             resolved["categories"] = list(entry.categories)
         if entry.auth_ref and not str(resolved.get("auth_ref") or "").strip():
             resolved["auth_ref"] = entry.auth_ref
+        if entry.facts:
+            resolved.setdefault("facts", True)
         resolved.setdefault("default_read_priority", entry.default_read_priority)
         resolved.setdefault("enabled", entry.enabled)
         resolved_refs.append(resolved)

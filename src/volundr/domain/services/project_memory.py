@@ -73,7 +73,7 @@ class ProjectMemoryService:
             write_prefixes=write_prefixes,
             added_by=self._acting_user(principal),
         )
-        await self._resolver.target(mount.name, mount.registry_entry_id, project.tenant_id)
+        await self._resolver.target(mount, tenant_id=project.tenant_id, owner_id=mount.added_by)
         return await self._repository.add(mount)
 
     async def change(
@@ -96,6 +96,9 @@ class ProjectMemoryService:
                 "write_prefixes": write_prefixes,
                 "updated_at": datetime.now(UTC),
             }
+        )
+        await self._resolver.target(
+            changed, tenant_id=project.tenant_id, owner_id=self._acting_user(principal)
         )
         updated = await self._repository.update(
             project.id, name, access=changed.access, write_prefixes=changed.write_prefixes

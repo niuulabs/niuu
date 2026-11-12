@@ -1145,6 +1145,18 @@ guild:
   # -- This Forge's instance slug in that Guild (required with url)
   instanceSlug: ""
 
+# Memory a project owns (see docs/operator/project-memory.md). Its mounts are resolved
+# against a Mimir registry when they are added and at every launch.
+projectMemory:
+  # -- Origin of the hosted Mimir whose registry the mounts are resolved against, such as
+  # https://mimir.example.com. Set: Forge asks it over HTTP with a workload token for the
+  # session's owner (audience below), and workloadIdentity must be enabled. Unset: Forge
+  # reads the registry file in `config.projects.memory.directory_kwargs`, which only works
+  # where Forge shares a disk with Mimir (mini mode).
+  mimirUrl: ""
+  # -- Audience of that workload token; added to workloadIdentity.audiences when set.
+  audience: mimir
+
 workloadIdentity:
   enabled: false
   issuer: ""
@@ -1534,14 +1546,6 @@ config:
     git_timeout_seconds: 15
     dispatch_wait_seconds: 30
     dispatch_poll_seconds: 0.05
-    # Memory a project owns. Its mounts are resolved against a Mimir registry at add time
-    # and at every launch; the default reads the registry file below, which a Forge pod
-    # must be able to open (mount the Mimir registry there, or point `directory_adapter` at
-    # another lookup). A project with no mounts never reads it.
-    memory:
-      directory_adapter: volundr.adapters.outbound.mimir_registry_directory.MimirRegistryFileDirectory
-      directory_kwargs:
-        registry_path: ~/.ravn/mimir/.mimir-registry.json
   conversationRecentMaxTurns: 15
   conversationRecentMaxBytes: 262144
   # -- First durable event-log window (frames) for a `?tail=N` conversation read

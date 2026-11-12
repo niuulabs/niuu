@@ -26,8 +26,8 @@ owner cannot probe which entries other organizations have.
 |---|---|
 | `name` | The mount's name in the project (unique per project). A session sees it as the MCP server `mimir-<name>`. Lowercase letters, digits, `-` and `_`. |
 | `registry_entry_id` | The Mímir registry entry it points to. A resource node of a workflow graph is only a pointer to a registry entry, so a project mounts the entry itself. |
-| `access` | `read`, or `read_write` with the page prefixes it may write. |
-| `write_prefixes` | Relative page paths such as `project/`. Required for `read_write`, refused for `read`. |
+| `access` | `read`, or `read_write`. |
+| `write_prefixes` | Relative page paths such as `project/` that a `read_write` mount may write. Empty means any page. Refused for `read`. |
 | `added_by` | The owner who added it. |
 
 Routes, under `/api/v1/forge/projects/{id}/memory`:
@@ -57,22 +57,53 @@ the same path; Ting does nothing extra.
 targets, the launch is refused with `409` naming the mount and both sources.
 Nothing wins silently. Repeating the same target is fine.
 
+## Read-only and write prefixes hold, or the mount is refused
+
+A limit (`read`, or `read_write` with prefixes) is held by the Mímir server Forge
+starts for the session, never by the model's good behaviour:
+
+- A **path** registry entry is started as `mimir mcp --path … --read-only` or
+  `--write-prefix <p>` (repeatable). That server puts the mount behind the
+  composite adapter, which refuses a write that the mount does not allow
+  (`upsert_page`, `delete_page`, `ingest`, thread changes, `lint --fix`), counts
+  it (`write_refusals`, per mount) and logs it at error. The tool returns the
+  refusal to the model as a tool error with the mount named. An ingest or lint
+  fix cannot be confined to prefixes, so a prefix-limited mount refuses them.
+- An entry reached over a **url or an adapter** is served by its own Mímir, and
+  the session talks to that Mímir directly (which is also where the typed-fact
+  tools live). Forge cannot hold a limit there, so it refuses one: adding or
+  changing the mount fails with `422`, and so does a launch whose entry has since
+  become a url entry. Mount such an entry `read_write` with no prefixes; that
+  Mímir decides what the session may write.
+
 ## Launches that cannot get their memory fail
 
 - A project mount whose registry entry is gone, is disabled, has no way to
   connect, or is not reachable by the session's owner fails the start with
   `422` naming the mount and the entry. The session is not started without it.
+- A registry that cannot be asked (the hosted Mímir is down, refuses Forge's
+  token, or answers something that is not its registry) fails with `503` naming
+  `projects.memory.directory_kwargs`. "Could not ask" is never "not found".
 - A session's own Mímir configuration that cannot be launched (an instance
   with no name, a ref with no connection, a binding for a mount the session
-  does not have, a duplicate name) raises, with the remedy in the message.
-  Nothing is skipped.
+  does not have, a duplicate name, an adapter mount with no url or path to serve
+  it) raises, with the remedy in the message. Nothing is skipped. A workflow ref
+  with no connection that is not in the registry raises when it is resolved too.
 
 ## What the harness is told
 
 When a session has Mímir mounts, Forge appends to its system prompt, for every
-harness: call `mimir_fact_context_pack` for the work at the start; call
-`mimir_fact_recall` before re-deriving something; call `mimir_fact_remember`
-only for outcomes it checked, with the evidence.
+harness, how to use them. Which tools it names depends on the mounts:
+
+- If at least one mount's registry entry has `facts: true` (the Mímir behind it
+  serves the typed-fact tools): call `mimir_fact_context_pack` for the work at
+  the start; call `mimir_fact_recall` before re-deriving something; call
+  `mimir_fact_remember` only for outcomes it checked, with the evidence.
+- Otherwise (wiki-only mounts): call `mimir_search` / `mimir_related` and
+  `mimir_read` at the start and before re-deriving; call `mimir_write` only for
+  checked outcomes, citing their sources.
+
+Both tell the session that a refused write is final.
 
 Facts a session writes are an **agent's**: Mímir assigns the level from the
 caller's verified identity, never from the request. A session's token comes from
@@ -80,31 +111,32 @@ the workload-identity exchange, which sets the actor claim whenever the workload
 is not the token's own subject, and Mímir resolves any principal with an actor
 to an agent (a tool at most, and never higher). The same user's own login would
 resolve through its roles, which is why the session's token must stay the
-session's. Trust is not a field of the tool. A mount carries no trust setting, and the instructions say the
-session cannot raise its level. A derived fact takes the lowest trust of its
-inputs, so a session cannot launder a guess through a person's fact.
+session's. Trust is not a field of the tool.
 
 ## Configuration
+
+Where a mount's registry entry is looked up (`projects.memory`):
+
+| Where Forge runs | Directory | Set by |
+|---|---|---|
+| Mini mode (`niuu platform up`) | `MimirRegistryFileDirectory`: the registry file of the Mímir the host runs (`<mimir path>/.mimir-registry.json`) | the CLI, with `PROJECTS__MEMORY__DIRECTORY_*` (an operator's own value wins) |
+| A cluster with a hosted Mímir | `MimirRegistryHttpDirectory`: `GET {mimirUrl}/mimir/registry/mounts` with a workload token Forge mints for the session's owner (audience `mimir`, Forge as the acting workload; no PAT) | the Volundr chart, when `projectMemory.mimirUrl` is set |
+
+The chart refuses to render `projectMemory.mimirUrl` without
+`workloadIdentity.enabled`, and adds `mimir` to the workload audiences. Mímir
+answers with the entries the owner's tenant can reach, so an entry of another
+organization is not found. Set `facts: true` on a registry entry whose Mímir
+serves the fact tools.
 
 ```yaml
 projects:
   memory:
-    repository_adapter: volundr.adapters.outbound.postgres_project_memory.PostgresProjectMemoryRepository
-    directory_adapter: volundr.adapters.outbound.mimir_registry_directory.MimirRegistryFileDirectory
+    directory_adapter: volundr.adapters.outbound.mimir_registry_http_directory.MimirRegistryHttpDirectory
     directory_kwargs:
-      registry_path: ~/.ravn/mimir/.mimir-registry.json
+      base_url: https://mimir.example.com
+      audience: mimir          # optional
+      timeout_seconds: 10.0    # optional
 ```
 
-The default directory reads the Mímir registry file, so the Forge process must
-be able to open it. A missing file is an error at add time and at the launch of
-any session in a project that has mounts. A project without mounts never reads
-it. Point `directory_adapter` at another `MemoryMountDirectory` to look
-entries up elsewhere.
-
-## Not enforced by Forge today
-
-`access` and `write_prefixes` are recorded and passed to the session's Mímir
-configuration as bindings, the same way a workflow's bindings are. The Mímir
-MCP servers a session talks to do not receive them yet: what a session may
-write is still decided by the Mímir behind each mount. Do not treat a `read`
-mount as a security boundary until the servers enforce it.
+Point `directory_adapter` at another `MemoryMountDirectory` to look entries up
+elsewhere. A project without mounts never asks.

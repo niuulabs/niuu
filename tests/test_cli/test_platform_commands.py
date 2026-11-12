@@ -1210,8 +1210,22 @@ def test_mini_gives_local_memory_a_deployment_target_guild_can_find(tmp_path):
     assert env["NIUU__REALM_DATABASE"] == "volundr"
 
 
+def test_mini_resolves_project_memory_in_the_registry_file_its_mimir_keeps(tmp_path):
+    from mimir.config import MimirServiceConfig
+
+    env = _resolve_local_pod_manager_env(
+        CLISettings(mode="mini", pod_manager={"workspaces_dir": str(tmp_path / "workspaces")})
+    )
+
+    assert env["PROJECTS__MEMORY__DIRECTORY_ADAPTER"].endswith("MimirRegistryFileDirectory")
+    assert json.loads(env["PROJECTS__MEMORY__DIRECTORY_KWARGS"]) == {
+        "registry_path": str(Path(MimirServiceConfig().path) / ".mimir-registry.json")
+    }
+
+
 def test_only_mini_targets_local_memory():
     env = _resolve_local_pod_manager_env(CLISettings(mode="cluster"))
+    assert "PROJECTS__MEMORY__DIRECTORY_ADAPTER" not in env
 
     assert "MIMIR__DEPLOYMENT" not in env
     assert "NIUU__LOCAL_MIMIR_URL" not in env

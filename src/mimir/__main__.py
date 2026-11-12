@@ -103,11 +103,47 @@ def serve(
     uvicorn.run(fastapi_app, host=config.host, port=config.port)
 
 
+def _with_write_policy(adapter, name: str, read_only: bool, write_prefix: list[str]):
+    """``adapter`` behind a mount that refuses the writes the flags do not allow.
+
+    The composite is where a mount's write policy is held: it refuses the write, names
+    why, and counts the refusal, whatever adapter sits behind it. With no flag the adapter
+    is returned as it is.
+    """
+    if read_only and write_prefix:
+        raise typer.BadParameter("--read-only and --write-prefix exclude each other")
+    if not (read_only or write_prefix):
+        return adapter
+    from mimir.adapters.composite import CompositeMimirAdapter
+    from mimir.domain import MimirMount, WriteRouting
+
+    return CompositeMimirAdapter(
+        mounts=[
+            MimirMount(
+                name=name,
+                port=adapter,
+                role="local",
+                read_only=read_only,
+                write_prefixes=tuple(write_prefix) if write_prefix else None,
+            )
+        ],
+        write_routing=WriteRouting(default=[name]),
+    )
+
+
 @app.command()
 def mcp(
     path: str = typer.Option("~/.ravn/mimir", help="Root directory for the Mímir store."),
     name: str = typer.Option("local", help="Instance name reported in the MCP handshake."),
     adapter_config: str | None = typer.Option(None, help="Backend instance YAML configuration."),
+    read_only: bool = typer.Option(
+        False, "--read-only", help="Refuse every write to this mount (the tool returns an error)."
+    ),
+    write_prefix: list[str] = typer.Option(
+        [],
+        "--write-prefix",
+        help="Page path prefix this mount may write (repeatable); other writes are refused.",
+    ),
 ) -> None:
     """Run the Mímir MCP server in stdio mode (no running Mímir service required).
 
@@ -143,6 +179,7 @@ def mcp(
             raise ValueError("No knowledge adapter configured")
     else:
         adapter = _mcp_adapter(path)
+    adapter = _with_write_policy(adapter, name, read_only, write_prefix)
     server = MimirMcpServer(adapter=adapter, name=name)
     asyncio.run(server.run_stdio())
 

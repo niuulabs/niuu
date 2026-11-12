@@ -237,11 +237,16 @@ def _resolve_mimir_runtime(
                 "add the mount or remove the binding"
             )
         access = str(raw_binding.get("access") or "read")
+        prefixes = _string_list(
+            raw_binding.get("write_prefixes") or raw_binding.get("writePrefixes")
+        )
+        if raw_binding.get("enforce") is True:
+            _hold_access_limit(
+                next(i for i in instances if i["name"] == mount_name), access, prefixes
+            )
         if "write" not in access:
             continue
-        for prefix in _string_list(
-            raw_binding.get("write_prefixes") or raw_binding.get("writePrefixes")
-        ):
+        for prefix in prefixes:
             write_rules.append({"prefix": prefix, "mounts": [mount_name]})
 
     explicit_routing = mimir_cfg.get("write_routing") or {}
@@ -286,6 +291,39 @@ def _resolve_mimir_runtime(
             default_mounts = [instances[0]["name"]]
 
     return instances, {"rules": write_rules, "default": default_mounts}
+
+
+def _hold_access_limit(instance: dict[str, Any], access: str, prefixes: list[str]) -> None:
+    """Record the write limit of an enforced binding on ``instance``.
+
+    A limit is held by the Mimir server the session starts for a path mount (its
+    ``--read-only`` / ``--write-prefix`` flags). A mount the session reaches over a url
+    or an adapter is served by someone else's Mimir, where this launch cannot hold it, so
+    that is refused rather than started with a limit that does not hold.
+    """
+    if "write" in access and not prefixes:
+        return
+    name = instance["name"]
+    if "path" not in instance:
+        raise MimirMountConfigError(
+            f"The mount {name!r} limits writes (access {access!r}, write prefixes "
+            f"{prefixes or 'none'}), but it is served by its own Mimir over a url or an "
+            "adapter, where the limit cannot be held. Give it unrestricted write access "
+            "(that Mimir decides what the session may write), or mount a path"
+        )
+    if "write" not in access:
+        if instance.get("write_prefixes"):
+            raise MimirMountConfigError(
+                f"The mount {name!r} has bindings that are both read-only and write-limited; "
+                "keep one"
+            )
+        instance["read_only"] = True
+        return
+    if instance.get("read_only"):
+        raise MimirMountConfigError(
+            f"The mount {name!r} has bindings that are both read-only and write-limited; keep one"
+        )
+    instance["write_prefixes"] = sorted({*instance.get("write_prefixes", []), *prefixes})
 
 
 def _require_known(names: list[str], known_mounts: set[str], where: str) -> None:
@@ -389,16 +427,7 @@ class SessionMCPContributor(SessionContributor):
         if not instances:
             return SessionContribution()
 
-        mcp_servers: list[dict[str, Any]] = []
-        for instance in instances:
-            server = self._build_mimir_server(instance)
-            if server is None:
-                continue
-            mcp_servers.append(server)
-
-        if not mcp_servers:
-            return SessionContribution()
-
+        mcp_servers = [self._build_mimir_server(instance) for instance in instances]
         return SessionContribution(values={"mcpServers": mcp_servers})
 
     def _resolve_workload(
@@ -426,10 +455,8 @@ class SessionMCPContributor(SessionContributor):
             return self._launch_spec_provider.get_default(context.workload_type)
         return None
 
-    def _build_mimir_server(self, instance: dict[str, Any]) -> dict[str, Any] | None:
+    def _build_mimir_server(self, instance: dict[str, Any]) -> dict[str, Any]:
         mount_name = str(instance.get("name") or "").strip()
-        if not mount_name:
-            return None
 
         server_name = f"{MIMIR_SERVER_PREFIX}{_slugify_server_name(mount_name)}"
         description = _describe_mimir_instance(instance)
@@ -440,7 +467,21 @@ class SessionMCPContributor(SessionContributor):
                 "name": server_name,
                 "type": "stdio",
                 "command": self._python_binary,
-                "args": ["-m", "mimir", "mcp", "--path", path, "--name", mount_name],
+                "args": [
+                    "-m",
+                    "mimir",
+                    "mcp",
+                    "--path",
+                    path,
+                    "--name",
+                    mount_name,
+                    *(["--read-only"] if instance.get("read_only") else []),
+                    *(
+                        arg
+                        for prefix in instance.get("write_prefixes") or []
+                        for arg in ("--write-prefix", prefix)
+                    ),
+                ],
                 "env": {},
                 "description": description,
             }
@@ -454,5 +495,8 @@ class SessionMCPContributor(SessionContributor):
                 "description": description,
             }
 
-        logger.debug("Skipping Mimir MCP server for mount %s without path or url", mount_name)
-        return None
+        raise MimirMountConfigError(
+            f"The mount {mount_name!r} is reached through an adapter with no url or path, so "
+            "the session has no MCP endpoint for it. Give its registry entry the url of the "
+            "Mimir that serves it, or remove the mount"
+        )

@@ -5,7 +5,11 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
-from volundr.domain.project_memory import MemoryMountDirectory, RegistryTarget
+from volundr.domain.project_memory import (
+    MemoryDirectoryUnavailableError,
+    MemoryMountDirectory,
+    RegistryTarget,
+)
 
 
 class MimirRegistryFileDirectory(MemoryMountDirectory):
@@ -25,14 +29,16 @@ class MimirRegistryFileDirectory(MemoryMountDirectory):
             )
         self._path = Path(registry_path).expanduser()
 
-    async def resolve(self, entry_id: str, tenant_id: str) -> RegistryTarget | None:
+    async def resolve(
+        self, entry_id: str, *, tenant_id: str, owner_id: str
+    ) -> RegistryTarget | None:
         return await asyncio.to_thread(self._resolve, entry_id, tenant_id)
 
     def _resolve(self, entry_id: str, tenant_id: str) -> RegistryTarget | None:
         from mimir.registry import MimirRegistryStore
 
         if not self._path.is_file():
-            raise FileNotFoundError(
+            raise MemoryDirectoryUnavailableError(
                 f"The Mimir registry file {self._path} does not exist; set "
                 "projects.memory.directory_kwargs.registry_path to the registry of the Mimir "
                 "this Forge uses, or remove the project's memory mounts"
@@ -53,5 +59,6 @@ class MimirRegistryFileDirectory(MemoryMountDirectory):
                 auth_ref=entry.auth_ref,
                 categories=tuple(entry.categories or ()),
                 default_read_priority=entry.default_read_priority,
+                facts=entry.facts,
             )
         return None

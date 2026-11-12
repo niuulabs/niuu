@@ -78,6 +78,7 @@ from volundr.domain.project_memory import (
     ProjectMemoryResolver,
     has_derived,
     merge_memory,
+    offers_facts,
     with_memory_instructions,
 )
 from volundr.domain.projects import SessionCoordination
@@ -1490,7 +1491,9 @@ class SessionService:
             return workload_config
         config = workload_config or {}
         project = await self._project_memory.for_launch(
-            session.coordination.project_id, tenant_id=session.tenant_id or ""
+            session.coordination.project_id,
+            tenant_id=session.tenant_id or "",
+            owner_id=session.owner_id or "",
         )
         if not project and not has_derived(config.get("mimir")):
             return workload_config
@@ -1790,7 +1793,8 @@ class SessionService:
             # the session was given.
             session_values = spec.values.setdefault("session", {})
             session_values["systemPrompt"] = with_memory_instructions(
-                session_values.get("systemPrompt", "")
+                session_values.get("systemPrompt", ""),
+                facts=offers_facts(workload_config.get("mimir")),
             )
         spec.forge_session = await self._deliver_forge_session(session, spec)
         if session.coordination and (

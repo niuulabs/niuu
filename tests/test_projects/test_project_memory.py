@@ -25,13 +25,14 @@ from volundr.adapters.outbound.contributors.session_mcp import SessionMCPContrib
 from volundr.domain.models import LaunchSpec, SessionStatus
 from volundr.domain.ports import LaunchSpecProvider
 from volundr.domain.project_memory import (
-    MEMORY_INSTRUCTIONS,
     MemoryAccess,
+    MemoryDirectoryUnavailableError,
     MemoryMountClashError,
     MemoryMountDirectory,
     MemoryMountExistsError,
     MemoryMountNotFoundError,
     MemoryMountUnavailableError,
+    MemoryMountUnenforceableError,
     ProjectMemoryMount,
     ProjectMemoryRefs,
     ProjectMemoryRepository,
@@ -39,6 +40,7 @@ from volundr.domain.project_memory import (
     RegistryTarget,
     has_derived,
     merge_memory,
+    with_memory_instructions,
     without_derived,
 )
 from volundr.domain.project_ports import ProjectAccessDeniedError, ProjectWorkspace
@@ -95,13 +97,15 @@ class Registry(MemoryMountDirectory):
     def __init__(self) -> None:
         self.entries: dict[str, tuple[str, RegistryTarget]] = {}
         self.lookups: list[tuple[str, str]] = []
+        self.owners: list[str] = []
 
     def put(self, entry_id, *, tenant="acme", **fields):
         fields.setdefault("path", f"/mimir/{entry_id}")
         self.entries[entry_id] = (tenant, RegistryTarget(id=entry_id, name=entry_id, **fields))
 
-    async def resolve(self, entry_id, tenant_id):
+    async def resolve(self, entry_id, *, tenant_id, owner_id):
         self.lookups.append((entry_id, tenant_id))
+        self.owners.append(owner_id)
         found = self.entries.get(entry_id)
         if found is None or found[0] not in ("", tenant_id):
             return None
@@ -263,8 +267,6 @@ async def test_a_name_is_taken_once_per_project(world):
 
 
 async def test_access_and_prefixes_must_agree(world):
-    with pytest.raises(ValueError, match="needs the page prefixes"):
-        await world.mount(access=MemoryAccess.READ_WRITE)
     with pytest.raises(ValueError, match="no write prefixes"):
         await world.mount(write_prefixes=("project/",))
     with pytest.raises(ValueError, match="relative page path"):
@@ -284,7 +286,7 @@ async def test_a_mount_needs_a_registry_entry_its_org_can_reach(world):
         ("missing", "does not exist or is not reachable"),
         ("other-org", "does not exist or is not reachable"),
         ("off", "disabled"),
-        ("nowhere", "no url, path or adapter"),
+        ("nowhere", "no url, adapter or path"),
     ):
         with pytest.raises(MemoryMountUnavailableError, match=why) as raised:
             await world.mount("notes", entry=entry)
@@ -300,8 +302,8 @@ async def test_change_and_remove(world):
         pid, ALICE, "notes", access=MemoryAccess.READ_WRITE, write_prefixes=("project/",)
     )
     assert changed.access is MemoryAccess.READ_WRITE
-    with pytest.raises(ValueError, match="needs the page prefixes"):
-        await world.service.change(pid, ALICE, "notes", access=MemoryAccess.READ_WRITE)
+    open_access = await world.service.change(pid, ALICE, "notes", access=MemoryAccess.READ_WRITE)
+    assert open_access.write_prefixes == () and not open_access.restricts
     with pytest.raises(MemoryMountNotFoundError):
         await world.service.change(pid, ALICE, "ghost", access=MemoryAccess.READ)
     await world.service.remove(pid, ALICE, "notes")
@@ -352,7 +354,7 @@ async def test_routes_map_roles_and_errors(world, client):
     unknown = {"name": "n2", "registry_entry_id": "missing"}
     refused = await client.post(base, json=unknown, headers=owner)
     assert refused.status_code == 422 and "'n2'" in refused.json()["detail"]
-    bad = {"name": "n3", "registry_entry_id": "team-notes", "access": "read_write"}
+    bad = {"name": "n3", "registry_entry_id": "team-notes", "write_prefixes": ["a/"]}
     assert (await client.post(base, json=bad, headers=owner)).status_code == 422
     assert (
         await client.post(base, json={**bad, "name": "Bad Name"}, headers=owner)
@@ -378,31 +380,83 @@ async def test_routes_map_roles_and_errors(world, client):
 # --- sessions inherit --------------------------------------------------------------------
 
 
-async def test_a_session_in_a_project_gets_its_mounts_and_is_told_to_use_them(world):
+WIKI = with_memory_instructions("", facts=False)
+FACTS = with_memory_instructions("", facts=True)
+
+
+async def test_a_session_gets_its_mounts_with_the_limits_held_and_wiki_instructions(world):
     await world.mount("notes")
     await world.mount(
-        "book", entry="playbook", access=MemoryAccess.READ_WRITE, write_prefixes=("a/",)
+        "scratch", entry="team-notes", access=MemoryAccess.READ_WRITE, write_prefixes=("a/", "b/")
     )
+    await world.mount("book", entry="playbook", access=MemoryAccess.READ_WRITE)
     started = await world.launch()
     assert started.status in (SessionStatus.STARTING, SessionStatus.RUNNING)
 
     servers = world.servers()
-    assert set(servers) == {"mimir-notes", "mimir-book"}
-    assert servers["mimir-notes"]["args"][-4:] == ["--path", "/mimir/team-notes", "--name", "notes"]
+    assert set(servers) == {"mimir-notes", "mimir-scratch", "mimir-book"}
+    assert servers["mimir-notes"]["args"] == [
+        "-m",
+        "mimir",
+        "mcp",
+        "--path",
+        "/mimir/team-notes",
+        "--name",
+        "notes",
+        "--read-only",
+    ]
+    assert servers["mimir-scratch"]["args"][-4:] == ["--write-prefix", "a/", "--write-prefix", "b/"]
     assert servers["mimir-book"]["url"] == "https://mimir.example/m"
 
     prompt = world.last_spec().values["session"]["systemPrompt"]
-    assert MEMORY_INSTRUCTIONS in prompt
+    assert WIKI in prompt and FACTS not in prompt
+    for tool in ("mimir_search", "mimir_read", "mimir_write"):
+        assert tool in WIKI
+    assert "mimir_fact" not in WIKI
+
+
+async def test_a_mount_that_offers_the_fact_tools_gets_the_fact_instructions(world):
+    world.registry.put("hub", url="https://hub.example", path="", facts=True)
+    await world.mount("notes")
+    await world.mount("hub", entry="hub", access=MemoryAccess.READ_WRITE)
+    await world.launch()
+    prompt = world.last_spec().values["session"]["systemPrompt"]
+    assert FACTS in prompt and WIKI not in prompt
     for step in ("mimir_fact_context_pack", "mimir_fact_recall", "mimir_fact_remember"):
-        assert step in prompt
-    assert "agent's" in prompt and "cannot raise it" in prompt
+        assert step in FACTS
+    assert "agent's" in FACTS and "cannot raise it" in FACTS
 
 
 async def test_instructions_follow_the_prompt_the_session_was_given(world):
     await world.mount()
     await world.launch(system_prompt="Review the diff.")
     prompt = world.last_spec().values["session"]["systemPrompt"]
-    assert prompt.startswith("Review the diff.\n\n" + MEMORY_INSTRUCTIONS)
+    assert prompt.startswith("Review the diff.\n\n" + WIKI)
+
+
+async def test_limits_that_cannot_be_held_are_refused_when_adding_and_changing(world):
+    with pytest.raises(MemoryMountUnenforceableError, match="'book'.*cannot hold that limit"):
+        await world.mount("book", entry="playbook")
+    with pytest.raises(MemoryMountUnenforceableError, match="'book'"):
+        await world.mount(
+            "book", entry="playbook", access=MemoryAccess.READ_WRITE, write_prefixes=("a/",)
+        )
+    await world.mount("book", entry="playbook", access=MemoryAccess.READ_WRITE)
+    with pytest.raises(MemoryMountUnenforceableError):
+        await world.service.change(world.project.id, ALICE, "book", access=MemoryAccess.READ)
+
+
+async def test_an_entry_that_changed_under_a_limited_mount_fails_the_launch(world):
+    await world.mount("notes")
+    world.registry.put("team-notes", path="", url="https://moved.example")
+    with pytest.raises(MemoryMountUnenforceableError, match="'notes'"):
+        await world.forge.create_and_start_session(world.create(), principal=ALICE)
+
+
+async def test_the_owner_the_registry_is_asked_for_is_the_sessions_owner(world):
+    await world.mount("notes")
+    await world.launch()
+    assert set(world.registry.owners) == {"alice"} and len(world.registry.owners) >= 2
 
 
 async def test_a_project_without_mounts_changes_nothing(world):
@@ -448,7 +502,7 @@ async def test_a_restart_picks_up_what_the_project_holds_now(world):
     await world.mount("notes")
     first = await world.launch()
     await world.service.remove(world.project.id, ALICE, "notes")
-    await world.mount("later", entry="playbook")
+    await world.mount("later", entry="playbook", access=MemoryAccess.READ_WRITE)
     stored = await world.sessions.get_session(first.id)
     await world.sessions._repository.update(
         stored.model_copy(update={"status": SessionStatus.STOPPED})
@@ -590,7 +644,7 @@ async def test_every_member_of_a_run_in_the_project_gets_the_mounts(world):
     for member in ("planner", "reviewer"):
         await world.launch(workflow_run_id=run_id, workflow_member=member, persona_name="coder")
         assert set(world.servers()) == {"mimir-notes"}, member
-        assert MEMORY_INSTRUCTIONS in world.last_spec().values["session"]["systemPrompt"]
+        assert WIKI in world.last_spec().values["session"]["systemPrompt"]
 
 
 RUN = uuid4()
@@ -634,7 +688,7 @@ async def test_hosted_members_get_the_mounts_when_their_unit_starts(world):
     assert len(launches) == 2
     for launch in launches:
         assert [s["name"] for s in launch.spec.values["mcpServers"]] == ["mimir-notes"]
-        assert MEMORY_INSTRUCTIONS in launch.spec.values["session"]["systemPrompt"]
+        assert WIKI in launch.spec.values["session"]["systemPrompt"]
 
 
 # --- pure pieces --------------------------------------------------------------------------
@@ -726,12 +780,12 @@ def test_nothing_in_a_mount_carries_trust():
     mount = ProjectMemoryMount(project_id=uuid4(), name="p", registry_entry_id="e")
     assert not any("trust" in key for key in (*ref, *mount.model_dump()))
     # The only thing a session is told about trust is that it cannot raise its own.
-    assert "cannot raise it" in MEMORY_INSTRUCTIONS
+    assert "cannot raise it" in FACTS
 
 
 def test_the_resolver_hydrates_refs_from_the_registry():
     class One(MemoryMountDirectory):
-        async def resolve(self, entry_id, tenant_id):
+        async def resolve(self, entry_id, *, tenant_id, owner_id):
             return RegistryTarget(
                 id=entry_id,
                 name="n",
@@ -744,8 +798,16 @@ def test_the_resolver_hydrates_refs_from_the_registry():
 
     repo = MemoryMounts()
     pid = uuid4()
-    asyncio.run(repo.add(ProjectMemoryMount(project_id=pid, name="g", registry_entry_id="e1")))
-    refs = asyncio.run(ProjectMemoryResolver(repo, One()).for_launch(pid, tenant_id="acme"))
+    asyncio.run(
+        repo.add(
+            ProjectMemoryMount(
+                project_id=pid, name="g", registry_entry_id="e1", access=MemoryAccess.READ_WRITE
+            )
+        )
+    )
+    refs = asyncio.run(
+        ProjectMemoryResolver(repo, One()).for_launch(pid, tenant_id="acme", owner_id="alice")
+    )
     assert refs.refs[0] == {
         "mount_name": "g",
         "registry_entry_id": "e1",
@@ -779,3 +841,52 @@ def test_a_session_writes_as_an_agent_even_for_an_owner_who_is_a_person():
 
     assert resolver.resolve(owner).trust is TrustLevel.PERSON
     assert resolver.resolve(session).trust is TrustLevel.AGENT
+
+
+async def test_an_unreachable_registry_is_a_503_naming_the_knob_never_not_found(world, client):
+    async def down(*_a, **_k):
+        raise MemoryDirectoryUnavailableError("Mimir at x could not be reached; check base_url")
+
+    world.registry.resolve = down
+    base = f"/projects/{world.project.id}/memory"
+
+    added = await client.post(
+        base, json={"name": "n", "registry_entry_id": "team-notes"}, headers={"x-user": "alice"}
+    )
+    assert added.status_code == 503 and "could not be reached" in added.json()["detail"]
+
+    open_project = await world.projects.register(ForgeProject(name="Open"), None)
+    await world.repository.add(
+        ProjectMemoryMount(project_id=open_project.id, name="n", registry_entry_id="team-notes")
+    )
+    world.sessions._authorization = None
+    app = FastAPI()
+    app.include_router(
+        create_router(
+            world.sessions,
+            project_service=world.projects,
+            session_participant_service=make_session_participant_service(world.sessions),
+        )
+    )
+    body = SessionCreate(
+        name="t", model="test", coordination=SessionCoordination(project_id=open_project.id)
+    ).model_dump(mode="json")
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url="http://t") as http:
+        created = await http.post("/api/v1/forge/sessions", json=body)
+        assert created.status_code == 503
+        waiting = await world.sessions.create_session(
+            name="again",
+            model="test",
+            coordination=SessionCoordination(project_id=open_project.id),
+        )
+        restarted = await http.post(f"/api/v1/forge/sessions/{waiting.id}/start")
+        assert restarted.status_code == 503
+
+
+def test_only_mounts_that_say_so_offer_the_fact_tools():
+    from volundr.domain.project_memory import offers_facts
+
+    assert not offers_facts(None) and not offers_facts({"registry_refs": [{"facts": False}]})
+    assert offers_facts({"registry_refs": [{"facts": True}]})
+    assert offers_facts({"instances": [{"name": "a", "url": "u", "facts": True}]})
+    assert not offers_facts({"ephemeral_locals": [{"facts": True}]})

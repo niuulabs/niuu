@@ -43,7 +43,7 @@ import time
 from collections.abc import Awaitable, Callable
 
 from mimir.domain import MimirMount, WriteRouting
-from mimir.exceptions import MimirUnavailableError
+from mimir.exceptions import MimirUnavailableError, MimirWriteRefusedError
 from niuu.domain.mimir import (
     LintIssue,
     MimirLintReport,
@@ -128,6 +128,43 @@ class CompositeMimirAdapter(MimirPort):
         self._read_retry_max_seconds = read_retry_max_seconds
         self._read_retry_initial_backoff_seconds = read_retry_initial_backoff_seconds
         self._read_retry_max_backoff_seconds = read_retry_max_backoff_seconds
+        #: Writes refused by a mount's policy, by mount name: read by the component that
+        #: exposes this adapter's health.
+        self.write_refusals: dict[str, int] = {}
+
+    def _refuse_write(self, mount: MimirMount, operation: str, path: str | None = None) -> None:
+        """Raise ``MimirWriteRefusedError`` unless ``mount`` allows this write.
+
+        ``path`` is the page being written; an operation with no single path (ingest, a
+        lint fix) is allowed only on a mount with no restriction at all.
+        """
+        if not mount.restricted:
+            return
+        if mount.read_only:
+            reason = "the mount is read-only"
+        elif path is None:
+            reason = (
+                f"the mount may only write {', '.join(mount.write_prefixes or ())} and this "
+                "operation cannot be confined to those paths"
+            )
+        elif any(path.startswith(prefix) for prefix in mount.write_prefixes or ()):
+            return
+        else:
+            reason = (
+                f"{path!r} is outside the prefixes the mount may write: "
+                f"{', '.join(mount.write_prefixes or ())}"
+            )
+        self.write_refusals[mount.name] = self.write_refusals.get(mount.name, 0) + 1
+        logger.error(
+            "composite mimir: refused %s on mount %s: %s",
+            _sanitize_log(operation),
+            _sanitize_log(mount.name),
+            _sanitize_log(reason),
+        )
+        raise MimirWriteRefusedError(
+            f"Write refused: {operation} on Mímir mount {mount.name!r}: {reason}. "
+            "Write to a mount that allows it, or ask the project owner to change this mount."
+        )
 
     def _mount_names(self) -> list[str]:
         return sorted(self._mount_map)
@@ -168,6 +205,7 @@ class CompositeMimirAdapter(MimirPort):
         """Ingest into all mounts, merge returned page paths."""
         all_paths: list[str] = []
         for mount in self._mounts:
+            self._refuse_write(mount, "ingest")
             try:
                 paths = await mount.port.ingest(source)
             except Exception as exc:
@@ -184,6 +222,7 @@ class CompositeMimirAdapter(MimirPort):
         mount = self._mount_map.get(mount_name)
         if mount is None:
             raise ValueError(f"Unknown Mimir mount: {mount_name}")
+        self._refuse_write(mount, "ingest")
         return await mount.port.ingest(source)
 
     async def query(self, question: str) -> MimirQueryResult:
@@ -469,6 +508,8 @@ class CompositeMimirAdapter(MimirPort):
         pages_checked = 0
 
         for mount in self._mounts:
+            if fix:
+                self._refuse_write(mount, "lint --fix")
             try:
                 report = await mount.port.lint(fix=fix)
             except Exception as exc:
@@ -530,6 +571,7 @@ class CompositeMimirAdapter(MimirPort):
             mount = self._mount_map.get(name)
             if mount is None:
                 raise _unknown_mount(f"update_thread_state({path!r})", name, self._mount_names())
+            self._refuse_write(mount, "update_thread_state", path)
             try:
                 await mount.port.update_thread_state(path, state)
             except Exception as exc:
@@ -545,6 +587,7 @@ class CompositeMimirAdapter(MimirPort):
             mount = self._mount_map.get(name)
             if mount is None:
                 raise _unknown_mount(f"assign_thread_owner({path!r})", name, self._mount_names())
+            self._refuse_write(mount, "assign_thread_owner", path)
             try:
                 await mount.port.assign_thread_owner(path, owner_id)
             except ThreadOwnershipError:
@@ -564,6 +607,7 @@ class CompositeMimirAdapter(MimirPort):
             mount = self._mount_map.get(name)
             if mount is None:
                 raise _unknown_mount(f"update_thread_weight({path!r})", name, self._mount_names())
+            self._refuse_write(mount, "update_thread_weight", path)
             try:
                 await mount.port.update_thread_weight(path, weight, signals)
             except Exception as exc:
@@ -592,6 +636,7 @@ class CompositeMimirAdapter(MimirPort):
             mount = self._mount_map.get(name)
             if mount is None:
                 raise _unknown_mount(f"upsert_page({path!r})", name, self._mount_names())
+            self._refuse_write(mount, "upsert_page", path)
             try:
                 await mount.port.upsert_page(path, content, meta=meta)
             except Exception as exc:
@@ -609,6 +654,7 @@ class CompositeMimirAdapter(MimirPort):
             mount = self._mount_map.get(name)
             if mount is None:
                 raise _unknown_mount(f"delete_page({path!r})", name, self._mount_names())
+            self._refuse_write(mount, "delete_page", path)
             try:
                 deleted = await mount.port.delete_page(path) or deleted
             except Exception as exc:

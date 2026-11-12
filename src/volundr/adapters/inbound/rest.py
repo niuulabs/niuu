@@ -133,7 +133,11 @@ from volundr.domain.ports import (
     PricingProvider,
 )
 from volundr.domain.presented_files import PresentedFileStore, is_presented_file_id
-from volundr.domain.project_memory import MemoryMountClashError, ProjectMemoryError
+from volundr.domain.project_memory import (
+    MemoryDirectoryUnavailableError,
+    MemoryMountClashError,
+    ProjectMemoryError,
+)
 from volundr.domain.projects import SessionCoordination
 from volundr.domain.push import (
     EnvironmentAssumed,
@@ -3258,6 +3262,8 @@ def create_router(
             )
         except MemoryMountClashError as e:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
+        except MemoryDirectoryUnavailableError as e:
+            raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(e))
         except ProjectMemoryError as e:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(e))
         except (ExecutionCatalogError, ExecutionSelectionError) as e:
@@ -3785,6 +3791,8 @@ def create_router(
             )
         except MemoryMountClashError as e:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
+        except MemoryDirectoryUnavailableError as e:
+            raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(e))
         except ProjectMemoryError as e:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(e))
         except (ExecutionCatalogError, ExecutionSelectionError) as e:

@@ -16,6 +16,7 @@ from pydantic import BaseModel, Field
 from volundr.domain.project_memory import (
     MOUNT_NAME_PATTERN,
     MemoryAccess,
+    MemoryDirectoryUnavailableError,
     MemoryMountExistsError,
     MemoryMountNotFoundError,
     ProjectMemoryError,
@@ -37,6 +38,8 @@ def memory_http_errors() -> Iterator[None]:
         raise HTTPException(403, str(exc)) from exc
     except MemoryMountExistsError as exc:
         raise HTTPException(409, str(exc)) from exc
+    except MemoryDirectoryUnavailableError as exc:
+        raise HTTPException(503, str(exc)) from exc
     except (ProjectMemoryError, ValueError) as exc:
         raise HTTPException(422, str(exc)) from exc
 
@@ -71,7 +74,8 @@ class MemoryMountCreate(BaseModel):
     registry_entry_id: str = Field(min_length=1, max_length=200)
     access: MemoryAccess = MemoryAccess.READ
     write_prefixes: list[str] = Field(
-        default_factory=list, description="Page prefixes a read_write mount may write"
+        default_factory=list,
+        description="Page prefixes a read_write mount may write; empty means any page",
     )
 
 

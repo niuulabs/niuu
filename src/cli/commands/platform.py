@@ -501,6 +501,8 @@ _OPERATOR_OWNED_LOCAL_ENV = frozenset(
         "RESIDENT_RUNTIMES",
         "CREDENTIAL_STORE",
         "MIMIR__DEPLOYMENT",
+        "PROJECTS__MEMORY__DIRECTORY_ADAPTER",
+        "PROJECTS__MEMORY__DIRECTORY_KWARGS",
     }
 )
 MINI_RESIDENT_CODEX_MODEL = "gpt-5.6-sol"
@@ -739,6 +741,16 @@ def _resolve_local_pod_manager_env(settings: CLISettings) -> dict[str, str]:
             }
         )
         env["NIUU__LOCAL_MIMIR_URL"] = _host_resident_platform_url(settings)
+        # The Mimir this host runs keeps its registry in a file Forge can read, so a
+        # project's memory mounts are resolved there (a cluster asks its hosted Mimir).
+        from mimir.config import MimirServiceConfig
+
+        env["PROJECTS__MEMORY__DIRECTORY_ADAPTER"] = (
+            "volundr.adapters.outbound.mimir_registry_directory.MimirRegistryFileDirectory"
+        )
+        env["PROJECTS__MEMORY__DIRECTORY_KWARGS"] = json.dumps(
+            {"registry_path": str(Path(MimirServiceConfig().path) / ".mimir-registry.json")}
+        )
         # A resident runtime references its realm by foreign key in Forge's
         # database, so a host that embeds Forge keeps one realm store there.
         env["NIUU__REALM_DATABASE"] = database_name_for_service("volundr")

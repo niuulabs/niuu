@@ -31,9 +31,7 @@ _DERIVED_SOURCES = frozenset({PROJECT_SOURCE, LAUNCH_SPEC_SOURCE})
 #: Every Mimir mount reaches the harness as an MCP server named ``mimir-<mount name>``.
 MIMIR_SERVER_PREFIX = "mimir-"
 
-#: What a session with Mimir mounts is told, appended to its system prompt for every harness.
-#: The tool names are the ones the Mimir MCP server offers for typed facts.
-MEMORY_INSTRUCTIONS = """\
+_FACT_INSTRUCTIONS = """\
 ## Project memory
 
 This session has Mimir memory mounts (the `mimir-*` MCP servers). Use them:
@@ -49,7 +47,30 @@ Facts you write are recorded as an agent's. The platform assigns that level from
 are: you cannot raise it, and you must not claim a higher one in a statement. A fact a \
 person confirmed ranks above yours; if it conflicts with what you found, say so in your \
 answer instead of overwriting it.
+
+A mount may refuse a write (read-only, or outside the pages it may write). The tool returns \
+the refusal: report it, do not look for another way around it.
 """
+
+_WIKI_INSTRUCTIONS = """\
+## Project memory
+
+This session has Mimir memory mounts (the `mimir-*` MCP servers). They hold wiki pages; they \
+do not offer typed-fact tools. Use them:
+
+1. At the start of the work, call `mimir_search` (and `mimir_related` on what it finds) for \
+the subjects the task is about, and read the pages that matter with `mimir_read` before you begin.
+2. Before you re-derive something, search the mounts to see whether it is already written down.
+3. Call `mimir_write` only for outcomes you have checked (a test that passed, a file you \
+read, a command whose output you saw). Cite where each came from in the page's sources or \
+timeline. Never record a guess or a plan as a finding.
+
+A mount may refuse a write (read-only, or outside the pages it may write). The tool returns \
+the refusal: report it, do not look for another way around it.
+"""
+
+#: Kept for callers that want the typed-fact text; see ``memory_instructions``.
+MEMORY_INSTRUCTIONS = _FACT_INSTRUCTIONS
 
 
 class ProjectMemoryError(ValueError):
@@ -66,6 +87,14 @@ class MemoryMountExistsError(ProjectMemoryError):
 
 class MemoryMountUnavailableError(ProjectMemoryError):
     """A project mount's registry entry is missing or its owner cannot reach it."""
+
+
+class MemoryMountUnenforceableError(ProjectMemoryError):
+    """A mount's access limits cannot be held for the way its target is served."""
+
+
+class MemoryDirectoryUnavailableError(RuntimeError):
+    """The registry could not be asked, so whether a mount's entry exists is not known."""
 
 
 class MemoryMountClashError(ProjectMemoryError):
@@ -111,9 +140,12 @@ class ProjectMemoryMount(BaseModel):
     def _access_matches_prefixes(self) -> ProjectMemoryMount:
         if self.access is MemoryAccess.READ and self.write_prefixes:
             raise ValueError("A read-only mount has no write prefixes; use access read_write")
-        if self.access is MemoryAccess.READ_WRITE and not self.write_prefixes:
-            raise ValueError("A read_write mount needs the page prefixes it may write")
         return self
+
+    @property
+    def restricts(self) -> bool:
+        """True when the mount limits writes: it is read-only, or confined to prefixes."""
+        return self.access is MemoryAccess.READ or bool(self.write_prefixes)
 
 
 @dataclass(frozen=True)
@@ -132,6 +164,13 @@ class RegistryTarget:
     auth_ref: str | None = None
     categories: tuple[str, ...] = ()
     default_read_priority: int = 10
+    facts: bool = False
+
+    @property
+    def served_by_forge(self) -> bool:
+        """True when a session reaches this entry through a Mimir server Forge starts for it
+        (a plain path), not through the Mimir that owns it (a url or an adapter)."""
+        return bool(self.path) and not self.url and not self.adapter
 
 
 class ProjectMemoryRepository(ABC):
@@ -166,11 +205,14 @@ class MemoryMountDirectory(ABC):
     """Where a mount's registry entry is looked up, for one tenant."""
 
     @abstractmethod
-    async def resolve(self, entry_id: str, tenant_id: str) -> RegistryTarget | None:
-        """The entry, or ``None`` when it does not exist or the tenant cannot reach it.
+    async def resolve(
+        self, entry_id: str, *, tenant_id: str, owner_id: str
+    ) -> RegistryTarget | None:
+        """The entry, or ``None`` when it does not exist or the owner's tenant cannot reach it.
 
         The two are one answer, so a project owner cannot probe which entries other tenants
-        have. An adapter that cannot read its registry raises instead of answering ``None``.
+        have. An adapter that cannot ask its registry raises
+        ``MemoryDirectoryUnavailableError`` instead of answering ``None``.
         """
 
 
@@ -206,6 +248,8 @@ def mount_ref(mount: ProjectMemoryMount, target: RegistryTarget) -> dict[str, An
         ref["auth_ref"] = target.auth_ref
     if target.categories:
         ref["categories"] = list(target.categories)
+    if target.facts:
+        ref["facts"] = True
     return ref
 
 
@@ -214,6 +258,8 @@ def mount_binding(mount: ProjectMemoryMount) -> dict[str, Any]:
         "mount_name": mount.name,
         "access": mount.access.value,
         "write_prefixes": list(mount.write_prefixes),
+        # The launch holds this limit (or refuses the launch); other bindings only describe.
+        "enforce": True,
         "source": PROJECT_SOURCE,
     }
 
@@ -225,31 +271,52 @@ class ProjectMemoryResolver:
         self._repository = repository
         self._directory = directory
 
-    async def target(self, mount_name: str, entry_id: str, tenant_id: str) -> RegistryTarget:
-        """The entry ``entry_id`` for ``tenant_id``; raises naming ``mount_name`` when it is not
-        there, is switched off, or has no way to be reached."""
-        target = await self._directory.resolve(entry_id, tenant_id)
+    async def target(
+        self, mount: ProjectMemoryMount, *, tenant_id: str, owner_id: str
+    ) -> RegistryTarget:
+        """The entry ``mount`` points at, for an owner of ``tenant_id``.
+
+        Raises naming the mount when the entry is not there, is switched off, has no way
+        to be reached, or cannot be held to the mount's access limits.
+        """
+        target = await self._directory.resolve(
+            mount.registry_entry_id, tenant_id=tenant_id, owner_id=owner_id
+        )
         if target is None:
             reason = "does not exist or is not reachable by this owner's organization"
         elif not target.enabled:
             reason = "is disabled in the registry"
         elif not (target.url or target.path or target.adapter):
-            reason = "has no url, path or adapter to connect to"
+            reason = (
+                "has no url, adapter or path a session can use (a path on another host's "
+                "disk is not one)"
+            )
         else:
+            if mount.restricts and not target.served_by_forge:
+                raise MemoryMountUnenforceableError(
+                    f"Project memory mount {mount.name!r} limits writes, but registry entry "
+                    f"{mount.registry_entry_id!r} is served by its own Mimir over a url or "
+                    "adapter, where Forge cannot hold that limit. Mount it with access "
+                    "read_write and no prefixes (that Mimir decides what a session may "
+                    "write), or point the mount at an entry that is a plain path."
+                )
             return target
         raise MemoryMountUnavailableError(
-            f"Project memory mount {mount_name!r} points at registry entry {entry_id!r}, which "
-            f"{reason}. Restore or enable the entry, or change or remove the mount through "
-            "the project's memory API (PATCH or DELETE /projects/<id>/memory/<name>)."
+            f"Project memory mount {mount.name!r} points at registry entry "
+            f"{mount.registry_entry_id!r}, which {reason}. Restore or enable the entry, or "
+            "change or remove the mount through the project's memory API "
+            "(PATCH or DELETE /projects/<id>/memory/<name>)."
         )
 
-    async def for_launch(self, project_id: UUID, *, tenant_id: str) -> ProjectMemoryRefs:
-        """The project's mounts as they launch for an owner of ``tenant_id``."""
+    async def for_launch(
+        self, project_id: UUID, *, tenant_id: str, owner_id: str
+    ) -> ProjectMemoryRefs:
+        """The project's mounts as they launch for ``owner_id`` of ``tenant_id``."""
         mounts = await self._repository.list_for_project(project_id)
         refs: list[dict[str, Any]] = []
         bindings: list[dict[str, Any]] = []
         for mount in mounts:
-            target = await self.target(mount.name, mount.registry_entry_id, tenant_id)
+            target = await self.target(mount, tenant_id=tenant_id, owner_id=owner_id)
             refs.append(mount_ref(mount, target))
             bindings.append(mount_binding(mount))
         return ProjectMemoryRefs(refs, bindings)
@@ -385,6 +452,19 @@ def merge_memory(
     return result
 
 
-def with_memory_instructions(system_prompt: str) -> str:
-    """``system_prompt`` followed by how to use the session's memory."""
-    return "\n\n".join(part for part in (system_prompt, MEMORY_INSTRUCTIONS) if part)
+def offers_facts(mimir: dict[str, Any] | None) -> bool:
+    """True when at least one mount of ``mimir`` serves the typed-fact tools."""
+    if not isinstance(mimir, dict):
+        return False
+    return any(
+        isinstance(item, dict) and item.get("facts") is True
+        for key in ("registry_refs", "instances")
+        for item in (mimir.get(key) or [])
+    )
+
+
+def with_memory_instructions(system_prompt: str, *, facts: bool) -> str:
+    """``system_prompt`` followed by how to use the session's memory: the typed-fact tools
+    when a mount offers them, the wiki tools otherwise."""
+    text = _FACT_INSTRUCTIONS if facts else _WIKI_INSTRUCTIONS
+    return "\n\n".join(part for part in (system_prompt, text) if part)
