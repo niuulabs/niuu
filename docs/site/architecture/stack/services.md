@@ -138,4 +138,5 @@ On Kubernetes the same apps run as separate Deployments from the charts in
 
 - [One request end to end](request-flow.md)
 - [Product and implementation names](names.md)
+- [Design principles](../design/index.md) — the hexagonal shape every service shares.
 - The Forge, Skuld, Communication and Deployment modes areas go deeper on each row.

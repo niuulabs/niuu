@@ -25,9 +25,9 @@ links to it.
 1. **Stack map** (this area) — start with [services and channels](stack/services.md),
    then follow [one request end to end](stack/request-flow.md). Keep
    [product and implementation names](stack/names.md) open while reading the rest.
-2. **Design principles** — the rules every service follows; read before changing code.
+2. [Design principles](design/index.md) — the rules every service follows; read before changing code.
 3. **Forge**, then **Skuld** — the session path, which most other areas plug into.
-4. **Communication** and **Security** — how services and machines talk and prove who
+4. **Communication** and [Security](security/index.md) — how services and machines talk and prove who
    they are.
 5. **Models**, **Memory**, **Workflows** — the services sessions and residents use.
 6. **Deployment modes** — how the same services run locally, in Docker and on
@@ -38,11 +38,11 @@ links to it.
 | Area | What it answers |
 |---|---|
 | [Stack map](stack/services.md) | Every service and library, what talks to what, one request end to end, product vs implementation names |
-| Design principles | Hexagonal layout, ports and adapters, composition roots, dynamic adapters, fail loud, no hidden limits, config first, module boundaries |
+| [Design principles](design/index.md) | Hexagonal layout, ports and adapters, composition roots, dynamic adapters, fail loud, no hidden limits, config first, module boundaries |
 | Forge | Session lifecycle, Workspaces and projects, pod managers, compute pools, VMs, registered hosts, slots, event log |
 | Skuld | The runtime gateway: runtimes, process lifecycle, transcripts, channels, WebSocket, broker and Forge MCP |
 | Workflows | Ting: workflows, runs, steps, gates and reviews, trackers, personas in workflows |
-| Security | Edge auth, identity adapters, every credential kind, machine identities, isolation, secrets |
+| [Security](security/index.md) | Edge auth, identity adapters, every credential kind, machine identities, isolation, secrets |
 | Deployment modes | Local mini mode, Docker, joined nodes and remote compute, Kubernetes, and the levers per mode |
 | Communication | Sleipnir events, collaboration rooms, the flock mesh, A2A, SSE and WebSocket APIs |
 | Models | Bifröst gateway, model catalog, provider connections, routing |
