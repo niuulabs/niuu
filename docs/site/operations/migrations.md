@@ -7,7 +7,7 @@ lifecycle. Identify which path owns the schema before upgrading.
 
 The Niuu root server prepares embedded databases and applies bundled bootstrap
 and migration SQL during startup. Source migrations are under `migrations/`, with
-Ting migrations in `migrations/ting/`. Startup logs report the attempted migration
+workflow engine migrations in `migrations/ting/`. Startup logs report the attempted migration
 work; inspect errors rather than treating HTTP health as schema verification.
 
 Do not delete local database files to solve an unexplained migration failure if
@@ -16,7 +16,7 @@ logs before testing a recovery path on a copy.
 
 ## Kubernetes
 
-The Völundr chart has a `migrations` configuration and a migration init container.
+The Forge chart (`volundr`) has a `migrations` configuration and a migration init container.
 Its SQL is embedded in the chart's migration ConfigMap. Inspect the selected chart
 version and the init-container logs when a pod cannot start.
 

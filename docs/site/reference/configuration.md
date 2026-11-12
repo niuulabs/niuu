@@ -42,7 +42,7 @@ host when it differs from the listen address; it does not configure TLS or login
 Mini mode and docker mode have no Envoy JWT filter in front of them, so
 `host_auth.mode` says explicitly how the host trusts a caller — it defaults
 to `none` (today's behaviour: every caller is admin) and is never inferred.
-It is named `host_auth`, not `auth`: Ting's own `Settings` reads a top-level
+It is named `host_auth`, not `auth`: the workflow engine's own `Settings` reads a top-level
 `auth:` key from this same file for an unrelated, differently-shaped config.
 
 ```yaml
@@ -65,8 +65,8 @@ host_auth:
 
 `host_auth.mode: oidc` requires at least one `host_auth.oidc.issuers` entry
 (issuer and one or more audiences); the CLI settings loader raises at
-config-load time otherwise, as it does when a plugin or Bifröst mode not yet
-covered by `oidc` (Mímir, Guild, an open Bifröst gateway) is still enabled.
+config-load time otherwise, as it does when a plugin or model gateway mode not yet
+covered by `oidc` (Memory, Platform, an open model gateway) is still enabled.
 See [Authentication mode on hosts without
 Envoy](../operations/security-and-permissions.md#authentication-mode-on-hosts-without-envoy)
 for what each mode covers today, path by path.
@@ -87,8 +87,8 @@ entire environment or configuration containing credentials into a shared log.
 
 ## Observability (OpenTelemetry)
 
-Every process that owns a composition root — Völundr, Ting, Bifröst, Skuld,
-Mímir, Observatory, and the local `niuu` host itself
+Every process that owns a composition root — Forge, the workflow engine, the model gateway, the session gateway,
+Memory, Observatory, and the local `niuu` host itself
 (`src/cli/shared_host.py`, the "Niuu Shared Services" app) — reads its own
 `observability:` block from the shared
 `niuu.domain.observability.ObservabilityConfig` shape:
@@ -127,7 +127,7 @@ collector.
 
 Service settings belong to their own configuration models, such as
 `src/volundr/config.py` and `src/mimir/config.py`.
-A standalone Völundr `pod_manager` uses `adapter` plus a nested `kwargs` mapping.
+A standalone Forge `pod_manager` uses `adapter` plus a nested `kwargs` mapping.
 Do not paste the host's flattened adapter shape into that schema.
 
 Secret-backed adapter arguments use explicit secret mappings. For OpenShell,
@@ -136,8 +136,8 @@ See [OpenShell configuration](../operations/openshell-runtime.md).
 
 ## Helm values
 
-Chart values are a third schema. Within the umbrella chart, Völundr values belong
-under `volundr`, Ting values under `ting`, and so on. A root
+Chart values are a third schema. Within the umbrella chart, Forge values belong
+under `volundr`, workflow engine values under `ting`, and so on. A root
 `database.external.host` does not configure every subchart's database.
 
 Inspect and render the selected chart version before deploying:

@@ -1076,7 +1076,7 @@ class GuildConfig(BaseModel):
     means this host has never joined a Guild.
     """
 
-    url: str = Field(default="", description="Base URL of the Guild this host joined.")
+    url: str = Field(default="", description="Base URL of the Platform this host joined.")
     node_id: str = Field(
         default="", description="This host's node id, assigned by Guild at join time."
     )

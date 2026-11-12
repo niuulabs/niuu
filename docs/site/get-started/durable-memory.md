@@ -46,7 +46,7 @@ which pages cite the source and which mount is being queried.
 
 ## 4. Give the agent access
 
-Configure the agent's Mímir adapter or tools to use this store. Ask it to retrieve
+Configure the agent's Memory adapter or tools to use this store. Ask it to retrieve
 the onboarding note and cite the source. Verify the returned content rather than
 accepting a plausible answer from model memory. This final agent step requires a
 working model and configured tools and is not covered by the source-ingest check.

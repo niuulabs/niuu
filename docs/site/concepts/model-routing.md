@@ -1,7 +1,7 @@
 # Models and routing
 
 A runtime is the software executing an agent. A model is the inference service
-it calls. The model gateway (AI models in the UI, Bifröst in configuration) provides a
+it calls. The model gateway (AI models in the UI, `bifrost` in configuration) provides a
 shared catalog and inference routing for clients configured to use it.
 
 ## Catalog, provider, and alias

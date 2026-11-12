@@ -1,6 +1,6 @@
 # Find service instances and inspect topology
 
-Use Guild when more than one instance of a service is available. Use Observatory
+Use Platform when more than one instance of a service is available. Use Observatory
 to understand relationships and activity across those instances.
 
 ## Inspect the registered instances
@@ -20,12 +20,12 @@ An instance record is not proof that its endpoint can be reached by every caller
 Check reachability from the host that will route the request, and check the
 identity expected by the destination.
 
-## How Guild probes health
+## How Platform probes health
 
-Guild probes each registered instance on registration and on a periodic interval
+Platform probes each registered instance on registration and on a periodic interval
 (`niuu.health.interval_seconds`), and records `health` (`unknown` / `ok` /
 `unreachable`), `lastSeenAt`, `lastCheckedAt`, and `lastError` on the instance —
-visible in Guild's instance detail view and over the instances API.
+visible in Platform's instance detail view and over the instances API.
 
 The probe never guesses `{base_url}/health`. Two real deployment shapes break on a
 bare `/health`:
@@ -58,7 +58,7 @@ truth — this table mirrors it.)
 
 Two levels, evaluated in order:
 
-1. **Per-kind, cluster-wide** — `niuu.health.probe.health_paths` in Guild's config
+1. **Per-kind, cluster-wide** — `niuu.health.probe.health_paths` in Platform's config
    (rendered from `registry.health.probe.healthPaths` in the `guild` chart's
    values) is a map of kind → path, merged on top of the built-in defaults. Set
    only the kinds you're changing:
@@ -77,7 +77,7 @@ Two levels, evaluated in order:
    an instance registered with the API version prefix already baked into
    `base_url` (`https://host/api/v1`), where the kind's normal
    `/api/v1/<service>/health` default would double up the prefix. Set it in the
-   instance's `config` when registering or editing it in Guild.
+   instance's `config` when registering or editing it in Platform.
 
 A path that isn't publicly reachable through the target's Envoy sidecar reports
 `unreachable` even though the service is healthy — Envoy's `jwt_authn` filter
@@ -89,7 +89,7 @@ check.
 
 ## What crosses the wire to a remote instance
 
-Every Guild aggregate call (Forge REST, the session event stream, the
+Every Platform aggregate call (Forge REST, the session event stream, the
 resident chat and Forge replay WebSockets, the health probe, and the
 Observatory/agent-directory lookups) forwards only the caller's `Authorization`
 bearer token to a remote instance. A client-supplied `x-auth-*` header or
@@ -121,7 +121,7 @@ A remote instance's `base_url` must use `https://` unless the instance
 explicitly opts out. This is enforced twice: once at registration/update time
 (a 422 with the remedy in the message, so a mistake is caught immediately),
 and again on every single outbound call this process makes to that instance
-(REST, the health probe, both WebSocket proxy legs, and Ting's own Volundr
+(REST, the health probe, both WebSocket proxy legs, and the workflow engine's own Forge
 calls), which is the real boundary — a row that predates this validation, or
 an update that never touched its transport fields, is still refused at call
 time, never silently sent a bearer token over plaintext. Embedded instances
@@ -136,7 +136,7 @@ full DNS-label boundary (`niuu-volundr.volundr.svc.cluster.local` matches;
 `notreallyasvc.cluster.local` and `evil-svc.cluster.local.example.com` do
 not) skips the https-unless-allow_plaintext requirement without
 `config.allow_plaintext` set on every in-cluster seed — a live cluster's
-Guild routinely seeds `http://niuu-volundr.volundr.svc.cluster.local`, which
+Platform routinely seeds `http://niuu-volundr.volundr.svc.cluster.local`, which
 needs no opt-in for this. Set the list to `[]` to require the explicit `allow_plaintext`
 opt-in everywhere, including in-cluster addresses — this is checked at the
 same two enforcement points (registration/seed time and every outbound
@@ -158,12 +158,12 @@ write-time check even when that PATCH itself doesn't touch `base_url`/
 `config` — a two-step "make it plaintext and disable it" followed later by a
 bare "enable it" cannot slip back in unvalidated.
 
-A **config-seeded instance** (`niuu.instances` in the Guild config file,
+A **config-seeded instance** (`niuu.instances` in the Platform config file,
 rendered from the Helm chart) is validated the same way, but the consequence
-is more severe: seeding runs at process startup, before Guild serves any
+is more severe: seeding runs at process startup, before Platform serves any
 traffic, so an `http://` seed entry that is neither loopback nor covered by
 `guildTransport.trustedPlaintextHostSuffixes`, and has no
-`config.allow_plaintext: true`, stops Guild from starting at all, not just
+`config.allow_plaintext: true`, stops Platform from starting at all, not just
 its outbound calls from failing once it's up. This is deliberate — a
 misconfigured seed is a deploy-time error to fix in the chart values, not a
 runtime condition to degrade past. An in-cluster seed like
@@ -215,17 +215,17 @@ rely on ordinary CA-verified `https://` instead.
   network path is trusted by some other means. It is never the default and
   never inferred.
 
-The Guild register/edit dialog exposes both `allow_plaintext` and
+The Platform register/edit dialog exposes both `allow_plaintext` and
 `tls_fingerprint` as instance fields.
 
-### Knowledge deployments to a remote Mímir
+### Knowledge deployments to a remote Memory instance
 
-Guild's knowledge-deployments router (`/knowledge/...`) forwards only the
-caller's bearer token to the target Mímir instance, the same as every other
-Guild aggregate call — the target re-verifies that bearer itself. A Mímir
+Platform's knowledge-deployments router (`/knowledge/...`) forwards only the
+caller's bearer token to the target Memory instance, the same as every other
+Platform aggregate call — the target re-verifies that bearer itself. A Memory instance
 reachable only over a Tailscale LAN address therefore needs to be able to
 verify it: put it behind Envoy with the platform's IdP, or run it with
-`host_auth.mode: oidc` directly. A bare `allow_anonymous_dev`/`none` Mímir on
+`host_auth.mode: oidc` directly. A bare `allow_anonymous_dev`/`none` Memory instance on
 a tailnet accepts the request but cannot attribute it to the calling user.
 
 ## Follow one session

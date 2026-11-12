@@ -21,7 +21,7 @@ class GuildPlugin(ServicePlugin):
     def register_service(self) -> ServiceDefinition:
         return ServiceDefinition.hosted(
             name="guild",
-            description="Shared instance registry and aggregate service",
+            description="Platform: shared instance registry and aggregate API",
             default_enabled=True,
             depends_on=["postgres"],
             default_port=8084,

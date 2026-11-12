@@ -22,7 +22,7 @@ class BifrostPlugin(ServicePlugin):
     def register_service(self) -> ServiceDefinition:
         return ServiceDefinition.hosted(
             name="bifrost",
-            description="Anthropic-compatible LLM proxy",
+            description="AI models: the Anthropic-compatible model gateway",
             default_enabled=True,
             depends_on=[],
             default_port=8082,

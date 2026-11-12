@@ -65,7 +65,7 @@ renders only the fields that session's integrations ask for into
 `session-secrets/<session-id>/`: an `env.sh` with `export NAME='value'` lines
 and one file per requested file mount. Those files are bind-mounted read-only
 into the session container (`/run/secrets/env.sh` and the requested paths) and
-the skuld entrypoint sources them on start-up. Secret values never appear in
+the session gateway's entrypoint sources them on start-up. Secret values never appear in
 the container's environment as seen by `docker inspect`, the platform's own
 environment is not inherited by the sandbox, and the directory is removed when
 the session stops. A session whose integration credential is missing from the
@@ -150,7 +150,7 @@ be read there:
 | `INTEGRATIONS__DATABASE_NAME=niuu_shared` | Sessions resolve the integration connections the wizard created through the shared API. |
 | `CREDENTIAL_STORE` / `SECRET_INJECTION` | File credential store under `credentials/` and the per-session materializer under `session-secrets/`, both keyed by `NIUU_CREDENTIAL_KEY`. |
 | `SESSION_CONTRIBUTORS` | Enables the secret-injection contributor and disables workload identity (see above). |
-| `NIUU_POD_MANAGER__*` | `DockerContainerPodManager` with the compose network, the skuld image and the in-network platform URL sessions call back to. |
+| `NIUU_POD_MANAGER__*` | `DockerContainerPodManager` with the compose network, the session gateway image and the in-network platform URL sessions call back to. |
 | `SESSION_ROOM__INTERNAL_BASE_URL` | The platform dials session brokers through its own loopback proxy instead of the published LAN address, which is not reachable from inside the container. |
 
 ## The setup wizard
@@ -205,7 +205,7 @@ changes go through a stack controller (`NIUU_STACK_DIR`, the data directory):
 
 The bundle configures `CREDENTIAL_ENROLLMENT_RUNNER` with
 `DockerLoginRunner`: each sign-in starts a `niuu-login-<id>` container from the
-skuld image on the compose network, read-only except for a 256 MB memory-backed
+session gateway image on the compose network, read-only except for a 256 MB memory-backed
 `/tmp` (the Codex app-server clones its plugin marketplace on startup), with no platform environment and all capabilities dropped. It runs the
 same `login_worker.py` the Kubernetes runner uses (`claude setup-token`, the
 Codex app-server device flow, or `grok login --device-auth`). The platform
@@ -327,7 +327,7 @@ your accounts it will use; **Manage providers** opens **Settings →
 Integrations**, where accounts are added, tested and signed in again. With no
 AI provider connected the dialog says so and links there instead of offering
 an engine that could not start. Engines meant for other callers stay out of
-the list: the `batch` Codex definition is Ting's, and Remote Control sessions
+the list: the `batch` Codex definition belongs to the workflow engine, and Remote Control sessions
 are driven from the Claude app.
 
 When more than one account could run the engine (a Claude subscription and
@@ -363,7 +363,7 @@ across the network, becomes a provider in two places at once:
   (comma-separated; the first is the default), and a bearer token only if the
   server checks one. Saving restarts the platform.
 - After the restart the server is the `local` provider of the model gateway
-  (Bifrost, `/api/v1/bifrost`, which speaks both the Anthropic and the OpenAI
+  (`/api/v1/bifrost`, which speaks both the Anthropic and the OpenAI
   dialect and forwards to the server), and a **Model server** AI provider is
   seeded under **Settings → Integrations**. The wizard-managed vLLM container
   gets the same treatment as provider `vllm`.
@@ -377,12 +377,12 @@ server** integration's `gateway_url` and `token`, mapped by
 `IntegrationContributor`'s `env_from_config` — see
 `cli.commands.platform.model_server_seed_connections` and
 `volundr.config`'s `model-server` integration definition; the resident-only
-`ModelGatewayContributor` isn't wired into docker or mini mode), and its Skuld
+`ModelGatewayContributor` isn't wired into docker or mini mode), and its session gateway
 routes the CLI through the gateway: Claude Code with `ANTHROPIC_BASE_URL` (the
 platform API key is dropped so it cannot win), Codex with a `niuu` model
 provider block (`wire_api = "responses"`: the gateway serves the OpenAI
 Responses API at `/v1/responses` for it, its key from
-`NIUU_MODEL_GATEWAY_TOKEN`; no ChatGPT sign-in is attempted). Ravn residents
+`NIUU_MODEL_GATEWAY_TOKEN`; no ChatGPT sign-in is attempted). Residents
 already talk to the gateway, so the server's models show up for them as
 `niuu/<model>` without further setup. The bundle's gateway is open; the token
 the CLIs present is the named `OPEN_GATEWAY_TOKEN` sentinel
@@ -391,7 +391,7 @@ documented literal the gateway ignores because it runs `auth_mode: open`. The
 CLIs refuse to start with a blank token instead of silently sending no
 credential or leaking the host's own subscription login, so this sentinel is
 load-bearing until real per-session credentials exist. `niuu up` only ever
-seeds this connection where the bifrost plugin is enabled, which `auth.mode:
+seeds this connection where the `bifrost` plugin is enabled, which `auth.mode:
 oidc` hosts cannot do yet (see `CLISettings._OIDC_UNCOVERED_PLUGINS`), so the
 sentinel is never sent under `oidc`.
 

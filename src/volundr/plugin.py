@@ -36,7 +36,7 @@ class VolundrPlugin(ServicePlugin):
     def register_service(self) -> ServiceDefinition:
         return ServiceDefinition.hosted(
             name="volundr",
-            description="AI-native development platform",
+            description="Forge: sessions, projects and compute",
             default_enabled=True,
             depends_on=["postgres"],
             default_port=8080,
