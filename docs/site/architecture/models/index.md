@@ -133,3 +133,5 @@ token that carries no authority.
 - [Model catalog](catalog.md): what an entry records and how to add one
 - [Provider connections](connections.md): how a user's model sign-in reaches a session
 - [Routing](routing.md): rules, strategies, passthrough and compaction
+- [Skuld runtimes](../skuld/runtimes.md): how each runtime is spawned
+- [Mini and Docker mode](../deployment/single-host.md): where the seeded Model server Connection comes from

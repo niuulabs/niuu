@@ -125,3 +125,4 @@ says what exists, not that a provider accepts it: test with a real request.
 - [Models](index.md): what goes through the gateway
 - [Routing](routing.md): how a catalog id becomes a provider call
 - [Provider connections](connections.md)
+- [Fail loud](../design/fail-loud.md): why an output cap is read, never guessed

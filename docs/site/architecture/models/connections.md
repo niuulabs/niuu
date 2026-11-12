@@ -141,3 +141,6 @@ device-flow runner); each enrollment goes to the first that implements its metho
 - [Models](index.md): which sessions go through the gateway
 - [Model catalog](catalog.md)
 - [Routing](routing.md)
+- [Isolation and secrets](../security/isolation-and-secrets.md): how secret files reach a session
+- [Credentials](../security/credentials.md): every credential kind the platform accepts
+- [Skuld runtimes](../skuld/runtimes.md)

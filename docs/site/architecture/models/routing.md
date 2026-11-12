@@ -152,3 +152,4 @@ All are keys of Bifröst's config (`bifrost.yaml`; the chart's `config` value).
 - [Models](index.md)
 - [Model catalog](catalog.md)
 - [Provider connections](connections.md)
+- [Fail loud](../design/fail-loud.md)
