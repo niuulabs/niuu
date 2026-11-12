@@ -71,6 +71,7 @@ from volundr.adapters.inbound.rest_guild import create_guild_router
 from volundr.adapters.inbound.rest_integrations import create_canonical_integrations_router
 from volundr.adapters.inbound.rest_issues import create_canonical_issues_router
 from volundr.adapters.inbound.rest_memory_context import create_memory_context_router
+from volundr.adapters.inbound.rest_memory_gateway import create_memory_gateway_router
 from volundr.adapters.inbound.rest_mesh_identity import create_mesh_identity_router
 from volundr.adapters.inbound.rest_message_delivery import create_message_delivery_router
 from volundr.adapters.inbound.rest_notifications import create_notifications_router
@@ -200,7 +201,7 @@ from volundr.composition_builders import (  # noqa: F401
     require_presented_file_uploads,
     with_oauth_device_runner,
 )
-from volundr.config import Settings
+from volundr.config import ALLOW_ALL_IDENTITY_ADAPTERS, Settings
 from volundr.domain.models import SessionStatus
 from volundr.domain.notifications import NotificationSinkInfo
 from volundr.domain.ports import OpenShellCredentialGrantPort
@@ -223,6 +224,7 @@ from volundr.domain.services.credential_enrollment import CredentialEnrollmentSe
 from volundr.domain.services.event_ingestion import EventIngestionService
 from volundr.domain.services.forge import catalog_session_definition
 from volundr.domain.services.memory_context import MemoryContextService
+from volundr.domain.services.memory_layers import MemoryLayerService
 from volundr.domain.services.mesh_identity import MeshIdentityService
 from volundr.domain.services.mount_strategies import SecretMountStrategyRegistry
 from volundr.domain.services.notification_images import NotificationImageWorker
@@ -2415,9 +2417,19 @@ def create_app(
             app.include_router(
                 create_memory_context_router(
                     MemoryContextService(
-                        project_service.repository if project_service is not None else None
+                        project_service.repository if project_service is not None else None,
+                        session_service,
                     ),
                     session_service,
+                    prefix="/api/v1/forge",
+                )
+            )
+            app.include_router(
+                create_memory_gateway_router(
+                    MemoryLayerService(session_service),
+                    project_service,
+                    service_subject=settings.memory.gateway_service_subject,
+                    allow_all_identity=settings.identity.adapter in ALLOW_ALL_IDENTITY_ADAPTERS,
                     prefix="/api/v1/forge",
                 )
             )

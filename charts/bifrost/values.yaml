@@ -389,6 +389,19 @@ config:
   host: "0.0.0.0"
   port: 8088
   auth_mode: open
+  # -- Forge session credentials on the three model routes (/v1/messages,
+  # /v1/chat/completions, /v1/responses), accepted in every auth_mode and nowhere
+  # else. A session's own credential (scope forge:model) is confirmed by presenting
+  # it to Forge, and usage is charged to the owner and tenant Forge names. Empty
+  # base_url means session credentials are refused 401, naming this setting.
+  # Behind Envoy (envoy.jwt), the workload-identity issuer that signs session
+  # credentials must also be accepted by envoy.jwt.workload.
+  forge_session:
+    # -- Forge's base URL, e.g. http://volundr:8080
+    base_url: ""
+    # -- Per-request timeout asking Forge about a session; Forge unreachable or
+    # slower answers 503, never an unconfirmed admit.
+    timeout_seconds: 10
   providers: {}
   aliases: {}
   default_quota: {}

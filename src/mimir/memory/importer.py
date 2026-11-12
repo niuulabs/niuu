@@ -76,8 +76,10 @@ class ImportReport:
 
 
 def _import_layer(layer: Layer) -> Layer:
-    if layer.kind is LayerKind.SESSION:
-        raise WikiImportError("a wiki imports into the org layer or a project layer, not a session")
+    if layer.kind not in (LayerKind.ORG, LayerKind.PROJECT):
+        raise WikiImportError(
+            f"a wiki imports into the org layer or a project layer, not {layer.kind.value}"
+        )
     return layer
 
 

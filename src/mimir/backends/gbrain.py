@@ -522,6 +522,9 @@ class GBrainBackend(MemoryBackend):
             arguments["detail"] = row.detail
         await self._call("add_timeline_entry", arguments)
 
+    async def delete_page(self, namespace: str, slug: str) -> None:
+        await self._call("delete_page", {"slug": self._full(namespace, slug), "force": True})
+
     async def list_pages(self, namespace: str, *, limit: int) -> list[PageRef]:
         prefix = self._prefix(namespace)
         rows = await self._scan(prefix, want=limit, include_internal=False)
@@ -995,6 +998,20 @@ class GBrainBackend(MemoryBackend):
         except RevisionConflictError:
             return False
         return True
+
+    async def list_namespaces(self) -> list[str]:
+        """Namespaces with a marker page, found by paging over every page under ``l/``."""
+        root = f"{_ROOT}/"
+        marker = f"/{_MARKER}"
+        found: list[str] = []
+        for row in await self._scan(root, want=None, include_internal=True):
+            slug = str(row.get("slug") or "")
+            if not slug.endswith(marker):
+                continue
+            namespace = slug[len(root) : -len(marker)]
+            if _NAMESPACE.fullmatch(namespace):
+                found.append(namespace)
+        return found
 
     async def delete_namespace(self, namespace: str) -> NamespaceRemoval:
         prefix = self._prefix(namespace)

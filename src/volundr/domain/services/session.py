@@ -459,6 +459,13 @@ class SessionService:
         """
         return await self._repository.list_by_project(project_ids, tenant_id)
 
+    async def list_workflow_run_sessions(self, run_ids: list[str]) -> list[Session]:
+        """Sessions of the workflow runs, across tenants, oldest first, without access checks.
+
+        A lookup for the memory routes, which scope the answer to their caller themselves.
+        """
+        return await self._repository.list_by_workflow_runs(run_ids)
+
     async def with_read_states(
         self, sessions: list[Session], principal: Principal | None
     ) -> list[Session]:

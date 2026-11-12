@@ -22,6 +22,7 @@ more stdio entry in the merged ``mcp_servers`` list, the same process with
 
 from __future__ import annotations
 
+import logging
 import sys
 from pathlib import Path
 from typing import Any
@@ -39,7 +40,12 @@ from skuld.forge_mcp.skill import (
     materialize_claude_plugin,
     materialize_codex_skills_root,
 )
-from skuld.memory_mcp.gateway import MemoryGatewayClient
+from skuld.memory_mcp.gateway import (
+    ContextPack,
+    MemoryContextPackError,
+    MemoryGatewayClient,
+    MemoryGatewayError,
+)
 from skuld.session_runtime import SessionRuntime
 from skuld.transports.mcp_config import mcp_server_names, with_default_mcp_servers
 from skuld.transports.session_tools import (
@@ -55,6 +61,9 @@ STDIO_MODULE = "skuld.forge_mcp"
 FROZEN_SUBCOMMAND = ("platform", "forge-mcp")
 _WILDCARD_HOSTS = {"", "0.0.0.0", "::", "[::]", "localhost", "127.0.0.1"}
 _LOOPBACK_HOST = "127.0.0.1"
+
+
+logger = logging.getLogger("skuld.broker")
 
 
 def forge_mcp_command() -> list[str]:
@@ -75,6 +84,7 @@ class ForgeSessionMixin:
     _session_tools_cache: SessionTools | None
     _forge_mcp_toolbox_cache: ForgeMcpToolbox | None
     _memory_gateway_cache: MemoryGatewayClient | None
+    _memory_context_pack: ContextPack | None
 
     @property
     def _session_runtime(self) -> SessionRuntime:
@@ -215,7 +225,9 @@ class ForgeSessionMixin:
                     else {}
                 ),
             },
-            instructions=capability_instructions(forge_mcp_server=server),
+            instructions=capability_instructions(
+                forge_mcp_server=server, memory_context=self._memory_context_text()
+            ),
             loopback_authorization=runtime.authorization,
             claude_plugin_dirs=plugin_dirs,
             codex_skill_roots=codex_roots,
@@ -270,6 +282,58 @@ class ForgeSessionMixin:
                 timeout_s=cfg.gateway_request_timeout_s,
             )
         return self._memory_gateway_cache
+
+    async def _load_memory_context_pack(self) -> None:
+        """Fetch the session's context pack once per broker start (C10).
+
+        Called by ``startup()`` before the transport is created. A second call keeps the
+        first pack, so a resumed harness gets the same text. A gateway failure raises
+        :class:`MemoryContextPackError` naming the URL and the reason; the broker then
+        does not start, and no empty pack stands in for the missing one.
+        """
+        cfg = self._settings.memory
+        if not cfg.enabled or self._memory_context_pack is not None:
+            return
+        gateway = self._memory_gateway()
+        url = f"{gateway.base_url}/memory/context-pack"
+        try:
+            pack = await gateway.context_pack(timeout_s=cfg.context_pack_timeout_s)
+        except MemoryGatewayError as exc:
+            raise MemoryContextPackError(
+                f"cannot start: the memory context pack could not be fetched from {url}: {exc}. "
+                "Fix the memory gateway, or set SKULD__MEMORY__ENABLED=false to run without "
+                "memory"
+            ) from exc
+        self._memory_context_pack = pack
+        if pack.omitted:
+            logger.warning(
+                "memory context pack from %s left out %d entries that did not fit its "
+                "%d-token budget (%d used): %s",
+                url,
+                len(pack.omitted),
+                pack.budget_tokens,
+                pack.used_tokens,
+                pack.omitted,
+            )
+        logger.info(
+            "memory context pack loaded from %s: %d characters, %d of %d tokens, %d omitted",
+            url,
+            len(pack.text),
+            pack.used_tokens,
+            pack.budget_tokens,
+            len(pack.omitted),
+        )
+
+    def _memory_context_text(self) -> str:
+        """The fetched pack's text; memory enabled without a fetched pack is a bug."""
+        if not self._settings.memory.enabled:
+            return ""
+        if self._memory_context_pack is None:
+            raise RuntimeError(
+                "memory is enabled but the context pack was not fetched before the session "
+                "tools were built; _load_memory_context_pack() must run first in startup()"
+            )
+        return self._memory_context_pack.text
 
     async def _close_memory_gateway(self) -> None:
         if self._memory_gateway_cache is not None:

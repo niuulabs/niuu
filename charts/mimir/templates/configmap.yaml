@@ -90,5 +90,38 @@ data:
         {{ $tenant | quote }}: {{ $system | quote }}
         {{- else }} {}
         {{- end }}
+      {{- if not (and .serviceAuth .serviceAuth.adapter) }}
+      {{- fail "config.memory.serviceAuth.adapter is required when config.memory.enabled: how the gateway authenticates as a service to Forge and Bifröst" }}
+      {{- end }}
+      service_auth:
+        {{- toYaml .serviceAuth | nindent 8 }}
+      bifrost_url: {{ required "config.memory.bifrostUrl is required when config.memory.enabled: the context pack and memory_ask go through Bifröst" .bifrostUrl | quote }}
+      {{- if not (kindIs "invalid" .bifrostTimeoutSeconds) }}
+      bifrost_timeout_seconds: {{ .bifrostTimeoutSeconds }}
+      {{- end }}
+      {{- $ask := ternary true .askEnabled (kindIs "invalid" .askEnabled) }}
+      ask_enabled: {{ $ask }}
+      {{- if $ask }}
+      answer_model: {{ required "config.memory.answerModel is required when config.memory.askEnabled" .answerModel | quote }}
+      {{- end }}
+      {{- if not (kindIs "invalid" .askRetrievalCount) }}
+      ask_retrieval_count: {{ .askRetrievalCount }}
+      {{- end }}
+      {{- if not (kindIs "invalid" .contextPackShare) }}
+      context_pack_share: {{ .contextPackShare }}
+      {{- end }}
+      {{- if not (kindIs "invalid" .charsPerToken) }}
+      chars_per_token: {{ .charsPerToken }}
+      {{- end }}
+      {{- if not (kindIs "invalid" .retentionDays) }}
+      retention_days: {{ .retentionDays }}
+      {{- end }}
+      {{- if not (kindIs "invalid" .retentionSweepSeconds) }}
+      retention_sweep_seconds: {{ .retentionSweepSeconds }}
+      {{- end }}
+      {{- with .orgAdminRoles }}
+      org_admin_roles:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
     {{- end }}
     {{- end }}

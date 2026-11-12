@@ -20,6 +20,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, Response
 
 from bifrost.adapters.auth import build_auth_adapter
+from bifrost.adapters.auth.forge_session import ForgeSessionModelAuth
 from bifrost.adapters.key_vault import EnvKeyVault
 from bifrost.config import AuditAdapter, BifrostConfig, CacheMode
 from bifrost.inbound.observability import create_observability_router
@@ -33,6 +34,7 @@ from bifrost.ports.usage_store import UsageStore
 from bifrost.pricing import ModelPricing, load_pricing_from_yaml
 from bifrost.router import ModelRouter
 from niuu.domain.services.pat_validator import PATValidator
+from niuu.forge_mcp.session_proof import ForgeSessionVerifier
 from niuu.utils import import_class
 
 logger = logging.getLogger(__name__)
@@ -129,6 +131,20 @@ def _build_key_vault(config: BifrostConfig) -> KeyVaultPort:
 # ---------------------------------------------------------------------------
 # PAT revocation validator factory
 # ---------------------------------------------------------------------------
+
+
+def _build_forge_session_verifier(config: BifrostConfig) -> ForgeSessionVerifier | None:
+    """The Forge-backed verifier for session credentials, or ``None`` when not configured.
+
+    ``None`` is the operator's choice (no ``forge_session.base_url``); a session credential
+    is then refused 401 naming the setting rather than admitted unconfirmed.
+    """
+    if not config.forge_session.base_url:
+        return None
+    return ForgeSessionVerifier(
+        config.forge_session.base_url,
+        timeout_seconds=config.forge_session.timeout_seconds,
+    )
 
 
 def _build_pat_revocation_validator(config: BifrostConfig) -> PATValidator | None:
@@ -302,6 +318,8 @@ def create_app(config: BifrostConfig) -> FastAPI:
         oidc_kwargs=config.oidc_kwargs,
         pat_revocation_validator=_build_pat_revocation_validator(config),
     )
+    session_verifier = _build_forge_session_verifier(config)
+    model_auth_adapter = ForgeSessionModelAuth(auth_adapter, session_verifier)
     event_emitter = _build_event_emitter(config)
 
     # ── SIGHUP handler — reload keys without restarting ──────────────────────
@@ -323,6 +341,8 @@ def create_app(config: BifrostConfig) -> FastAPI:
             yield
         finally:
             await router.close()
+            if session_verifier is not None:
+                await session_verifier.close()
             if hasattr(store, "close"):
                 await store.close()
             await event_emitter.close()
@@ -381,6 +401,7 @@ def create_app(config: BifrostConfig) -> FastAPI:
         store=store,
         pricing_overrides=pricing_overrides,
         auth_adapter=auth_adapter,
+        model_auth_adapter=model_auth_adapter,
         event_emitter=event_emitter,
         cache=cache,
         audit=audit,

@@ -1167,6 +1167,15 @@ memory:
   # authenticates to the gateway with its own credential. Empty runs sessions without a
   # memory server.
   gatewayUrl: ""
+  # -- The workload subject of the memory gateway's own service credential, such as
+  # system:serviceaccount:niuu:mimir: the `act.sub` of the workload-identity token the gateway
+  # presents to Forge. Only that credential may call POST /api/v1/forge/memory/ended (when run
+  # and session layers ended, for retention); a person, a session credential or any other
+  # service gets 403. Required with `gatewayUrl` while Forge verifies its callers (an
+  # `identity.adapter` other than the allow-all one); the render refuses otherwise. The
+  # gateway's workload-identity mapping must name an owner other than the subject itself,
+  # because the exchange only sets `act` when the workload is not the token's own subject.
+  gatewayServiceSubject: ""
 
 workloadIdentity:
   enabled: false

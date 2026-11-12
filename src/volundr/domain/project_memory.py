@@ -267,9 +267,19 @@ def mount_binding(mount: ProjectMemoryMount) -> dict[str, Any]:
 class ProjectMemoryResolver:
     """Resolves a project's mounts against the registry for the session's owner."""
 
-    def __init__(self, repository: ProjectMemoryRepository, directory: MemoryMountDirectory):
+    def __init__(
+        self,
+        repository: ProjectMemoryRepository,
+        directory: MemoryMountDirectory,
+        *,
+        gateway_holds_limits: bool = False,
+    ):
+        """*gateway_holds_limits*: the memory gateway (``memory.gateway_url``) serves every
+        mount of a session and enforces its access limits, so a restricted mount is no longer
+        refused here. Without a gateway no one can hold them, and they are refused."""
         self._repository = repository
         self._directory = directory
+        self._gateway_holds_limits = gateway_holds_limits
 
     async def target(
         self, mount: ProjectMemoryMount, *, tenant_id: str, owner_id: str
@@ -289,13 +299,14 @@ class ProjectMemoryResolver:
         elif not (target.url or target.adapter):
             reason = "has no url or adapter a session can use"
         else:
-            if mount.restricts:
+            if mount.restricts and not self._gateway_holds_limits:
                 raise MemoryMountUnenforceableError(
                     f"Project memory mount {mount.name!r} limits writes, but Forge cannot "
                     f"hold that limit for registry entry {mount.registry_entry_id!r}: it is "
                     "served by its own Mimir, and limits are not enforceable until the "
                     "memory gateway lands. Mount it with access read_write and no prefixes "
-                    "(that Mimir decides what a session may write)."
+                    "(that Mimir decides what a session may write), or set "
+                    "memory.gateway_url so the gateway holds the limit."
                 )
             return target
         raise MemoryMountUnavailableError(

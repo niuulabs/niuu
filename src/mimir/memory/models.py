@@ -46,22 +46,46 @@ class CapabilityMissingError(MemoryStoreError):
 
 
 class LayerKind(StrEnum):
-    """The layers of step 1. Order of declaration is not distance; see :attr:`Layer.distance`."""
+    """The layers of steps 1 and 2. Declaration order is not distance; see :attr:`Layer.distance`.
+
+    ``attached`` is a memory a project or launch spec adds beside the tree (design
+    section 4); it lives in a registered store of its own, never in the org's system.
+    """
 
     SESSION = "session"
+    RUN = "run"
     PROJECT = "project"
+    ATTACHED = "attached"
     ORG = "org"
 
 
-#: How far a layer is from the session; reads show the nearest first.
-_DISTANCE = {LayerKind.SESSION: 0, LayerKind.PROJECT: 1, LayerKind.ORG: 2}
+#: How far a layer is from the session; reads show the nearest first. Attached
+#: memories sit beside the project they were added to, before the org.
+_DISTANCE = {
+    LayerKind.SESSION: 0,
+    LayerKind.RUN: 1,
+    LayerKind.PROJECT: 2,
+    LayerKind.ATTACHED: 3,
+    LayerKind.ORG: 4,
+}
+
+#: Layers that live in the org's own memory system, as namespaces of it.
+SYSTEM_LAYER_KINDS: frozenset[LayerKind] = frozenset(
+    {LayerKind.SESSION, LayerKind.RUN, LayerKind.PROJECT, LayerKind.ORG}
+)
+
+#: Layers that are deleted a retention window after their session or run ends.
+EPHEMERAL_LAYER_KINDS: frozenset[LayerKind] = frozenset({LayerKind.SESSION, LayerKind.RUN})
 
 _LAYER_KEY = re.compile(r"^[a-z0-9][a-z0-9-]*$")
+#: Attached layers are named after their mount (Forge's MOUNT_NAME_PATTERN).
+_MOUNT_KEY = re.compile(r"^[a-z0-9][a-z0-9_-]{0,62}$")
 
 
 @dataclass(frozen=True)
 class Layer:
-    """One body of memory: ``org``, ``project:<id>`` or ``session:<id>``."""
+    """One body of memory: ``org``, ``project:<id>``, ``run:<id>``, ``session:<id>`` or
+    ``attached:<mount name>``."""
 
     kind: LayerKind
     key: str = ""
@@ -70,6 +94,13 @@ class Layer:
         if self.kind is LayerKind.ORG:
             if self.key:
                 raise MemoryValidationError("the org layer has no key")
+            return
+        if self.kind is LayerKind.ATTACHED:
+            if not _MOUNT_KEY.fullmatch(self.key):
+                raise MemoryValidationError(
+                    f"an attached layer is named after its mount (lowercase letters, digits, "
+                    f"'_' and '-'), not {self.key!r}"
+                )
             return
         if not _LAYER_KEY.fullmatch(self.key):
             raise MemoryValidationError(
@@ -88,8 +119,13 @@ class Layer:
 
     @property
     def proposals_namespace(self) -> str:
-        """Where proposals for this layer are kept (``_proposals/<namespace>``)."""
+        """Where pending proposals for this layer are kept (``_proposals/<namespace>``)."""
         return f"_proposals/{self.namespace}"
+
+    @property
+    def decided_namespace(self) -> str:
+        """Where decided proposals for this layer are kept (``_decided/<namespace>``)."""
+        return f"_decided/{self.namespace}"
 
     @property
     def distance(self) -> int:
@@ -103,7 +139,8 @@ class Layer:
         except ValueError:
             names = ", ".join(k.value for k in LayerKind)
             raise MemoryValidationError(
-                f"unknown layer {layer_id!r}; layers are {names} (project:<id>, session:<id>)"
+                f"unknown layer {layer_id!r}; layers are {names} (project:<id>, run:<id>, "
+                "session:<id>, attached:<name>)"
             ) from None
         if layer_kind is LayerKind.ORG and sep:
             raise MemoryValidationError("the org layer is named 'org', with no id")
@@ -139,6 +176,7 @@ class EvidenceKind(StrEnum):
     PAGE = "page"
     FACT = "fact"
     IMPORT = "import"
+    PROPOSAL = "proposal"
 
 
 _EVIDENCE_SHAPES: dict[EvidenceKind, tuple[re.Pattern[str], str]] = {
@@ -161,6 +199,10 @@ _EVIDENCE_SHAPES: dict[EvidenceKind, tuple[re.Pattern[str], str]] = {
     EvidenceKind.PAGE: (re.compile(r"^\S+$"), "a page reference such as services/booking-api"),
     EvidenceKind.FACT: (re.compile(r"^\S+$"), "a fact id"),
     EvidenceKind.IMPORT: (re.compile(r"^\S.*$"), "the imported file"),
+    EvidenceKind.PROPOSAL: (
+        re.compile(r"^[a-z]+(:[a-z0-9_-]+)?/p-[0-9a-f]+$"),
+        "<target layer>/<proposal id>, e.g. project:<id>/p-1a2b",
+    ),
 }
 
 
@@ -414,6 +456,8 @@ class NamespaceRemoval:
 
 class ProposalStatus(StrEnum):
     PENDING = "pending"
+    APPROVED = "approved"
+    REJECTED = "rejected"
 
 
 class ChangeAction(StrEnum):
@@ -426,7 +470,13 @@ class ChangeAction(StrEnum):
 
 @dataclass(frozen=True)
 class Proposal:
-    """A change waiting for the target layer's owner. Approval comes in step 2."""
+    """A change waiting for the target layer's owner, or the owner's decision on it.
+
+    ``promoted_from`` names the record a person promoted (``session:<id>/<ref>``);
+    empty for a proposal an agent made. ``decided_by``/``decided_at``/``decision``
+    are set once an owner approved or rejected it; ``applied`` says what approval
+    wrote.
+    """
 
     id: str
     target_layer: str
@@ -442,11 +492,37 @@ class Proposal:
     approver: str
     created_at: datetime
     attested: bool = True
+    promoted_from: str = ""
+    decided_by: str = ""
+    decided_at: datetime | None = None
+    decision: str = ""
+    applied: str = ""
+
+    @property
+    def ref(self) -> str:
+        """The proposal as evidence: ``<target layer>/<id>``."""
+        return f"{self.target_layer}/{self.id}"
+
+
+class AttachmentAccess(StrEnum):
+    READ = "read"
+    READ_WRITE = "read_write"
+
+
+@dataclass(frozen=True)
+class Attachment:
+    """A memory a project or launch spec attaches to a session (contract C4)."""
+
+    name: str
+    registry_entry_id: str
+    access: AttachmentAccess
+    write_prefixes: tuple[str, ...] = ()
+    source: str = ""
 
 
 @dataclass(frozen=True)
 class SessionMemoryContext:
-    """Forge's answer about a session (contract C1)."""
+    """Forge's answer about a session (contracts C1 and C4)."""
 
     session_id: str
     launch_id: str
@@ -455,9 +531,16 @@ class SessionMemoryContext:
     project_id: str | None
     workflow_run_id: str | None
     project_write_prefixes: tuple[str, ...] = field(default_factory=tuple)
+    model: str | None = None
+    objective: str | None = None
+    project_brief: str | None = None
+    since: datetime | None = None
+    attached: tuple[Attachment, ...] = ()
 
 
 __all__ = [
+    "Attachment",
+    "AttachmentAccess",
     "Attribution",
     "CapabilityMissingError",
     "ChangeAction",

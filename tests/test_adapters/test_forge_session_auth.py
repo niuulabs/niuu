@@ -10,10 +10,12 @@ import pytest
 from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
 
+from niuu.domain.services.forge_session_policy import policy_refusal
 from niuu.domain.services.forge_session_token import LAUNCH_ID_CLAIM, SESSION_ID_CLAIM
 from niuu.domain.services.token_scope import (
     FORGE_MEMORY_SCOPE,
     FORGE_MESH_IDENTITY_SCOPE,
+    FORGE_MODEL_SCOPE,
     FORGE_NOTIFY_SCOPE,
     FORGE_SESSION_LIFECYCLE_SCOPE,
     FORGE_SESSION_MESSAGE_SCOPE,
@@ -206,6 +208,11 @@ class TestPolicyTable:
             None,
         }
         assert {policy.scope for policy in ROUTE_POLICIES} <= scopes
+
+    def test_no_forge_route_takes_the_model_scope(self) -> None:
+        """``forge:model`` is Bifröst's: Forge's allow-list must never admit it."""
+        assert FORGE_MODEL_SCOPE not in {policy.scope for policy in ROUTE_POLICIES}
+        assert policy_refusal("GET", "/api/v1/forge/sessions", (FORGE_MODEL_SCOPE,)) is not None
 
 
 class TestTokenDetection:

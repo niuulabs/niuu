@@ -169,7 +169,7 @@ async def test_a_raw_source_that_fails_its_integrity_check_stops_the_import(back
 async def test_a_root_without_a_wiki_and_a_session_layer_are_refused(backend, tmp_path) -> None:
     with pytest.raises(WikiImportError, match="no wiki/"):
         await import_wiki(backend, tmp_path, ORG, OPERATOR)
-    with pytest.raises(WikiImportError, match="not a session"):
+    with pytest.raises(WikiImportError, match="not session"):
         await import_wiki(backend, tmp_path, Layer(LayerKind.SESSION, "s"), OPERATOR)
 
 

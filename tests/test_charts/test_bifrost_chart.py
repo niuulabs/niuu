@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from bifrost.config import BifrostConfig
+from bifrost.config import BifrostConfig, ForgeSessionAuthConfig
 
 CHART = Path(__file__).parents[2] / "charts" / "bifrost"
 
@@ -16,6 +16,14 @@ def test_selection_is_opt_in_and_config_is_not_duplicated():
     source = (CHART / "values.yaml").read_text()
     assert source.splitlines().count("config:") == 1
     assert yaml.safe_load(source)["config"]["selection"] is None
+
+
+def test_forge_session_acceptance_is_off_until_a_forge_url_is_set():
+    values = yaml.safe_load((CHART / "values.yaml").read_text())
+    section = values["config"]["forge_session"]
+    parsed = ForgeSessionAuthConfig.model_validate(section)
+    assert parsed.base_url == ""
+    assert parsed.timeout_seconds == ForgeSessionAuthConfig().timeout_seconds
 
 
 @pytest.mark.skipif(shutil.which("helm") is None, reason="Helm is required to render charts")

@@ -328,6 +328,38 @@ config:
     systems: []
     # -- Tenant id -> the `name` of the system holding that org's layers.
     tenants: {}
+    # -- How the gateway authenticates as a service (Forge's memory/ended for retention,
+    # the Bifröst model catalog): a niuu.ports.http_auth.HttpAuthPort dynamic adapter,
+    # rendered as given. Required when enabled. Examples:
+    #   {adapter: niuu.adapters.outbound.http_auth.FileBearerTokenAuthAdapter,
+    #    token_file: /var/run/secrets/memory/token}
+    #   {adapter: niuu.adapters.outbound.http_auth.NoAuthHeaderAdapter}   # no auth at all
+    serviceAuth: {}
+    # -- Bifröst's base URL, e.g. http://bifrost:8080: the model catalog sizes the context
+    # pack, and memory_ask answers through /v1/messages. Required when enabled.
+    bifrostUrl: ""
+    # -- Seconds before a Bifröst call times out (an answer call waits for the whole
+    # answer). Null = the service default (300).
+    bifrostTimeoutSeconds: null
+    # -- Serve memory_ask. false is a choice to go without cited answers.
+    askEnabled: true
+    # -- The Bifröst model memory_ask answers with. Required when askEnabled.
+    answerModel: ""
+    # -- Search hits memory_ask reads before answering; reaching it is a listed gap.
+    # Null = the service default (10).
+    askRetrievalCount: null
+    # -- Share of the session model's context window the launch context pack may take.
+    # Null = the service default (0.05).
+    contextPackShare: null
+    # -- Characters per token the context pack is measured with. Null = default (4).
+    charsPerToken: null
+    # -- Days a run or session layer outlives its run or session. Null = default (14).
+    retentionDays: null
+    # -- Seconds between retention sweeps. Null = the service default (3600).
+    retentionSweepSeconds: null
+    # -- Roles that make a person an org admin (decides org proposals).
+    # Empty = the service default ([volundr:admin]).
+    orgAdminRoles: []
 
 # Optional dynamic Flux deployment adapter configuration. Disabled by default.
 # Supply namespace, source_name, chart_versions, images and cluster in this map.

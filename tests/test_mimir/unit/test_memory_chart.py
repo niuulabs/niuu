@@ -25,6 +25,13 @@ _SYSTEM = {
 }
 
 
+_STEP2 = {
+    "serviceAuth": {"adapter": "niuu.adapters.outbound.http_auth.NoAuthHeaderAdapter"},
+    "bifrostUrl": "http://bifrost:8080",
+    "answerModel": "answer-model-1",
+}
+
+
 def _helm(tmp_path: Path, memory: dict) -> subprocess.CompletedProcess[str]:
     values = tmp_path / "values.yaml"
     values.write_text(yaml.safe_dump({"config": {"backend": _BACKEND, "memory": memory}}))
@@ -64,10 +71,21 @@ def test_an_enabled_gateway_renders_its_systems_tenants_and_secret_mounts(
                 "defaultResultCount": 20,
                 "systems": [{**_SYSTEM, "recallLimit": 100, "pageSize": 50}],
                 "tenants": {"acme": "acme-brain"},
+                **_STEP2,
+                "contextPackShare": 0.1,
+                "retentionDays": 7,
+                "retentionSweepSeconds": 600,
+                "orgAdminRoles": ["admin"],
             },
         )
     )
     memory = _config(docs)["memory"]
+    assert memory["service_auth"] == _STEP2["serviceAuth"]
+    assert memory["bifrost_url"] == "http://bifrost:8080"
+    assert memory["ask_enabled"] is True and memory["answer_model"] == "answer-model-1"
+    assert memory["context_pack_share"] == 0.1
+    assert (memory["retention_days"], memory["retention_sweep_seconds"]) == (7, 600)
+    assert memory["org_admin_roles"] == ["admin"]
     assert memory["forge_base_url"] == "http://volundr:8080"
     assert memory["forge_timeout_seconds"] == 5
     assert memory["default_result_count"] == 20
@@ -105,12 +123,27 @@ def test_an_enabled_gateway_renders_its_systems_tenants_and_secret_mounts(
     ("memory", "message"),
     [
         ({"enabled": True, "systems": [_SYSTEM]}, "config.memory.forgeBaseUrl is required"),
+        (
+            {"enabled": True, "forgeBaseUrl": "http://f", "systems": [_SYSTEM]},
+            "config.memory.serviceAuth.adapter is required",
+        ),
+        (
+            {
+                "enabled": True,
+                "forgeBaseUrl": "http://f",
+                "systems": [_SYSTEM],
+                **_STEP2,
+                "answerModel": "",
+            },
+            "config.memory.answerModel is required",
+        ),
         ({"enabled": True, "forgeBaseUrl": "http://f"}, "at least one memory system"),
         (
             {
                 "enabled": True,
                 "forgeBaseUrl": "http://f",
                 "systems": [{k: v for k, v in _SYSTEM.items() if k != "signingKeySecret"}],
+                **_STEP2,
             },
             "signingKeySecret.name is required",
         ),
@@ -132,3 +165,16 @@ def test_the_backend_is_still_required(tmp_path: Path) -> None:
     )
     assert rendered.returncode != 0
     assert "config.backend.mcpUrl is required" in rendered.stderr
+
+
+def test_ask_can_be_turned_off_without_an_answer_model(tmp_path: Path) -> None:
+    memory = {
+        "enabled": True,
+        "forgeBaseUrl": "http://f",
+        "systems": [_SYSTEM],
+        **_STEP2,
+        "answerModel": "",
+        "askEnabled": False,
+    }
+    rendered = _config(_docs(_helm(tmp_path, memory)))["memory"]
+    assert rendered["ask_enabled"] is False and "answer_model" not in rendered

@@ -165,6 +165,16 @@ class ManagedModelConfig(BaseModel):
     effort_note: str = Field(
         default="", description="Model-specific effort behavior shown to users."
     )
+    context_window: int | None = Field(
+        default=None,
+        gt=0,
+        description=(
+            "Input tokens the model accepts, from the vendor's documented limit. Null means "
+            "no documented limit is recorded; it is never a guess. A consumer that needs the "
+            "window for a model with null (the memory gateway sizing a context pack) refuses "
+            "naming this field, so set it here to enable that model."
+        ),
+    )
 
     @model_validator(mode="after")
     def resolve_effort_options(self) -> ManagedModelConfig:
@@ -183,7 +193,13 @@ class ManagedModelConfig(BaseModel):
 
 
 def _default_models() -> list[ManagedModelConfig]:
-    """Built-in Bifrost model catalog used when no explicit catalog is configured."""
+    """Built-in Bifrost model catalog used when no explicit catalog is configured.
+
+    ``context_window`` is set only where the vendor's documented limit is stated in this
+    catalog (the 1M-token models). Every other entry leaves it null: no limit is recorded
+    for it here, and a number is never guessed. Set it in ``models`` / ``additional_models``
+    from the vendor's documentation to enable a consumer that needs the window.
+    """
     return [
         ManagedModelConfig(
             id="openai-codex/gpt-6-astra",
@@ -217,6 +233,9 @@ def _default_models() -> list[ManagedModelConfig]:
             ),
             # Claude Fable 5.1 is $10 in / $50 out per 1M tokens (blended shown).
             cost_per_million_tokens=30.0,
+            # 1M-token window: the vendor's documented limit, stated in the description above
+            # and in Forge's `session_usage.model_windows` (LEX-1421 model contract).
+            context_window=1_000_000,
             session_definition="skuldClaude",
             supports_tools=True,
             supports_thinking=True,
@@ -237,6 +256,9 @@ def _default_models() -> list[ManagedModelConfig]:
             ),
             # Claude Opus 5.5 is $4 in / $20 out per 1M tokens (blended shown).
             cost_per_million_tokens=12.0,
+            # 1M-token window: the vendor's documented limit, stated in the description above
+            # and in Forge's `session_usage.model_windows` (LEX-1421 model contract).
+            context_window=1_000_000,
             session_definition="skuldClaude",
             supports_tools=True,
             supports_thinking=True,
@@ -274,6 +296,8 @@ def _default_models() -> list[ManagedModelConfig]:
             ),
             # GPT-6 Astra is $10 in / $50 out per 1M tokens; use the output rate.
             cost_per_million_tokens=50.0,
+            # 1M-token window: the vendor's documented limit, stated in the description above.
+            context_window=1_000_000,
             session_definition="skuldCodex",
             supports_tools=True,
             supports_thinking=True,
@@ -291,6 +315,8 @@ def _default_models() -> list[ManagedModelConfig]:
             ),
             # GPT-6 Sol is $2 in / $10 out per 1M tokens; use the output rate.
             cost_per_million_tokens=10.0,
+            # 1M-token window: the vendor's documented limit, stated in the description above.
+            context_window=1_000_000,
             session_definition="skuldCodex",
             supports_tools=True,
             supports_thinking=True,
@@ -308,6 +334,8 @@ def _default_models() -> list[ManagedModelConfig]:
             ),
             # GPT-6 Luna is $0.10 in / $0.50 out per 1M tokens; use the output rate.
             cost_per_million_tokens=0.5,
+            # 1M-token window: the vendor's documented limit, stated in the description above.
+            context_window=1_000_000,
             session_definition="skuldCodex",
             supports_tools=True,
             supports_thinking=True,
@@ -387,6 +415,8 @@ def _default_models() -> list[ManagedModelConfig]:
             ),
             # Muse Spark 1.3 is $1.25 in / $4.25 out per 1M tokens; use the output rate.
             cost_per_million_tokens=4.25,
+            # 1M-token window: the vendor's documented limit, stated in the description above.
+            context_window=1_000_000,
             session_definition="skuldMuse",
             supports_tools=True,
             supports_thinking=True,
@@ -400,6 +430,8 @@ def _default_models() -> list[ManagedModelConfig]:
             color="#0866FF",
             description="Meta Muse Spark 1.2 — the previous Muse Code model; 1M-token context.",
             cost_per_million_tokens=4.25,
+            # 1M-token window: the vendor's documented limit, stated in the description above.
+            context_window=1_000_000,
             session_definition="skuldMuse",
             supports_tools=True,
             supports_thinking=True,
@@ -1010,6 +1042,47 @@ class PATRevocationConfig(BaseModel):
     )
 
 
+class ForgeSessionAuthConfig(BaseModel):
+    """How Bifröst confirms a Forge session credential on its model routes.
+
+    A ``forge_session`` credential carrying ``forge:model`` is accepted on
+    ``/v1/messages``, ``/v1/chat/completions`` and ``/v1/responses`` in every
+    ``auth_mode``, and nowhere else. Bifröst presents it to Forge
+    (``GET {base_url}/api/v1/forge/sessions/{id}``); Forge's 200 is the proof, and its
+    answer (owner, tenant, session) is the identity usage is charged to. Without a
+    ``base_url`` Bifröst cannot confirm one, so it refuses a session credential with a
+    401 naming this setting; it never admits one unconfirmed.
+    """
+
+    base_url: str = Field(
+        default="",
+        description=(
+            "Forge's base URL (for example http://volundr:8080). Empty means session "
+            "credentials are not accepted: a model call that presents one is refused 401, "
+            "naming this setting. Set it wherever sessions (or the memory gateway acting for "
+            "one) call Bifröst with their Forge session credential."
+        ),
+    )
+    timeout_seconds: float = Field(
+        default=10.0,
+        gt=0,
+        allow_inf_nan=False,
+        description=(
+            "Per-request timeout when asking Forge about a session. Forge unreachable or "
+            "slower than this refuses the call with a 503 naming Forge; it is never "
+            "answered from a cache or admitted unconfirmed."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _base_url_is_http(self) -> ForgeSessionAuthConfig:
+        if self.base_url and not self.base_url.startswith(("http://", "https://")):
+            raise ValueError(
+                f"forge_session.base_url {self.base_url!r} must start with http:// or https://"
+            )
+        return self
+
+
 class BifrostConfig(BaseModel):
     """Top-level Bifröst gateway configuration."""
 
@@ -1104,6 +1177,13 @@ class BifrostConfig(BaseModel):
     pat_revocation: PATRevocationConfig = Field(
         default_factory=PATRevocationConfig,
         description="Revocation check applied to PATs accepted in auth_mode='pat'.",
+    )
+    forge_session: ForgeSessionAuthConfig = Field(
+        default_factory=ForgeSessionAuthConfig,
+        description=(
+            "Confirmation of Forge session credentials presented on the model routes, "
+            "in every auth_mode. See ForgeSessionAuthConfig."
+        ),
     )
     oidc_kwargs: dict[str, Any] = Field(
         default_factory=dict,

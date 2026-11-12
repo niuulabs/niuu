@@ -348,3 +348,83 @@ class TestEnforcedAccessLimits:
             await SessionMCPContributor().contribute(
                 session, SessionContext(workload_config={"mimir": config})
             )
+
+
+GATEWAY = "http://127.0.0.1:8080/api/v1/mimir"
+
+
+class TestWithTheMemoryGateway:
+    """With memory.gateway_url the gateway holds the limits; no per-mount server is started."""
+
+    def _context(self, mimir: dict) -> SessionContext:
+        return SessionContext(workload_config={"mimir": mimir})
+
+    async def test_no_per_mount_server_is_emitted(self, session):
+        mimir = {
+            "registry_refs": [
+                {"mount_name": "a", "registry_entry_id": "e1", "url": "https://a.example"},
+                {"mount_name": "b", "registry_entry_id": "e2", "url": "https://b.example"},
+            ]
+        }
+
+        result = await SessionMCPContributor(memory_gateway_url=GATEWAY).contribute(
+            session, self._context(mimir)
+        )
+
+        assert result.values == {}
+        # Without the gateway the same config starts one server per mount.
+        without = await SessionMCPContributor().contribute(session, self._context(mimir))
+        assert [s["name"] for s in without.values["mcpServers"]] == ["mimir-a", "mimir-b"]
+
+    @pytest.mark.parametrize(("access", "prefixes"), [("read", ()), ("read_write", ("x/",))])
+    async def test_a_restricted_mount_is_not_refused(self, session, access, prefixes):
+        mimir = _enforced("a", access, prefixes, registry_entry_id="e1", url="https://m")
+
+        result = await SessionMCPContributor(memory_gateway_url=GATEWAY).contribute(
+            session, self._context(mimir)
+        )
+
+        assert result.values == {}
+        with pytest.raises(MimirMountConfigError, match="'a' limits writes.*memory gateway"):
+            await SessionMCPContributor().contribute(session, self._context(mimir))
+
+    async def test_an_adapter_only_mount_needs_no_endpoint(self, session):
+        mimir = {
+            "registry_refs": [
+                {
+                    "mount_name": "g",
+                    "registry_entry_id": "e1",
+                    "adapter": "mimir.adapters.gbrain.GBrainMimirAdapter",
+                }
+            ]
+        }
+
+        result = await SessionMCPContributor(memory_gateway_url=GATEWAY).contribute(
+            session, self._context(mimir)
+        )
+
+        assert result.values == {}
+
+    @pytest.mark.parametrize(
+        ("mimir", "message"),
+        [
+            ({"instances": [{"name": "a", "url": "https://a"}]}, "instances.*registry_refs"),
+            ({"hosted_url": "https://h"}, "hosted_url.*registry_refs"),
+            ({"registry_refs": [{"mount_name": "a", "url": "https://a"}]}, "registry_entry_id"),
+            ({"ephemeral_locals": [{"mount_name": "s"}]}, "ephemeral_locals"),
+        ],
+    )
+    async def test_a_mount_the_gateway_could_not_open_is_refused_not_dropped(
+        self, session, mimir, message
+    ):
+        with pytest.raises(MimirMountConfigError, match=message):
+            await SessionMCPContributor(memory_gateway_url=GATEWAY).contribute(
+                session, self._context(mimir)
+            )
+
+    async def test_a_session_without_mimir_config_is_untouched(self, session):
+        result = await SessionMCPContributor(memory_gateway_url=GATEWAY).contribute(
+            session, SessionContext()
+        )
+
+        assert result.values == {}

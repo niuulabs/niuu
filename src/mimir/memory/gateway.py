@@ -1,11 +1,16 @@
 """The memory gateway: one view of a session's layers, and the write rules on every call.
 
 Design sections 4–6. The gateway resolves a session's layers from Forge's answer
-(org always, project when the session has one, session always), reads them as
-one view with every record labelled by its layer, and routes each write by the
-rules in :mod:`mimir.memory.rules`: written to the layer, or recorded as a
+(org always, project when the session has one, run when it is a member of a
+workflow run, session always, and an attached layer per attached memory), reads
+them as one view with every record labelled by its layer, and routes each write
+by the rules in :mod:`mimir.memory.rules`: written to the layer, or recorded as a
 proposal for the layer's owner. Trust comes from who calls, never from what the
 call says; a session is an ``agent``.
+
+The org's own layers are namespaces of its one memory system. An attached layer
+is a separate store opened from the gateway's registry; reads fan out to it and
+merge like any layer, and writes reach it only as the attachment allows.
 
 Reads that disagree are shown, not hidden: the same page in several layers is
 returned for each, nearest layer first; facts come highest trust first, then
@@ -19,7 +24,7 @@ from __future__ import annotations
 import json
 import logging
 import uuid
-from collections.abc import Awaitable, Callable, Iterable, Sequence
+from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
 from typing import Any
@@ -27,6 +32,8 @@ from typing import Any
 from mimir.memory.models import (
     Attribution,
     ChangeAction,
+    ChangeSet,
+    EntityLayer,
     Evidence,
     HitKind,
     Layer,
@@ -55,7 +62,8 @@ from mimir.memory.rules import (
     refuse,
 )
 from mimir.memory.systems import MemorySystems
-from mimir.ports.memory_backend import MemoryBackend, require_capabilities
+from mimir.ports.attached_memory import AttachedMemories, AttachedMemoryError
+from mimir.ports.memory_backend import Capability, MemoryBackend, require_capabilities
 from niuu.domain.mimir import OPERATIONAL_SOURCE_TYPES
 from niuu.domain.mimir_facts import (
     Fact,
@@ -231,20 +239,47 @@ def page_disagreements(pages: Sequence[LabelledPage]) -> list[Disagreement]:
 
 @dataclass(frozen=True)
 class Session:
-    """One call's resolved session: its view and the system holding its layers."""
+    """One call's resolved session: its view, the org's system holding its own layers,
+    and the store behind each attached layer."""
 
     view: SessionView
     backend: MemoryBackend
+    attached: Mapping[Layer, MemoryBackend] = field(default_factory=dict)
 
     @property
     def layers(self) -> tuple[Layer, ...]:
         return self.view.layers
+
+    @property
+    def system_layers(self) -> tuple[Layer, ...]:
+        """The layers that live in the org's memory system (all but attached ones)."""
+        return tuple(layer for layer in self.layers if layer.kind is not LayerKind.ATTACHED)
+
+    @property
+    def system_namespaces(self) -> tuple[str, ...]:
+        return tuple(layer.namespace for layer in self.system_layers)
+
+    def store(self, layer: Layer) -> tuple[str, MemoryBackend]:
+        """The system name and backend that hold *layer*."""
+        if layer.kind is LayerKind.ATTACHED:
+            return layer.id, self.attached[layer]
+        return self.view.system, self.backend
+
+    def groups(self, layers: Sequence[Layer]) -> list[tuple[str, MemoryBackend, list[Layer]]]:
+        """*layers* grouped by the store that holds them, nearest group first."""
+        grouped: dict[str, tuple[str, MemoryBackend, list[Layer]]] = {}
+        for layer in sorted(layers, key=lambda lyr: lyr.distance):
+            name, backend = self.store(layer)
+            grouped.setdefault(name, (name, backend, []))[2].append(layer)
+        return list(grouped.values())
 
 
 class MemoryGateway:
     """Args:
     systems: the memory systems and which org lives on which.
     default_result_count: results a list read returns when the caller names no limit.
+    attached: opens the stores behind attached layers; None on a gateway that serves
+        no attached memories, where a session that has one is refused.
     """
 
     def __init__(
@@ -252,12 +287,18 @@ class MemoryGateway:
         systems: MemorySystems,
         *,
         default_result_count: int,
+        attached: AttachedMemories | None = None,
     ) -> None:
         if default_result_count < 1:
             raise ValueError("default_result_count must be positive")
         self._systems = systems
         self._default_count = default_result_count
+        self._attached = attached
         self._ready: set[tuple[str, str]] = set()
+
+    @property
+    def systems(self) -> MemorySystems:
+        return self._systems
 
     @property
     def default_result_count(self) -> int:
@@ -272,9 +313,34 @@ class MemoryGateway:
         """
         system, backend = self._systems.for_tenant(context.tenant_id)
         view = SessionView.of(context, system)
+        attached: dict[Layer, MemoryBackend] = {}
         for layer in view.layers:
+            if layer.kind is LayerKind.ATTACHED:
+                attached[layer] = self._open_attached(view, layer)
+                continue
             await self._place(system, backend, layer.kind, layer.namespace)
-        return Session(view=view, backend=backend)
+        return Session(view=view, backend=backend, attached=attached)
+
+    def _open_attached(self, view: SessionView, layer: Layer) -> MemoryBackend:
+        attachment = view.attachment(layer)
+        if self._attached is None:
+            raise LayerUnavailableError(
+                f"{layer.id} cannot be opened: this gateway has no registry of attached memories"
+            )
+        try:
+            store = self._attached.open(view.context.tenant_id, attachment, layer.namespace)
+        except AttachedMemoryError as exc:
+            raise LayerUnavailableError(f"{layer.id} cannot be opened: {exc}") from exc
+        require_capabilities(layer.id, store, LayerKind.ATTACHED)
+        return store
+
+    def forget(self, system: str, namespace: str) -> None:
+        """Forget that *namespace* was prepared on *system* (it was deleted)."""
+        self._ready.discard((system, namespace))
+
+    async def place(self, system: str, backend: MemoryBackend, kind: LayerKind, ns: str) -> None:
+        """Make namespace *ns* (of a layer of *kind*) ready on *system*, once per process."""
+        await self._place(system, backend, kind, ns)
 
     async def _place(self, system: str, backend: MemoryBackend, kind: LayerKind, ns: str) -> None:
         if (system, ns) in self._ready:
@@ -319,25 +385,33 @@ class MemoryGateway:
         limit: int | None = None,
     ) -> list[LabelledHit]:
         chosen = self._layers(session, layers)
-        namespaces = [layer.namespace for layer in chosen]
-        hits = await self._guard(
-            namespaces,
-            session.view.system,
-            session.backend.search(
-                namespaces,
-                query,
-                kinds=frozenset(kinds or HitKind),
-                limit=self._limit(limit),
-            ),
-        )
+        count = self._limit(limit)
+        wanted = frozenset(kinds or HitKind)
+        ranked: list[list[SearchHit]] = []
+        for system, backend, group in session.groups(chosen):
+            namespaces = [layer.namespace for layer in group]
+            ranked.append(
+                await self._guard(
+                    namespaces,
+                    system,
+                    backend.search(namespaces, query, kinds=wanted, limit=count),
+                )
+            )
+        # Each store ranks its own hits; their scores do not compare, so the lists are
+        # interleaved by rank, nearest store first, up to the caller's count.
+        hits = [
+            group[rank]
+            for rank in range(max((len(g) for g in ranked), default=0))
+            for group in ranked
+            if rank < len(group)
+        ][:count]
         by_ref: dict[tuple[HitKind, str], list[LabelledHit]] = {}
         order: list[tuple[HitKind, str]] = []
         for hit in hits:
             layer = session.view.layer_of_namespace(hit.namespace)
-            if layer is None:
+            if layer is None or layer not in chosen:
                 raise MemoryBackendError(
-                    f"memory system {session.view.system!r} returned a hit outside the "
-                    f"requested layers ({hit.namespace})"
+                    f"a memory system returned a hit outside the requested layers ({hit.namespace})"
                 )
             key = (hit.kind, hit.ref)
             if key not in by_ref:
@@ -355,23 +429,30 @@ class MemoryGateway:
         if sep and kind == "fact":
             return await self._read_fact(session, rest.strip())
         if sep and kind == "source":
+            holding = [lyr for lyr in chosen if self._can(session, lyr, Capability.SOURCES)]
             sources = await self._each_layer(
-                session, chosen, lambda lyr: session.backend.get_source(lyr.namespace, rest.strip())
+                session,
+                holding,
+                lambda lyr: session.store(lyr)[1].get_source(lyr.namespace, rest.strip()),
             )
             if not sources:
                 raise RecordNotFoundError(f"no source {rest.strip()} in this session's layers")
             return ReadResult(sources=tuple(LabelledSource(lyr, s) for lyr, s in sources))
         pages = await self._each_layer(
-            session, chosen, lambda lyr: session.backend.get_page(lyr.namespace, ref)
+            session, chosen, lambda lyr: session.store(lyr)[1].get_page(lyr.namespace, ref)
         )
         if not pages:
             raise RecordNotFoundError(f"no page {ref} in this session's layers")
         labelled = tuple(LabelledPage(lyr, p) for lyr, p in pages)
         return ReadResult(pages=labelled, disagreements=tuple(page_disagreements(labelled)))
 
+    @staticmethod
+    def _can(session: Session, layer: Layer, capability: Capability) -> bool:
+        return capability in session.store(layer)[1].capabilities
+
     async def _read_fact(self, session: Session, fact_id: str) -> ReadResult:
         found = await self._guard(
-            session.view.namespaces, session.view.system, session.backend.get_fact(fact_id)
+            session.system_namespaces, session.view.system, session.backend.get_fact(fact_id)
         )
         layer = session.view.layer_of_namespace(found.namespace)
         if layer is None:
@@ -389,7 +470,10 @@ class MemoryGateway:
         for layer in sorted(layers, key=lambda lyr: lyr.distance):
             try:
                 found.append(
-                    (layer, await self._guard([layer.namespace], session.view.system, read(layer)))
+                    (
+                        layer,
+                        await self._guard([layer.namespace], session.store(layer)[0], read(layer)),
+                    )
                 )
             except RecordNotFoundError:
                 continue
@@ -398,15 +482,7 @@ class MemoryGateway:
     async def entity(self, session: Session, name: str) -> EntityCard:
         subject = _subject(name)
         views = [
-            (
-                layer,
-                await self._guard(
-                    [layer.namespace],
-                    session.view.system,
-                    session.backend.entity(layer.namespace, subject),
-                ),
-            )
-            for layer in session.layers
+            (layer, await self._entity_layer(session, layer, subject)) for layer in session.layers
         ]
         pages = tuple(LabelledPage(lyr, v.page) for lyr, v in views if v.page is not None)
         facts = order_facts(LabelledFact(lyr, f.fact) for lyr, v in views for f in v.facts)
@@ -423,14 +499,31 @@ class MemoryGateway:
             omitted=tuple(o for _, v in views for o in v.omitted),
         )
 
+    async def _entity_layer(self, session: Session, layer: Layer, subject: str) -> EntityLayer:
+        """What *layer* knows about *subject*; a store without facts contributes its page."""
+        system, backend = session.store(layer)
+        if Capability.FACTS in backend.capabilities:
+            return await self._guard(
+                [layer.namespace], system, backend.entity(layer.namespace, subject)
+            )
+        try:
+            page: PageRecord | None = await self._guard(
+                [layer.namespace], system, backend.get_page(layer.namespace, subject)
+            )
+        except RecordNotFoundError:
+            page = None
+        return EntityLayer(
+            namespace=layer.namespace, subject=subject, page=page, aliases=(), links=(), facts=()
+        )
+
     async def recall(
         self, session: Session, about: str, *, kinds: Iterable[FactKind] | None = None
     ) -> RecallResult:
         subject = _subject(about)
         recalled = await self._guard(
-            session.view.namespaces,
+            session.system_namespaces,
             session.view.system,
-            session.backend.recall(session.view.namespaces, subject=subject),
+            session.backend.recall(session.system_namespaces, subject=subject),
         )
         wanted = set(kinds or FactKind)
         facts = []
@@ -449,6 +542,44 @@ class MemoryGateway:
             disagreements=tuple(fact_disagreements(ordered)),
             omitted=recalled.omitted,
         )
+
+    async def changes(
+        self,
+        session: Session,
+        since: datetime,
+        *,
+        layers: Sequence[Layer],
+        page_size: int | None = None,
+    ) -> list[tuple[Layer, ChangeSet]]:
+        """What changed after *since* in *layers*, every change, oldest first per layer.
+
+        Pages through each layer's feed until it has no more; *page_size* (default:
+        the default result count) is how many are asked per call, not a limit. Only
+        layers of the org's own system keep a feed; an attached layer is refused.
+        """
+        size = self._limit(page_size)
+        found: list[tuple[Layer, ChangeSet]] = []
+        for layer in layers:
+            if layer.kind is LayerKind.ATTACHED:
+                raise MemoryValidationError(f"{layer.id} keeps no change feed")
+            cursor = since.isoformat()
+            while True:
+                batch = await self._guard(
+                    [layer.namespace],
+                    session.view.system,
+                    session.backend.delta([layer.namespace], since=cursor, limit=size),
+                )
+                found.append((layer, batch))
+                if not batch.has_more:
+                    break
+                if batch.cursor == cursor:
+                    raise LayerUnavailableError(
+                        f"the change feed of {layer.id} on memory system "
+                        f"{session.view.system!r} says it has more but did not move its cursor "
+                        f"past {cursor}"
+                    )
+                cursor = batch.cursor
+        return found
 
     # -- writes ----------------------------------------------------------
 
@@ -534,10 +665,11 @@ class MemoryGateway:
             return await self._propose(
                 session, target, ChangeAction.WRITE_PAGE, change, cited, decision
             )
+        system, backend = session.store(target)
         record = await self._guard(
             [target.namespace],
-            session.view.system,
-            session.backend.put_page(
+            system,
+            backend.put_page(
                 target.namespace,
                 ref,
                 page,
@@ -574,10 +706,11 @@ class MemoryGateway:
             return await self._propose(
                 session, target, ChangeAction.ADD_TIMELINE, change, cited, decision
             )
+        system, backend = session.store(target)
         await self._guard(
             [target.namespace],
-            session.view.system,
-            session.backend.append_timeline(
+            system,
+            backend.append_timeline(
                 target.namespace, ref, row, self._attribution(session.view.caller, cited)
             ),
             "written",
@@ -678,7 +811,7 @@ class MemoryGateway:
 
     async def _fact_in(self, session: Session, fact_id: str) -> tuple[Layer, Fact]:
         found = await self._guard(
-            session.view.namespaces, session.view.system, session.backend.get_fact(fact_id)
+            session.system_namespaces, session.view.system, session.backend.get_fact(fact_id)
         )
         layer = session.view.layer_of_namespace(found.namespace)
         if layer is None:
@@ -817,7 +950,7 @@ def _subject(name: str) -> str:
 
 
 def _proposal_json(proposal: Proposal) -> dict[str, Any]:
-    return {
+    data: dict[str, Any] = {
         "id": proposal.id,
         "target_layer": proposal.target_layer,
         "status": proposal.status.value,
@@ -832,6 +965,60 @@ def _proposal_json(proposal: Proposal) -> dict[str, Any]:
         "approver": proposal.approver,
         "created_at": proposal.created_at.isoformat(),
     }
+    if proposal.promoted_from:
+        data["promoted_from"] = proposal.promoted_from
+    if proposal.status is not ProposalStatus.PENDING:
+        data["decided_by"] = proposal.decided_by
+        data["decided_at"] = proposal.decided_at.isoformat() if proposal.decided_at else None
+        data["decision"] = proposal.decision
+        data["applied"] = proposal.applied
+    return data
+
+
+def _proposal_body(target: Layer, proposal: Proposal) -> str:
+    origin = (
+        f"promoted from {proposal.promoted_from} by {proposal.proposer}"
+        if proposal.promoted_from
+        else f"from session {proposal.proposer_session}"
+    )
+    head = (
+        f"Proposal to {proposal.action.value.replace('_', ' ')} in {target.id}, "
+        f"{origin} (owner {proposal.session_owner}). "
+    )
+    if proposal.status is ProposalStatus.PENDING:
+        head += f"{proposal.approver} must approve it. Why it was not written: {proposal.reason}."
+    else:
+        head += f"{proposal.status.value.capitalize()} by {proposal.decided_by}"
+        head += f": {proposal.decision}." if proposal.decision else "."
+    return f"{head}\n\n```json\n{json.dumps(_proposal_json(proposal), ensure_ascii=False)}\n```"
+
+
+async def _put_proposal(
+    backend: MemoryBackend,
+    system: str,
+    target: Layer,
+    namespace: str,
+    proposal: Proposal,
+    attribution: Attribution,
+    expected_revision: str | None = None,
+) -> PageRecord:
+    try:
+        return await backend.put_page(
+            namespace,
+            proposal.id,
+            PageWrite(
+                compiled_truth=_proposal_body(target, proposal),
+                title=f"Proposal {proposal.id}",
+                page_type=_PROPOSAL_TYPE,
+                evidence=proposal.evidence,
+            ),
+            attribution,
+            expected_revision=expected_revision,
+        )
+    except (MemoryBackendError, FactBackendError) as exc:
+        raise LayerUnavailableError(
+            f"the proposal for {target.id} could not be recorded on memory system {system!r}: {exc}"
+        ) from exc
 
 
 async def write_proposal(
@@ -845,29 +1032,43 @@ async def write_proposal(
     """Record *proposal* as a page in the target layer's proposals namespace."""
     namespace = target.proposals_namespace
     await place(system, backend, target.kind, namespace)
-    body = (
-        f"Proposal to {proposal.action.value.replace('_', ' ')} in {target.id}, "
-        f"from session {proposal.proposer_session} (owner {proposal.session_owner}). "
-        f"{proposal.approver} must approve it. Why it was not written: {proposal.reason}.\n\n"
-        f"```json\n{json.dumps(_proposal_json(proposal), ensure_ascii=False)}\n```"
+    await _put_proposal(
+        backend,
+        system,
+        target,
+        namespace,
+        proposal,
+        Attribution.by(caller, proposal.evidence, proposal.created_at),
     )
-    try:
-        await backend.put_page(
-            namespace,
-            proposal.id,
-            PageWrite(
-                compiled_truth=body,
-                title=f"Proposal {proposal.id}",
-                page_type=_PROPOSAL_TYPE,
-                evidence=proposal.evidence,
-            ),
-            Attribution.by(caller, proposal.evidence, proposal.created_at),
-            expected_revision=None,
-        )
-    except (MemoryBackendError, FactBackendError) as exc:
-        raise LayerUnavailableError(
-            f"the proposal for {target.id} could not be recorded on memory system {system!r}: {exc}"
-        ) from exc
+
+
+async def write_decision(
+    backend: MemoryBackend,
+    system: str,
+    target: Layer,
+    decided: Proposal,
+    decider: FactCaller,
+    place: Any,
+    *,
+    expected_revision: str | None = None,
+) -> str:
+    """Record a decided proposal in the target layer's decided namespace; its revision.
+
+    With no *expected_revision* it fails with RevisionConflictError when the record is
+    already there: someone decided the proposal first.
+    """
+    namespace = target.decided_namespace
+    await place(system, backend, target.kind, namespace)
+    record = await _put_proposal(
+        backend,
+        system,
+        target,
+        namespace,
+        decided,
+        Attribution.by(decider, decided.evidence, decided.decided_at or datetime.now(UTC)),
+        expected_revision,
+    )
+    return record.revision
 
 
 def proposal_from_page(page: PageRecord) -> Proposal:
@@ -877,6 +1078,7 @@ def proposal_from_page(page: PageRecord) -> Proposal:
     if start < 0 or end <= start:
         raise MemoryBackendError(f"proposal page {page.slug} holds no proposal record")
     data = json.loads(page.compiled_truth[start + len("```json\n") : end])
+    decided_at = data.get("decided_at")
     return Proposal(
         id=data["id"],
         target_layer=data["target_layer"],
@@ -892,11 +1094,16 @@ def proposal_from_page(page: PageRecord) -> Proposal:
         approver=data["approver"],
         created_at=datetime.fromisoformat(data["created_at"]),
         attested=page.attribution.attested,
+        promoted_from=str(data.get("promoted_from") or ""),
+        decided_by=str(data.get("decided_by") or ""),
+        decided_at=datetime.fromisoformat(decided_at) if decided_at else None,
+        decision=str(data.get("decision") or ""),
+        applied=str(data.get("applied") or ""),
     )
 
 
 async def list_proposals(backend: MemoryBackend, layer: Layer, *, limit: int) -> list[Proposal]:
-    """Pending proposals for *layer*, for its owner to review (approval is step 2)."""
+    """Up to *limit* pending proposals for *layer*, oldest first, for its owner to decide."""
     namespace = layer.proposals_namespace
     refs = await backend.list_pages(namespace, limit=limit)
     proposals = []

@@ -14,6 +14,7 @@ from collections.abc import Callable, Iterator
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
+from unittest.mock import AsyncMock
 
 import httpx
 import pytest
@@ -29,8 +30,9 @@ from skuld.forge_mcp.stdio import (
     main,
 )
 from skuld.forge_mcp.stdio import MEMORY_PROFILE as STDIO_MEMORY_PROFILE
-from skuld.memory_mcp.gateway import MemoryGatewayClient
+from skuld.memory_mcp.gateway import ContextPack, MemoryContextPackError, MemoryGatewayClient
 from skuld.memory_mcp.routes import register_memory_mcp_routes
+from skuld.transports.session_tools import claude_cli_args
 
 SESSION_ID = "0b6c1d7e-3f0a-4a8e-9a57-6a9c2f1d0e11"
 GATEWAY = "http://gateway.test/api/v1/mimir"
@@ -68,8 +70,17 @@ def _settings(tmp_path: Path, **overrides: Any) -> SkuldSettings:
     )
 
 
-def _broker(tmp_path: Path, **overrides: Any) -> Broker:
-    return Broker(settings=_settings(tmp_path, **overrides))
+PACK_TEXT = "Entity: Checkout service. Open thread: retry policy undecided."
+
+
+def _broker(tmp_path: Path, *, pack: bool = True, **overrides: Any) -> Broker:
+    """A broker; by default the context pack startup() would have fetched is already in."""
+    broker = Broker(settings=_settings(tmp_path, **overrides))
+    if pack:
+        broker._memory_context_pack = ContextPack(
+            text=PACK_TEXT, budget_tokens=1000, used_tokens=20, omitted=()
+        )
+    return broker
 
 
 # ------------------------------------------------------------------ settings
@@ -553,6 +564,335 @@ class TestRoutes:
         client = broker._memory_gateway()
         assert client.base_url == GATEWAY
         assert broker._memory_gateway() is client
+
+
+# ------------------------------------------------------------------ context pack at start
+
+PACK_PATH = "/api/v1/mimir/memory/context-pack"
+
+
+def _pack_body(**overrides: Any) -> dict[str, Any]:
+    return {
+        "text": PACK_TEXT,
+        "budget_tokens": 1000,
+        "used_tokens": 20,
+        "omitted": [],
+        **overrides,
+    }
+
+
+class PackGateway:
+    """A fake gateway serving only the context pack (and the tools listing)."""
+
+    def __init__(self, response: Callable[[httpx.Request], httpx.Response] | None = None) -> None:
+        self.requests: list[httpx.Request] = []
+        self.timeouts: list[Any] = []
+        self.response = response or (lambda _r: httpx.Response(200, json=_pack_body()))
+
+    def handler(self, request: httpx.Request) -> httpx.Response:
+        self.requests.append(request)
+        self.timeouts.append(request.extensions.get("timeout"))
+        if request.url.path == PACK_PATH and request.method == "GET":
+            return self.response(request)
+        return httpx.Response(404, json={"detail": "no route"})
+
+    @property
+    def pack_requests(self) -> list[httpx.Request]:
+        return [r for r in self.requests if r.url.path == PACK_PATH]
+
+
+def _unfetched(tmp_path: Path, fake: PackGateway, **overrides: Any) -> Broker:
+    """A broker whose pack must come from ``fake`` through ``startup()``."""
+    broker = _broker(tmp_path, pack=False, **overrides)
+    broker._memory_gateway_cache = MemoryGatewayClient(
+        base_url=GATEWAY,
+        token=FORGE_CREDENTIAL,
+        timeout_s=5,
+        transport=httpx.MockTransport(fake.handler),
+    )
+    return broker
+
+
+def _claude_prompt(broker: Broker) -> str:
+    argv = broker._create_transport()._interactive_argv()
+    return argv[argv.index("--append-system-prompt") + 1]
+
+
+class TestContextPackAtStart:
+    def test_the_pack_timeout_is_a_knob_and_must_be_positive(self) -> None:
+        with pytest.raises(ValidationError):
+            SkuldSettings(
+                memory={
+                    "enabled": True,
+                    "gateway_url": GATEWAY,
+                    "context_pack_timeout_s": 0,
+                },
+                forge_mcp={"token": FORGE_CREDENTIAL},
+            )
+
+    async def test_startup_fetches_the_pack_with_the_session_credential(
+        self, tmp_path: Path
+    ) -> None:
+        fake = PackGateway()
+        broker = _unfetched(tmp_path, fake, memory={"context_pack_timeout_s": 7.5})
+        await broker.startup()
+        try:
+            [request] = fake.pack_requests
+            assert request.headers["authorization"] == f"Bearer {FORGE_CREDENTIAL}"
+            assert fake.timeouts[0]["read"] == 7.5
+            assert broker._transport is not None
+            assert broker.startup_status()["startup_state"] == "ready"
+        finally:
+            await broker.shutdown()
+
+    async def test_the_pack_reaches_claude_under_a_heading(self, tmp_path: Path) -> None:
+        fake = PackGateway()
+        broker = _unfetched(tmp_path, fake)
+        await broker.startup()
+        try:
+            prompt = _claude_prompt(broker)
+            assert "## Memory context at launch" in prompt
+            assert PACK_TEXT in prompt
+            assert prompt.index("## Memory context at launch") < prompt.index(PACK_TEXT)
+            assert "present-file" in prompt  # the other capability text is still there
+        finally:
+            await broker.shutdown()
+
+    async def test_a_resume_reuses_the_same_text_without_asking_again(self, tmp_path: Path) -> None:
+        fake = PackGateway()
+        broker = _unfetched(tmp_path, fake)
+        await broker.startup()
+        try:
+            first = _claude_prompt(broker)
+            # The gateway now says something else; a resumed harness must not see it.
+            fake.response = lambda _r: httpx.Response(200, json=_pack_body(text="a different pack"))
+            await broker._load_memory_context_pack()
+            resumed = claude_cli_args(
+                broker._session_tools(),
+                mcp_servers=[],
+                legacy_mcp_config=None,
+                system_prompt="first run only",
+                include_system_prompt=False,
+            )
+            prompt = resumed[resumed.index("--append-system-prompt") + 1]
+            assert PACK_TEXT in prompt and "a different pack" not in prompt
+            assert "first run only" not in prompt
+            assert _claude_prompt(broker) == first
+            assert len(fake.pack_requests) == 1
+        finally:
+            await broker.shutdown()
+
+    async def test_the_pack_reaches_codex_app_server_developer_instructions(
+        self, tmp_path: Path
+    ) -> None:
+        fake = PackGateway()
+        broker = _unfetched(
+            tmp_path, fake, transport_adapter="skuld.transports.codex_ws.CodexWebSocketTransport"
+        )
+        await broker.startup()
+        try:
+            transport = broker._transport
+            assert transport is not None
+            instructions = transport._developer_instructions()
+            assert "## Memory context at launch" in instructions
+            assert PACK_TEXT in instructions
+            rpc = AsyncMock(side_effect=[{"userAgent": "codex"}, {}, {"thread": {"id": "t-1"}}])
+            transport._send_rpc = rpc
+            transport._send_notification = AsyncMock()
+            transport._authenticate_codex = AsyncMock()
+            transport.on_event(AsyncMock())
+            await transport._handshake()
+            thread = rpc.await_args_list[-1].args[1]
+            assert PACK_TEXT in thread["developerInstructions"]
+        finally:
+            await broker.shutdown()
+
+    async def test_the_pack_reaches_codex_exec_developer_instructions(self, tmp_path: Path) -> None:
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        fake = PackGateway()
+        broker = _unfetched(
+            tmp_path, fake, transport_adapter="skuld.transports.codex.CodexSubprocessTransport"
+        )
+        await broker.startup()
+        try:
+            transport = broker._transport
+            assert transport is not None
+            await transport.start()
+            process = MagicMock(stdout=None, stderr=None, returncode=0)
+            with patch(
+                "skuld.transports.codex.asyncio.create_subprocess_exec",
+                new_callable=AsyncMock,
+                return_value=process,
+            ) as spawn:
+                try:
+                    await transport.send_message("hi")
+                except Exception:  # noqa: BLE001 - the fake process has no stdout to parse
+                    pass
+            argv = list(spawn.call_args.args)
+            overrides = [argv[i + 1] for i, arg in enumerate(argv) if arg == "-c"]
+            [instructions] = [o for o in overrides if o.startswith("developer_instructions=")]
+            assert PACK_TEXT in instructions
+            assert FORGE_CREDENTIAL not in json.dumps(argv)
+            assert FORGE_CREDENTIAL not in json.dumps(spawn.call_args.kwargs["env"])
+        finally:
+            await broker.shutdown()
+
+    async def test_the_credential_is_in_neither_claude_args_nor_the_agent_env(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("SKULD__FORGE_MCP__TOKEN", FORGE_CREDENTIAL)
+        fake = PackGateway()
+        broker = _unfetched(tmp_path, fake)
+        await broker.startup()
+        try:
+            transport = broker._transport
+            assert transport is not None
+            assert FORGE_CREDENTIAL not in json.dumps(transport._interactive_argv())
+            assert FORGE_CREDENTIAL not in json.dumps(transport._spawn_env())
+            assert FORGE_CREDENTIAL not in _claude_prompt(broker)
+        finally:
+            await broker.shutdown()
+
+    @pytest.mark.parametrize(
+        ("response", "reason"),
+        [
+            (lambda _r: httpx.Response(500, json={"detail": "entity store down"}), "entity store"),
+            (lambda _r: httpx.Response(403, json={"detail": "no forge:memory"}), "refused"),
+            (lambda _r: httpx.Response(200, text="<html>"), "invalid JSON"),
+            (lambda _r: httpx.Response(200, json={"text": PACK_TEXT}), "omitted"),
+            (lambda _r: httpx.Response(200, json=_pack_body(text=None)), "text"),
+            (lambda _r: httpx.Response(200, json=_pack_body(budget_tokens="x")), "budget_tokens"),
+        ],
+    )
+    async def test_a_gateway_failure_stops_startup_naming_the_url_and_the_reason(
+        self,
+        tmp_path: Path,
+        response: Callable[[httpx.Request], httpx.Response],
+        reason: str,
+    ) -> None:
+        fake = PackGateway(response)
+        broker = _unfetched(tmp_path, fake)
+        await broker.startup()
+        status = broker.startup_status()
+        assert status["ready"] is False
+        assert status["startup_state"] == "failed"
+        assert "MemoryContextPackError" in status["error"]
+        assert f"{GATEWAY}/memory/context-pack" in status["error"]
+        assert reason in status["error"]
+        assert broker._transport is None
+        assert broker._memory_context_pack is None
+
+    async def test_an_unreachable_gateway_stops_startup(self, tmp_path: Path) -> None:
+        def refuse(_request: httpx.Request) -> httpx.Response:
+            raise httpx.ConnectError("connection refused")
+
+        broker = _unfetched(tmp_path, PackGateway(refuse))
+        await broker.startup()
+        status = broker.startup_status()
+        assert status["startup_state"] == "failed"
+        assert GATEWAY in status["error"] and "connection refused" in status["error"]
+        assert broker._transport is None
+
+    async def test_a_timeout_stops_startup_naming_the_url(self, tmp_path: Path) -> None:
+        def slow(_request: httpx.Request) -> httpx.Response:
+            raise httpx.ReadTimeout("took too long")
+
+        broker = _unfetched(tmp_path, PackGateway(slow))
+        await broker.startup()
+        status = broker.startup_status()
+        assert status["startup_state"] == "failed"
+        assert GATEWAY in status["error"] and "ReadTimeout" in status["error"]
+
+    async def test_a_failed_pack_is_reported_to_forge_as_a_failed_start(
+        self, tmp_path: Path
+    ) -> None:
+        import asyncio
+
+        broker = _unfetched(
+            tmp_path, PackGateway(lambda _r: httpx.Response(502, json={"detail": "bad gateway"}))
+        )
+        broker.volundr_api_url = "http://forge.test"
+        broker._post_activity_payload = AsyncMock(return_value=True)  # type: ignore[method-assign]
+        await broker.startup()
+        for _ in range(5):
+            await asyncio.sleep(0)
+        reports = [call.args[0] for call in broker._post_activity_payload.await_args_list]
+        [failed] = [report for report in reports if report["state"] == "error"]
+        assert failed["metadata"]["startup_failed"] is True
+        assert "context-pack" in failed["metadata"]["error"]
+
+    async def test_an_empty_text_with_omitted_entries_is_a_real_pack_and_is_logged(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        omitted = [{"ref": "entity:checkout", "tokens": 5000}, {"ref": "entity:cart"}]
+        fake = PackGateway(
+            lambda _r: httpx.Response(
+                200, json=_pack_body(text="", budget_tokens=10, used_tokens=0, omitted=omitted)
+            )
+        )
+        broker = _unfetched(tmp_path, fake)
+        with caplog.at_level("INFO", logger="skuld.broker"):
+            await broker.startup()
+        try:
+            assert broker.startup_status()["startup_state"] == "ready"
+            assert broker._memory_context_pack is not None
+            assert list(broker._memory_context_pack.omitted) == omitted
+            assert "left out 2 entries" in caplog.text
+            assert "## Memory context at launch" not in _claude_prompt(broker)
+        finally:
+            await broker.shutdown()
+
+    async def test_omitted_entries_are_logged_beside_a_pack_with_text(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        fake = PackGateway(
+            lambda _r: httpx.Response(200, json=_pack_body(omitted=[{"ref": "entity:cart"}]))
+        )
+        broker = _unfetched(tmp_path, fake)
+        with caplog.at_level("INFO", logger="skuld.broker"):
+            await broker.startup()
+        try:
+            assert "left out 1 entries" in caplog.text
+            assert PACK_TEXT in _claude_prompt(broker)
+        finally:
+            await broker.shutdown()
+
+    async def test_memory_disabled_fetches_nothing_and_adds_no_heading(
+        self, tmp_path: Path
+    ) -> None:
+        fake = PackGateway()
+        broker = _unfetched(tmp_path, fake, memory={"enabled": False, "gateway_url": ""})
+        await broker.startup()
+        try:
+            assert fake.requests == []
+            assert "Memory context" not in _claude_prompt(broker)
+        finally:
+            await broker.shutdown()
+
+    def test_building_the_tools_before_the_pack_is_fetched_is_a_bug_not_an_empty_pack(
+        self, tmp_path: Path
+    ) -> None:
+        broker = _broker(tmp_path, pack=False)
+        with pytest.raises(RuntimeError, match="context pack was not fetched"):
+            broker._session_tools()
+
+    async def test_the_client_rejects_a_boolean_token_count(self) -> None:
+        client = MemoryGatewayClient(
+            base_url=GATEWAY,
+            token=FORGE_CREDENTIAL,
+            timeout_s=5,
+            transport=httpx.MockTransport(
+                lambda _r: httpx.Response(200, json=_pack_body(used_tokens=True))
+            ),
+        )
+        with pytest.raises(Exception, match="used_tokens"):
+            await client.context_pack(timeout_s=5)
+
+    async def test_the_error_type_is_the_one_startup_catches(self, tmp_path: Path) -> None:
+        broker = _unfetched(tmp_path, PackGateway(lambda _r: httpx.Response(500, text="boom")))
+        with pytest.raises(MemoryContextPackError, match="Fix the memory gateway"):
+            await broker._load_memory_context_pack()
 
 
 # ------------------------------------------------------------------ stdio profile

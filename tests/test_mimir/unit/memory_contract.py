@@ -127,6 +127,15 @@ class MemoryBackendContract:
                 A, "nope", NewTimelineRow(date(2026, 11, 10), "x", EVIDENCE), attribution()
             )
 
+    async def test_a_deleted_page_is_gone(self, backend: MemoryBackend) -> None:
+        await backend.create_namespace(A)
+        await backend.put_page(A, "p", PageWrite("one"), attribution(), expected_revision=None)
+        await backend.delete_page(A, "p")
+        with pytest.raises(RecordNotFoundError):
+            await backend.get_page(A, "p")
+        with pytest.raises(RecordNotFoundError):
+            await backend.delete_page(A, "p")
+
     async def test_namespaces_keep_pages_apart(self, backend: MemoryBackend) -> None:
         for ns, text in ((A, "in a"), (B, "in b")):
             await backend.create_namespace(ns)
@@ -261,6 +270,13 @@ class MemoryBackendContract:
         assert not rest.has_more
 
     # -- namespaces ------------------------------------------------------
+
+    async def test_every_created_namespace_is_listed(self, backend: MemoryBackend) -> None:
+        for ns in (A, "session-s1", "_proposals/project-a"):
+            await backend.create_namespace(ns)
+        assert {A, "session-s1", "_proposals/project-a"} <= set(await backend.list_namespaces())
+        await backend.delete_namespace("session-s1")
+        assert "session-s1" not in await backend.list_namespaces()
 
     async def test_creating_a_namespace_twice_is_harmless(self, backend: MemoryBackend) -> None:
         assert await backend.create_namespace(A) is True

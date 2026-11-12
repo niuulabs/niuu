@@ -22,6 +22,31 @@ same engines: Claude Code (every transport) and Codex. The design is
    write and trust rules; Skuld only carries the call, and the server's tools are
    approved by default (`default_tools_approval_mode: approve`).
 
+## Context at launch
+
+When memory is enabled, the broker also asks the gateway for the session's context pack
+before it creates the harness (`GET {memory.gateway_url}/memory/context-pack`, with the
+same Forge credential). The pack's `text` (the entities in the project brief and the
+objective, their open threads, the facts that hold now, what changed since the owner's
+last session) is added to the harness instructions under the heading
+`## Memory context at launch`: Claude Code's `--append-system-prompt` and Codex's
+developer instructions (app-server and `exec`), and any other engine that takes the
+session's capability text.
+
+- The pack is fetched **once per broker start**. A resumed harness gets the same text, not
+  a fresh fetch.
+- What did not fit the pack's budget is listed in `omitted`; the broker logs the count
+  (warning, `skuld.broker`) and the gateway counts it. A pack with empty `text` and
+  `omitted` entries is a real pack: every entry was too large for the budget.
+- If the gateway cannot be reached, refuses the credential, times out
+  (`memory.context_pack_timeout_s`) or answers a malformed pack, the broker does not
+  start. `/ready` reports `startup_state: failed` with an error naming
+  `<gateway_url>/memory/context-pack` and the reason, and Forge is told the start failed.
+  No empty pack stands in for a missing one. Set `memory.enabled` to `false` to run a
+  session without memory.
+- The credential is used only for this call. It is not in the harness arguments or
+  environment; the pack text itself is.
+
 ## Configuration
 
 Forge sets these for every session when its own `memory.gateway_url` is configured.
@@ -34,6 +59,7 @@ Forge sets these for every session when its own `memory.gateway_url` is configur
 | `memory.gateway_request_timeout_s` | | `120` | One broker to gateway call |
 | `memory.broker_request_timeout_s` | | `150` | One stdio to broker call |
 | `memory.tool_timeout_s` | | `180` | The engine's own tool-call timeout (Codex) |
+| `memory.context_pack_timeout_s` | | `30` | The one broker to gateway call that fetches the context pack at startup |
 | `memory.startup_timeout_s` | | `20` | The engine's server startup timeout (Codex) |
 | `memory.stdio_max_concurrency` | | `4` | Tool calls served in parallel |
 

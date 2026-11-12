@@ -76,10 +76,10 @@ class TestInstructions:
         text = instructions(await gateway.open(context(prefixes=())))
         assert "none are set, so propose every change" in text
 
-    def test_memory_ask_is_not_offered(self) -> None:
-        names = [tool["name"] for tool in MemoryTools.definitions()]
+    def test_memory_ask_is_not_offered_without_an_answer_model(self, tools) -> None:
+        names = [tool["name"] for tool in tools.definitions()]
         assert "memory_ask" not in names and len(names) == 10
-        for tool in MemoryTools.definitions():
+        for tool in tools.definitions():
             assert tool["inputSchema"]["type"] == "object"
 
 

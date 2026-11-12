@@ -122,7 +122,9 @@ def create_project_memory(
     directory = directory_class(**kwargs)
     if not isinstance(directory, MemoryMountDirectory):
         raise TypeError("projects.memory.directory_adapter must implement MemoryMountDirectory")
-    return repository, ProjectMemoryResolver(repository, directory)
+    return repository, ProjectMemoryResolver(
+        repository, directory, gateway_holds_limits=bool(settings.memory.gateway_url)
+    )
 
 
 def _create_forge_session_tokens(
@@ -401,10 +403,23 @@ def require_memory_credentials(settings: Settings, *, delivers_session_credentia
     A session's memory server calls the gateway with the session's own Forge credential
     (scope ``forge:memory``), which the gateway checks with Forge. Sessions that hold no
     credential would start a memory server that every call of fails, so the combination is
-    refused at startup.
+    refused at startup. So is a Forge that verifies its callers but cannot tell which one is
+    the gateway (``memory.gateway_service_subject``): the retention sweep would be refused.
     """
     if not settings.memory.gateway_url:
         return
+    if (
+        settings.identity.adapter not in ALLOW_ALL_IDENTITY_ADAPTERS
+        and not settings.memory.gateway_service_subject
+    ):
+        raise RuntimeError(
+            "memory.gateway_url is set, but memory.gateway_service_subject is empty: only "
+            "the memory gateway's own service credential may tell Forge when run and session "
+            "layers ended (POST /api/v1/forge/memory/ended), and Forge cannot tell which "
+            "caller that is. Set it to the gateway's workload subject (for example "
+            "system:serviceaccount:niuu:mimir), or clear memory.gateway_url to run sessions "
+            "without a memory server"
+        )
     if not settings.forge_mcp.session_tokens.enabled:
         raise RuntimeError(
             "memory.gateway_url is set, but forge_mcp.session_tokens.enabled is false: the "
@@ -1057,7 +1072,9 @@ def _create_contributors(
     from volundr.adapters.outbound.contributors.session_mcp import SessionMCPContributor
 
     if not _has_contributor("session_mcp"):
-        contributors.append(SessionMCPContributor(**ports))
+        contributors.append(
+            SessionMCPContributor(memory_gateway_url=settings.memory.gateway_url, **ports)
+        )
         logger.info("Session contributor: session_mcp (auto-wired)")
 
     return contributors

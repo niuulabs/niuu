@@ -14,6 +14,7 @@ from volundr.domain.ports import (
     SessionContributor,
 )
 from volundr.domain.project_memory import MIMIR_SERVER_PREFIX
+from volundr.domain.services.memory_context import MemoryContextError, attached_mounts
 
 logger = logging.getLogger(__name__)
 
@@ -360,15 +361,23 @@ class SessionMCPContributor(SessionContributor):
     The contributor is generic at the session layer: it inspects attached
     resources and emits ``mcpServers`` into session values. Mimir is simply the
     first supported resource type behind this contributor.
+
+    With the memory gateway (*memory_gateway_url*, ``memory.gateway_url``) the session's
+    one ``memory`` server carries every mount, and the gateway holds their limits: this
+    contributor then emits no per-mount ``mimir-<name>`` server and does not refuse a
+    restricted mount. It refuses a mount the gateway could not open (one with no registry
+    entry), so nothing is dropped silently.
     """
 
     def __init__(
         self,
         *,
         launch_spec_provider: LaunchSpecProvider | None = None,
+        memory_gateway_url: str = "",
         **_extra: object,
     ) -> None:
         self._launch_spec_provider = launch_spec_provider
+        self._memory_gateway_url = memory_gateway_url.strip()
 
     @property
     def name(self) -> str:
@@ -391,12 +400,24 @@ class SessionMCPContributor(SessionContributor):
         if not mimir_cfg:
             return SessionContribution()
 
+        if self._memory_gateway_url:
+            self._require_attachable(mimir_cfg)
+            return SessionContribution()
+
         instances, _write_routing = _resolve_mimir_runtime(mimir_cfg)
         if not instances:
             return SessionContribution()
 
         mcp_servers = [self._build_mimir_server(instance) for instance in instances]
         return SessionContribution(values={"mcpServers": mcp_servers})
+
+    @staticmethod
+    def _require_attachable(mimir_cfg: dict[str, Any]) -> None:
+        """Refuse a launch whose mounts the memory gateway could not open."""
+        try:
+            attached_mounts(mimir_cfg)
+        except MemoryContextError as exc:
+            raise MimirMountConfigError(str(exc)) from exc
 
     def _resolve_workload(
         self,

@@ -14,6 +14,7 @@ from volundr.adapters.outbound.contributors.memory_server import (
     MEMORY_GATEWAY_URL_ENV,
     MemoryServerContributor,
 )
+from volundr.adapters.outbound.contributors.session_mcp import MimirMountConfigError
 from volundr.adapters.outbound.flux import FluxPodManager
 from volundr.adapters.outbound.local_process import LocalProcessPodManager
 from volundr.composition_builders import require_memory_credentials
@@ -52,6 +53,13 @@ def test_a_contributor_without_a_gateway_names_the_fix(url: str) -> None:
 class TestConfig:
     def test_memory_is_off_by_default(self) -> None:
         assert Settings().memory.gateway_url == ""
+        assert Settings().memory.gateway_service_subject == ""
+
+    def test_the_service_subject_is_trimmed(self) -> None:
+        subject = "system:serviceaccount:niuu:mimir"
+        assert (
+            MemoryConfig(gateway_service_subject=f" {subject} ").gateway_service_subject == subject
+        )
 
     def test_a_trailing_slash_is_dropped_and_whitespace_trimmed(self) -> None:
         assert MemoryConfig(gateway_url=f"  {URL}/ ").gateway_url == URL
@@ -63,6 +71,23 @@ class TestConfig:
 
 
 class TestWiring:
+    async def test_a_configured_gateway_reaches_the_session_mcp_contributor(self) -> None:
+        mimir = {
+            "registry_refs": [{"mount_name": "a", "registry_entry_id": "e", "url": "https://a"}],
+            "bindings": [{"mount_name": "a", "access": "read", "enforce": True}],
+        }
+        context = SessionContext(workload_config={"mimir": mimir})
+
+        def session_mcp(settings: Settings):
+            return next(c for c in _create_contributors(settings) if c.name == "session_mcp")
+
+        with_gateway = await session_mcp(Settings(memory={"gateway_url": URL})).contribute(
+            Session(name="s"), context
+        )
+        assert with_gateway.values == {}
+        with pytest.raises(MimirMountConfigError, match="limits writes"):
+            await session_mcp(Settings()).contribute(Session(name="s"), context)
+
     def test_a_configured_gateway_wires_the_contributor_once(self) -> None:
         contributors = _create_contributors(Settings(memory={"gateway_url": URL}))
 
@@ -88,6 +113,27 @@ class TestStartupChecks:
         )
         with pytest.raises(RuntimeError, match="forge_mcp.session_tokens"):
             require_memory_credentials(settings, delivers_session_credential=True)
+
+    def test_a_gateway_with_a_verifying_identity_needs_the_service_subject(self) -> None:
+        settings = Settings(
+            memory={"gateway_url": URL},
+            identity={"adapter": "volundr.adapters.outbound.identity.EnvoyHeaderIdentityAdapter"},
+        )
+        with pytest.raises(RuntimeError, match="memory.gateway_service_subject"):
+            require_memory_credentials(settings, delivers_session_credential=True)
+
+    def test_a_verifying_identity_with_the_service_subject_starts(self) -> None:
+        settings = Settings(
+            memory={"gateway_url": URL, "gateway_service_subject": "system:serviceaccount:n:m"},
+            identity={"adapter": "volundr.adapters.outbound.identity.EnvoyHeaderIdentityAdapter"},
+        )
+        require_memory_credentials(settings, delivers_session_credential=True)
+
+    def test_no_gateway_needs_no_service_subject_whatever_the_identity(self) -> None:
+        settings = Settings(
+            identity={"adapter": "volundr.adapters.outbound.identity.EnvoyHeaderIdentityAdapter"}
+        )
+        require_memory_credentials(settings, delivers_session_credential=False)
 
     def test_a_gateway_no_broker_can_authenticate_to_is_fatal_and_names_the_fix(self) -> None:
         with pytest.raises(RuntimeError, match="projection_adapter"):

@@ -14,7 +14,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 from mimir.exceptions import MimirConfigurationError
-from mimir.memory.models import LayerKind
+from mimir.memory.models import SYSTEM_LAYER_KINDS
 from mimir.ports.memory_backend import MemoryBackend, require_capabilities
 from niuu.utils import import_class
 
@@ -35,7 +35,7 @@ class MemorySystems:
                     f"{_TENANTS}.{tenant} names memory system {name!r}, which is not in "
                     f"{_SYSTEMS} (configured: {known})"
                 )
-            for kind in LayerKind:
+            for kind in SYSTEM_LAYER_KINDS:
                 require_capabilities(name, systems[name], kind)
         self._systems = dict(systems)
         self._tenants = dict(tenants)
@@ -85,6 +85,14 @@ class MemorySystems:
                 f"({tenant_id}: <system name>)"
             )
         return name, self._systems[name]
+
+    def items(self) -> list[tuple[str, MemoryBackend]]:
+        """Every configured system, by name."""
+        return list(self._systems.items())
+
+    def tenants_of(self, name: str) -> list[str]:
+        """The orgs whose layers live on system *name*."""
+        return [tenant for tenant, system in self._tenants.items() if system == name]
 
     async def close(self) -> None:
         for backend in self._systems.values():

@@ -132,16 +132,21 @@ class MimirFactsConfig(BaseModel):
 
 
 class MemoryGatewayConfig(BaseModel):
-    """The memory gateway (docs/design/memory): sessions' ``memory`` tools over their layers.
+    """The memory gateway (docs/design/memory): sessions' ``memory`` tools over their layers,
+    the context pack, the people routes for proposals and promotions, and retention.
 
     Off unless ``enabled``. When enabled, every setting below is checked at startup:
-    a system that cannot be built, a tenant naming a system that does not exist, or
-    a system lacking a capability its layers need stops the service.
+    a system that cannot be built, a tenant naming a system that does not exist, a
+    system lacking a capability its layers need, a missing Bifröst URL or service
+    credential stops the service.
     """
 
     enabled: bool = Field(
         default=False,
-        description="Serve GET/POST /memory/tools on the Mímir API prefixes.",
+        description=(
+            "Serve the memory routes (/memory/tools, /memory/context-pack, /memory/proposals, "
+            "/memory/promotions) on the Mímir API prefixes, and sweep expired layers."
+        ),
     )
     forge_base_url: str = Field(
         default="",
@@ -178,7 +183,107 @@ class MemoryGatewayConfig(BaseModel):
         ge=1,
         description=(
             "How many results memory_search and list reads return when the caller names no "
-            "`limit`. A default, not a cap: a caller may ask for more."
+            "`limit`. A default, not a cap: a caller may ask for more. The context pack "
+            "considers this many pages for the session's objective and for its project brief; "
+            "reaching it is listed in the pack's `omitted` and counted."
+        ),
+    )
+    service_auth: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "How the gateway authenticates as a service, to Forge's "
+            "POST /api/v1/forge/memory/ended (the retention sweep) and to the Bifröst model "
+            "catalog: a dynamic niuu.ports.http_auth.HttpAuthPort adapter, e.g. {adapter: "
+            "niuu.adapters.outbound.http_auth.WorkloadIdentityBearerTokenAuthAdapter, "
+            "audiences: [forge, bifrost]} on a cluster, or {adapter: "
+            "niuu.adapters.outbound.http_auth.NoAuthHeaderAdapter} in mini mode without auth. "
+            "Required when enabled."
+        ),
+    )
+    bifrost_url: str = Field(
+        default="",
+        description=(
+            "Bifröst's base URL. The context pack reads the session model's context_window "
+            "from GET {bifrost_url}/models/{id}; memory_ask answers through "
+            "POST {bifrost_url}/v1/messages with the session's own credential, charged to "
+            "the session's owner. Required when enabled."
+        ),
+    )
+    bifrost_timeout_seconds: float = Field(
+        default=300.0,
+        gt=0,
+        description=(
+            "Timeout of each Bifröst call. An answer call waits for the whole answer, so this "
+            "bounds the longest answer memory_ask can wait for; a timeout is a tool error."
+        ),
+    )
+    ask_enabled: bool = Field(
+        default=True,
+        description=(
+            "Serve the memory_ask tool. False is the operator's choice to go without cited "
+            "answers; the other tools and the context pack are unaffected."
+        ),
+    )
+    answer_model: str = Field(
+        default="",
+        description=(
+            "The Bifröst model memory_ask answers with. Required when ask_enabled. No output "
+            "cap is sent: the model's own limit bounds the answer, and an answer cut off by it "
+            "is an error naming this setting."
+        ),
+    )
+    ask_retrieval_count: int = Field(
+        default=10,
+        ge=1,
+        description=(
+            "Search hits memory_ask reads in full before answering (plus the current facts "
+            "about each hit page's subject). Bounded by what the answer model's context can "
+            "hold. When a search returns this many, the answer lists it as a gap and the hit "
+            "is counted."
+        ),
+    )
+    context_pack_share: float = Field(
+        default=0.05,
+        gt=0,
+        le=1,
+        description=(
+            "Share of the session model's context window (Bifröst catalog context_window) the "
+            "launch context pack may take. Bounded by what the harness needs besides it: its "
+            "own system prompt and tools, and the session's work. What does not fit is listed "
+            "in the pack's `omitted` and counted."
+        ),
+    )
+    chars_per_token: int = Field(
+        default=4,
+        ge=1,
+        description=(
+            "Characters per token the context pack is measured with: a character-count "
+            "estimate, as gbrain budgets, not a tokenizer."
+        ),
+    )
+    retention_days: float = Field(
+        default=14,
+        ge=0,
+        description=(
+            "Days a run or session layer outlives its run or session (design decision "
+            "2026-11-12), after which the retention sweep deletes it. A layer whose session "
+            "or run Forge no longer knows is deleted at once."
+        ),
+    )
+    retention_sweep_seconds: float = Field(
+        default=3600.0,
+        gt=0,
+        description=(
+            "Seconds between retention sweeps. A failed sweep is logged at error, counted "
+            "(memory.retention_sweep on the degraded counter) and tried again after this long."
+        ),
+    )
+    org_admin_roles: list[str] = Field(
+        default_factory=lambda: ["volundr:admin"],
+        min_length=1,
+        description=(
+            "Roles of a person's login that make them an org admin, who decides proposals "
+            "to the org layer."
         ),
     )
 

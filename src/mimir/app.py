@@ -30,7 +30,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from identity.adapters.jwks import JwksBearerAuthenticationAdapter
-from mimir.adapters.memory_rest import MemoryRouter, is_memory_tool_route
+from mimir.adapters.memory_rest import MemoryRouter, is_session_route
 from mimir.backend import build_backend
 from mimir.config import MimirServiceConfig
 from mimir.facts import FactCallerResolver, FactService
@@ -39,7 +39,7 @@ from mimir.mcp import MimirMcpServer
 from mimir.registry import MimirRegistryStore
 from mimir.router import MimirRouter
 from niuu.domain.services.token_scope import credential_allows_route
-from niuu.ports.identity import InvalidTokenError
+from niuu.ports.identity import HeaderAuthenticationPort, InvalidTokenError
 from niuu.ports.mimir_facts import MimirFactPort
 from niuu.settings_schema import (
     SettingsFieldSchema,
@@ -146,7 +146,9 @@ def create_app(config: MimirServiceConfig) -> FastAPI:
         fact_callers = FactCallerResolver(
             config.facts.trust.role_levels, config.facts.trust.scope_levels
         )
-    memory_router = _build_memory_router(config)
+    memory_router = _build_memory_router(
+        config, registry_store=registry_store, identity=identity_adapter
+    )
     mcp_server = MimirMcpServer(
         adapter=adapter,
         name=config.name,
@@ -160,6 +162,8 @@ def create_app(config: MimirServiceConfig) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        if memory_router is not None:
+            memory_router.start()
         try:
             yield
         finally:
@@ -238,10 +242,10 @@ def create_app(config: MimirServiceConfig) -> FastAPI:
         """
         if request.url.path in health_paths:
             return await call_next(request)
-        if memory_router is not None and is_memory_tool_route(request.method, request.url.path):
-            # The memory tools authenticate every call through Forge with the session's
-            # own credential (mimir.adapters.memory_rest), never anonymously; the OIDC
-            # and credential_allows_route checks below are for Mímir's own callers.
+        if memory_router is not None and is_session_route(request.method, request.url.path):
+            # The memory session routes authenticate every call through Forge with the
+            # session's own credential (mimir.adapters.memory_rest), never anonymously; the
+            # OIDC and credential_allows_route checks below are for Mímir's own callers.
             return await call_next(request)
         if auth_mode != "oidc" and not config.tenant_id:
             return await call_next(request)
@@ -372,25 +376,107 @@ def create_app(config: MimirServiceConfig) -> FastAPI:
     return app
 
 
-def _build_memory_router(config: MimirServiceConfig) -> MemoryRouter | None:
+def _service_auth(spec: dict | None):
+    """The gateway's service credential (``memory.service_auth``), a dynamic HttpAuthPort."""
+    from niuu.utils import import_class
+
+    if not spec or not str(spec.get("adapter") or "").strip():
+        raise ValueError(
+            "memory.service_auth is not set: the gateway authenticates as a service to Forge "
+            "(retention) and to the Bifröst catalog. Set {adapter: "
+            "niuu.adapters.outbound.http_auth.WorkloadIdentityBearerTokenAuthAdapter, ...} on "
+            "a cluster, or {adapter: niuu.adapters.outbound.http_auth.NoAuthHeaderAdapter} in "
+            "mini mode without auth"
+        )
+    adapter = import_class(str(spec["adapter"]))
+    auth = adapter(**{k: v for k, v in spec.items() if k != "adapter"})
+    if not (
+        callable(getattr(auth, "headers", None)) and callable(getattr(auth, "invalidate", None))
+    ):
+        raise ValueError(f"memory.service_auth adapter {spec['adapter']!r} is not an HttpAuthPort")
+    return auth
+
+
+def _build_memory_router(
+    config: MimirServiceConfig,
+    *,
+    registry_store: MimirRegistryStore,
+    identity: HeaderAuthenticationPort,
+) -> MemoryRouter | None:
     """The memory gateway's routes, or None when ``memory.enabled`` is off.
 
     Enabled means every part must be buildable now: Forge's URL, each memory
-    system, every tenant's system and the capabilities its layers need.
+    system, every tenant's system and the capabilities its layers need, Bifröst's
+    URL, the service credential, and the answer model when memory_ask is on.
     """
     memory = config.memory
     if not memory.enabled:
         return None
+    from mimir.adapters.attached_registry import RegistryAttachedMemories
+    from mimir.adapters.bifrost_answers import BifrostAnswerModel
     from mimir.adapters.forge_directory import ForgeSessionDirectory
+    from mimir.adapters.forge_lifetimes import ForgeLayerLifetimes
+    from mimir.adapters.forge_people import ForgePeopleDirectory
+    from mimir.memory.answers import MemoryAnswers
+    from mimir.memory.curation import Curation
     from mimir.memory.gateway import MemoryGateway
+    from mimir.memory.retention import RetentionSweeper
     from mimir.memory.systems import MemorySystems
 
+    if memory.ask_enabled and not memory.answer_model.strip():
+        raise ValueError(
+            "memory.answer_model is empty while memory.ask_enabled: name the Bifröst model "
+            "memory_ask answers with, or set ask_enabled: false to go without memory_ask"
+        )
+    service_auth = _service_auth(memory.service_auth)
     directory = ForgeSessionDirectory(
         memory.forge_base_url, timeout_seconds=memory.forge_timeout_seconds
     )
     systems = MemorySystems.from_config(memory.systems, memory.tenants)
+    attached = RegistryAttachedMemories(
+        registry_store, platform_tenant_id=config.platform_tenant_id
+    )
     gateway = MemoryGateway(
         systems,
         default_result_count=memory.default_result_count,
+        attached=attached,
     )
-    return MemoryRouter(gateway, directory, tenant_id=config.tenant_id, systems=systems)
+    answers = MemoryAnswers(
+        gateway,
+        BifrostAnswerModel(
+            memory.bifrost_url,
+            timeout_seconds=memory.bifrost_timeout_seconds,
+            service_auth=service_auth,
+        ),
+        answer_model=memory.answer_model if memory.ask_enabled else "",
+        retrieval_count=memory.ask_retrieval_count,
+        context_pack_share=memory.context_pack_share,
+        chars_per_token=memory.chars_per_token,
+    )
+    curation = Curation(
+        gateway,
+        ForgePeopleDirectory(memory.forge_base_url, timeout_seconds=memory.forge_timeout_seconds),
+        org_admin_roles=memory.org_admin_roles,
+    )
+    sweeper = RetentionSweeper(
+        systems,
+        ForgeLayerLifetimes(
+            memory.forge_base_url,
+            timeout_seconds=memory.forge_timeout_seconds,
+            service_auth=service_auth,
+        ),
+        retention_days=memory.retention_days,
+        interval_seconds=memory.retention_sweep_seconds,
+        forget=gateway.forget,
+    )
+    return MemoryRouter(
+        gateway,
+        directory,
+        tenant_id=config.tenant_id,
+        systems=systems,
+        answers=answers,
+        curation=curation,
+        identity=identity,
+        sweeper=sweeper,
+        attached=attached,
+    )

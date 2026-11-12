@@ -451,12 +451,55 @@ Each step ends with a live proof, not only tests.
    ticket.
 4. **Person and resident layers, and the screens.** Mockups first.
 
-## 13. Open questions
+## 13. Decisions and open questions
 
-1. How long do run and session layers live after they end?
-2. Who may promote from a session layer: only its owner, or any project member
-   who can see the session?
-3. Should a project member's own sessions be able to read their `person` layer
+Decided 2026-11-12:
+
+1. Run and session layers live **14 days** after the run or session ends
+   (`memory.retention_days`), then they are deleted.
+2. Only the **session's owner** promotes from a session layer, and only the
+   run's owner from a run layer.
+3. A proposal to a project is approved by a member with role `approver` or
+   `owner` (a tenant admin counts as owner); to the org by an org admin.
+
+Decided while building step 2:
+
+- **Approval** writes as `operator:<approver>` and keeps the original evidence
+  plus a `proposal:<layer>/<id>` reference that names the proposer. Decided
+  proposals move to `l/_decided/<layer>/` and stay there. The decision is
+  recorded before the change is applied, so a second approver loses; if
+  applying fails the proposal stays pending. An approval never overrides a
+  `person`-level fact.
+- **Promotion** proposes a page's compiled truth with the evidence of its
+  timeline rows, and keeps the record's original trust.
+- **Attached memories** hold pages only. They read at `agent` trust (their
+  stores carry no sealed attribution), sit between project and org when
+  reading, and never take proposals: `read` refuses every write, `read_write`
+  takes pages and timeline rows under its prefixes.
+- **`memory_ask`** retrieves search hits plus the facts about each hit's
+  subject, makes one answer call through Bifröst with the session's own
+  credential (scope `forge:model`, charged to the owner), and refuses an answer
+  that cites anything it did not retrieve or says anything without a citation.
+  Nothing retrieved means no model call.
+- **The context pack** holds the pages the objective and project brief lead
+  to, with their current facts, then the changes to the project and org layers
+  since the owner's previous session in the project. Its budget is the
+  catalog's `context_window` for the session's model times
+  `memory.context_pack_share`. Open threads are not in it: threads left in
+  step 0. It is built by the gateway, not gbrain's `context_pack`, which reads
+  across every layer.
+- **Retention** is a gateway sweeper. It asks Forge when sessions and runs
+  ended (`POST /api/v1/forge/memory/ended`, the gateway's service credential)
+  and deletes layers whose end plus `memory.retention_days` has passed, and
+  layers Forge no longer knows. A Forge node that cannot answer fails the
+  sweep, never reads as "gone".
+- With the gateway configured, Forge no longer starts per-mount `mimir-<name>`
+  servers or refuses restricted mounts; a mount the gateway cannot open
+  refuses the launch.
+
+Open:
+
+4. Should a project member's own sessions be able to read their `person` layer
    in a project session, or only outside projects?
 
 ## Background

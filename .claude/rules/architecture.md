@@ -204,14 +204,61 @@ enabling them without one fails the render. When adding a NEW Forge route a sess
 to the allow-list and give it a `require_scope(...)` naming a `forge:*` scope.
 
 The memory gateway (the Mímir service, `docs/design/memory/README.md`) is the one
-non-Forge service that accepts this credential, on exactly two routes:
-`GET …/memory/tools` and `POST …/memory/tools/{name}`. It does not verify the token
+non-Forge service that accepts this credential, on exactly three routes:
+`GET …/memory/tools`, `POST …/memory/tools/{name}` and `GET …/memory/context-pack`
+(the only routes its identity middleware exempts). Its people routes
+(`…/memory/proposals…`, `…/memory/promotions`) take a person's own login through Mímir's
+identity adapter, refuse any credential carrying `workload_session_id` or that
+`credential_allows_route` denies, and pass the person's `Authorization` on to Forge. Its
+own service credential (`memory.service_auth`) is used only for
+`POST /api/v1/forge/memory/ended` and the Bifröst catalog. It does not verify the token
 itself. It reads the unverified `workload_session_id` only to address
 `GET /api/v1/forge/sessions/{id}/memory-context` (scope `forge:memory`, the session's own
 only), presents the same token there, and treats Forge's 200 as the verification; any
 other answer is a 401. The broker makes these calls; the `memory` stdio server the agent
 runs only reaches the broker's loopback routes, so the credential stays out of the agent.
 Do not admit the credential on any other Mímir route.
+
+### Exception: the memory gateway's service credential (`memory.gateway_service_subject`)
+
+The memory gateway asks Forge when run and session layers ended
+(`POST /api/v1/forge/memory/ended`) so it can delete them after retention. No person or
+session is behind that call, so it uses the gateway's own workload-identity token: an
+unscoped exchange token whose `act.sub` equals the configured
+`memory.gateway_service_subject`. Forge admits only that token on that route.
+
+- A `forge_session` credential, any scoped token or PAT, a person and any other service
+  get 403. The session allow-list stays closed to the route.
+- Where Forge's identity adapter is allow-all (local mini mode) nothing verifies callers,
+  so the local caller passes, still never with a session or scoped credential.
+- A Forge that verifies callers and has `memory.gateway_url` but no subject fails at
+  startup, and the chart refuses to render.
+- The exchange sets `act` only when the workload differs from the mapped owner, so map
+  the gateway to an owner that is not its own subject.
+- The platform front door asks every visible node and fails if one cannot answer, so an
+  unreachable node never reads as "gone" (which would delete a live layer).
+
+`GET /projects/{id}/role` and `GET /memory/runs/{id}` take a person's own login only;
+they are not scoped-credential routes.
+
+### Exception: Forge session credentials at Bifröst (`forge:model`)
+
+Bifröst accepts a `forge_session` credential carrying `forge:model` (every session has it)
+on its three model routes only: `POST /v1/messages`, `/v1/chat/completions` and
+`/v1/responses`, in every `auth_mode`, in front of the configured adapter. Every other
+Bifröst route behaves as before. The memory gateway uses it to answer `memory_ask` with
+the session's own credential, so the answer is charged to the session's owner.
+
+- Bifröst never verifies the token itself. It reads `workload_session_id` unverified only
+  to address Forge, and presents the credential to `GET /api/v1/forge/sessions/{id}`
+  (`forge_session.base_url`, `.timeout_seconds`). Forge's 200 is the proof; the answer must
+  name the same session, an owner and a tenant.
+- Usage is charged to Forge's answer: agent = `owner_id`, tenant = `tenant_id`, session =
+  the id. Attribution headers are never read for this credential.
+- Nothing is cached, so a stopped session or a new launch loses access on its next call.
+- Refusals are 401 naming why, a missing scope is 403, Forge unreachable is 503. Without
+  `forge_session.base_url` the credential is refused.
+- `credential_allows_route` admits the credential at the edge on these three routes only.
 
 ### Exception: mesh sender attestation (`mesh_peer` certificates)
 

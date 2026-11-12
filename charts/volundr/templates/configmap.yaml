@@ -213,9 +213,19 @@ data:
     {{- fail "memory.gatewayUrl needs Forge session credentials (a session's memory server authenticates to the gateway with them): enable workloadIdentity with signingKey.existingSecret, or set forgeMcp.session_tokens.signing_key_file. Or clear memory.gatewayUrl to run sessions without a memory server" }}
     {{- end }}
 
+    {{- /* Where Forge verifies its callers, it must know which one is the memory gateway:
+    only that service credential may say when run and session layers ended. */}}
+    {{- $allowAllIdentity := and (not .Values.identityAuthority.enabled) (has .Values.identity.adapter (list "volundr.adapters.outbound.identity.AllowAllIdentityAdapter" "identity.adapters.identity.AllowAllIdentityAdapter")) }}
+    {{- if and (not $allowAllIdentity) (not .Values.memory.gatewayServiceSubject) }}
+    {{- fail "memory.gatewayUrl needs memory.gatewayServiceSubject while Forge verifies its callers (identity.adapter is not the allow-all adapter): only the memory gateway's own service credential may tell Forge when run and session layers ended. Set it to the gateway's workload subject (for example system:serviceaccount:niuu:mimir), or clear memory.gatewayUrl to run sessions without a memory server" }}
+    {{- end }}
+
     # Every session runs Skuld's memory server against this gateway.
     memory:
       gateway_url: {{ tpl .Values.memory.gatewayUrl . | quote }}
+      {{- if .Values.memory.gatewayServiceSubject }}
+      gateway_service_subject: {{ .Values.memory.gatewayServiceSubject | quote }}
+      {{- end }}
     {{- end }}
     {{- $attestation := dict }}
     {{- range $key, $value := ((.Values.mesh | default dict).attestation | default dict) }}

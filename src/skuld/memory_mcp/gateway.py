@@ -4,6 +4,8 @@
 ``POST {gateway_url}/memory/tools/{name}`` runs one tool and answers an MCP
 ``CallToolResult``. Both carry ``Authorization: Bearer <the session's forge_session
 credential>``: the credential lives here, in the broker, and never reaches the agent.
+``GET {gateway_url}/memory/context-pack`` answers the session's launch context
+(``{"text", "budget_tokens", "used_tokens", "omitted"}``), fetched once per broker start.
 Every failure is a typed error naming the gateway and what went wrong; nothing here
 turns a failure into an empty tool list or an empty result.
 """
@@ -11,11 +13,13 @@ turns a failure into an empty tool list or an empty result.
 from __future__ import annotations
 
 import urllib.parse
+from dataclasses import dataclass
 from typing import Any
 
 import httpx
 
 TOOLS_SEGMENT = "memory/tools"
+CONTEXT_PACK_SEGMENT = "memory/context-pack"
 
 
 class MemoryGatewayError(Exception):
@@ -32,6 +36,25 @@ class MemoryCredentialRefusedError(MemoryGatewayError):
 
 class UnknownMemoryToolError(MemoryGatewayError):
     """The gateway answered 404 for a tool name."""
+
+
+class MemoryContextPackError(MemoryGatewayError):
+    """The session's context pack could not be fetched; the broker must not start without it."""
+
+
+@dataclass(frozen=True)
+class ContextPack:
+    """What the gateway chose to tell a session at launch.
+
+    ``omitted`` lists what did not fit the budget. An empty ``text`` with ``omitted``
+    entries is a real pack (everything was too big for the budget), and an empty
+    ``text`` with nothing omitted is a project the gateway holds nothing about yet.
+    """
+
+    text: str
+    budget_tokens: int
+    used_tokens: int
+    omitted: tuple[Any, ...]
 
 
 def _detail(response: httpx.Response) -> str:
@@ -78,7 +101,13 @@ class MemoryGatewayClient:
             self._client = None
 
     async def _request(
-        self, method: str, path: str, *, body: dict[str, Any] | None = None, tool: str = ""
+        self,
+        method: str,
+        path: str,
+        *,
+        body: dict[str, Any] | None = None,
+        tool: str = "",
+        timeout_s: float | None = None,
     ) -> dict[str, Any]:
         url = f"{self._base_url}/{path}"
         try:
@@ -87,6 +116,7 @@ class MemoryGatewayClient:
                 url,
                 json=body,
                 headers={"Authorization": f"Bearer {self._token}", "Accept": "application/json"},
+                timeout=httpx.USE_CLIENT_DEFAULT if timeout_s is None else timeout_s,
             )
         except httpx.HTTPError as exc:
             raise MemoryGatewayError(
@@ -150,3 +180,33 @@ class MemoryGatewayClient:
                 "content list"
             )
         return payload
+
+    async def context_pack(self, *, timeout_s: float) -> ContextPack:
+        """The session's launch context; a pack missing a field is an error, not a pack."""
+        payload = await self._request("GET", CONTEXT_PACK_SEGMENT, timeout_s=timeout_s)
+        text = payload.get("text")
+        omitted = payload.get("omitted")
+        budget = payload.get("budget_tokens")
+        used = payload.get("used_tokens")
+        if not isinstance(text, str):
+            raise MemoryGatewayError(
+                f"the memory gateway at {self._base_url} answered the context pack without "
+                "a text string"
+            )
+        if not isinstance(omitted, list):
+            raise MemoryGatewayError(
+                f"the memory gateway at {self._base_url} answered the context pack without "
+                "an omitted list, so what was left out cannot be reported"
+            )
+        for name, value in (("budget_tokens", budget), ("used_tokens", used)):
+            if isinstance(value, bool) or not isinstance(value, int):
+                raise MemoryGatewayError(
+                    f"the memory gateway at {self._base_url} answered the context pack "
+                    f"without an integer {name}"
+                )
+        return ContextPack(
+            text=text,
+            budget_tokens=budget,
+            used_tokens=used,
+            omitted=tuple(omitted),
+        )

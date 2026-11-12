@@ -78,16 +78,35 @@ Bearer $(cat <path>)" …`. Never echo, print or log the value, and never copy i
 present or commit."""
 
 
-def capability_instructions(*, forge_mcp_server: str | None) -> str:
+MEMORY_CONTEXT_HEADING = "## Memory context at launch"
+MEMORY_CONTEXT_PREAMBLE = (
+    "This is what the memory gateway held about this session's project and objective when "
+    "it started: the entities involved, their open threads, the facts that hold now and "
+    "what changed since your owner's last session. It is a snapshot; ask `memory_ask` or "
+    "`memory_search` for anything current or missing."
+)
+
+
+def memory_context_instruction(text: str) -> str:
+    """The launch context pack under its own heading; nothing when the pack has no text."""
+    if not text.strip():
+        return ""
+    return f"{MEMORY_CONTEXT_HEADING}\n\n{MEMORY_CONTEXT_PREAMBLE}\n\n{text.strip()}"
+
+
+def capability_instructions(*, forge_mcp_server: str | None, memory_context: str = "") -> str:
     """The capability text for a session.
 
-    present-file always; notify, descriptions and secret requests when the MCP is on.
+    present-file always; notify, descriptions and secret requests when the MCP is on;
+    the memory context pack (already fetched) when memory is on.
     """
     parts = [PRESENT_FILE_INSTRUCTION]
     if forge_mcp_server:
         parts.append(FORGE_NOTIFY_INSTRUCTION.format(server=forge_mcp_server))
         parts.append(SESSION_DESCRIPTION_INSTRUCTION.format(server=forge_mcp_server))
         parts.append(SECRETS_INSTRUCTION.format(server=forge_mcp_server))
+    if pack := memory_context_instruction(memory_context):
+        parts.append(pack)
     return "\n\n".join(parts)
 
 

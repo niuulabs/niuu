@@ -1,10 +1,12 @@
 """REST adapter for a session's memory context (under ``/api/v1/forge``).
 
 ``GET /sessions/{session_id}/memory-context`` tells the memory gateway which layers a session
-has: its owner, tenant, project, workflow run and the project layer's write prefixes. The
-gateway calls it on every request with the session's own ``forge_session`` credential, so
-Forge's live-session check (session exists, same launch, not stopped or archived) is the
-gateway's proof of the session.
+has: its owner, tenant, project, workflow run and the project layer's write prefixes, and what
+it needs for the session's context pack: its model, objective, the project's brief, when this
+owner's previous session in the project began (``since``) and the memories the launch attached
+(``attached``). The gateway calls it on every request with the session's own ``forge_session``
+credential, so Forge's live-session check (session exists, same launch, not stopped or
+archived) is the gateway's proof of the session.
 
 * 200 the context (``project_memory`` is null when the session has no project)
 * 401 the credential is revoked (session gone, restarted, stopped or archived)
@@ -13,12 +15,15 @@ gateway's proof of the session.
   read the session, because the answer is only meaningful as the session's own proof and a
   person has their own login at the gateway.
 * 404 no such session
-* 409 the session's project no longer exists
+* 409 the session's project no longer exists, or a memory it carries cannot be opened by the
+  gateway (no registry entry); the message names the fix
 * 503 this Forge runs without projects
 """
 
 from __future__ import annotations
 
+from datetime import datetime
+from typing import Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Request, Response, status
@@ -44,6 +49,19 @@ class ProjectMemoryResponse(BaseModel):
     )
 
 
+class AttachedMemoryResponse(BaseModel):
+    name: str = Field(description="The mount's name; the gateway's layer is attached:<name>")
+    registry_entry_id: str = Field(description="The Mimir registry entry the gateway opens")
+    access: Literal["read", "read_write"]
+    write_prefixes: list[str] = Field(
+        description="With read_write: the page prefixes the session may write; empty means any"
+    )
+    source: str = Field(
+        description="Where the attachment comes from: project, launch_spec, or session (set "
+        "by the session itself)"
+    )
+
+
 class MemoryContextResponse(BaseModel):
     """The layers of a session's memory, as Forge knows them."""
 
@@ -54,6 +72,15 @@ class MemoryContextResponse(BaseModel):
     project_id: UUID | None
     workflow_run_id: str | None
     project_memory: ProjectMemoryResponse | None
+    model: str | None = Field(description="The model the session was launched with")
+    objective: str | None = Field(description="The session's coordination objective")
+    project_brief: str | None = Field(description="The project's brief")
+    since: datetime | None = Field(
+        description="When this owner's previous session in the project began; null if none"
+    )
+    attached: list[AttachedMemoryResponse] = Field(
+        description="Every memory mount the launch carries (project, launch spec, session)"
+    )
 
 
 def create_memory_context_router(
@@ -71,7 +98,9 @@ def create_memory_context_router(
         responses={
             403: {"description": "Not the session's own Forge session credential"},
             404: {"description": "No such session"},
-            409: {"description": "The session's project no longer exists"},
+            409: {
+                "description": "The session's project is gone, or an attached memory is unopenable"
+            },
             503: {"description": "This Forge runs without projects"},
         },
     )
@@ -80,7 +109,7 @@ def create_memory_context_router(
         response: Response,
         session_id: UUID = Path(description="Session id"),
     ) -> MemoryContextResponse:
-        """The session's owner, tenant, project, run and the project's write prefixes."""
+        """The session's owner, tenant, project, run, prefixes, brief and attached memories."""
         credential = forge_session_claims(request)
         if credential is None:
             raise HTTPException(
@@ -112,6 +141,20 @@ def create_memory_context_router(
                 if project_memory is None
                 else ProjectMemoryResponse(write_prefixes=list(project_memory.write_prefixes))
             ),
+            model=context.model,
+            objective=context.objective,
+            project_brief=context.project_brief,
+            since=context.since,
+            attached=[
+                AttachedMemoryResponse(
+                    name=mount.name,
+                    registry_entry_id=mount.registry_entry_id,
+                    access=mount.access.value,
+                    write_prefixes=list(mount.write_prefixes),
+                    source=mount.source,
+                )
+                for mount in context.attached
+            ],
         )
 
     return router

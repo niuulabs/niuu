@@ -126,8 +126,11 @@ class Specs(LaunchSpecProvider):
         return next((s for s in self.specs.values() if s.is_default), None)
 
 
+GATEWAY_URL = "http://127.0.0.1:8080/api/v1/mimir"
+
+
 class World:
-    def __init__(self, *specs: LaunchSpec) -> None:
+    def __init__(self, *specs: LaunchSpec, gateway: bool = False) -> None:
         self.users = MemoryUsers()
         for name in ("alice", "bob", "carol", "dave"):
             self.users.seed(name, "acme", name=name.title())
@@ -136,7 +139,9 @@ class World:
         self.registry = Registry()
         self.registry.put("team-notes")
         self.registry.put("playbook", url="https://mimir.example/m")
-        self.resolver = ProjectMemoryResolver(self.repository, self.registry)
+        self.resolver = ProjectMemoryResolver(
+            self.repository, self.registry, gateway_holds_limits=gateway
+        )
         self.pods = MockPodManager()
         self.sessions = SessionService(
             InMemorySessionRepository(),
@@ -144,7 +149,10 @@ class World:
             authorization=CedarAuthorizationAdapter(),
             validate_repos=False,
             provisioning_initial_delay=0,
-            contributors=[SessionMCPContributor(), PromptContributor()],
+            contributors=[
+                SessionMCPContributor(memory_gateway_url=GATEWAY_URL if gateway else ""),
+                PromptContributor(),
+            ],
             launch_spec_provider=Specs(*specs),
             project_memory=self.resolver,
         )
@@ -206,6 +214,14 @@ class World:
 @pytest.fixture
 async def world():
     w = World()
+    await w.setup()
+    return w
+
+
+@pytest.fixture
+async def gateway_world():
+    """A Forge given the memory gateway (memory.gateway_url), which holds the limits."""
+    w = World(gateway=True)
     await w.setup()
     return w
 
@@ -912,3 +928,77 @@ def test_only_mounts_that_say_so_offer_the_fact_tools():
     assert offers_facts({"registry_refs": [{"facts": True}]})
     assert offers_facts({"instances": [{"name": "a", "url": "u", "facts": True}]})
     assert not offers_facts({"ephemeral_locals": [{"facts": True}]})
+
+
+# --- with the memory gateway: it holds the limits ---------------------------------------
+
+
+@pytest.mark.parametrize("entry", ["team-notes", "playbook"])
+async def test_with_the_gateway_limits_are_accepted_when_adding_and_changing(gateway_world, entry):
+    world = gateway_world
+    read_only = await world.mount("book", entry=entry, access=MemoryAccess.READ)
+    assert read_only.access is MemoryAccess.READ and read_only.restricts
+    prefixed = await world.mount("pages", entry=entry, write_prefixes=("a/",))
+    assert prefixed.write_prefixes == ("a/",)
+    changed = await world.service.change(
+        world.project.id, ALICE, "book", access=MemoryAccess.READ_WRITE, write_prefixes=("b/",)
+    )
+    assert changed.write_prefixes == ("b/",)
+
+
+async def test_with_the_gateway_a_limited_mount_launches_and_carries_its_limit(gateway_world):
+    world = gateway_world
+    await world.mount("notes", access=MemoryAccess.READ)
+    await world.mount("pages", entry="playbook", write_prefixes=("a/",))
+
+    started = await world.launch()
+
+    config = (await world.sessions.get_session(started.id)).workload_config["mimir"]
+    assert {b["mount_name"]: (b["access"], b["write_prefixes"]) for b in config["bindings"]} == {
+        "notes": ("read", []),
+        "pages": ("read_write", ["a/"]),
+    }
+    assert {r["mount_name"]: r["registry_entry_id"] for r in config["registry_refs"]} == {
+        "notes": "team-notes",
+        "pages": "playbook",
+    }
+
+
+async def test_with_the_gateway_no_per_mount_server_and_no_mimir_instructions(gateway_world):
+    world = gateway_world
+    await world.mount("notes")
+    await world.mount("pages", entry="playbook", access=MemoryAccess.READ)
+
+    await world.launch(system_prompt="Review the diff.")
+
+    assert world.servers() == {}
+    spec = world.last_spec()
+    assert "mcpServers" not in spec.values
+    prompt = spec.values["session"]["systemPrompt"]
+    assert prompt.startswith("Review the diff.")
+    assert WIKI not in prompt and FACTS not in prompt
+
+
+async def test_with_the_gateway_a_mount_it_could_not_open_still_fails_the_launch(gateway_world):
+    world = gateway_world
+    await world.mount("notes")
+
+    started = await world.forge.create_and_start_session(
+        world.create(workload_config={"mimir": {"registry_refs": [{"mount_name": "x"}]}}),
+        principal=ALICE,
+    )
+    await asyncio.gather(*world.sessions._provisioning_tasks.values())
+
+    failed = await world.sessions.get_session(started.id)
+    assert failed.status is SessionStatus.FAILED
+    assert "registry_refs[1] (x)" in failed.error and "registry_entry_id" in failed.error
+    assert world.pods.start_calls == []
+
+
+async def test_without_the_gateway_the_launch_is_unchanged(world):
+    """The switch is memory.gateway_url alone: a Forge without it keeps its refusals and servers."""
+    await world.mount("notes")
+    await world.launch()
+    assert list(world.servers()) == ["mimir-notes"]
+    with pytest.raises(MemoryMountUnenforceableError):
+        await world.mount("book", access=MemoryAccess.READ)

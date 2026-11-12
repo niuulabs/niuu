@@ -24,6 +24,7 @@ from tests.test_mimir.unit.memory_fakes import (
 from tests.test_mimir.unit.test_auth_mode import _OIDC_ISSUER_KWARGS, JWKS_URI, PUBLIC_JWK
 
 FORGE = "http://forge.test"
+BIFROST = "http://bifrost.test"
 CONTEXT_URL = f"{FORGE}/api/v1/forge/sessions/{SESSION_ID}/memory-context"
 _BACKEND = {"adapter": "tests.test_mimir.unit.fakes.InMemoryMimirAdapter"}
 TOOLS = [
@@ -37,6 +38,7 @@ TOOLS = [
     "memory_remember",
     "memory_retire",
     "memory_propose",
+    "memory_ask",
 ]
 
 
@@ -54,6 +56,9 @@ def _memory(**overrides) -> dict:
             }
         ],
         "tenants": {"acme": "acme-brain"},
+        "service_auth": {"adapter": "niuu.adapters.outbound.http_auth.NoAuthHeaderAdapter"},
+        "bifrost_url": BIFROST,
+        "answer_model": "claude-fable-5-1",
         **overrides,
     }
 
@@ -67,6 +72,11 @@ def _forge_answer(tenant: str = "acme") -> dict:
         "project_id": PROJECT_ID,
         "workflow_run_id": None,
         "project_memory": {"write_prefixes": ["decisions/"]},
+        "model": "claude-fable-5-1",
+        "objective": None,
+        "project_brief": None,
+        "since": None,
+        "attached": [],
     }
 
 
@@ -213,16 +223,22 @@ class TestOtherRoutesStayClosed:
             ("POST", "/mimir/memory/tools/a/b", False),
             ("GET", "/mimir/memory/toolsx", False),
             ("GET", "/mimir/stats", False),
+            ("GET", "/mimir/memory/context-pack", True),
+            ("GET", "/api/v1/mimir/memory/context-pack", True),
+            ("POST", "/mimir/memory/context-pack", False),
+            ("GET", "/mimir/memory/proposals", False),
+            ("POST", "/mimir/memory/promotions", False),
+            ("POST", "/mimir/memory/proposals/p-1/approve", False),
         ],
     )
-    def test_only_the_two_routes_are_exempt(self, method, path, exempt) -> None:
+    def test_only_the_session_routes_are_exempt(self, method, path, exempt) -> None:
         assert is_memory_tool_route(method, path) is exempt
 
 
 class TestCalls:
     def test_an_unknown_tool_is_404(self, tmp_path, services) -> None:
         with _client(tmp_path) as client:
-            response = client.post("/mimir/memory/tools/memory_ask", headers=_auth(), json={})
+            response = client.post("/mimir/memory/tools/memory_think", headers=_auth(), json={})
         assert response.status_code == 404
 
     def test_a_body_that_is_not_json_is_400(self, tmp_path, services) -> None:

@@ -22,6 +22,23 @@ class ManagedModelTier(StrEnum):
     REASONING = "reasoning"
 
 
+def parse_context_window(value: object, *, model_id: str) -> int | None:
+    """A catalog entry's ``context_window`` as published: a positive token count or ``None``.
+
+    ``None`` means no documented limit is recorded for the model; it is never a
+    default. Anything else that is not a positive integer is a malformed catalog
+    answer and raises rather than becoming ``None`` or a number.
+    """
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise ValueError(
+            f"model {model_id!r} has context_window={value!r}: expected a positive "
+            "integer token count or null; fix the model's context_window in the Bifrost catalog"
+        )
+    return value
+
+
 @dataclass(frozen=True)
 class ManagedModel:
     """Canonical model-catalog entry exposed by Bifrost."""
@@ -41,6 +58,9 @@ class ManagedModel:
     effort_levels: tuple[str, ...] = ()
     default_effort: str = ""
     effort_note: str = ""
+    #: Input tokens the model accepts (its documented limit); ``None`` when no limit is
+    #: recorded. A reader that needs it raises naming the catalog knob, never guesses.
+    context_window: int | None = None
     enabled: bool = True
     aliases: tuple[str, ...] = field(default_factory=tuple)
     provider_keys: tuple[str, ...] = field(default_factory=tuple)

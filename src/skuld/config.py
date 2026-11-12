@@ -941,6 +941,17 @@ class MemoryConfig(BaseModel):
     stdio_max_concurrency: int = Field(
         default=4, ge=1, description="Memory tool calls the stdio server runs in parallel."
     )
+    context_pack_timeout_s: float = Field(
+        default=30.0,
+        gt=0,
+        description=(
+            "Timeout for the one broker -> gateway call that fetches the session's context "
+            "pack (GET <gateway_url>/memory/context-pack) at broker startup. The gateway "
+            "assembles the pack from entity lookups across the session's layers, not from a "
+            "model call. Exceeding it stops startup naming the gateway URL; raise it if the "
+            "gateway is slow to build packs for large projects."
+        ),
+    )
     startup_timeout_s: float = Field(
         default=20.0,
         gt=0,

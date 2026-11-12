@@ -59,14 +59,18 @@ class Capability(StrEnum):
 
 ALL_CAPABILITIES: frozenset[Capability] = frozenset(Capability)
 
-#: What each layer kind needs from the system it is placed on. Every layer kind
-#: of step 1 needs all of them: the org and project layers are long-lived and
-#: answer "what changed", and the session layer is created and removed with
-#: its session.
+#: What each layer kind needs from the system it is placed on. The org and
+#: project layers are long-lived and answer "what changed"; the run and session
+#: layers are created and removed with their run or session. An attached memory
+#: is a store someone else curates: the gateway reads its pages and searches it,
+#: and writes pages to it when the attachment allows; it holds no facts and is
+#: never created or removed by the gateway.
 LAYER_CAPABILITIES: dict[LayerKind, frozenset[Capability]] = {
     LayerKind.ORG: ALL_CAPABILITIES,
     LayerKind.PROJECT: ALL_CAPABILITIES,
+    LayerKind.RUN: ALL_CAPABILITIES,
     LayerKind.SESSION: ALL_CAPABILITIES,
+    LayerKind.ATTACHED: frozenset({Capability.PAGES, Capability.SEARCH}),
 }
 
 
@@ -137,6 +141,10 @@ class MemoryBackend(ABC):
         """Append one cited row to an existing page's timeline."""
 
     @abstractmethod
+    async def delete_page(self, namespace: str, slug: str) -> None:
+        """Remove one page. RecordNotFoundError when there is none."""
+
+    @abstractmethod
     async def list_pages(self, namespace: str, *, limit: int) -> list[PageRef]:
         """Up to *limit* pages, or all of them when there are fewer."""
 
@@ -203,6 +211,10 @@ class MemoryBackend(ABC):
     @abstractmethod
     async def delete_namespace(self, namespace: str) -> NamespaceRemoval:
         """Remove every page of *namespace* and withdraw its facts."""
+
+    @abstractmethod
+    async def list_namespaces(self) -> list[str]:
+        """Every namespace created on this system, all of them (the retention sweep's input)."""
 
     async def close(self) -> None:  # noqa: B027 — optional hook, nothing to release by default
         """Release connections."""

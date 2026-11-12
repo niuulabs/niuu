@@ -475,7 +475,7 @@ def _target_layer(layer: str):
         target = Layer.parse(layer)
     except MemoryValidationError as exc:
         raise typer.BadParameter(str(exc)) from exc
-    if target.kind is LayerKind.SESSION:
+    if target.kind not in (LayerKind.ORG, LayerKind.PROJECT):
         raise typer.BadParameter("name the org layer (org) or a project layer (project:<id>)")
     return target
 
@@ -525,7 +525,7 @@ def list_proposals_command(
     layer: str = typer.Option(..., "--layer", help="org, or project:<project id>."),
     limit: int = typer.Option(..., "--limit", min=1, help="How many proposals to list."),
 ) -> None:
-    """List the pending proposals for a layer, for its owner (approval comes later)."""
+    """List the pending proposals for a layer, for its owner (decide them over the API)."""
     from mimir.memory.gateway import list_proposals
 
     target = _target_layer(layer)

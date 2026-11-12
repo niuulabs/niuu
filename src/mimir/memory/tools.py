@@ -5,7 +5,8 @@ with the session's real layers, and runs one call, answering an MCP
 ``CallToolResult``. A refusal by the write rules, a validation error, a missing
 record or an unreachable layer is ``isError: true`` with a message that names
 the cause; every write result names the layer it landed in, or the proposal and
-who must approve it. ``memory_ask`` is not part of step 1.
+who must approve it. ``memory_ask`` is listed when the gateway has an answer
+model; it is made with the session's own credential.
 """
 
 from __future__ import annotations
@@ -16,6 +17,7 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Any
 
+from mimir.memory.answers import Answer, MemoryAnswers
 from mimir.memory.gateway import (
     Disagreement,
     EntityCard,
@@ -37,6 +39,8 @@ from mimir.memory.models import (
     SourceKind,
 )
 from mimir.memory.rules import RuleRefusalError, normalize_prefix
+from mimir.ports.answer_model import AnswerModelError
+from niuu.cap_telemetry import OutputTruncatedError
 from niuu.domain.mimir_facts import Fact, FactError, FactKind, Omission
 
 
@@ -61,9 +65,15 @@ _EVIDENCE = {
 _LAYER = {
     "type": "string",
     "description": (
-        "The layer to write: session (default), project or org, or a full id such as "
-        "project:<id>. Writing above the session follows the rules in the instructions."
+        "The layer to write: session (default), run, project or org, or a full id such as "
+        "project:<id> or attached:<name>. Writing above the session follows the rules in "
+        "the instructions."
     ),
+}
+_LAYERS = {
+    "type": "array",
+    "items": {"type": "string"},
+    "description": "Only these layers (session, run, project, org or full ids).",
 }
 _FACT_KINDS = [k.value for k in FactKind if k is not FactKind.IDEA]
 
@@ -77,6 +87,15 @@ def _schema(properties: dict[str, Any], required: list[str]) -> dict[str, Any]:
     }
 
 
+ASK_DEFINITION: dict[str, Any] = {
+    "name": "memory_ask",
+    "description": (
+        "Answer a question from your memory layers, with citations (layer and record) and "
+        "the gaps memory could not answer. The answer is not stored."
+    ),
+    "inputSchema": _schema({"question": {"type": "string"}, "layers": _LAYERS}, ["question"]),
+}
+
 TOOL_DEFINITIONS: tuple[dict[str, Any], ...] = (
     {
         "name": "memory_search",
@@ -86,11 +105,7 @@ TOOL_DEFINITIONS: tuple[dict[str, Any], ...] = (
         "inputSchema": _schema(
             {
                 "query": {"type": "string"},
-                "layers": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "Only these layers (session, project, org or full ids).",
-                },
+                "layers": _LAYERS,
                 "kinds": {
                     "type": "array",
                     "items": {"type": "string", "enum": [k.value for k in HitKind]},
@@ -227,28 +242,44 @@ TOOL_DEFINITIONS: tuple[dict[str, Any], ...] = (
     },
 )
 
-_NAMES = {tool["name"] for tool in TOOL_DEFINITIONS}
+_ALL_DEFINITIONS = (*TOOL_DEFINITIONS, ASK_DEFINITION)
 
 
-def instructions(session: Session) -> str:
+def instructions(session: Session, *, asks: bool = False) -> str:
     """Design section 5's instructions, filled with this session's layers."""
     parts = [f"this session ({session.view.layers[0].id})"]
+    run = next((lyr for lyr in session.layers if lyr.kind is LayerKind.RUN), None)
+    if run is not None:
+        parts.append(f"this workflow run ({run.id})")
     project = next((lyr for lyr in session.layers if lyr.kind is LayerKind.PROJECT), None)
     if project is not None:
         parts.append(f"project {project.key} ({project.id})")
+    attached = [lyr for lyr in session.layers if lyr.kind is LayerKind.ATTACHED]
+    parts += [f"attached memory {lyr.key} ({lyr.id})" for lyr in attached]
     parts.append("the org (org)")
     layers = ", ".join(parts[:-1]) + f", and {parts[-1]}"
+    readers = "memory_ask and memory_search read" if asks else "memory_search reads"
     text = (
-        f"Your memory has layers: {layers}. memory_search reads all of them. "
+        f"Your memory has layers: {layers}. {readers} all of them. "
         "Before working on a subject, read its entity card. Write what you find to the "
         "session layer with evidence."
     )
+    if run is not None:
+        text += " Share what the other sessions of this run need in the run layer."
     if project is not None:
         prefixes = [normalize_prefix(p) for p in session.view.context.project_write_prefixes]
         allowed = ", ".join(p for p in prefixes if p) or "none are set, so propose every change"
         text += (
             f" Write to the project only under its write prefixes ({allowed}); otherwise propose."
         )
+    for lyr in attached:
+        attachment = session.view.attachment(lyr)
+        if attachment.access.value == "read":
+            text += f" {lyr.id} is read-only."
+            continue
+        prefixes = [normalize_prefix(p) for p in attachment.write_prefixes]
+        allowed = ", ".join(p for p in prefixes if p) or "none are set"
+        text += f" {lyr.id} takes pages only under its write prefixes ({allowed})."
     text += " Never store your own conclusions as facts about the world without evidence."
     return text
 
@@ -482,11 +513,24 @@ class _Args:
         return value
 
 
-class MemoryTools:
-    """The C2 tool surface over one gateway."""
+def _answer_result(answer: Answer) -> dict[str, Any]:
+    structured = {
+        "answer": answer.answer,
+        "citations": [{"layer": layer, "ref": ref} for layer, ref in answer.citations],
+        "gaps": list(answer.gaps),
+    }
+    lines = [answer.answer or "Memory does not answer this."]
+    lines += [f"[{layer}] {ref}" for layer, ref in answer.citations]
+    lines += [f"Gap: {gap}" for gap in answer.gaps]
+    return _ok("\n".join(lines), structured)
 
-    def __init__(self, gateway: MemoryGateway) -> None:
+
+class MemoryTools:
+    """The C2 tool surface over one gateway; ``memory_ask`` when *answers* can answer."""
+
+    def __init__(self, gateway: MemoryGateway, answers: MemoryAnswers | None = None) -> None:
         self._gateway = gateway
+        self._answers = answers
         self._handlers: dict[str, Callable[[Session, _Args], Awaitable[dict[str, Any]]]] = {
             "memory_search": self._search,
             "memory_read": self._read,
@@ -500,22 +544,34 @@ class MemoryTools:
             "memory_propose": self._propose,
         }
 
-    @staticmethod
-    def definitions() -> list[dict[str, Any]]:
-        return [dict(tool) for tool in TOOL_DEFINITIONS]
+    @property
+    def asks(self) -> bool:
+        return self._answers is not None and self._answers.asks
 
-    @staticmethod
-    def exists(name: str) -> bool:
-        return name in _NAMES
+    def definitions(self) -> list[dict[str, Any]]:
+        tools = [dict(tool) for tool in TOOL_DEFINITIONS]
+        if self.asks:
+            tools.append(dict(ASK_DEFINITION))
+        return tools
 
-    async def call(self, session: Session, name: str, arguments: Any) -> dict[str, Any]:
+    def exists(self, name: str) -> bool:
+        return any(tool["name"] == name for tool in self.definitions())
+
+    async def call(
+        self, session: Session, name: str, arguments: Any, *, credential: str = ""
+    ) -> dict[str, Any]:
         handler = self._handlers.get(name)
+        if name == ASK_DEFINITION["name"] and self.asks:
+
+            async def handler(session: Session, args: _Args) -> dict[str, Any]:
+                return await self._ask(session, args, credential)
+
         if handler is None:
             raise UnknownToolError(name)
         if not isinstance(arguments, dict):
             return tool_error(f"{name} takes a JSON object of arguments")
         allowed = set(
-            next(t for t in TOOL_DEFINITIONS if t["name"] == name)["inputSchema"]["properties"]
+            next(t for t in _ALL_DEFINITIONS if t["name"] == name)["inputSchema"]["properties"]
         )
         unknown = sorted(set(arguments) - allowed)
         if unknown:
@@ -535,10 +591,25 @@ class MemoryTools:
             return tool_error(f"revision conflict: {exc}")
         except LayerUnavailableError as exc:
             return tool_error(str(exc))
+        except OutputTruncatedError as exc:
+            return tool_error(str(exc), knob=exc.knob)
+        except AnswerModelError as exc:
+            return tool_error(f"the answer model failed: {exc}")
         except (MemoryStoreError, FactError) as exc:
             return tool_error(str(exc))
 
     # -- handlers --------------------------------------------------------
+
+    async def _ask(self, session: Session, args: _Args, credential: str) -> dict[str, Any]:
+        if self._answers is None or not credential:
+            raise ToolArgumentError("memory_ask needs the session's credential")
+        answer = await self._answers.ask(
+            session,
+            args.text("question", required=True),
+            layers=args.strings("layers") or None,
+            credential=credential,
+        )
+        return _answer_result(answer)
 
     async def _search(self, session: Session, args: _Args) -> dict[str, Any]:
         try:

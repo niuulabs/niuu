@@ -225,8 +225,12 @@ built stops startup. Limits that apply are in [limits.md](limits.md).
 ## Memory gateway (`memory:`)
 
 The memory gateway serves a Forge session's `memory` tools over its layers:
-`org`, `project:<id>` when the session has a project, and `session:<id>`
-([design](../design/memory/README.md), step 1). It is off unless
+`session:<id>`, `run:<id>` when the session is a member of a workflow run,
+`project:<id>` when it has a project, `attached:<name>` for each memory its
+project or launch spec attaches, and `org`
+([design](../design/memory/README.md), steps 1 and 2). It also builds the
+launch context pack, lets people decide proposals and promote records, and
+deletes run and session layers after their retention. It is off unless
 `memory.enabled`.
 
 ```yaml
@@ -242,27 +246,111 @@ memory:
       signing_key_file: /etc/mimir-memory/acme-brain/signing-key
   tenants:
     acme: acme-brain                         # tenant id -> system name
+  service_auth:                              # the gateway as a service (Forge, Bifröst catalog)
+    adapter: niuu.adapters.outbound.http_auth.FileBearerTokenAuthAdapter
+    token_file: /var/run/secrets/memory/token
+  bifrost_url: http://bifrost:8080
+  bifrost_timeout_seconds: 300
+  ask_enabled: true
+  answer_model: claude-fable-5-1             # memory_ask answers with this model
+  ask_retrieval_count: 10
+  context_pack_share: 0.05                   # of the session model's context window
+  chars_per_token: 4
+  retention_days: 14
+  retention_sweep_seconds: 3600
+  org_admin_roles: [volundr:admin]
 ```
 
 In the chart these come from `config.memory` (`forgeBaseUrl`, `systems[]` with
-`mcpUrl`, `apiTokenSecret`, `signingKeySecret`, and `tenants`); each system's
-two secrets are mounted under `/etc/mimir-memory/<name>/`. Startup fails on a
-system that cannot be built, a tenant naming a missing system, or a system
-lacking a capability its layers need. A session whose org is not in `tenants`
-gets a 503 naming `memory.tenants`.
+`mcpUrl`, `apiTokenSecret`, `signingKeySecret`, `tenants`, `serviceAuth`,
+`bifrostUrl`, `answerModel`, `askEnabled`, `contextPackShare`, `retentionDays`,
+`retentionSweepSeconds`, `orgAdminRoles` and the optional timeouts); each
+system's two secrets are mounted under `/etc/mimir-memory/<name>/`. The chart
+renders `serviceAuth` as given and does not project a ServiceAccount token, so
+mount whatever the chosen adapter reads. In mini mode without auth use
+`niuu.adapters.outbound.http_auth.NoAuthHeaderAdapter`. Startup fails on a system
+that cannot be built, a tenant naming a missing system, a system lacking a
+capability its layers need, a missing `service_auth` or `bifrost_url`, and a
+missing `answer_model` while `ask_enabled`. A session whose org is not in
+`tenants` gets a 503 naming `memory.tenants`.
 
-**Routes.** `GET {base}/memory/tools` (instructions and tool definitions) and
-`POST {base}/memory/tools/{name}` (one call, an MCP `CallToolResult`), on
-`/mimir` and `/api/v1/mimir`. The caller sends the session's `forge_session`
-credential; the gateway reads `workload_session_id` from it and asks Forge
+**Session routes.** `GET {base}/memory/tools` (instructions and tool
+definitions), `POST {base}/memory/tools/{name}` (one call, an MCP
+`CallToolResult`) and `GET {base}/memory/context-pack`, on `/mimir` and
+`/api/v1/mimir`. The caller sends the session's `forge_session` credential; the
+gateway reads `workload_session_id` from it and asks Forge
 (`GET /api/v1/forge/sessions/{id}/memory-context`, scope `forge:memory`) with
-the same token. Anything but Forge's 200 is a 401. Mímir's own identity checks
-skip exactly these two routes and nothing else.
+the same token. Anything but Forge's 200 is a 401, so a person's login is
+refused here. Mímir's own identity checks skip exactly these three routes and
+nothing else.
 
-**Write rules.** An agent writes the session layer; writes project pages and
-timeline rows only under the project's write prefixes; everything else for the
-project, and everything for the org, is recorded as a proposal for the layer's
-owner. A refused write (a layer the session does not have, tool output as a
+**memory_ask.** Searches the session's layers (`ask_retrieval_count` hits),
+reads each hit in full from its layer and recalls the current facts about each
+hit page, then makes one call to `POST {bifrost_url}/v1/messages` with the
+session's own credential (Bifröst confirms it with Forge and charges the
+session's owner), model `answer_model`, no `max_tokens`. A cut-off answer is a
+tool error naming `memory.answer_model`. Every citation must be a retrieved
+record, and an answer that says something must cite one, or it is refused and
+counted (`memory.ask.citations`). Disagreements between layers and a full
+retrieval are listed as gaps. The answer is never stored.
+
+**Context pack.** Its budget is the session model's `context_window` from
+`GET {bifrost_url}/models/{id}` (read with `service_auth`) times
+`context_pack_share`; a model without `context_window` is a 502 naming it. It
+holds the pages the session's objective and project brief lead to, layer by
+layer, with their current facts, then the pages and facts changed in the
+project and org layers since the owner's previous session in the project. What
+does not fit is listed in `omitted` (and in a closing line of the pack) and
+counted (`memory.context_pack_share`).
+
+**People routes.** A person's own login, through Mímir's identity adapter (in
+mini mode without auth, the configured dev principal); a session or workload
+credential is a 403. Forge is asked with the person's own `Authorization`.
+
+- `GET {base}/memory/proposals?layer=project:<id>|org[&limit=n]` — pending
+  proposals, for a project member with role `approver` or `owner` (Forge
+  `GET /api/v1/forge/projects/{id}/role`; tenant admins are owners) or, for the
+  org, a holder of one of `org_admin_roles`. Other members get 403, a non-member
+  404.
+- `POST {base}/memory/proposals/{id}/approve` `{"layer": ...}` — applies the
+  change at `operator` trust as the approver, with the proposal's evidence plus
+  `proposal:<layer>/<id>`, whose record names the proposer. A change that no
+  longer applies (the page moved on, a person-level fact) is a 409 and the
+  proposal stays pending.
+- `POST {base}/memory/proposals/{id}/reject` `{"layer": ..., "reason": ...}` —
+  records the reason.
+- `POST {base}/memory/promotions`
+  `{"from": "session:<id>|run:<id>", "refs": [...], "to": "project:<id>|org"}` —
+  proposes those records to the target; only the session's owner (Forge
+  `GET /api/v1/forge/sessions/{id}`) or the run's owner
+  (`GET /api/v1/forge/memory/runs/{id}`) may. Returns the proposals created.
+
+Decided proposals move from `l/_proposals/<layer>/` to `l/_decided/<layer>/` and
+stay there, so the evidence reference resolves.
+
+**Attached layers.** Each attachment Forge names (`registry_entry_id`) is opened
+from this gateway's own mount registry for the session's org: an entry of that
+org, or a global entry when the org is the platform's own. A disabled or missing
+entry fails the session's calls naming the layer. An attached store holds pages
+only, reads as unattested (it has no sealed attribution), and takes writes only
+as the attachment says: `read` refuses every write, `read_write` takes pages and
+timeline rows under its write prefixes and refuses the rest. Nothing written to
+an attached layer becomes a proposal. Every write adds a timeline row naming
+its author, trust and evidence.
+
+**Retention.** Every `retention_sweep_seconds` the gateway lists each system's
+namespaces, asks Forge (`POST /api/v1/forge/memory/ended`, as the service) which
+of their sessions and runs are active, ended (and when) or gone, and deletes the
+run and session layers (with their proposal namespaces) that ended
+`retention_days` ago or that Forge no longer knows. A sweep that cannot ask
+Forge or list a system deletes nothing there, logs at error, is counted as
+`memory.retention_sweep` on the degraded counter, and runs again next interval.
+
+**Write rules.** An agent writes the session layer, and the run layer of a run
+its session is a member of; writes project pages and timeline rows only under
+the project's write prefixes; everything else for the project, and everything
+for the org, is recorded as a proposal for the layer's owner. Attached layers
+follow their attachment (above). A refused write (a layer the session does not have, tool output as a
 source, a proposal for something it may write, a fact replacing one in another
 layer) is a tool error naming the rule and is counted as
 `memory.write_rules.<rule>` on the cap counter. Sessions write at `agent` trust.
@@ -282,7 +370,7 @@ and counted when reached (`memory.systems[].recall_limit`, `.timeline_limit`).
 ```bash
 # Import a retired Markdown wiki (wiki/, raw/) into a layer at operator trust.
 python -m mimir import-wiki --root /data/old-wiki --tenant acme --layer project:<id> --operator jozef
-# Pending proposals for a layer (approval comes in step 2).
+# Pending proposals for a layer (decide them with the people routes above).
 python -m mimir list-proposals --tenant acme --layer org --limit 50
 ```
 
