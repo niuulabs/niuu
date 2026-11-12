@@ -53,3 +53,21 @@ def test_webhook_refuses_an_event_missing_fields() -> None:
     adapter = WebhookMeshAdapter(own_peer_id="peer-a", discovery=None)
     with pytest.raises(KeyError):
         adapter._dict_to_event({"type": "publish", "topic": "t", "event": {"type": "response"}})
+
+
+async def test_webhook_answers_a_malformed_event_with_a_400_and_no_exception_detail() -> None:
+    import json
+    from unittest.mock import AsyncMock, MagicMock
+
+    pytest.importorskip("aiohttp")
+    adapter = WebhookMeshAdapter(own_peer_id="peer-a", discovery=None)
+    wire = adapter._event_to_dict(_event(), "topic.a", "publish")
+    wire["event"]["type"] = "not-a-mesh-event-type"
+    request = MagicMock()
+    request.read = AsyncMock(return_value=json.dumps(wire).encode())
+
+    response = await adapter._handle_webhook(request)
+
+    assert response.status == 400
+    assert response.text == "Invalid event: unknown type or missing fields"
+    assert "not-a-mesh-event-type" not in response.text

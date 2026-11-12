@@ -222,15 +222,11 @@ class TestBifrostConfig:
         assert cfg.routing_strategy == RoutingStrategy.ROUND_ROBIN
 
     def test_failover_strategy_is_refused_with_the_removal_message(self):
-        with pytest.raises(
-            ValueError, match="'failover' was removed.*exactly one provider.*direct"
-        ):
+        with pytest.raises(ValueError, match=_FAILOVER_REMOVED):
             BifrostConfig.model_validate({"routing_strategy": "failover"})
 
     def test_failover_in_model_routing_strategies_is_refused(self):
-        with pytest.raises(
-            ValueError, match="'failover' was removed.*exactly one provider.*direct"
-        ):
+        with pytest.raises(ValueError, match=_FAILOVER_REMOVED):
             BifrostConfig.model_validate({"model_routing_strategies": {"m1": "failover"}})
 
     def test_failover_is_not_a_routing_strategy_member(self):

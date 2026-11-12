@@ -262,8 +262,16 @@ class WebhookMeshAdapter:
             try:
                 event = self._dict_to_event(payload)
             except (KeyError, TypeError, ValueError) as exc:
-                # Refuse it to the sender, who can see why; never deliver a guess.
-                return aiohttp_web.Response(status=400, text=f"Invalid event: {exc!r}")
+                # Refuse it, never deliver a guess. The reason is logged here, not
+                # echoed to the sender, so no exception detail leaves the process.
+                logger.error(
+                    "webhook_mesh: refused a malformed event on topic %r: %s",
+                    _sanitize_log(payload.get("topic", "")),
+                    _sanitize_log(f"{type(exc).__name__}: {exc}"),
+                )
+                return aiohttp_web.Response(
+                    status=400, text="Invalid event: unknown type or missing fields"
+                )
             await self._handle_publish(payload.get("topic", ""), event)
             return aiohttp_web.Response(status=202, text="Accepted")
 
