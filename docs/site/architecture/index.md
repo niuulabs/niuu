@@ -30,7 +30,7 @@ links to it.
 4. **Communication** and [Security](security/index.md) — how services and machines talk and prove who
    they are.
 5. **Models**, **Memory**, **Workflows** — the services sessions and residents use.
-6. **Deployment modes** — how the same services run locally, in Docker and on
+6. [Deployment modes](deployment/index.md) — how the same services run locally, in Docker and on
    Kubernetes.
 
 ## Areas
@@ -43,7 +43,7 @@ links to it.
 | [Skuld](skuld/index.md) | The runtime gateway: runtimes, process lifecycle, transcripts, channels, WebSocket, broker and Forge MCP |
 | Workflows | Ting: workflows, runs, steps, gates and reviews, trackers, personas in workflows |
 | [Security](security/index.md) | Edge auth, identity adapters, every credential kind, machine identities, isolation, secrets |
-| Deployment modes | Local mini mode, Docker, joined nodes and remote compute, Kubernetes, and the levers per mode |
+| [Deployment modes](deployment/index.md) | Local mini mode, Docker, joined nodes and remote compute, Kubernetes, and the levers per mode |
 | Communication | Sleipnir events, collaboration rooms, the flock mesh, A2A, SSE and WebSocket APIs |
 | Models | Bifröst gateway, model catalog, provider connections, routing |
 | Memory | Mímir: sources, pages, retrieval, tenants, hosting |
