@@ -3829,10 +3829,13 @@ class Broker(
         msg_id: str,
         request_id: str | None,
         author: MessageAuthor | None = None,
-    ) -> None:
+    ) -> bool:
         """One delivery attempt. Re-resolves routing so a moved turn boundary routes
         correctly, then sends with a per-attempt timeout so a wedged input channel is
-        bounded (and therefore retryable) instead of hanging the delivery forever."""
+        bounded (and therefore retryable) instead of hanging the delivery forever.
+
+        Returns True when the send itself ran the agent's turn on the message
+        (``capabilities.send_runs_turn``), which proves the agent consumed it."""
         timeout = self._settings.delivery.attempt_timeout_seconds
         if self._resolve_delivery_routing():
             # Live steering appends to the existing turn; redirect may cancel and
@@ -3858,13 +3861,14 @@ class Broker(
                 raise DeliveryNotAcceptedError(
                     "Transport rejected the message before accepting input"
                 )
-            return
+            return False
         # Idle / non-native transports (Codex turn/start, SDK, …). Thread the ids so a
         # transport that CAN correlate a consumption signal (Codex turn/started) flips
         # the bubble; transports that can't simply ignore the kwargs.
         outbound = self._author_prefix(author) + await self._apply_retrieval_reflex(content)
         sending = self._transport.send_message(outbound, msg_id=msg_id, request_id=request_id)
-        if getattr(self._transport.capabilities, "send_runs_turn", False) is True:
+        runs_turn = getattr(self._transport.capabilities, "send_runs_turn", False) is True
+        if runs_turn:
             # The send returns when the whole turn is over (SDK, ``claude -p``). Cutting it at
             # the attempt timeout would cancel a healthy turn and run it again; the transport's
             # own turn timeout is what bounds it, and that one is loud.
@@ -3873,6 +3877,7 @@ class Broker(
             accepted = await asyncio.wait_for(sending, timeout=timeout)
         if accepted is False:
             raise DeliveryNotAcceptedError("Transport rejected the message before accepting input")
+        return runs_turn
 
     async def _deliver_user_message_and_ack(
         self,
@@ -3895,7 +3900,8 @@ class Broker(
         * retries a transient send failure (wedged ``_send_lock``, transport warming)
           up to ``delivery.max_attempts`` with exponential backoff;
         * on success emits ``user_delivered`` (the pending->active flip is driven later
-          by the correlated consumption signal);
+          by the correlated consumption signal, or here when the send itself ran the
+          turn: such a transport has no later signal for it);
         * on TERMINAL failure flips the user turn to a VISIBLE ``failed`` state
           (persisted + broadcast) and emits ``user_delivery_failed`` — never leaving the
           turn silently ``pending``.
@@ -3925,6 +3931,7 @@ class Broker(
         attempts = cfg.max_attempts
         backoff = cfg.initial_backoff_seconds
         last_error: Exception | None = None
+        ran_turn = False
         # Mark the turn as in-flight so the non-native pending->active backstop EXCLUDES
         # it: while we are still retrying, the agent could not have consumed this steer,
         # so an unrelated transport frame must not flip it to "active". Cleared only once
@@ -3934,7 +3941,7 @@ class Broker(
         try:
             for attempt in range(1, attempts + 1):
                 try:
-                    await self._attempt_transport_delivery(
+                    ran_turn = await self._attempt_transport_delivery(
                         content, msg_id=msg_id, request_id=request_id, author=author
                     )
                     last_error = None
@@ -3971,6 +3978,13 @@ class Broker(
         finally:
             self._delivering_msg_ids.discard(msg_id)
 
+        if ran_turn:
+            # The send returned because the agent's turn on this message is over. The
+            # pending->active backstop skipped the turn while its delivery was in flight,
+            # which for such a transport is the whole turn, and nothing correlated will
+            # come later: without this the turn stays "pending" in the history until the
+            # next message's output flips it, and the session's last message never.
+            await self._activate_user_turn({"msg_id": msg_id, "request_id": request_id})
         await self._emit_delivery_ack(
             request_id,
             msg_id,
