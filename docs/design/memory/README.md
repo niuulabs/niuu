@@ -1,6 +1,11 @@
 # Memory for Niuu
 
-Status: design, 2026-11-12, against `dev` at `1f4f9622b`. Nothing here is built.
+Status: 2026-11-12. Steps 0 and 1 of section 12 are built on
+`refactor/memory-clean-slate`. Step 1 was proven live in mini mode against a local
+gbrain: a Claude Code and a Codex session in one project answered from the project
+layer with a citation, and their writes outside the write prefixes became proposals.
+A session of another project saw none of it. A second org could not be run in mini
+mode, so org isolation is covered by tests only. Steps 2 to 4 are not built.
 It reworks Mímir. Today's flows are not kept for their own sake: what stays is
 what this design needs.
 
