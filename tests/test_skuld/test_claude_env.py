@@ -397,3 +397,23 @@ class TestOAuthFile:
         assert "test-only-subscription-token" not in repr(captured["command"])
         # The SDK re-inherits this nonsecret pointer; it never becomes a global token.
         assert captured["env"][CLAUDE_OAUTH_TOKEN_FILE_ENV] == str(oauth_file)
+
+
+def test_gateway_log_names_only_the_gateway_host(caplog) -> None:
+    """The routing log line never carries the token or a URL's userinfo."""
+    import logging
+
+    from skuld.transports.claude_env import claude_spawn_env
+
+    with caplog.at_level(logging.INFO, logger="skuld.transports.claude_env"):
+        env = claude_spawn_env(
+            gateway_url="https://user:secret@gateway.example:8443/v1/",
+            gateway_token="tok-123",
+            claude_auth="subscription",
+            claude_oauth_token_file=None,
+        )
+    assert env["ANTHROPIC_AUTH_TOKEN"] == "tok-123"
+    logged = " ".join(r.getMessage() for r in caplog.records)
+    assert "https://gateway.example:8443" in logged
+    assert "secret" not in logged
+    assert "tok-123" not in logged
