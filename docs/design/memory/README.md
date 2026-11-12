@@ -5,7 +5,19 @@ Status: 2026-11-12. Steps 0 and 1 of section 12 are built on
 gbrain: a Claude Code and a Codex session in one project answered from the project
 layer with a citation, and their writes outside the write prefixes became proposals.
 A session of another project saw none of it. A second org could not be run in mini
-mode, so org isolation is covered by tests only. Steps 2 to 4 are not built.
+mode, so org isolation is covered by tests only.
+
+Step 2 is built too and was proven live the same way: a planner session of a workflow
+run wrote its decision to the run layer; the implementer's `memory_ask` answered from
+the run and project layers with citations, through Bifröst with the session's own
+credential and charged to its owner; the context pack reached the harness at launch;
+the run's owner promoted the decision, a project owner approved it, and it landed at
+`operator` trust with the planner's evidence and the proposal reference; and the run
+and session layers were deleted once their retention (shortened for the proof) had
+passed. Attached memories through the gateway are covered by tests only. Catalog
+models without a `context_window` (for example `gpt-5.6-terra`) cannot start a session
+with memory on until one is set. Steps 3 and 4 are not built.
+
 It reworks Mímir. Today's flows are not kept for their own sake: what stays is
 what this design needs.
 
