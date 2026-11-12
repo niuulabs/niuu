@@ -37,7 +37,7 @@ tmux"):
 The tmux scenarios are @pytest.mark.integration (default addopts deselect them)
 and skip when tmux is unavailable. Run them on the real-tmux tier:
 
-    SKULD__TMUX_REMOTE_CONTROL=0 uv run pytest -m integration \
+    uv run pytest -m integration \
         tests/test_skuld/test_forge_questions.py -p no:cacheprovider -q -rs
 
 E6's SDK half and E1/E7 unit-style assertions run on the default tier.

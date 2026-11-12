@@ -13,6 +13,7 @@ from niuu.ports.cli import CLITransport
 from niuu.utils import import_class, resolve_secret_kwargs
 from personas.domain.persona_document import PersonaDocumentError, PortablePersonaDefinition
 from skuld.broker_api import _rebuild_presented_registry, _resume_presented_uploads
+from skuld.channels import TelegramChannelError
 from skuld.chronicle_watcher import ChronicleWatcher
 from skuld.codex_auth import CodexAuthProviderPort
 from skuld.conversation_models import ConversationTurn
@@ -112,6 +113,9 @@ class TransportLifecycleMixin:
             "dsh_api_key": self._settings.dsh.api_key,
             "dsh_provider": self._settings.dsh.provider,
             "dsh_prompt_timeout_s": self._settings.dsh.prompt_timeout_s,
+            "claude_auth": self._settings.claude_auth,
+            "claude_oauth_token_file": self._settings.claude_oauth_token_file,
+            "tmux_remote_control": self._settings.tmux_remote_control,
             "model_gateway_url": self._settings.model_gateway.url,
             "model_gateway_token": self._settings.model_gateway.token,
         }
@@ -355,8 +359,19 @@ class TransportLifecycleMixin:
         self._start_preview()
         self._git_workspace_checkpoint = _capture_git_workspace_checkpoint(self.workspace_dir)
 
-        # Initialize Telegram channel if configured
-        await self._init_telegram_channel()
+        # Initialize Telegram channel if configured. A configured channel that cannot start
+        # fails the session: it would otherwise run unreachable from the operator's chat.
+        try:
+            await self._init_telegram_channel()
+        except TelegramChannelError as exc:
+            self._fail_startup(exc)
+            logger.critical(
+                "Configured Telegram channel cannot start; broker remains unready: %s",
+                self._startup_failure,
+                exc_info=True,
+            )
+            self._report_startup_failure()
+            return
 
         # Start chronicle watcher (tails JSONL session files for terminal mode)
         if self._settings.chronicle_watcher_enabled and self.volundr_api_url:

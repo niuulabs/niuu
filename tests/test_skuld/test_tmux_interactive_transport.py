@@ -1166,8 +1166,6 @@ async def test_message_display_hook_drops_sidechain_prose(tmp_path: Path) -> Non
 def test_remote_control_on_by_default_adds_flag(tmp_path: Path, monkeypatch) -> None:
     # Hybrid sessions: Remote Control is ON by default so a Forge tmux session is also
     # drivable from claude.ai/code + phone (label = the friendly Forge session name).
-    monkeypatch.delenv("SKULD__TMUX_REMOTE_CONTROL", raising=False)
-    monkeypatch.delenv("SKULD__CLAUDE_AUTH", raising=False)
     monkeypatch.setenv("SKULD__SESSION__NAME", "lexi-presentation")
     transport = FakeTmuxInteractiveTransport(str(tmp_path))
     argv = transport._interactive_argv()
@@ -1175,19 +1173,18 @@ def test_remote_control_on_by_default_adds_flag(tmp_path: Path, monkeypatch) -> 
     assert argv[argv.index("--remote-control") + 1] == "lexi-presentation"
 
 
-def test_remote_control_disabled_by_env(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setenv("SKULD__TMUX_REMOTE_CONTROL", "0")
-    transport = FakeTmuxInteractiveTransport(str(tmp_path))
+def test_remote_control_disabled_by_setting(tmp_path: Path) -> None:
+    transport = FakeTmuxInteractiveTransport(str(tmp_path), tmux_remote_control=False)
     assert "--remote-control" not in transport._interactive_argv()
 
 
-def test_remote_control_force_off_under_api_key_auth(tmp_path: Path, monkeypatch) -> None:
+def test_remote_control_force_off_under_api_key_auth(tmp_path: Path) -> None:
     # API-key auth can't register a session to the claude.ai account, and would block on
     # the interactive "use this API key?" chooser — so RC must auto-disable there even if
     # explicitly requested, to never wedge session startup.
-    monkeypatch.setenv("SKULD__TMUX_REMOTE_CONTROL", "1")
-    monkeypatch.setenv("SKULD__CLAUDE_AUTH", "api_key")
-    transport = FakeTmuxInteractiveTransport(str(tmp_path))
+    transport = FakeTmuxInteractiveTransport(
+        str(tmp_path), tmux_remote_control=True, claude_auth="api_key"
+    )
     assert "--remote-control" not in transport._interactive_argv()
 
 
@@ -2311,7 +2308,6 @@ async def test_runtime_dir_cleanup_is_guarded_to_expected_path(tmp_path: Path) -
 
 
 def test_resume_id_makes_interactive_argv_add_resume_flag(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.delenv("SKULD__TMUX_REMOTE_CONTROL", raising=False)
     transport = FakeTmuxInteractiveTransport(str(tmp_path), resume_session_id="claude-cli-123")
     argv = transport._interactive_argv()
     assert "--resume" in argv
@@ -2324,7 +2320,6 @@ async def test_resume_restart_creates_fresh_session_with_current_port(
 ) -> None:
     # A restart = a FRESH tmux launching `claude --resume <id>` that re-writes the CURRENT broker
     # port into the hook settings (no stale-port baking from resurrecting an old tmux).
-    monkeypatch.delenv("SKULD__TMUX_REMOTE_CONTROL", raising=False)
     transport = FakeTmuxInteractiveTransport(
         str(tmp_path), sdk_port=8099, resume_session_id="claude-cli-xyz"
     )

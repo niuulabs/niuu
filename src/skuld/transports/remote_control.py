@@ -42,7 +42,6 @@ from skuld.claude_permission import (
     DEFAULT_CLAUDE_PERMISSION_MODE,
     resolve_claude_permission_mode,
 )
-from skuld.transports.claude_env import CLAUDE_OAUTH_TOKEN_FILE_ENV
 from skuld.transports.session_env import session_process_env
 
 logger = logging.getLogger("skuld.transport")
@@ -73,10 +72,12 @@ class RemoteControlTransport(CLITransport):
         session_name: str = "volundr",
         remote_control_permission_mode: str = "",
         claude_permission_mode: str = DEFAULT_CLAUDE_PERMISSION_MODE,
+        claude_oauth_token_file: str | None = None,
         **_kwargs: object,
     ) -> None:
         super().__init__()
         self.workspace_dir = workspace_dir
+        self._claude_oauth_token_file = claude_oauth_token_file
         self._model = model
         self._session_id_hint = session_id
         self._skip_permissions = skip_permissions
@@ -143,7 +144,7 @@ class RemoteControlTransport(CLITransport):
     async def start(self) -> None:
         if self.is_alive:
             return
-        if CLAUDE_OAUTH_TOKEN_FILE_ENV in os.environ:
+        if self._claude_oauth_token_file is not None:
             raise ValueError("Claude OAuth token file is for inference, not Remote Control")
         cmd = self._build_command()
         logger.info("RemoteControlTransport: launching %s", " ".join(cmd))

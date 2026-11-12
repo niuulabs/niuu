@@ -2261,6 +2261,15 @@ class TestFastAPIEndpoints:
         assert isinstance(data["dirty"], bool)
         assert data["build"]
 
+    def test_health_reports_cap_hits(self, client):
+        """The session's cap hits (event-log overflow, …) show on /health."""
+        from niuu.cap_telemetry import record_cap_hit
+
+        record_cap_hit("event_log_max_buffer", "raise event_log_max_buffer")
+        caps = client.get("/health").json()["caps"]
+        assert caps["cap_hits.event_log_max_buffer"] >= 1
+        assert caps["cap_hits_total"] >= 1
+
     def test_ready_endpoint_not_ready(self, client):
         broker._transport = None
         broker._startup_ready = False

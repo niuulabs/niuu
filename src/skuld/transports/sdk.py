@@ -40,6 +40,7 @@ from claude_agent_sdk.types import (
 
 from niuu.adapters.cli.runtime import filter_cli_event as _filter_event
 from niuu.ports.cli import CLITransport, TransportCapabilities
+from skuld.claude_auth import ClaudeAuthMode
 from skuld.claude_permission import (
     DEFAULT_CLAUDE_PERMISSION_MODE,
     resolve_claude_permission_mode,
@@ -325,8 +326,12 @@ class SDKTransport(CLITransport):
         mcp_startup_timeout_seconds: float = 30.0,
         mcp_status_poll_interval_seconds: float = 0.1,
         claude_tool_policy: ClaudeToolPolicy | None = None,
+        claude_auth: ClaudeAuthMode = "subscription",
+        claude_oauth_token_file: str | None = None,
     ) -> None:
         super().__init__()
+        self._claude_auth = claude_auth
+        self._claude_oauth_token_file = claude_oauth_token_file
         for value in (mcp_startup_timeout_seconds, mcp_status_poll_interval_seconds):
             if not math.isfinite(value) or value <= 0:
                 raise ValueError(
@@ -725,8 +730,10 @@ class SDKTransport(CLITransport):
         return str(path) if path else {}
 
     def _spawn_env(self) -> dict[str, str]:
-        # Subscription auth by default (SKULD__CLAUDE_AUTH); the gateway when set.
+        # The claude_auth setting (subscription by default); the gateway when set.
         return claude_spawn_env(
+            claude_auth=self._claude_auth,
+            claude_oauth_token_file=self._claude_oauth_token_file,
             gateway_url=self._model_gateway_url,
             gateway_token=self._model_gateway_token,
         )

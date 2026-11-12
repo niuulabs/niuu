@@ -17,7 +17,7 @@ and skip when tmux is unavailable. Timeouts are kept small.
 
 Run (real-tmux tier)::
 
-    SKULD__TMUX_REMOTE_CONTROL=0 uv run pytest -m integration \
+    uv run pytest -m integration \
         tests/test_skuld/test_forge_surfaces.py -p no:cacheprovider -q -rs
 """
 
@@ -102,12 +102,12 @@ class _StandaloneTransport:
             turn_idle_timeout_s=0.3,
             turn_no_output_timeout_s=2.0,
             pane_poll_interval_s=0.15,
+            tmux_remote_control=False,
         )
         self.transport.on_event(on_event)
 
         self._old_path = os.environ.get("PATH", "")
         os.environ["PATH"] = env["PATH"]
-        os.environ["SKULD__TMUX_REMOTE_CONTROL"] = "0"
         if self._boot is not None:
             os.environ["FORGE_FAKEAGENT_BOOT"] = self._boot
 
@@ -126,7 +126,6 @@ class _StandaloneTransport:
             await self._hook_server.stop()
         if self._old_path is not None:
             os.environ["PATH"] = self._old_path
-        os.environ.pop("SKULD__TMUX_REMOTE_CONTROL", None)
         os.environ.pop("FORGE_FAKEAGENT_BOOT", None)
 
 

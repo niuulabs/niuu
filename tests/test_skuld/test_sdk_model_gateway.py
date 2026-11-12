@@ -21,8 +21,8 @@ def test_spawn_env_routes_through_the_model_gateway(tmp_path):
 
 
 def test_spawn_env_without_a_gateway_keeps_the_vendor_api(tmp_path):
-    fake = {"PATH": "/usr/bin", "SKULD__CLAUDE_AUTH": "api_key", "ANTHROPIC_API_KEY": "sk-platform"}
+    fake = {"PATH": "/usr/bin", "ANTHROPIC_API_KEY": "sk-platform"}
     with patch.dict("os.environ", fake, clear=True):
-        env = SDKTransport(workspace_dir=str(tmp_path))._spawn_env()
+        env = SDKTransport(workspace_dir=str(tmp_path), claude_auth="api_key")._spawn_env()
     assert "ANTHROPIC_BASE_URL" not in env
     assert env["ANTHROPIC_API_KEY"] == "sk-platform"

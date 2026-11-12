@@ -25,6 +25,7 @@ from pydantic import BaseModel, Field
 
 from niuu.adapters.identity_headers import parse_roles_header
 from niuu.build_identity import build_identity
+from niuu.cap_telemetry import health_counts
 from niuu.domain.conversation_timeline import resolve_timeline_turn
 from niuu.domain.history_paging import InvalidHistoryCursorError
 from niuu.domain.json_text import json_text_safe
@@ -414,6 +415,7 @@ async def health() -> dict:
         "session_id": broker.session_id,
         **startup,
         **_BUILD_IDENTITY,
+        "caps": health_counts(),
     }
 
 

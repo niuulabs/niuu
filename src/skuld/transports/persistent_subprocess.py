@@ -41,6 +41,7 @@ from niuu.adapters.cli.runtime import (
     stop_subprocess as _stop_process,
 )
 from niuu.ports.cli import CLITransport, TransportCapabilities
+from skuld.claude_auth import ClaudeAuthMode
 from skuld.claude_permission import (
     DEFAULT_CLAUDE_PERMISSION_MODE,
     resolve_claude_permission_mode,
@@ -110,8 +111,12 @@ class PersistentSubprocessTransport(CLITransport):
         read_only_mcp_only: bool = False,
         allowed_mcp_tools: list[str] | None = None,
         claude_tool_policy: ClaudeToolPolicy | None = None,
+        claude_auth: ClaudeAuthMode = "subscription",
+        claude_oauth_token_file: str | None = None,
     ) -> None:
         super().__init__()
+        self._claude_auth = claude_auth
+        self._claude_oauth_token_file = claude_oauth_token_file
         self._model_gateway_url = model_gateway_url
         self._model_gateway_token = model_gateway_token
         self.workspace_dir = workspace_dir
@@ -364,8 +369,10 @@ class PersistentSubprocessTransport(CLITransport):
         self._reader_error = None
         self._required_mcp_ready = not self._read_only_mcp_only
         cmd = self._build_command()
-        # Subscription auth by default (SKULD__CLAUDE_AUTH); the gateway when set.
+        # The claude_auth setting (subscription by default); the gateway when set.
         env = claude_spawn_env(
+            claude_auth=self._claude_auth,
+            claude_oauth_token_file=self._claude_oauth_token_file,
             gateway_url=self._model_gateway_url,
             gateway_token=self._model_gateway_token,
         )

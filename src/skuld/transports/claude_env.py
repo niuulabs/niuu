@@ -8,14 +8,18 @@ deploy env's API key belongs to an org without data retention enabled, which
 400s on retention-gated models (``claude-fable-5``) that the same host's
 subscription login can use.
 
-Set ``SKULD__CLAUDE_AUTH=api_key`` to restore API-key billing (the key vars are
-kept). ``CLAUDECODE`` is always dropped — a nested-session marker that breaks
-the spawned CLI.
+Set the ``claude_auth`` setting to ``api_key`` (env ``SKULD__CLAUDE_AUTH``) to
+restore API-key billing (the key vars are kept); a value other than
+``subscription`` or ``api_key`` fails settings validation. ``CLAUDECODE`` is
+always dropped — a nested-session marker that breaks the spawned CLI.
 
-``SKULD__CLAUDE_OAUTH_TOKEN_FILE`` optionally supplies an owner-only 0400 file
-for direct subscription inference. Conflicting auth settings or an invalid
-file refuse the launch. Its token is read afresh into the Claude child env,
-never the broker's environment or another engine's environment.
+The ``claude_oauth_token_file`` setting (env ``SKULD__CLAUDE_OAUTH_TOKEN_FILE``)
+optionally supplies an owner-only 0400 file for direct subscription inference.
+Conflicting auth settings or an invalid file refuse the launch. Its token is
+read afresh into the Claude child env, never the broker's environment or
+another engine's environment. Both settings are passed in by the transports
+from Skuld's settings; this module reads no configuration from the environment,
+only the child env it is building.
 
 With a model gateway (``gateway_url``), the CLI is pointed at it instead of
 api.anthropic.com: ``ANTHROPIC_BASE_URL`` + ``ANTHROPIC_AUTH_TOKEN``, and the
@@ -51,8 +55,10 @@ import os
 import stat
 import sys
 from pathlib import Path
+from typing import get_args
 
 from niuu.observability import get_observability
+from skuld.claude_auth import ClaudeAuthMode
 from skuld.transports.session_env import CLAUDE_OAUTH_ENV_VARS, session_process_env
 
 logger = logging.getLogger(__name__)
@@ -60,7 +66,6 @@ logger = logging.getLogger(__name__)
 _API_KEY_VARS = ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN")
 #: Where auto mode's permission check runs (Claude Code 2.1.319+): 0 = the built-in classifier.
 CLAUDE_AUTO_MODE_SERVER_ENV = "CLAUDE_CODE_AUTO_MODE_SERVER"
-CLAUDE_OAUTH_TOKEN_FILE_ENV = "SKULD__CLAUDE_OAUTH_TOKEN_FILE"
 _MAX_OAUTH_TOKEN_BYTES = 4096
 
 
@@ -90,10 +95,25 @@ def _read_oauth_token_file(filename: str) -> str:
         raise ValueError("Configured Claude OAuth token file is invalid or unreadable") from None
 
 
-def claude_spawn_env(*, gateway_url: str = "", gateway_token: str = "") -> dict[str, str]:
-    """Build the child env for a Claude CLI/SDK spawn (see module docstring)."""
-    mode = os.environ.get("SKULD__CLAUDE_AUTH", "subscription").strip().lower()
-    token_file = os.environ.get(CLAUDE_OAUTH_TOKEN_FILE_ENV)
+def claude_spawn_env(
+    *,
+    claude_auth: ClaudeAuthMode,
+    claude_oauth_token_file: str | None,
+    gateway_url: str = "",
+    gateway_token: str = "",
+) -> dict[str, str]:
+    """Build the child env for a Claude CLI/SDK spawn (see module docstring).
+
+    ``claude_auth`` and ``claude_oauth_token_file`` are Skuld's settings of the same
+    names; they have no default so a caller cannot get subscription auth by omission.
+    """
+    mode = claude_auth
+    token_file = claude_oauth_token_file
+    if mode not in get_args(ClaudeAuthMode):
+        raise ValueError(
+            f"Unknown claude_auth {mode!r}; set claude_auth (SKULD__CLAUDE_AUTH) to one of "
+            f"{', '.join(get_args(ClaudeAuthMode))}"
+        )
     if token_file is not None and (
         mode != "subscription"
         or gateway_url.strip()
@@ -150,9 +170,9 @@ def claude_spawn_env(*, gateway_url: str = "", gateway_token: str = "") -> dict[
         and not (Path.home() / ".claude" / ".credentials.json").exists()
     ):
         logger.warning(
-            "SKULD__CLAUDE_AUTH=subscription but ~/.claude/.credentials.json is "
+            "claude_auth=subscription but ~/.claude/.credentials.json is "
             "missing on this host — run `claude login`, or set "
-            "SKULD__CLAUDE_AUTH=api_key to use the platform API key"
+            "claude_auth=api_key (SKULD__CLAUDE_AUTH) to use the platform API key"
         )
     env.update(get_observability().inject())
     return env

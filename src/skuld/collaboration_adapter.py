@@ -316,6 +316,9 @@ class SkuldCollaborationAdapter(CollaborationRoom):
             is_connected=lambda peer_id: peer_id in self._websockets,
             clock=clock,
             presence_sweep_interval_s=config.presence_sweep_interval_s,
+            agent_heartbeat_ttl_s=config.agent_heartbeat_ttl_s,
+            peer_heartbeat_ttl_s=config.peer_heartbeat_ttl_s,
+            join_heartbeat_ttl_s=config.join_heartbeat_ttl_s,
         )
 
     async def register(
