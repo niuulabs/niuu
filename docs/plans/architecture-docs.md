@@ -73,6 +73,8 @@ split or cut.
   relative links to other folders fail the strict build.
 - Mermaid is enabled (```` ```mermaid ```` fences).
 - The build must pass: `uvx --from mkdocs-material==9.7.5 mkdocs build --strict`.
+  Locally the one expected warning is `reference/api.md` linking `../openapi.json`
+  (gitignored, generated in CI); any other warning is yours to fix.
 
 ## Merging
 
