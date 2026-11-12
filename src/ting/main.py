@@ -20,6 +20,7 @@ from niuu.adapters.notifications.integrations import NotificationChannelFactory
 from niuu.adapters.pat_revocation_middleware import PATRevocationMiddleware
 from niuu.adapters.postgres_integration_usage import PostgresIntegrationUsageLog
 from niuu.adapters.postgres_integrations import PostgresIntegrationRepository
+from niuu.cap_telemetry import health_counts
 from niuu.cors import apply_cors_middleware
 from niuu.domain.models import Principal
 from niuu.mesh.attestation import MeshSigner
@@ -1684,7 +1685,7 @@ def create_app(
     @app.get("/health")
     @app.get("/api/v1/ting/health", include_in_schema=False)
     async def health(request: Request) -> dict[str, Any]:
-        body: dict[str, Any] = {"status": "ok"}
+        body: dict[str, Any] = {"status": "ok", "caps": health_counts()}
         signing = getattr(request.app.state, "mesh_signing", None)
         if signing is not None:
             body["mesh_attestation"] = signing

@@ -16,7 +16,7 @@ async def test_health_no_auth(volundr_client):
     """GET /health returns 200 without any auth headers."""
     resp = await volundr_client.get("/health")
     assert resp.status_code == 200
-    assert resp.json() == {"status": "healthy"}
+    assert resp.json()["status"] == "healthy"
 
 
 async def test_auth_headers_propagate_principal(volundr_client, auth_headers):

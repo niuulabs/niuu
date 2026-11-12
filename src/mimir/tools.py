@@ -30,7 +30,12 @@ from mimir.fact_tools import FACT_TOOLS, FactToolSpec, run_fact_tool
 from mimir.facts import FactService
 from mimir.file_security import PathSecurityError, resolve_safe
 from mimir.ports.entity_extractor import EntityExtractorPort
-from niuu.domain.mimir import MimirSource, compute_content_hash, compute_source_id
+from niuu.domain.mimir import (
+    MimirSource,
+    compute_content_hash,
+    compute_source_id,
+    refuse_operational_source_type,
+)
 from niuu.domain.mimir_facts import FactCaller, FactError
 from niuu.domain.tool import ToolResult
 from niuu.ports.mimir import MimirPort
@@ -63,10 +68,7 @@ def _string_list(value: Any) -> list[str]:
 def _resolve_ingest_mount_names(adapter: MimirPort, explicit: str | None = None) -> list[str]:
     resolver = getattr(type(adapter), "ingest_targets", None)
     if resolver is not None:
-        try:
-            return _string_list(resolver(adapter, explicit))
-        except Exception:
-            logger.debug("mimir_ingest: failed to resolve ingest targets", exc_info=True)
+        return _string_list(resolver(adapter, explicit))
     if explicit:
         return [explicit]
     return []
@@ -215,6 +217,10 @@ class MimirIngestTool(ToolPort):
             return ToolResult(tool_call_id="", content="content is required", is_error=True)
         if not title:
             return ToolResult(tool_call_id="", content="title is required", is_error=True)
+        try:
+            refuse_operational_source_type(source_type)
+        except ValueError as exc:
+            return ToolResult(tool_call_id="", content=str(exc), is_error=True)
 
         source = MimirSource(
             source_id=compute_source_id(content),

@@ -12,8 +12,10 @@ import logging
 
 import pytest
 
+from niuu.cap_telemetry import cap_hit_counts
 from sleipnir.adapters._subscriber_support import (
     DEFAULT_RING_BUFFER_DEPTH,
+    RING_BUFFER_DEPTH_KNOB,
     Delivery,
     _BaseSubscription,
     consume_deliveries,
@@ -210,9 +212,10 @@ async def test_dispatch_empty_subscription_list_is_noop():
     )
 
 
-async def test_dispatch_ring_buffer_overflow_warns(caplog):
-    """When the queue is full, dispatch drops the oldest event with a WARNING."""
+async def test_dispatch_ring_buffer_overflow_is_a_counted_cap_hit(caplog):
+    """When the queue is full, dropping the oldest event is an error-level, counted cap hit."""
     released = asyncio.Event()
+    before = cap_hit_counts().get(RING_BUFFER_DEPTH_KNOB, 0)
 
     async def blocking_handler(_: SleipnirEvent) -> None:
         await released.wait()
@@ -227,8 +230,13 @@ async def test_dispatch_ring_buffer_overflow_warns(caplog):
         with caplog.at_level(logging.WARNING, logger=log.name):
             for i in range(depth + 3):
                 await dispatch_to_subscriptions(make_event(event_id=f"ov-{i}"), [sub], depth, log)
-        overflow_warnings = [r for r in caplog.records if "Ring buffer overflow" in r.message]
-        assert len(overflow_warnings) >= 1
+        overflow_errors = [
+            r
+            for r in caplog.records
+            if "Ring buffer overflow" in r.message and r.levelno == logging.ERROR
+        ]
+        assert len(overflow_errors) >= 1
+        assert cap_hit_counts()[RING_BUFFER_DEPTH_KNOB] >= before + 1
     finally:
         released.set()
         await sub.unsubscribe()

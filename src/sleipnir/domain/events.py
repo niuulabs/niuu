@@ -98,6 +98,18 @@ def flock_scope(domain: str, environment_id: str) -> dict[str, str]:
     return {"domain": domain, "environment_id": environment_id}
 
 
+def _active_trace_context() -> dict[str, str]:
+    """The W3C trace context of the span active where the event is created.
+
+    Every event carries its publisher's trace unless the caller sets one (an event
+    read back with ``from_dict`` keeps the one it was published with), so a consumer
+    can join or link the trace that caused it. Empty when observability is off.
+    """
+    from niuu.observability import get_observability
+
+    return get_observability().inject()
+
+
 @dataclass(kw_only=True)
 class SleipnirEvent:
     """A structured event published over the Sleipnir event bus.
@@ -128,7 +140,7 @@ class SleipnirEvent:
     causation_id: str | None = None
     tenant_id: str | None = None
     ttl: int | None = None
-    trace_context: dict[str, str] = field(default_factory=dict)
+    trace_context: dict[str, str] = field(default_factory=_active_trace_context)
 
     def __post_init__(self) -> None:
         if not 0.0 <= self.urgency <= 1.0:

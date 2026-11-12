@@ -26,6 +26,7 @@ from niuu.adapters.outbound.git_registry import create_provenance_verifier
 from niuu.adapters.postgres_credential_refresh_lock import PostgresCredentialRefreshLock
 from niuu.adapters.postgres_realms import PostgresRealmRepository
 from niuu.build_identity import build_identity
+from niuu.cap_telemetry import health_counts
 from niuu.config_models import SessionPreviewConfig
 from niuu.cors import apply_cors_middleware
 from niuu.domain.guild_membership import GuildInstance
@@ -727,6 +728,51 @@ def _create_otel_providers(otel_cfg):  # pragma: no cover
     )
 
     return tracer_provider, meter_provider
+
+
+async def _start_audit_subscriber(bus, audit_repository) -> AuditSubscriber:
+    """Start the Sleipnir audit subscriber; a start that fails raises.
+
+    With ``sleipnir.enabled`` the audit trail is part of what Forge promises. A
+    subscriber that cannot start used to be logged, so Forge ran on with no audit
+    records and nothing said so.
+    """
+    subscriber = AuditSubscriber(bus, audit_repository)
+    await subscriber.start()
+    return subscriber
+
+
+async def _connect_rabbitmq_event_sink(rmq_cfg):
+    """Build and connect the RabbitMQ event sink, or raise.
+
+    ``event_pipeline.rabbitmq.enabled: true`` without aio-pika, or with a broker
+    Forge cannot reach, is configured-but-impossible: raise with the remedy
+    rather than run the event pipeline without the sink.
+    """
+    try:
+        import aio_pika  # noqa: F401  (the sink imports it lazily; fail here, at startup)
+
+        from volundr.adapters.outbound.rabbitmq_event_sink import RabbitMQEventSink
+    except ImportError as exc:
+        raise RuntimeError(
+            "event_pipeline.rabbitmq.enabled is true but aio-pika is not installed — "
+            "install the 'rabbitmq' extra (pip install 'volundr[rabbitmq]') or set "
+            "event_pipeline.rabbitmq.enabled: false"
+        ) from exc
+    sink = RabbitMQEventSink(
+        url=rmq_cfg.url,
+        exchange_name=rmq_cfg.exchange_name,
+        exchange_type=rmq_cfg.exchange_type,
+    )
+    try:
+        await sink.connect()
+    except Exception as exc:
+        raise RuntimeError(
+            f"event_pipeline.rabbitmq is enabled but Forge could not connect to the broker "
+            f"({type(exc).__name__}: {exc}); fix event_pipeline.rabbitmq.url or set "
+            "event_pipeline.rabbitmq.enabled: false"
+        ) from exc
+    return sink
 
 
 def _build_otel_event_sink(otel_cfg):
@@ -2280,11 +2326,9 @@ def create_app(
 
             audit_repository = PostgresAuditRepository(pool)
             if settings.sleipnir.enabled and sleipnir_bus is not None:
-                try:
-                    audit_subscriber = AuditSubscriber(sleipnir_bus, audit_repository)
-                    await audit_subscriber.start()
-                except Exception:
-                    logger.exception("Failed to start audit subscriber")
+                # sleipnir.enabled with a subscriber that cannot start is fatal: the
+                # audit trail would otherwise stop recording while Forge looked healthy.
+                audit_subscriber = await _start_audit_subscriber(sleipnir_bus, audit_repository)
             app.include_router(create_canonical_audit_router(audit_repository))
             app.include_router(create_audit_router(audit_repository))
 
@@ -2294,27 +2338,9 @@ def create_app(
             # Optional: RabbitMQ sink
             rabbitmq_sink = None
             if settings.event_pipeline.rabbitmq.enabled:
-                try:
-                    from volundr.adapters.outbound.rabbitmq_event_sink import (
-                        RabbitMQEventSink,
-                    )
-
-                    rmq_cfg = settings.event_pipeline.rabbitmq
-                    rabbitmq_sink = RabbitMQEventSink(
-                        url=rmq_cfg.url,
-                        exchange_name=rmq_cfg.exchange_name,
-                        exchange_type=rmq_cfg.exchange_type,
-                    )
-                    await rabbitmq_sink.connect()
-                    event_sinks.append(rabbitmq_sink)
-                    logger.info("RabbitMQ event sink enabled")
-                except ImportError:
-                    logger.warning(
-                        "RabbitMQ sink enabled but aio-pika not installed. "
-                        "Install with: pip install volundr[rabbitmq]"
-                    )
-                except Exception:
-                    logger.exception("Failed to connect RabbitMQ event sink")
+                rabbitmq_sink = await _connect_rabbitmq_event_sink(settings.event_pipeline.rabbitmq)
+                event_sinks.append(rabbitmq_sink)
+                logger.info("RabbitMQ event sink enabled")
 
             # Optional: OTel sink (GenAI semantic conventions)
             otel_sink = None
@@ -2699,6 +2725,7 @@ def create_app(
         store = getattr(app.state, "presented_file_store", None)
         if quota is not None and store is not None:
             health["presented_files"] = await quota.usage(store)
+        health["caps"] = health_counts()
         return health
 
     return app

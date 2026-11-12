@@ -115,22 +115,22 @@ _KNOWN_AUTH_MODES = frozenset({"envoy", "none", "oidc"})
 
 
 def _get_auth_mode(settings: ServiceSettings) -> str:
-    """Read ``settings.auth_mode``, defaulting to ``"envoy"`` only for
-    packages that have not yet adopted the explicit ``auth.mode`` contract.
+    """Read ``settings.auth_mode``; a settings model without the field is refused.
 
-    Kept deliberately narrow: every package this fix touches (Völundr's
-    shared ``Settings``, Ting's ``Settings``) declares ``auth_mode`` as a
-    real field with its own default, so this fallback is never actually
-    exercised for them — a forgotten wire-up there surfaces as a concrete
-    ``auth_mode`` value flowing through the checks below, not as silence.
-    Packages this round does not touch (guild, credentials, tracker,
-    features, integrations, personas, observatory) have no ``auth_mode``
-    field at all yet; defaulting them to ``"envoy"`` preserves their
-    unchanged Kubernetes-only behaviour rather than crashing every
-    co-hosted service that has not opted into this contract. Migrating
-    them is tracked as follow-up work, not silently done here.
+    Every settings class that reaches the shared identity builders (Völundr's
+    ``Settings``, which Identity, Features, Tracker and Observatory reuse,
+    Ting's ``Settings``, Mímir's config, ``NiuuSettings``) declares
+    ``auth_mode`` with its own default. A model without it is a wiring
+    mistake, never "assume Envoy": guessing ``envoy`` would trust
+    ``x-auth-*`` headers on a host that has no Envoy in front of it.
     """
-    auth_mode = getattr(settings, "auth_mode", "envoy")
+    if not hasattr(settings, "auth_mode"):
+        raise ValueError(
+            f"{type(settings).__name__} has no auth_mode field, so the identity mode "
+            "cannot be checked against the configured adapters. Declare auth_mode on "
+            "the service's settings model (envoy, oidc or none)."
+        )
+    auth_mode = settings.auth_mode
     if auth_mode not in _KNOWN_AUTH_MODES:
         raise ValueError(
             f"Unknown auth_mode: {auth_mode!r} (expected one of {sorted(_KNOWN_AUTH_MODES)})"

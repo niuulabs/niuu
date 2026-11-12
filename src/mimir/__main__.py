@@ -359,7 +359,10 @@ def ingest(
     source_type: str = typer.Option(
         "document",
         "--type",
-        help="Source type: document, web, research, conversation, tool_output.",
+        help=(
+            "Source type: document, web, research, conversation. tool_output and "
+            "diagnostic are refused: they record activity, not knowledge."
+        ),
     ),
     origin_url: str = typer.Option("", "--url", "-u", help="Original URL (optional metadata)."),
     target: str = typer.Option(
@@ -449,7 +452,13 @@ async def _run_mimir_ingest(
     target: str | None = None,
 ) -> None:
     from mimir.builders import build_mimir
-    from niuu.domain.mimir import MimirSource, compute_content_hash
+    from niuu.domain.mimir import (
+        MimirSource,
+        compute_content_hash,
+        refuse_operational_source_type,
+    )
+
+    refuse_operational_source_type(source_type)
 
     mimir = _build_single_mimir(settings, target) if target else build_mimir(settings)
     if mimir is None:

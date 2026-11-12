@@ -67,6 +67,7 @@ from niuu.domain.mimir import (
     MimirSource,
     compute_content_hash,
     compute_source_id,
+    refuse_operational_source_type,
 )
 from niuu.domain.models import Principal
 from niuu.domain.tenancy import DEFAULT_PLATFORM_TENANT_ID
@@ -2449,16 +2450,10 @@ class MimirRouter:
             _auth: None = Depends(self._require_write_auth),
         ) -> IngestResponse:
             port, _ = self._resolve_port(request.mount)
-            if request.source_type in OPERATIONAL_SOURCE_TYPES:
-                raise HTTPException(
-                    status_code=422,
-                    detail=(
-                        f"Refusing to ingest source_type {request.source_type!r}: it records "
-                        "system activity, not knowledge, so nothing will ever synthesise it "
-                        "into a page and it would sit unprocessed forever. Write run output "
-                        "to logs or a thread instead."
-                    ),
-                )
+            try:
+                refuse_operational_source_type(request.source_type)
+            except ValueError as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
             content_hash = compute_content_hash(request.content)
             source_id = compute_source_id(request.content)
             source = MimirSource(
