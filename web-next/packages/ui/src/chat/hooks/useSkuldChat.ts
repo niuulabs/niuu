@@ -25,6 +25,7 @@ import type {
   SessionRuntimeOptions,
   SessionUsage,
 } from '../types';
+import { SESSION_AGENT_PEER_ID } from '../types';
 import {
   PERSON_ANSWER_MESSAGE,
   isPersonQuestionTurn,
@@ -323,7 +324,6 @@ interface UseSkuldChatResult {
   clearMessages: () => void;
 }
 
-const SINGLE_PARTICIPANT_ID = 'skuld-primary';
 // Frames Claude's interactive transport derives from its native hooks (metadata.source).
 const CLAUDE_HOOK_SOURCE = 'claude_hook';
 // Skuld's correlated rejections of an answer (skuld/control_errors.py): the question is
@@ -490,7 +490,7 @@ export function safeSessionStorageSet(url: string, state: PersistedChatState): v
 
 export function makeSingleParticipant(): RoomParticipant {
   return {
-    peerId: SINGLE_PARTICIPANT_ID,
+    peerId: SESSION_AGENT_PEER_ID,
     persona: 'Skuld',
     displayName: 'Skuld',
     color: 'brand',
@@ -1079,14 +1079,14 @@ export function useSkuldChat(
   const ensureSingleParticipant = useCallback((): RoomParticipant => {
     const participant = makeSingleParticipant();
     setParticipants((prev) => {
-      if (prev.size > 0 || prev.has(SINGLE_PARTICIPANT_ID)) return prev;
+      if (prev.size > 0 || prev.has(SESSION_AGENT_PEER_ID)) return prev;
       return new Map(prev).set(participant.peerId, participant);
     });
     return participant;
   }, []);
 
   const getDefaultAssistantParticipant = useCallback((): RoomParticipant | undefined => {
-    const existing = participantsRef.current.get(SINGLE_PARTICIPANT_ID);
+    const existing = participantsRef.current.get(SESSION_AGENT_PEER_ID);
     if (existing) return existing;
     if (participantsRef.current.size > 0) return undefined;
     return ensureSingleParticipant();
@@ -1788,7 +1788,7 @@ export function useSkuldChat(
             if (explicitParticipant) {
               setParticipants((prev) => {
                 const next = new Map(prev);
-                next.delete(SINGLE_PARTICIPANT_ID);
+                next.delete(SESSION_AGENT_PEER_ID);
                 next.set(explicitParticipant.peerId, explicitParticipant);
                 return next;
               });

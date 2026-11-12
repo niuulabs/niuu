@@ -69,6 +69,12 @@ export interface ParticipantMeta {
 
 export type RoomParticipant = ParticipantMeta;
 
+/**
+ * The peer id the chat gives the session's own agent when no room participant names it:
+ * the assistant of a session without a mesh room. It is the session itself, never a worker.
+ */
+export const SESSION_AGENT_PEER_ID = 'skuld-primary';
+
 export interface AgentEventTarget {
   participant: RoomParticipant;
   eventType: string;
