@@ -1534,6 +1534,14 @@ config:
     git_timeout_seconds: 15
     dispatch_wait_seconds: 30
     dispatch_poll_seconds: 0.05
+    # Memory a project owns. Its mounts are resolved against a Mimir registry at add time
+    # and at every launch; the default reads the registry file below, which a Forge pod
+    # must be able to open (mount the Mimir registry there, or point `directory_adapter` at
+    # another lookup). A project with no mounts never reads it.
+    memory:
+      directory_adapter: volundr.adapters.outbound.mimir_registry_directory.MimirRegistryFileDirectory
+      directory_kwargs:
+        registry_path: ~/.ravn/mimir/.mimir-registry.json
   conversationRecentMaxTurns: 15
   conversationRecentMaxBytes: 262144
   # -- First durable event-log window (frames) for a `?tail=N` conversation read

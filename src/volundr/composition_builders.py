@@ -55,6 +55,11 @@ from volundr.domain.ports import (
     SessionContributor,
 )
 from volundr.domain.presented_files import PresentedFileStore
+from volundr.domain.project_memory import (
+    MemoryMountDirectory,
+    ProjectMemoryRepository,
+    ProjectMemoryResolver,
+)
 from volundr.domain.services.client_credentials import ClientCredentialsMinter
 from volundr.domain.services.integration_registry import IntegrationRegistry
 from volundr.domain.services.mesh_identity import ForgeMeshCertificateSource
@@ -92,6 +97,26 @@ class HostPairingSignerUnavailableError(RuntimeError):
 
 #: Issuer and kid of pairing codes signed with ``compute.hosts.pairing_signing_key_file``.
 HOST_PAIRING_ISSUER = "niuu-forge-host-pairing"
+
+
+def create_project_memory(
+    settings: Settings, pool: Any
+) -> tuple[ProjectMemoryRepository | None, ProjectMemoryResolver | None]:
+    """The store of the Mimir mounts projects own and the resolver launches use.
+
+    ``(None, None)`` when projects are off. An adapter that is not of its port's type, or a
+    directory that cannot be built, is fatal here, at startup, rather than at a launch.
+    """
+    if not settings.projects.enabled:
+        return None, None
+    config = settings.projects.memory
+    repository = import_class(config.repository_adapter)(pool=pool, **config.repository_kwargs)
+    if not isinstance(repository, ProjectMemoryRepository):
+        raise TypeError("projects.memory.repository_adapter must implement ProjectMemoryRepository")
+    directory = import_class(config.directory_adapter)(**config.directory_kwargs)
+    if not isinstance(directory, MemoryMountDirectory):
+        raise TypeError("projects.memory.directory_adapter must implement MemoryMountDirectory")
+    return repository, ProjectMemoryResolver(repository, directory)
 
 
 def _create_forge_session_tokens(

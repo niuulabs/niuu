@@ -5,6 +5,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from volundr.adapters.outbound.contributors.session_mcp import (
+    MimirMountConfigError,
     SessionMCPContributor,
     _normalize_instance,
     _normalize_mimir_workload_config,
@@ -130,8 +131,10 @@ class TestMimirHelpers:
             "role": "shared",
             "url": "https://mimir.example",
         }
-        assert _normalize_instance({"name": "shared"}) is None
-        assert _normalize_instance({"url": "https://mimir.example"}) is None
+        with pytest.raises(MimirMountConfigError, match="'shared' has no adapter, url or path"):
+            _normalize_instance({"name": "shared"})
+        with pytest.raises(MimirMountConfigError, match="has no name"):
+            _normalize_instance({"url": "https://mimir.example"})
 
         assert _normalize_mimir_workload_config({}, "https://legacy.example") == {
             "hosted_url": "https://legacy.example"
@@ -147,9 +150,6 @@ class TestMimirHelpers:
                 "hosted_url": "https://hosted.example",
                 "instances": [
                     {"name": "shared", "url": "https://shared.example", "categories": ["entity"]},
-                    {"name": "shared", "url": "https://duplicate.example"},
-                    {"url": "https://invalid.example"},
-                    "bad",
                 ],
                 "registry_refs": [
                     {
@@ -167,14 +167,10 @@ class TestMimirHelpers:
                         "mount_name": "hosted-backed",
                         "role": "shared",
                     },
-                    {"mount_name": "registry-a", "url": "https://duplicate.example"},
-                    "bad",
                 ],
                 "ephemeral_locals": [
                     {"mount_name": "scratch", "categories": ["draft"]},
                     {"mountName": "scratch-2"},
-                    {"mount_name": "scratch"},
-                    "bad",
                 ],
                 "bindings": [
                     {
@@ -183,18 +179,13 @@ class TestMimirHelpers:
                         "write_prefixes": ["docs/"],
                     },
                     {"mountName": "scratch", "access": "write", "writePrefixes": ["drafts/"]},
-                    {"mount_name": "missing", "access": "write", "write_prefixes": ["ignored/"]},
-                    "bad",
+                    {"mount_name": "registry-b", "access": "read"},
                 ],
                 "write_routing": {
-                    "rules": [
-                        {"prefix": "reviews/", "mounts": ["registry-b", "missing"]},
-                        {"prefix": "ignored/", "mounts": []},
-                        "bad",
-                    ],
-                    "default": ["registry-b", "missing"],
+                    "rules": [{"prefix": "reviews/", "mounts": ["registry-b"]}],
+                    "default": ["registry-b"],
                 },
-                "default_mounts": ["scratch", "missing"],
+                "default_mounts": ["scratch"],
             }
         )
 
@@ -214,6 +205,74 @@ class TestMimirHelpers:
         registry_a = next(instance for instance in instances if instance["name"] == "registry-a")
         assert registry_a["url"] == "https://registry-a.example"
         assert "path" not in registry_a
+
+    @pytest.mark.parametrize(
+        ("config", "message"),
+        [
+            ({"instances": ["bad"]}, r"instances\[0\] must be an object"),
+            (
+                {"instances": [{"name": "a", "path": "/a"}, {"name": "a", "path": "/b"}]},
+                "'a' twice",
+            ),
+            ({"instances": [{"url": "https://x"}]}, "has no name"),
+            ({"instances": [{"name": "a"}]}, "'a' has no adapter, url or path"),
+            ({"registry_refs": ["bad"]}, r"registry_refs\[0\] must be an object"),
+            ({"registry_refs": [{"role": "shared"}]}, r"registry_refs\[0\] names no mount"),
+            (
+                {"registry_refs": [{"mount_name": "a", "path": "/a"}] * 2},
+                "'a' is configured twice",
+            ),
+            (
+                {"registry_refs": [{"mount_name": "a", "registry_entry_id": "e"}]},
+                "'a' has no adapter, url or path.*registry entry must exist",
+            ),
+            ({"ephemeral_locals": ["bad"]}, r"ephemeral_locals\[0\] must be an object"),
+            ({"ephemeral_locals": [{"categories": []}]}, r"ephemeral_locals\[0\] names no mount"),
+            (
+                {
+                    "instances": [{"name": "a", "path": "/a"}],
+                    "ephemeral_locals": [{"mount_name": "a"}],
+                },
+                "'a' is configured twice",
+            ),
+            ({"bindings": ["bad"]}, r"bindings\[0\] must be an object"),
+            (
+                {"instances": [{"name": "a", "path": "/a"}], "bindings": [{"mount_name": "b"}]},
+                r"bindings\[0\] is for the mount 'b'.*mounted: a",
+            ),
+            ({"write_routing": ["bad"]}, "write_routing must be an object"),
+            ({"write_routing": {"rules": ["bad"]}}, r"rules\[0\] must be an object"),
+            ({"write_routing": {"rules": [{"prefix": "x/"}]}}, "needs a prefix and at least one"),
+            (
+                {
+                    "instances": [{"name": "a", "path": "/a"}],
+                    "write_routing": {"rules": [{"prefix": "x/", "mounts": ["a", "ghost"]}]},
+                },
+                r"rules\[0\].mounts names 'ghost'",
+            ),
+            (
+                {"instances": [{"name": "a", "path": "/a"}], "write_routing": {"default": ["g"]}},
+                "write_routing.default names 'g'",
+            ),
+            (
+                {"instances": [{"name": "a", "path": "/a"}], "default_mounts": ["g"]},
+                "default_mounts names 'g'",
+            ),
+        ],
+    )
+    def test_a_mount_configuration_that_cannot_launch_raises_with_the_remedy(self, config, message):
+        with pytest.raises(MimirMountConfigError, match=message):
+            _resolve_mimir_runtime(config)
+
+    async def test_the_contributor_fails_the_launch_instead_of_dropping_a_mount(self, session):
+        contributor = SessionMCPContributor()
+        context = SessionContext(
+            workload_config={
+                "mimir": {"registry_refs": [{"mount_name": "lost", "registry_entry_id": "gone"}]}
+            }
+        )
+        with pytest.raises(MimirMountConfigError, match="'lost'"):
+            await contributor.contribute(session, context)
 
     def test_resolve_mimir_runtime_adds_default_hosted_instance_when_no_registry_refs(self):
         instances, routing = _resolve_mimir_runtime({"hosted_url": "https://hosted.example"})

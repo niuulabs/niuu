@@ -73,6 +73,13 @@ from volundr.domain.ports import (
     UnitMemberContext,
 )
 from volundr.domain.presented_files import PresentedFileStore
+from volundr.domain.project_memory import (
+    MIMIR_SERVER_PREFIX,
+    ProjectMemoryResolver,
+    has_derived,
+    merge_memory,
+    with_memory_instructions,
+)
 from volundr.domain.projects import SessionCoordination
 from volundr.domain.secret_request_ports import SessionSecretCleanup
 from volundr.domain.services.forge_session_launch import (
@@ -209,6 +216,7 @@ class SessionService:
         forge_session_projection: ExecutionCredentialProjectionPort | None = None,
         secret_cleanup: SessionSecretCleanup | None = None,
         mesh_identity: MeshIdentityRetirer | None = None,
+        project_memory: ProjectMemoryResolver | None = None,
     ):
         if forge_session_projection is not None and not forge_session_projection.supports(
             runtime_backend
@@ -221,6 +229,7 @@ class SessionService:
         self._presented_file_store = presented_file_store
         self._secret_cleanup = secret_cleanup
         self._mesh_identity = mesh_identity
+        self._project_memory = project_memory
         self._pod_manager = pod_manager
         self._git_registry = git_registry
         self._user_integration = user_integration
@@ -1382,6 +1391,14 @@ class SessionService:
         if project_context:
             workload_config = {**(workload_config or {}), "project_context": project_context}
 
+        # The project's memory mounts are derived again at every launch, so a mount added or
+        # removed since the last one applies to this one. A mount the registry no longer has,
+        # or two sources that disagree about one, refuse the start before the session flips
+        # to STARTING.
+        workload_config = await self.with_project_memory(
+            session, workload_config, launch_spec, workload_type
+        )
+
         # A restart ends the previous launch: its mesh peer ids are freed and its mesh
         # certificates revoked, exactly like its session credential (a launch that was
         # stopped first has nothing left to retire).
@@ -1453,6 +1470,51 @@ class SessionService:
         self._startup.watch(session_id)
 
         return starting
+
+    async def with_project_memory(
+        self,
+        session: Session,
+        workload_config: dict | None,
+        launch_spec: str | None,
+        workload_type: str = "session",
+    ) -> dict | None:
+        """``workload_config`` with its ``mimir`` merged from the session's project, the
+        launch spec and what the session itself sets.
+
+        A session in no project, or in a project with no mounts that has not had any derived
+        before, is returned as it is. Raises ``MemoryMountUnavailableError`` naming a project
+        mount the registry cannot give this session's owner, and ``MemoryMountClashError``
+        naming a mount two sources point at different targets.
+        """
+        if self._project_memory is None or session.coordination is None:
+            return workload_config
+        config = workload_config or {}
+        project = await self._project_memory.for_launch(
+            session.coordination.project_id, tenant_id=session.tenant_id or ""
+        )
+        if not project and not has_derived(config.get("mimir")):
+            return workload_config
+        merged = merge_memory(
+            config.get("mimir"), self._launch_spec_memory(launch_spec, workload_type), project
+        )
+        without = {key: value for key, value in config.items() if key != "mimir"}
+        return {**without, "mimir": merged} if merged else without
+
+    def _launch_spec_memory(self, launch_spec: str | None, workload_type: str) -> dict:
+        provider = self._launch_spec_provider
+        if provider is None:
+            return {}
+        spec = provider.get(launch_spec) if launch_spec else None
+        if spec is None and workload_type != "session":
+            spec = provider.get_default(workload_type)
+        if spec is None:
+            return {}
+        raw = spec.workload_config.get("mimir")
+        memory = dict(raw) if isinstance(raw, dict) else {}
+        hosted = spec.workload_config.get("mimir_hosted_url")
+        if hosted and not memory.get("hosted_url"):
+            memory["hosted_url"] = hosted
+        return memory
 
     async def _provision_background(
         self,
@@ -1675,6 +1737,11 @@ class SessionService:
         # A caller cannot change the internally persisted execution during contribution.
         if "_compute_execution" in session.workload_config:
             workload_config["_compute_execution"] = session.workload_config["_compute_execution"]
+        # Every launch, including a hosted member's at its unit's start, gets its project's
+        # memory as the project holds it now.
+        workload_config = await self.with_project_memory(
+            session, workload_config, launch_spec, workload_type
+        )
         resolved_connections = await self._resolve_connections(
             session, principal, integration_ids, workload_config
         )
@@ -1713,6 +1780,18 @@ class SessionService:
             contributions.append(contribution)
 
         spec = SessionSpec.merge(contributions)
+        if any(
+            str(server.get("name", "")).startswith(MIMIR_SERVER_PREFIX)
+            for server in spec.values.get("mcpServers", [])
+            if isinstance(server, dict)
+        ):
+            # Appended after persona and launch-spec resolution, as the project brief is,
+            # so every harness is told how to use the session's memory whichever prompt
+            # the session was given.
+            session_values = spec.values.setdefault("session", {})
+            session_values["systemPrompt"] = with_memory_instructions(
+                session_values.get("systemPrompt", "")
+            )
         spec.forge_session = await self._deliver_forge_session(session, spec)
         if session.coordination and (
             project_context := session.workload_config.get("project_context")

@@ -9,6 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from niuu.domain.agent_directory import AgentSkill
 from niuu.domain.services.token_scope import FORGE_SESSION_LIFECYCLE_SCOPE, require_scope
 from volundr.domain.execution_catalog import ExecutionSelectionError
+from volundr.domain.project_memory import MemoryMountClashError
 from volundr.domain.project_ports import (
     ProjectAccessDeniedError,
     ProjectConflictError,
@@ -130,6 +131,8 @@ async def project_result(operation):
         raise HTTPException(404, str(exc)) from exc
     except ExecutionSelectionError:
         raise
+    except MemoryMountClashError as exc:
+        raise HTTPException(409, str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
     except OSError as exc:

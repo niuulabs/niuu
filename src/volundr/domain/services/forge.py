@@ -334,6 +334,10 @@ class ForgeService:
                 initial_prompt=data.initial_prompt,
                 workload_type=data.workload_type,
             )
+            # A member is held, not started, so nothing else would refuse its memory now.
+            await self._session_service.with_project_memory(
+                session, workload_config, data.launch_spec, data.workload_type
+            )
             if isinstance(hosted_by, UUID):
                 workload_config[HOSTED_LAUNCH_KEY] = launch.model_dump()
                 return await self._hold_member(

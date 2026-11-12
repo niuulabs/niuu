@@ -78,6 +78,7 @@ from volundr.adapters.inbound.rest_guild import own_instance
 from volundr.adapters.inbound.rest_project_integrations import (
     create_project_integrations_router,
 )
+from volundr.adapters.inbound.rest_project_memory import create_project_memory_router
 from volundr.adapters.inbound.rest_projects import (
     create_projects_router,
     create_session_projects_router,
@@ -132,6 +133,7 @@ from volundr.domain.ports import (
     PricingProvider,
 )
 from volundr.domain.presented_files import PresentedFileStore, is_presented_file_id
+from volundr.domain.project_memory import MemoryMountClashError, ProjectMemoryError
 from volundr.domain.projects import SessionCoordination
 from volundr.domain.push import (
     EnvironmentAssumed,
@@ -2416,6 +2418,7 @@ def create_router(
     durable_transcripts: DurableTranscripts | None = None,
     project_service=None,
     project_integration_service=None,
+    project_memory_service=None,
     runtime_build: dict | None = None,
     session_status_host: str | None = None,
     runtime_health_timeout: float = 3.0,
@@ -2633,6 +2636,10 @@ def create_router(
         if project_integration_service is not None:
             router.include_router(
                 create_project_integrations_router(project_integration_service, project_principal)
+            )
+        if project_memory_service is not None:
+            router.include_router(
+                create_project_memory_router(project_memory_service, project_principal)
             )
 
     @router.get("/session-runtimes", tags=["Sessions"], response_model=SessionRuntimesResponse)
@@ -3249,6 +3256,10 @@ def create_router(
                 status_code=status.HTTP_409_CONFLICT,
                 detail=str(e),
             )
+        except MemoryMountClashError as e:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
+        except ProjectMemoryError as e:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(e))
         except (ExecutionCatalogError, ExecutionSelectionError) as e:
             raise _execution_catalog_http_error(e) from e
         return _session_response(started)
@@ -3772,6 +3783,10 @@ def create_router(
                 status_code=status.HTTP_409_CONFLICT,
                 detail=str(e),
             )
+        except MemoryMountClashError as e:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
+        except ProjectMemoryError as e:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(e))
         except (ExecutionCatalogError, ExecutionSelectionError) as e:
             raise _execution_catalog_http_error(e) from e
 

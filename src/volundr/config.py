@@ -3450,6 +3450,28 @@ class ArtifactsConfig(BaseModel):
     type_names: dict[str, str] = Field(default_factory=_default_artifact_type_names)
 
 
+class ProjectMemoryConfig(BaseModel):
+    """The memory a project owns: where its mounts are stored and looked up."""
+
+    repository_adapter: str = (
+        "volundr.adapters.outbound.postgres_project_memory.PostgresProjectMemoryRepository"
+    )
+    repository_kwargs: dict[str, Any] = Field(
+        default_factory=dict, description="Extra constructor kwargs for the mount store."
+    )
+    directory_adapter: str = (
+        "volundr.adapters.outbound.mimir_registry_directory.MimirRegistryFileDirectory"
+    )
+    directory_kwargs: dict[str, Any] = Field(
+        default_factory=lambda: {"registry_path": "~/.ravn/mimir/.mimir-registry.json"},
+        description=(
+            "Constructor kwargs for the registry lookup a mount is resolved with at add time "
+            "and at every launch. The default reads the Mimir registry file; a missing file "
+            "fails the launch of any session in a project that has mounts."
+        ),
+    )
+
+
 class ProjectsConfig(BaseModel):
     """Storage adapters and bounded checkpoint limits; workflows live in agent skills."""
 
@@ -3472,6 +3494,7 @@ class ProjectsConfig(BaseModel):
     git_timeout_seconds: float = Field(default=15.0, gt=0)
     dispatch_wait_seconds: float = Field(default=30.0, gt=0)
     dispatch_poll_seconds: float = Field(default=0.05, gt=0)
+    memory: ProjectMemoryConfig = Field(default_factory=ProjectMemoryConfig)
     team_usage_page_size: int = Field(
         default=50,
         ge=1,
