@@ -60,7 +60,7 @@ Telegram can post into one shared chat, a fixed topic, or a topic per session
 Participants join, beat and leave over `/api/room/*`; a participant past its
 heartbeat with no live WebSocket shows as away but stays a member. Room
 semantics (membership, routing, opaque reply context) belong to the
-Communication area; Skuld never reads a reply to decide what it means.
+[Communication area](../communication/index.md); Skuld never reads a reply to decide what it means.
 
 ## Messages from other agents
 
@@ -76,7 +76,7 @@ Skuld does not read these messages and puts no limit on how many wait.
 With `mesh.enabled`, the session is also a Flokk mesh peer (transport `nng`
 by default) and every message is signed with a Forge-issued peer certificate. With
 `workflow_steps.enabled`, a session takes step offers from its run's mesh and closes
-them with `workflow_step_close` (Workflows area).
+them with `workflow_step_close` ([Workflows area](../workflows/index.md)).
 
 ## The `forge` MCP tools
 
@@ -155,6 +155,6 @@ A quota refusal is logged as an error.
 
 ## Related
 
-- Communication area: rooms, the Flokk mesh, Sleipnir.
+- [Communication area](../communication/index.md): rooms, the Flokk mesh, Sleipnir.
 - [Credentials](../security/credentials.md): the `forge_session` credential. Mesh signing: [the rules](https://github.com/niuulabs/niuu/blob/dev/.claude/rules/architecture.md).
-- Workflows area: how a run hands steps to sessions.
+- [Workflows area](../workflows/index.md): how a run hands steps to sessions.

@@ -122,8 +122,8 @@ Channel, delivery and Forge-tool knobs are on the pages that use them.
 
 ## Related
 
-- Forge area: how a session's pod or slot is started and where Skuld runs in it.
-- Communication area: room mechanics, the Flokk mesh and Sleipnir.
+- [Forge area](../forge/index.md): how a session's pod or slot is started and where Skuld runs in it.
+- [Communication area](../communication/index.md): room mechanics, the Flokk mesh and Sleipnir.
 - [Credentials](../security/credentials.md): the session-bound Forge credential.
 - [Fail loud](../design/fail-loud.md): why a rejected event log stops the broker.
 - [Ravn, Skuld and collaboration ownership](https://github.com/niuulabs/niuu/blob/dev/docs/architecture/ravn-skuld-collaboration.md)

@@ -170,4 +170,4 @@ permanent rejection by Forge (bad session, bad credential) raises
 ## Related
 
 - [Runtimes](runtimes.md): which transport has which steering mode.
-- Forge area: the event log and message routes on the Forge side.
+- [Forge area](../forge/index.md): the event log and message routes on the Forge side.

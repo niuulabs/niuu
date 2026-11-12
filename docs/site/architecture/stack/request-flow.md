@@ -61,7 +61,7 @@ batched, not per token.
 ## 2. Launch Skuld
 
 The pod manager is chosen by `pod_manager.adapter`; each one launches the same
-Skuld broker somewhere different. The Forge area covers them in depth.
+Skuld broker somewhere different. The [Forge area](../forge/index.md) covers them in depth.
 
 | Pod manager | Launches Skuld as | Default for |
 |---|---|---|

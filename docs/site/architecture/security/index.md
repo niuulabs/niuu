@@ -45,7 +45,7 @@ authenticate inside the route; see [Machine identities](machine-identities.md).
 | Person's automation | Ting's dispatcher acting as you | Personal access token (a sanctioned exception) | [Credentials](credentials.md) |
 | Workload | A resident, a Skuld gateway, a workflow step | A provider proof (e.g. a Kubernetes ServiceAccount token) exchanged for a short-lived workload token | [Credentials](credentials.md) |
 | Session | One Forge session's broker, calling the Forge MCP | `forge_session` token bound to that session's launch | [Credentials](credentials.md) |
-| Platform service | Forge, Ting signing bus events | A `service` mesh certificate signed with the platform key | Communication area |
+| Platform service | Forge, Ting signing bus events | A `service` mesh certificate signed with the platform key | [Communication area](../communication/index.md) |
 | Machine | A joined node, a VM guest, a registered host | Ed25519 key, provider attestation or SPIFFE SVID | [Machine identities](machine-identities.md) |
 
 ## The edge

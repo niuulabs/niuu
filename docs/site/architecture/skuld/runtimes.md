@@ -136,4 +136,4 @@ would make the CLI fall back to the user's real subscription token.
 ## Related
 
 - [A message's path](message-path.md): how steering modes and `send_runs_turn` change delivery.
-- Models area: Bifröst and provider connections.
+- [Models area](../models/index.md): Bifröst and provider connections.

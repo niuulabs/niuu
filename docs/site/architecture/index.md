@@ -26,10 +26,10 @@ links to it.
    then follow [one request end to end](stack/request-flow.md). Keep
    [product and implementation names](stack/names.md) open while reading the rest.
 2. [Design principles](design/index.md) — the rules every service follows; read before changing code.
-3. **Forge**, then [Skuld](skuld/index.md) — the session path, which most other areas plug into.
-4. **Communication** and [Security](security/index.md) — how services and machines talk and prove who
+3. [Forge](forge/index.md), then [Skuld](skuld/index.md) — the session path, which most other areas plug into.
+4. [Communication](communication/index.md) and [Security](security/index.md) — how services and machines talk and prove who
    they are.
-5. **Models**, **Memory**, **Workflows** — the services sessions and residents use.
+5. [Models](models/index.md), [Memory](memory/index.md), [Workflows](workflows/index.md) — the services sessions and residents use.
 6. [Deployment modes](deployment/index.md) — how the same services run locally, in Docker and on
    Kubernetes.
 
@@ -39,14 +39,14 @@ links to it.
 |---|---|
 | [Stack map](stack/services.md) | Every service and library, what talks to what, one request end to end, product vs implementation names |
 | [Design principles](design/index.md) | Hexagonal layout, ports and adapters, composition roots, dynamic adapters, fail loud, no hidden limits, config first, module boundaries |
-| Forge | Session lifecycle, Workspaces and projects, pod managers, compute pools, VMs, registered hosts, slots, event log |
+| [Forge](forge/index.md) | Session lifecycle, Workspaces and projects, pod managers, compute pools, VMs, registered hosts, slots, event log |
 | [Skuld](skuld/index.md) | The runtime gateway: runtimes, process lifecycle, transcripts, channels, WebSocket, broker and Forge MCP |
-| Workflows | Ting: workflows, runs, steps, gates and reviews, trackers, personas in workflows |
+| [Workflows](workflows/index.md) | Ting: workflows, runs, steps, gates and reviews, trackers, personas in workflows |
 | [Security](security/index.md) | Edge auth, identity adapters, every credential kind, machine identities, isolation, secrets |
 | [Deployment modes](deployment/index.md) | Local mini mode, Docker, joined nodes and remote compute, Kubernetes, and the levers per mode |
-| Communication | Sleipnir events, collaboration rooms, the flock mesh, A2A, SSE and WebSocket APIs |
-| Models | Bifröst gateway, model catalog, provider connections, routing |
-| Memory | Mímir: sources, pages, retrieval, tenants, hosting |
+| [Communication](communication/index.md) | Sleipnir events, collaboration rooms, the flock mesh, A2A, SSE and WebSocket APIs |
+| [Models](models/index.md) | Bifröst gateway, model catalog, provider connections, routing |
+| [Memory](memory/index.md) | Mímir: sources, pages, retrieval, tenants, hosting |
 
 Ravn, the agent runtime, is being rebuilt; it gets its own area once the new
 runtime lands.
