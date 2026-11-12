@@ -1,8 +1,8 @@
 # Routing
 
 How Bifröst turns one request for a model name into a call to one provider:
-access and quota checks, rules, model selection, provider order, and the protocol
-the call is made in.
+access and quota checks, rules, model selection, provider selection, and the
+protocol the call is made in.
 
 ## In one minute
 
@@ -10,8 +10,10 @@ the call is made in.
   dialect it arrived in, so rules, quotas and usage work the same for all.
 - The model name is resolved through `aliases`, then to the providers that list
   it under `models`. No provider for the model is an error, not a guess.
-- The routing strategy orders those providers; the default, `failover`, tries the
-  next one on 429 or 5xx.
+- The routing strategy selects one of those providers; the default is `direct`.
+  Bifröst serves each request from exactly one provider: strategies select, they
+  do not fall back. When the selected provider fails, its error is the answer and
+  no other provider is tried.
 - `passthrough: true` on a provider skips the translation for callers that already
   speak its protocol. Bifröst still authenticates, routes, meters and audits.
 - Bifröst does not compact context itself. It carries a provider's own compaction
@@ -27,10 +29,10 @@ flowchart TD
     Q --> RULES[Rules: first match wins]
     RULES --> SEL{selection<br/>adapter?}
     SEL -- "route for this name" --> PICK[Weighted pick or<br/>classifier judge]
-    SEL -- no --> STRAT[Strategy orders<br/>providers of the model]
+    SEL -- no --> STRAT[Strategy selects one<br/>provider of the model]
     PICK --> CALL
-    STRAT --> CALL[Call candidates in order]
-    CALL -- "429 / 5xx /<br/>provider error" --> CALL
+    STRAT --> CALL[Call that provider]
+    CALL -- "provider error" --> ERR[Error returned,<br/>no other provider tried]
     CALL --> PATH{passthrough<br/>and same protocol?}
     PATH -- yes --> NAT[Native body,<br/>model name rewritten]
     PATH -- no --> TR[Translate to the<br/>provider's API]
@@ -41,18 +43,18 @@ are read from the provider's own stream.
 
 ## Picking the provider
 
-| Strategy | Order of candidates |
+| Strategy | Provider selected |
 |---|---|
-| `direct` | Only the first provider listed for the model; no failover |
-| `failover` (default) | Config order; next on a retryable failure |
-| `cost_optimised` | Cheapest `cost_per_token` first |
-| `round_robin` | Rotates the leading provider per request |
-| `latency_optimised` | Lowest EWMA latency first; providers with no data last |
+| `direct` (default) | The first provider listed for the model |
+| `cost_optimised` | The cheapest `cost_per_token` |
+| `round_robin` | The next provider in rotation, one per request |
+| `latency_optimised` | The lowest EWMA latency; providers with no data rank last |
 
 - `model_routing_strategies` overrides the strategy per model or alias.
-- Failover moves on for HTTP 429, 500, 502, 503, 504 and adapter errors; any other
-  status is returned to the caller. When every candidate fails the request fails
-  with the last error.
+- There is no failover. `failover` was removed as a strategy and a config that
+  still names it, globally or in `model_routing_strategies`, is refused at load.
+  A failing provider fails the request with an error naming the provider and
+  model; changing provider is a configuration change, not a runtime branch.
 - The adapter is `adapter` (a class path) when set, otherwise by provider key:
   `anthropic`, `openai`, `ollama`, anything else OpenAI-compatible.
 
@@ -73,7 +75,12 @@ are read from the provider's own stream.
   model's providers, `weights` keyed by provider.
 - `bifrost.adapters.switchyard_models.SwitchyardModelSelection`: named routes (the
   request's model name) over explicit `targets` (provider + model + weight). A route
-  with a `judge` and `prompt` asks the judge model which target fits.
+  with a `judge` and `prompt` asks the judge model which target fits. The judge's
+  `max_tokens` (`routes.<name>.max_tokens`) is required and has no default: it is
+  set to what the judge's answer, reasoning included, needs. A judge answer cut
+  off at it raises and is counted on `ravn.cap.hits` (knob
+  `bifrost.selection.routes.<name>.max_tokens`); the target is never chosen by
+  the classifier's default.
 
 A rejected request is a 400 naming the rule; nothing is sent to a provider.
 
@@ -87,13 +94,14 @@ A rejected request is a 400 naming the rule; nothing is sent to a provider.
 
 Startup refuses `passthrough: true` when the adapter cannot serve natively, when
 the response cache is on (it stores canonical responses only), or when one model's
-providers disagree on the path (failover cannot switch protocol mid-request).
+providers disagree on the path (the protocol of a request must not depend on which
+provider is selected).
 
 ## Compaction
 
 | Request carries | Served when | Otherwise |
 |---|---|---|
-| Anthropic `context_management` / `compaction` blocks | Every candidate is an Anthropic adapter (forwarded with the beta header; compaction tokens added to usage) | 400: route to Anthropic, or compact in the client |
+| Anthropic `context_management` / `compaction` blocks | The selected provider is an Anthropic adapter (forwarded with the beta header; compaction tokens added to usage) | 400: route to Anthropic, or compact in the client |
 | Responses `context_management` | Passthrough to an adapter with native compaction (ChatGPT subscription) | 400 |
 
 Runtimes that compact on their own (Claude Code, Codex) need neither.
@@ -111,11 +119,11 @@ Runtimes that compact on their own (Claude Code, Codex) need neither.
 
 | Knob | Default | What it changes |
 |---|---|---|
-| `routing_strategy` | `failover` | Provider order for every model |
+| `routing_strategy` | `direct` | Which provider serves every model |
 | `model_routing_strategies` | `{}` | Per model or alias strategy |
 | `providers.<name>.models` | `[]` | Which models a provider serves |
 | `providers.<name>.passthrough` | `false` | Native protocol for matching callers |
-| `providers.<name>.cost_per_token` | `0.0` | Order under `cost_optimised` |
+| `providers.<name>.cost_per_token` | `0.0` | Selection under `cost_optimised` |
 | `providers.<name>.timeout` | `120` s | Per-request timeout |
 | `providers.<name>.chat_template_kwargs` | `{}` | Forced chat-template arguments (OpenAI-compatible) |
 | `providers.<name>.api_key_env` / `api_key_file` | `""` | Provider key; re-read on `SIGHUP` or `POST /admin/reload-keys` |
@@ -132,7 +140,7 @@ All are keys of Bifröst's config (`bifrost.yaml`; the chart's `config` value).
 | Passthrough | Reasoning items, compaction and hosted tools reach the provider unchanged | Only callers already on that protocol; no response cache; all providers of a model must match |
 | Self-hosted model | Inference on your hardware; zero per-token price | You size, serve and keep it up; capability depends on the model |
 | Hosted model | Frontier capability, nothing to run | Per-token cost or plan limits; data leaves your network |
-| `failover` | A provider outage does not stop work | The serving provider can change between requests; check usage for which one answered |
+| One provider per request | The provider that answered is always the one selected; a failure is visible, not absorbed | A provider outage fails the requests routed to it until the configuration changes |
 
 ## Code map
 

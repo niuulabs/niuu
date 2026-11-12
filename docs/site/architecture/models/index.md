@@ -32,7 +32,7 @@ flowchart LR
     SVC[Platform services<br/>and other clients]
     subgraph B["AI models (Bifröst)"]
         IN[Inbound dialects<br/>/v1/messages · /v1/chat/completions<br/>/v1/responses · /api/chat]
-        R[Router<br/>rules · strategy · failover]
+        R[Router<br/>rules · strategy · one provider]
         CAT[(Catalog)]
     end
     FORGE[Forge] -- "GET /api/v1/bifrost/models<br/>every 60 s" --> CAT

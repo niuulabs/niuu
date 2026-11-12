@@ -103,7 +103,7 @@ refused. A fact derived from others takes the lowest trust among them.
 
 | Attempt | Answer | Where |
 |---|---|---|
-| Ingest a `tool_output` or `diagnostic` source over REST | `422`, "write run output to logs or a thread" (the MCP tool does not check yet) | `router.py` |
+| Ingest a `tool_output` or `diagnostic` source | `422` over REST, a tool error from `mimir_ingest`, an error from the CLI: "write run output to logs or a thread" | `niuu/domain/mimir.py` (`refuse_operational_source_type`), used by `router.py`, `tools.py`, `__main__.py` |
 | Write to a read-only mount, or outside its prefixes | Tool error naming the mount and what it allows; counted | `adapters/composite.py` |
 | Ingest or lint fix on a prefix-limited mount | Refused: cannot be confined to a path | same |
 | A page path that escapes `wiki/` (`../`) | `PathSecurityError` | `adapters/markdown.py` |
@@ -115,6 +115,16 @@ refused. A fact derived from others takes the lowest trust among them.
 
 Not refused, only reported: editing a page's Timeline instead of appending
 (lint `L09`).
+
+**Write roles are checked only in `oidc` mode.** Under `envoy` any caller Envoy
+authenticated may write, and Mímir's chart has no Cedar `ext_authz` in front of it to
+check roles instead. This is a known gap, not a design choice. Enforcing
+`WRITE_ROLES` under `envoy` as the code stands would refuse every session broker,
+because Forge session and scoped workload credentials carry no roles, and every web
+user, because Mímir's Envoy identity adapter is given no `role_mapping`, so Keycloak's
+raw `developer` never becomes `volundr:developer`. Closing it needs a scope for
+knowledge writes on those credentials and the role mapping on the chart. Under
+`none` there is no authorization, by the operator's choice.
 
 ## Levers
 

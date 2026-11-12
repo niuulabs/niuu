@@ -48,17 +48,29 @@ credential when it calls Forge.
 Telegram can post into one shared chat, a fixed topic, or a topic per session
 (`telegram.topic_mode`), and can be notify-only.
 
+A Telegram channel you turn on is a promise to be reachable from the chat, so one
+that cannot start fails the session's startup with the reason, and `/ready`,
+`/health` and Forge report it. That covers a missing `bot_token` or `chat_id`, a
+named credential that cannot be read or does not exist, the bot library not
+installed, and a failing start. Topic modes never fall back to shared chat:
+`fixed_topic` needs `telegram.message_thread_id`, and `topic_per_session` needs a
+forum chat where the bot may manage topics. An unknown mode, or `fixed_topic`
+without a thread, is refused when the config loads. Posting into the whole chat is
+a choice you make with `telegram.topic_mode: shared_chat`. A permission prompt
+that cannot be delivered raises as well.
+
 ## Rooms
 
 | Knob | Effect |
 |---|---|
-| `room.enabled` | This broker hosts a collaboration room: participants, presence, directed messages, replay |
+| `room.enabled` | This broker hosts a collaboration room: participants, presence, directed messages |
 | `room.default_target_peer_id` | Untargeted chat goes to this participant. Forge sets it for resident sessions, so any client can talk to the one Ravn behind the room |
 | `room.routed` | The broker owns **no runtime** of its own and only hosts the room. A workflow run's root session runs this way |
 | `room.realm_room` | The room shows everything its mesh realm publishes, so a run's room shows every member |
 
 Participants join, beat and leave over `/api/room/*`; a participant past its
-heartbeat with no live WebSocket shows as away but stays a member. Room
+heartbeat TTL (`room.agent_heartbeat_ttl_s`, `room.peer_heartbeat_ttl_s`,
+`room.join_heartbeat_ttl_s`) with no live WebSocket shows as away but stays a member. Room
 semantics (membership, routing, opaque reply context) belong to the
 [Communication area](../communication/index.md); Skuld never reads a reply to decide what it means.
 

@@ -52,6 +52,10 @@ A fallback turns a one-line failure into a data problem that takes weeks to find
 | Mesh transport ([`transport_builder.py`](https://github.com/niuulabs/niuu/blob/dev/src/niuu/mesh/transport_builder.py)) | A transport that cannot be imported or constructed → `TransportBuildError` | Install the package, or configure another transport |
 | Mesh attestation ([`niuu/mesh/config.py`](https://github.com/niuulabs/niuu/blob/dev/src/niuu/mesh/config.py)) | A peer that cannot get a certificate does not start its mesh | Fix identity, or set `mesh.attestation.required: false` (a decision) |
 | Skuld waits ([`skuld/config.py`](https://github.com/niuulabs/niuu/blob/dev/src/skuld/config.py)) | `ask.wait_max_s` not shorter than the engine's MCP timeouts → startup fails | Lower the wait or raise the timeout |
+| CLI plugins ([`cli/registry.py`](https://github.com/niuulabs/niuu/blob/dev/src/cli/registry.py)) | An installed or configured plugin that fails to load → `PluginLoadError` | Fix it, or set `plugins.enabled.<name>: false` |
+| Bifröst routing ([`bifrost/config.py`](https://github.com/niuulabs/niuu/blob/dev/src/bifrost/config.py)) | `routing_strategy: failover`: a request is served by one provider, never retried on another | Set `direct` or another selection strategy |
+| Forge event pipeline ([`volundr/main.py`](https://github.com/niuulabs/niuu/blob/dev/src/volundr/main.py)) | An audit subscriber that cannot start, or `event_pipeline.rabbitmq.enabled` with no aio-pika or no broker | Fix it, or turn the sink off |
+| Skuld Telegram ([`skuld/chronicle.py`](https://github.com/niuulabs/niuu/blob/dev/src/skuld/chronicle.py)) | `telegram.enabled` that cannot start (credentials, library, topic) fails the session's startup | Fix the credential or topic, or set `telegram.topic_mode: shared_chat` by decision |
 
 ## Recording a hit: `niuu.cap_telemetry`
 
@@ -84,9 +88,7 @@ One module, one set of counters. Do not add a parallel counter or log format.
 | Error log line | `cap hit [<knob>]: …`, `degraded [<path>]: …` |
 | OpenTelemetry counter | `ravn.cap.hits` (attr `ravn.cap.knob`), `ravn.degraded` (attr `ravn.degraded.path`), `ravn.retries` (attr `ravn.retry.path`) |
 | Prometheus | `ravn_cap_hits_total` and friends, via the process's OTLP pipeline |
-| Health snapshot shape | `health_counts()` → `cap_hits_total`, `cap_hits.<knob>`, `degraded_total`, `degraded.<path>`, `retries_total` |
-
-Not built yet: no service health endpoint serves `health_counts()` today; the resident health surface that carried it goes with the Ravn rebuild.
+| `GET /health` → `caps` | `health_counts()` → `cap_hits_total`, `cap_hits.<knob>`, `degraded_total`, `degraded.<path>`, `retries_total`, served by Forge, Skuld, Bifröst, Ting and the Niuu host. Counts are per process and reset on restart |
 
 Every cap that remains is listed with its real bound and decision in the limits registers: [`docs/operator/limits.md`](https://github.com/niuulabs/niuu/blob/dev/docs/operator/limits.md) (shared and non-Forge) and [`docs/operator/forge-limits.md`](https://github.com/niuulabs/niuu/blob/dev/docs/operator/forge-limits.md). Add a row when you add or keep a cap.
 
@@ -94,7 +96,7 @@ Every cap that remains is listed with its real bound and decision in the limits 
 
 | Resource | Real bound | So |
 |---|---|---|
-| Model output tokens | The model's context window, the request timeout | Send no `max_tokens` where the API allows; where required, derive it from the model catalog |
+| Model output tokens | The model's context window, the request timeout | Send no `max_tokens` where the API allows; where required, ask the vendor (Bifröst's Anthropic adapter reads the limit from the Models API) or make the operator's knob required, with no default |
 | Turns, iterations, attempts | A wall-clock deadline, an operator budget, or the agent's own decision | Bound by that; a count only where retrying is pointless past it, and exhausting it raises |
 | Retries | Whether a retry can change the outcome | Never retry a deterministic failure (truncation, validation) |
 | Lengths, excerpts | A downstream hard limit (prompt budget, column size, Telegram's 4096 UTF-16 units) | Use that limit; mark and count the cut |
@@ -115,7 +117,7 @@ Every cap that remains is listed with its real bound and decision in the limits 
 - `if count >= N: return` with no error and no counter; `text[:N]` without marking and counting it.
 - Tests asserting "does not crash", "continues" or "falls back". Assert the raise.
 
-Known drift the code still has: the CLI plugin registry logs and skips a plugin that fails to load ([`src/cli/registry.py`](https://github.com/niuulabs/niuu/blob/dev/src/cli/registry.py)), and packages without an `auth_mode` field are treated as `envoy` (`_get_auth_mode` in `service_runtime.py`).
+Two former fallbacks show the shape of the fix. The CLI plugin registry now raises `PluginLoadError` for a plugin that fails to load; a plugin turned off in `plugins.enabled` is not loaded at all ([`src/cli/registry.py`](https://github.com/niuulabs/niuu/blob/dev/src/cli/registry.py)). A settings model without an `auth_mode` field is refused instead of being treated as `envoy` (`_get_auth_mode` in `service_runtime.py`).
 
 ## Tradeoffs
 

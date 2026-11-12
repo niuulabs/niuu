@@ -49,6 +49,7 @@ is why a restarted Skuld can rebuild its conversation and re-seat members.
 | Join is not human-only | `join_environment` takes `participant_type` and `session_id`; agents from other sessions join the same way |
 | Joining grants no authority | Rights come from the room role (`viewer` < `approver` < `owner`), checked per route |
 | Quiet is not gone | `mark_quiet_participants` sets `attention_state: away` for a disconnected participant whose heartbeat expired. It keeps its seat, its rooms and any reply it is owed |
+| Heartbeat TTLs are configuration | The room's owner sets one per kind: Skuld's `room.agent_heartbeat_ttl_s` (90 s), `room.peer_heartbeat_ttl_s` (90 s) and `room.join_heartbeat_ttl_s` (300 s, for people and agents of other sessions). `0` never marks that kind away |
 | Back from quiet | The next heartbeat or activity makes it `available` again |
 | Leave is explicit | `leave_environment` removes the seat and drops any pending reply context; only a person or a session member may leave by role |
 
@@ -69,10 +70,11 @@ the deployment, a trusted proxy header (`x-niuu-room-role`), or by asking Forge
 
 ## Huddles and the log
 
-A **huddle** is a replayable room scoped to an environment, opened for a purpose
-(`open_environment_huddle`). It records a context snapshot for late joiners, sequenced
-messages, and on close a Markdown transcript published as `room.transcript.recorded`
-(`huddles/<environment>/<room>.md`).
+A **huddle** is a room scoped to an environment, opened for a purpose
+(`open_environment_huddle`). It records a context snapshot, sequenced messages, and on
+close a Markdown transcript published as `room.transcript.recorded`
+(`huddles/<environment>/<room>.md`). There is no in-room replay API for late joiners: a
+late joiner reads the conversation from Forge's event log, and the transcript after close.
 
 | Record | Where | Survives a restart |
 |---|---|---|

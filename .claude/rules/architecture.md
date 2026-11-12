@@ -65,7 +65,7 @@ least-privilege credential that can do one named thing and nothing else,
 enforced fail-closed at that entry point (Forge session create, Ting workflow
 launch, Observatory topology push). Tokens without
 `token_use == "valkyrie_build"` are never scope-checked, so human sessions and
-ordinary PATs are unaffected.
+unscoped PATs are unaffected.
 
 The `valkyrie_build` claim value is historical — builds were the first use.
 It means "this credential is scoped", not "this credential builds"; the
@@ -77,10 +77,14 @@ edit it can mint authority. A scope is also only real because code enforces
 it — `require_scope("x")` on a route is what gives `"x"` meaning, so a
 config-only scope would grant nothing while reading as protection.
 
-Known limitation (deliberate, for now): PATs themselves cannot carry scopes —
-a leaked PAT retains its owner's full authority. Off-cluster Valkyries using
-a PAT via `external_token_env` therefore do not get least-privilege; scoped
-PAT minting is future work. When adding a NEW scoped entry point, add its
+PATs can carry scopes too: `POST /api/v1/tokens` accepts `scopes`, bounded by
+`validate_pat_scopes` to the `valkyrie_build` family (`VALKYRIE_BUILD_SCOPES`),
+and the issuer writes them to the PAT's `scope` claim. A scoped PAT is
+restricted exactly like a `valkyrie_build` token: at the scoped entry points,
+and nowhere else (`claims_have_scope`). Forge session scopes are never granted
+to a PAT. A PAT minted without `scopes` still carries its owner's full
+authority, so an off-cluster Valkyrie using one via `external_token_env` gets
+least privilege only when its PAT is minted with scopes. When adding a NEW scoped entry point, add its
 scope to `KNOWN_WORKLOAD_SCOPES` and a `require_scope(...)` dependency on the
 route — scoped tokens are only as narrow as the enforcement coverage.
 `tests/test_niuu/test_token_scope.py` fails if the two drift apart in either

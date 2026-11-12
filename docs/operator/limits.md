@@ -25,7 +25,10 @@ model calls below therefore send no cap.
 - Every hit increments the `ravn.cap.hits` counter (attribute `ravn.cap.knob`;
   in Prometheus, `ravn_cap_hits_total`). `niuu.cap_telemetry.health_counts()`
   shapes the process counts for a component's health surface: `cap_hits_total`
-  plus one `cap_hits.<knob>` per limit that was hit.
+  plus one `cap_hits.<knob>` per limit that was hit. Forge, Skuld, Bifröst, Ting
+  and the Niuu host serve it on `GET /health` under `caps`, together with the
+  degraded and retry counts below. The counts are per process and start at zero
+  on restart.
 - Where raising would lose more than continuing, `record_degraded()` writes an
   error log and counts `ravn.degraded` (attribute `ravn.degraded.path`); the
   health counts carry `degraded_total` / `degraded.<path>`. An installed
@@ -49,6 +52,7 @@ continue to read them.
 | Tool-build gate review attempts | 2 | An unparseable verdict is worth one retry | Kept: one retry on an unparseable answer, never on truncation | Raises `ToolBuildError` after the last attempt |
 | A2A task result (`result_max_chars` of the A2A gateway kwargs) | 12000 | The consumer's prompt budget | Kept; bounds `a2a_task` results including `find`, whose handles leave out the case mandate. The character budget is the bound, not an item count | Marker in the result + error log + counted |
 | A2A outbound message (`message_max_chars` of the A2A gateway kwargs) | 12000 | The peer's request limit | Kept | The call is refused with an error naming the limit |
+| Bifröst classifier judge answer (`bifrost.selection.routes.<name>.max_tokens`) | none; required on every route with a `judge` | The judge model's answer, reasoning included, as sized by the operator for that model | Kept: the judge call needs a bound the operator knows, so there is no default and a route without it is refused at load | Raises `OutputTruncatedError`, so the request fails and no target is chosen; error log and counted on `ravn.cap.hits` (`bifrost.selection.routes.<name>.max_tokens`) |
 | Bifröst inbound defaults (chat completions 1024, Responses 4096, Ollama 1024) | none | Model max output / remaining window | **Removed**: an uncapped request stays uncapped. Bifröst's Anthropic upstream derives the cap from the Models API; a `max_tokens` routing rule treats uncapped as unbounded | `ProviderError` if the limit cannot be read |
 | Skuld Telegram `TELEGRAM_MAX_MESSAGE_LENGTH` | 4096 | Telegram: 4096 UTF-16 units after entity parsing | Measured in UTF-16 units; HTML chunks never split inside a tag or entity, and open tags are closed and reopened across a split | A failed chunk logs at error, and the event is not marked delivered, so a redelivery resends it |
 | Learned-tool Kubernetes Job (`job_pod_start_timeout_seconds` of the `k8s_job` backend) | 120 s | How long a node takes to start a pod | Kept: a wall-clock deadline on one run | The run fails as an infrastructure error (`LearnedToolInfrastructureError`) rather than as a failing tool |
@@ -64,6 +68,9 @@ continue to read them.
 | Workflow catch-up page (`workflow_steps.catch_up_page_size`, Ting) | 200 | Nothing: it is the page size of the read of a session's durable log | Not a cap: the read continues until the log has no more | A log that reports more and does not advance is an error |
 | Mesh request freshness (`mesh.attestation.clock_skew_s`) | 300 s | Bounds replay of a captured request or reply, and tolerated clock drift | Kept | The request is refused as `stale` and counted |
 | Mesh event age (`mesh.attestation.event_max_age_s`) | 3600 s | Bounds replay of a captured event; must exceed the transport's redelivery window | Kept | The event is not handled, logged at error and counted as `stale` |
+| Skuld event-log buffer (`event_log_max_buffer`) | 50000 frames | The broker's memory while Forge does not accept a flush | Kept: past it the broker would run out of memory instead | The oldest unflushed frames are dropped and replaced by one `log_gap` row with the count and `seq` range; error log and counted (`event_log_max_buffer`) |
+| Sleipnir subscriber queue (`ring_buffer_depth` of the in-process, nng, webhook, CLI-command, RabbitMQ and Redis transports, knob `sleipnir.ring_buffer_depth`) | 1000 events | A broker-less transport has nothing to push back on, and a publisher must not block on a slow subscriber | Kept for broker-less transports; NATS JetStream withholds acks instead and drops nothing | The oldest queued event is dropped; error log naming the event and the remedy, counted (`sleipnir.ring_buffer_depth`) |
+| Sleipnir webhook delivery attempts (`max_attempts` of `WebhookPublisher`, knob `sleipnir.webhook.max_attempts`) | 3 | Whether a retry can change the outcome: only a connection error, a timeout, HTTP 429 or 5xx is retried; any other 4xx is not | Kept | `publish` raises `WebhookDeliveryError` naming every receiver that did not take the event; each retry counts on `ravn.retries` (`sleipnir.webhook.publish`), running out counts on `ravn.cap.hits` (`sleipnir.webhook.max_attempts`) |
 | Mímir fact recall (`recall_limit` of the gbrain fact adapter, knob `mimir.facts.gbrain.recall_limit`) | 100 | gbrain caps `recall` at 100 rows per call and cannot page | Kept: it is gbrain's own cap, so the adapter sends exactly that and does not guess a lower one | Reported as a `backend_limit` omission in the result, error log, counted; `get` raises instead of answering "not found" when the cap may have hidden the fact |
 | Mímir fact provenance (`provenance_max_chars`, knob `mimir.facts.gbrain.provenance_max_chars`) | 500 | gbrain stores at most 500 characters of `provenance` | Kept: the structured envelope (author, trust, evidence, chain) has to fit | `remember` raises naming the limit and the remedy (cite fewer or shorter evidence references); error log, counted |
 

@@ -120,8 +120,10 @@ only when both `a2a.push_encryption_key` and `a2a.push_callback_allowed_origins`
 | A2A | The other side is outside the Flokk, found by URL, or not a Niuu peer at all |
 | A room | Humans and agents share one conversation (see [Collaboration rooms](rooms.md)) |
 
-The webhook mesh adapter does not carry trace context; use a Sleipnir transport when a
-trace must follow the message.
+Every mesh transport carries the event's trace context: nng and the webhook adapter in the
+shared event encoding, the Sleipnir mesh adapter in the payload. The webhook adapter
+refuses a malformed event (unknown type, missing field) with HTTP 400 to the sender; it
+never delivers a guess.
 
 ## Not built yet
 

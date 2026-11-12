@@ -68,7 +68,7 @@ participant instead (see [Channels, rooms and Forge tools](channels-and-tools.md
 
 | Runtime | Default credential | Alternatives |
 |---|---|---|
-| Claude (all Claude transports) | The host's claude.ai subscription login in `~/.claude`. Skuld strips `ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN` from the child env | `SKULD__CLAUDE_AUTH=api_key` keeps the platform key; `SKULD__CLAUDE_OAUTH_TOKEN_FILE` (a 0400 file) for direct subscription inference; the model gateway |
+| Claude (all Claude transports) | The host's claude.ai subscription login in `~/.claude`. Skuld strips `ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN` from the child env | the `claude_auth` setting (env `SKULD__CLAUDE_AUTH`) set to `api_key` keeps the platform key, and any value other than `subscription` or `api_key` is refused at startup; the `claude_oauth_token_file` setting (env `SKULD__CLAUDE_OAUTH_TOKEN_FILE`, a 0400 file) for direct subscription inference; the model gateway |
 | Codex | `HostCodexAuthProvider`: the host's own Codex login (`CODEX_HOME`, default `~/.codex`) | `VolundrCodexAuthProvider`: ChatGPT access tokens fetched from Forge (`/api/v1/internal/credentials/codex/tokens`); the model gateway |
 | Grok | The `grok` CLI's login (`XAI_API_KEY` or its cached `auth.json`) | — |
 | Muse | `META_API_KEY`, else a stored key, else a browser login | — |

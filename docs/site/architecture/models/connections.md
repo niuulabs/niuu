@@ -110,7 +110,7 @@ device-flow runner); each enrollment goes to the first that implements its metho
 | `credential_store.adapter` | `MemoryCredentialStore` | Where secrets live: OpenBao, Infisical, file or memory | Forge config |
 | `credential_enrollment_runner` | `UnsupportedCredentialEnrollmentRunner` | Which runner performs sign-ins | Forge config |
 | `codex_auth.adapter` (Skuld) | `HostCodexAuthProvider` | Host login versus Forge broker | Set per session by the pod manager |
-| `SKULD__CLAUDE_AUTH` | `subscription` | Subscription login or API key for Claude | Set by `IntegrationContributor` |
+| `claude_auth` (env `SKULD__CLAUDE_AUTH`) | `subscription` | Subscription login or API key for Claude; any other value is refused at startup | Skuld settings; the env var is set by `IntegrationContributor` |
 | Integration definitions | built in | Which vendors can be connected and how they are delivered | Forge config (integration catalog) |
 
 ## Tradeoffs

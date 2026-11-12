@@ -59,11 +59,12 @@ The default root is `~/.ravn/mimir`; the Helm chart uses `/data/mimir` on a PVC.
 ## Sources
 
 - `source_id` is derived from the content, so the same text ingests to the same id.
-- `source_type` is free text (`web`, `document`, `research`, …). `POST /ingest`
-  **refuses** two types with `422`: `tool_output` and `diagnostic`. They record
-  the system's own activity, nothing will ever turn them into a page, and they
-  would sit in the backlog forever. The MCP `mimir_ingest` tool does not check
-  this yet; such sources are stored but never counted as unprocessed.
+- `source_type` is free text (`web`, `document`, `research`, …). Every ingest
+  path **refuses** two types: `tool_output` and `diagnostic` (`POST /ingest` with
+  `422`, the `mimir_ingest` tool with a tool error, `python -m mimir ingest` with an
+  error). They record the system's own activity, nothing will ever turn them into a
+  page, and they would sit in the backlog forever. Sources of those types stored
+  before the check are never counted as unprocessed.
 - A source no page cites is **unprocessed**. `GET /mimir/sources?unprocessed=true`
   lists them (operational types excluded); the doctor reports them as work
   to do.

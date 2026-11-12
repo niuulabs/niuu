@@ -45,6 +45,12 @@ the conversation.
 | Chronicle timeline | Curated file, commit, command and token events | Skuld's `chronicle_watcher` from Claude's on-disk `.jsonl` | UI timeline |
 | `session_events` pipeline | Raw events fanned out to sinks (Postgres, RabbitMQ, OTel) | `POST /events`, `/events/batch` | `GET /sessions/{id}/events`, external consumers |
 
+Every enabled sink is required at startup: `event_pipeline.rabbitmq.enabled` without
+aio-pika or without a reachable broker, an OTel sink without the SDK, or (with
+`sleipnir.enabled`) an audit subscriber that cannot start stops Forge with the remedy.
+Once running, a sink that fails for an event does not stop the others; the failure logs
+at error and counts on `degraded.event_pipeline.sink.<name>` in Forge's `/health`.
+
 An empty chronicle is not data loss: Codex, Grok and OpenCode sessions never
 write Claude's `.jsonl`, and the watcher is off by default
 (`chronicle_watcher_enabled` in Skuld). The full disposition is in

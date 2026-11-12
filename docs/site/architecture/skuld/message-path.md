@@ -128,9 +128,14 @@ once with its error, so a waiting workflow run fails now, not on a timeout.
 | Connect snapshot | Recent turns sent to a new WebSocket | Per connection; bounded by `conversation_snapshot_max_bytes` |
 
 A full buffer (`event_log_max_buffer`) drops the oldest frames and writes a
-`log_gap` row with the count and the `seq` range, so replay shows the hole. A
-permanent rejection by Forge (bad session, bad credential) raises
-`EventLogRejectedError` and stops the broker.
+`log_gap` row with the count and the `seq` range, so replay shows the hole. The
+drop is a cap hit: an error log and `cap_hits.event_log_max_buffer` on the
+broker's `/health` (`caps`). A permanent rejection by Forge (bad session, bad
+credential) raises `EventLogRejectedError` and stops the broker.
+
+A turn goes to the event log first, then to the local history file. A history
+file that cannot be written raises; it is never a warning while the file on disk
+falls behind.
 
 ## Levers
 
@@ -141,7 +146,7 @@ permanent rejection by Forge (bad session, bad credential) raises
 | `delivery.initial_backoff_seconds` / `backoff_multiplier` / `max_backoff_seconds` | `0.5` / `2.0` / `5.0` | Retry spacing | Skuld config |
 | `event_log_batch_size` | `100` | Frames per POST to Forge | Skuld config |
 | `event_log_flush_interval_ms` | `500` | Flush cadence | Skuld config |
-| `event_log_max_buffer` | `50000` | Frames held while Forge is unreachable | Skuld config |
+| `event_log_max_buffer` | `50000` | Frames held while Forge is unreachable; past it the oldest are dropped and counted | Skuld config |
 | `history_hydration_enabled` | `true` | Rebuild history from Forge on start | Skuld config |
 | `conversation_snapshot_max_bytes` | `921600` (900 KiB) | Largest connect snapshot | Skuld config |
 | `activity_heartbeat.interval_seconds` | `30` | Heartbeat to Forge | Skuld config |

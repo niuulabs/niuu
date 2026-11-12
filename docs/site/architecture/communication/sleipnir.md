@@ -46,7 +46,7 @@ Publishers wrap their bus in `SigningBus`. Consumers that act on an event verify
 | `urgency` | `0.0`–`1.0` priority hint. |
 | `domain` | One of `code`, `infrastructure`, `home`, `business`, `personal`; anything else raises. |
 | `tenant_id`, `ttl` | Tenant scope; seconds until expiry (`ttl=0` is never delivered). |
-| `trace_context` | W3C trace context carried with the event (see the index page). |
+| `trace_context` | W3C trace context of the span active where the event was created, filled in automatically (empty when observability is off); `from_dict` keeps the publisher's. |
 
 Namespaces (`EVENT_NAMESPACES`): `volundr`, `ting`, `ravn`, `skuld`, `bifrost`, `mimir`,
 `github`, `system`, `environment`, `signal`, `valkyrie`, `participant`, `room`, `mesh`. An
@@ -77,11 +77,15 @@ constant, never the string.
 |---|---|---|---|---|---|
 | NATS JetStream | `nats` → `sleipnir.adapters.nats_transport.NatsTransport` | **At-least-once.** Ack after the handler returns; nak with backoff; dead-letter to `system.dlq.message` after `max_deliver` | Yes: a stream with retention, durable consumers, `replay_from_sequence` | Withholds acks (backpressure); nothing dropped | Any multi-node deployment where delivery matters |
 | Core NATS subjects | `core_subscriptions`, or `stream_name: core` | At-most-once | No | — | Live control traffic |
-| nng | `nng` → `NngTransport` | At-most-once | No | Drops the oldest queued event, logged | One node, many processes (Pi mode) |
-| In-process | `in_process` → `InProcessBus` (the default class) | At-most-once | No | Drops the oldest, logged | Mini mode, tests |
-| Webhook | `sleipnir.adapters.webhook.WebhookTransport` | At-most-once; `max_attempts` POSTs, then logged and dropped | No | Drops the oldest | Crossing hosts without a broker |
+| nng | `nng` → `NngTransport` | At-most-once | No | Drops the oldest queued event; a counted cap hit | One node, many processes (Pi mode) |
+| In-process | `in_process` → `InProcessBus` (the default class) | At-most-once | No | Drops the oldest; a counted cap hit | Mini mode, tests |
+| Webhook | `sleipnir.adapters.webhook.WebhookTransport` | Retries a transient failure (connection, timeout, 429, 5xx) up to `max_attempts`; then, or on any other 4xx, `publish` raises `WebhookDeliveryError` and the hit is counted | No | Drops the oldest; a counted cap hit | Crossing hosts without a broker |
 | CLI command | `sleipnir.adapters.cli_command.CLICommandTransport` | At-most-once (subscribe only) | No | — | Run a script on matching events |
-| RabbitMQ, Redis Streams | `rabbitmq.py`, `redis_streams.py` | At-most-once: they ack before the handler runs. No chart uses them | Redis only | Drops the oldest | Not recommended |
+| RabbitMQ, Redis Streams | `rabbitmq.py`, `redis_streams.py` | At-most-once: they ack before the handler runs. No chart uses them | Redis only | Drops the oldest; a counted cap hit | Not recommended |
+
+**Overflow is counted.** A broker-less subscriber whose queue is full drops its oldest
+event. Each drop logs at error and counts on `cap_hits.sleipnir.ring_buffer_depth` (on
+the service's `/health` under `caps`); raise the depth, speed up the handler, or use NATS.
 
 **Ordering.** Events for one subscription are handled one at a time, in the order the
 transport delivers them. There is no global order across subscriptions, and a redelivered
