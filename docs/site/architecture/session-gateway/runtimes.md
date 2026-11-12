@@ -32,8 +32,7 @@ flowchart LR
 
 If the session has a pinned persona, the session gateway projects it onto the transport's
 arguments first. If the transport cannot enforce something the persona states,
-the session refuses to start (`PersonaProjectionError`). It never drops the
-setting silently.
+the session refuses to start (`PersonaProjectionError`).
 
 ## The runtimes
 

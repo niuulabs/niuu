@@ -38,9 +38,9 @@ flowchart TD
     POOL --> RT[VM runtime<br/>container or host mode]
 ```
 
-Everything left of `Placement` is one session = one unit of the backend.
-Everything under `VmPodManager` shares machines: Forge leases a machine, binds
-the session to a slot, and the runtime starts the session gateway there over SSH.
+Every backend except `VmPodManager` runs one session per unit. Under
+`VmPodManager`, Forge leases a machine, binds the session to a slot, and the
+runtime starts the session gateway there over SSH.
 
 ## Pick a runtime
 

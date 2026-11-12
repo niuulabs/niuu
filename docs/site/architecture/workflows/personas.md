@@ -12,7 +12,7 @@ how much it may change, and which events it takes in and gives back.
   event contract is what routes work to it and turns its verdict into the next event.
 - When a workflow is saved or launched, each persona is **pinned** by revision and digest, and
   its full document is copied into the run. Forge checks the digest and plays it verbatim.
-- Three personas ship built in: `coder`, `reviewer`, `security-auditor`. A team is just a
+- Three personas ship built in: `coder`, `reviewer`, `security-auditor`. A team is a
   workflow that puts several personas on stages; there is no separate team object.
 
 ## How it fits
@@ -27,9 +27,6 @@ flowchart LR
     SN --> F[Forge session create:<br/>persona_definition + model]
     F --> SK[Session gateway: instructions + permission mode<br/>applied to the harness]
 ```
-
-The pin is what makes a run reproducible: editing a persona changes the next launch, never a
-run already going.
 
 ## The document
 

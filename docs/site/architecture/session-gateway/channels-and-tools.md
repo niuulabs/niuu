@@ -34,8 +34,8 @@ flowchart LR
   PI -- turn boundary --> R
 ```
 
-The runtime never holds a Forge credential. The stdio server it spawns knows
-only the broker's loopback secret; the broker adds the session's own
+The runtime never holds a Forge credential; the stdio server it spawns knows
+only the broker's loopback secret, and the broker adds the session's own
 credential when it calls Forge.
 
 ## Channels

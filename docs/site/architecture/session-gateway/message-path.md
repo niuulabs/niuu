@@ -1,10 +1,6 @@
 # A message's path
 
 What happens between a person pressing send and the agent's reply on screen.
-In short: the session gateway accepts the message as `pending`, delivers it to the runtime
-with retries, and turns it `active` once the runtime consumes it (`failed` if
-it never does). Every frame the runtime emits is logged to Forge before any
-client sees it.
 
 ## In one minute
 

@@ -1,7 +1,6 @@
 # One request end to end
 
-A user starts a Forge session in the web UI and sends a message. This page follows
-that request through the real code: what each hop does and where it lives.
+A user starts a Forge session in the web UI and sends a message.
 
 ## In one minute
 
@@ -60,8 +59,7 @@ batched, not per token.
 
 ## 2. Launch the session gateway
 
-The pod manager is chosen by `pod_manager.adapter`; each one launches the same
-session gateway somewhere different. The [Forge area](../forge/index.md) covers them in depth.
+`pod_manager.adapter` picks the pod manager.
 
 | Pod manager | Launches the session gateway as | Default for |
 |---|---|---|
@@ -150,4 +148,4 @@ host's own login.
 - [Product and code names](names.md)
 - [Security](../security/index.md) — edge auth and every credential on this path.
 - [Session gateway](../session-gateway/index.md) — runtimes and the message path inside a session.
-- [Forge](../forge/index.md) and [Models](../models/index.md) go deeper on the other hops.
+- [Forge](../forge/index.md), [Models](../models/index.md)

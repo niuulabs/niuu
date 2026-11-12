@@ -28,9 +28,7 @@ flowchart LR
   P -- "proxies API calls" --> NF["that host's Forge"]
 ```
 
-The left half is compute: the host only ever calls the two join routes, and from then
-on Forge drives it. The right half is federation: a Platform lists and proxies Forges
-that live elsewhere.
+A registered host only ever calls the two join routes; from then on Forge drives it.
 
 ## Registered hosts
 

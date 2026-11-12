@@ -45,7 +45,7 @@ flowchart LR
     R --> P2[vLLM · Ollama ·<br/>model server]
 ```
 
-Solid lines are inference traffic. Forge only reads the catalog; it never proxies
+Forge only reads the catalog; it never proxies
 inference. Whether a session's traffic reaches the model gateway is decided at launch from
 the catalog entry of the session's model, not by the model picker.
 

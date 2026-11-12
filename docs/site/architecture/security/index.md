@@ -32,10 +32,8 @@ flowchart LR
   A --> R[Route: require_scope,<br/>owner checks]
 ```
 
-Read it left to right: Envoy proves the token is genuine, Cedar decides whether that
-principal may enter this route, and the service narrows further (revoked PATs, scoped
-credentials, the session a credential is bound to). Machine routes skip the JWT step and
-authenticate inside the route; see [Machine identities](machine-identities.md).
+Machine routes skip the JWT step and authenticate inside the route; see
+[Machine identities](machine-identities.md).
 
 ## Principals
 
@@ -111,7 +109,7 @@ A cluster deployment turns them on in its values.
 
 ## Adding a new entry point
 
-1. Decide who calls it. A person or workload: an ordinary route behind Envoy. Nothing new.
+1. A person or workload calls it: an ordinary route behind Envoy, no extra steps.
 2. A narrow credential must reach it: add its scope to `KNOWN_WORKLOAD_SCOPES` and a
    `require_scope(...)` on the route, and add the route to `credential_allows_route`.
    `test_token_scope.py` fails if they drift.

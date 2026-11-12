@@ -34,9 +34,8 @@ flowchart LR
     C -.->|live WebSocket via Forge| SK
 ```
 
-Clients only ever talk to Forge. Forge proxies the live chat socket to the session
-gateway at `/s/{id}/session`, and the gateway writes every frame back to Forge's event log. The
-backend behind the pod manager is a configuration choice; see
+Forge proxies the live chat socket to the session gateway at `/s/{id}/session`.
+The backend behind the pod manager is set in config; see
 [where sessions run](where-sessions-run.md).
 
 ## Session lifecycle
@@ -91,11 +90,6 @@ when the session reaches `running` or `failed`.
 | Heartbeat reaper | off | Marks a session `stopped` after `stale_after_seconds` without activity |
 
 There is no idle auto-stop and no auto-archive: both happen only on request.
-
-## What a session runs against
-
-Projects, sources and workspaces are on their own page:
-[workspaces and projects](workspaces-and-projects.md).
 
 ## Levers
 

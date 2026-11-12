@@ -34,7 +34,7 @@ flowchart LR
 ```
 
 Two sources that give one mount name different targets fail the launch,
-naming the mount; neither wins silently.
+naming the mount.
 
 ## Who uses it
 

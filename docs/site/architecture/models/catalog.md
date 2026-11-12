@@ -61,8 +61,7 @@ local` when the provider key is `local`, `ollama` or `vllm`, or the id contains
 
 ## Output limits and context windows
 
-The no-hidden-limits rule says an output cap comes from the model, not from a
-number in code. The model gateway follows it per provider, not through the catalog:
+The model gateway reads the output cap per provider, not from the catalog:
 
 | Provider adapter | Request sent without `max_tokens` |
 |---|---|

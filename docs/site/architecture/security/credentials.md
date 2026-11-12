@@ -14,9 +14,8 @@ reaches and how it dies.
   whoever could edit it could mint authority.
 - A scope means something only where a route calls `require_scope(...)`. A test fails if
   the allowlist and the enforcement points drift apart.
-- Personal access tokens (PATs) are an existing, sanctioned exception for automation that
-  has no browser session. They are not the way to give workloads authority; workload
-  identity is.
+- Personal access tokens (PATs) are a sanctioned exception for automation with no browser
+  session. Workloads get authority through workload identity, not PATs.
 
 ## The matrix
 
@@ -78,7 +77,7 @@ flowchart LR
 ## PATs
 
 A PAT is a long-lived JWT for automation that must call as a person with no browser
-session. It is an exception to "no custom tokens", kept narrow:
+session. It is an exception to "no custom tokens":
 
 | Fact | Detail |
 |---|---|

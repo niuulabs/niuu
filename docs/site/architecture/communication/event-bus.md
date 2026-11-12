@@ -1,15 +1,14 @@
 # Event bus
 
 The event bus is how services announce what happened ("session started", "run
-needs approval", "page written") so whoever cares can subscribe. It moves
-facts; it never decides what they mean.
+needs approval", "page written") so whoever cares can subscribe.
 
 ## In one minute
 
 - One event shape (`SleipnirEvent`) and one registry of event type names, shared by
   every service.
-- One port (`SleipnirPublisher` / `SleipnirSubscriber`), many transports. The
-  transport is configuration, not code.
+- One port (`SleipnirPublisher` / `SleipnirSubscriber`), many transports, chosen in
+  configuration.
 - Only **NATS JetStream** gives at-least-once delivery with redelivery and a dead-letter
   queue. Every other transport is at-most-once.
 - Handlers acknowledge by returning and ask for redelivery by raising, so they must be
@@ -31,9 +30,6 @@ flowchart LR
   bus --> mesh[Flock mesh traffic<br/>mesh.* events]
 ```
 
-Publishers wrap their bus in `SigningBus`. Consumers that act on an event verify it with
-`PlatformEventVerifier`. The audit subscriber records everything it sees.
-
 ## The event
 
 | Field | Meaning |
@@ -46,7 +42,7 @@ Publishers wrap their bus in `SigningBus`. Consumers that act on an event verify
 | `urgency` | `0.0`–`1.0` priority hint. |
 | `domain` | One of `code`, `infrastructure`, `home`, `business`, `personal`; anything else raises. |
 | `tenant_id`, `ttl` | Tenant scope; seconds until expiry (`ttl=0` is never delivered). |
-| `trace_context` | W3C trace context carried with the event (see the index page). |
+| `trace_context` | W3C trace context carried with the event. |
 
 Namespaces (`EVENT_NAMESPACES`): `volundr`, `ting`, `ravn`, `skuld`, `bifrost`, `mimir`,
 `github`, `system`, `environment`, `signal`, `valkyrie`, `participant`, `room`, `mesh`. An

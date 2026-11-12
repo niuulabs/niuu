@@ -1,7 +1,6 @@
 # Runs, steps and gates
 
-How a run moves through its graph: the workflow engine offers work, members of the run pick it up,
-gates wait for a person, and an end node completes the run.
+How a run moves through its graph.
 
 ## In one minute
 
@@ -14,7 +13,7 @@ gates wait for a person, and an end node completes the run.
   author sets `maxIterations`.
 - **Gates** wait for a person. Only a gate with `mode: automated_approval` may be answered by
   an agent; any other gate refuses an agent's decision.
-- A stuck step is **flagged, not guessed**: overdue, unclaimed, unclosed, session gone or
+- A stuck step is **flagged**: overdue, unclaimed, unclosed, session gone or
   unit stopped each reach the owner once through the notification feed.
 
 ## How it fits
@@ -36,9 +35,8 @@ sequenceDiagram
     T->>T: verdict → outcome event → next offer / gate / end
 ```
 
-The workflow engine never joins the mesh and never relays conversation. It hands offers to the run's root
-and records what the members report, which reaches it through Forge's activity stream (and,
-after an outage, from each session's durable log).
+The workflow engine never joins the mesh or relays conversation. After an outage it reads members'
+reports back from each session's durable log.
 
 ## Offers, pickups and joins
 
@@ -53,7 +51,7 @@ after an outage, from each session's durable log).
 | `executionMode: parallel` (default) | Up to `maxConcurrent`, unbounded when unset |
 | One step per member | A member's session gateway refuses an offer while it holds a step, so an offer queues (`pending`) until its members are free |
 
-A pickup is a step of its own, so a join counts the members that actually picked the work up,
+A pickup is a step of its own, so a join counts the members that picked the work up,
 not every member the graph lists.
 
 ## The ledger

@@ -37,10 +37,6 @@ flowchart LR
     S --> A
 ```
 
-Read it left to right: sources come in and are kept verbatim; an agent turns
-them into pages; every page write re-indexes that page; search reads the index
-and loads the pages. [Retrieval](retrieval.md) covers the right-hand side.
-
 ## What a store holds
 
 | Path (under the store root) | What it is | Rebuildable? |

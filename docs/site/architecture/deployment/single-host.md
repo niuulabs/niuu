@@ -1,8 +1,7 @@
 # Mini and Docker mode
 
-Both one-machine shapes run the same root server: mini mode runs it as a process on
-your machine, Docker mode runs it inside a container next to its database and
-session containers.
+Both one-machine shapes run the same root server: as a host process (mini) or in a
+container (Docker).
 
 ## In one minute
 
@@ -16,8 +15,8 @@ session containers.
 - `mode: docker` makes `niuu up` render and start a **Compose bundle** instead. The
   `niuu` container inside it runs mini mode against a PostgreSQL container, and each
   session becomes a sibling container.
-- With no identity configured, both modes are **allow-all**: every caller is admin.
-  That is an explicit setting (`host_auth.mode: none`), not a fallback.
+- With no identity configured, both modes are **allow-all** (`host_auth.mode: none`):
+  every caller is admin.
 
 ## How it fits
 
@@ -37,8 +36,7 @@ flowchart TB
   PM --> VM["VmPodManager<br/>registered hosts"]
 ```
 
-Read top to bottom: the CLI checks the host, starts the database, migrates, then
-serves every API from one ASGI app. Forge's pod manager decides where a session runs.
+The root server serves every API from one ASGI app.
 
 ## Mini mode, step by step
 

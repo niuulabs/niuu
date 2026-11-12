@@ -1,7 +1,6 @@
 # Communication
 
-Niuu has five ways for things to talk, and each one exists for a different job. Pick by
-**who is talking to whom**, not by which transport happens to be nearby.
+Niuu has five ways for things to talk. Pick by **who is talking to whom**.
 
 ## In one minute
 
@@ -39,9 +38,6 @@ flowchart TB
   ext[External agents] <-- "A2A" --> wf
   ext <-- "A2A" --> forge
 ```
-
-The user reaches services through APIs. Services announce on the bus. A session hosts the
-room. Peers inside the flock use the mesh, and everything outside it uses A2A.
 
 ## Service APIs
 
@@ -84,8 +80,6 @@ and `log_endpoint` (OTLP) are all required. There is no default endpoint.
 | `mesh.attestation.required` | `true` | Signed mesh and platform events | Every platform service |
 | `a2a.*` | card name `Niuu Workflows`; push off | The workflow engine's A2A surface | Workflow engine |
 | `observability.enabled` | `false` | Trace, metric and log export | Every service |
-
-Each page below has the full lever table for its mechanism.
 
 ## Tradeoffs
 

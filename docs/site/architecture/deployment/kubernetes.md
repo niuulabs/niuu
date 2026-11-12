@@ -38,10 +38,8 @@ flowchart LR
   F --> OB["OpenBao"]
 ```
 
-The ingress splits paths across services (`ingress.routeSets` in the umbrella). Each
-service keeps its own database. Forge never runs session processes itself: it asks
-the configured pod manager, which on the default path hands Flux a release to
-reconcile.
+The ingress splits paths across services (`ingress.routeSets` in the umbrella); each
+service keeps its own database.
 
 ## What each mode-defining value picks
 
@@ -69,8 +67,7 @@ reconcile.
 | `OpenShellGatewayPodManager` | A sandbox in an OpenShell gateway | Sessions must run in OpenShell sandboxes |
 | `VmPodManager` (with `compute:`) | A slot on a VM from a compute pool | Sessions need a VM boundary (`podManager.runtimeBackend: vm`) |
 
-All live in `src/volundr/adapters/outbound/`; the Forge architecture pages cover how
-each one launches and stops a session.
+All live in `src/volundr/adapters/outbound/`.
 
 ## GitOps
 

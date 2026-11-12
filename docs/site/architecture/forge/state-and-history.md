@@ -31,9 +31,7 @@ flowchart LR
     LOG --> TR[Transcript: reducer fold]
 ```
 
-Everything a client renders as conversation comes from the left half: the log
-and the live socket carry the same frames. SSE is about the session row, not
-the conversation.
+The log and the live socket carry the same frames.
 
 ## The stores
 
@@ -66,9 +64,8 @@ On connect, the live socket sends a `conversation_history` snapshot with its
 client loads the rest from the log pages. Internal tool blocks are hidden on
 every read path by default; one `set_internal_visibility` message toggles them.
 
-The session orchestrator guide has the full wire contract: frames, payloads and
-consumer rules ([guide](https://github.com/niuulabs/niuu/blob/dev/docs/forge/openclaw-session-orchestrator-guide.md),
-sections 8–10).
+Full wire contract (frames, payloads, consumer rules): [session orchestrator guide](https://github.com/niuulabs/niuu/blob/dev/docs/forge/openclaw-session-orchestrator-guide.md),
+sections 8–10.
 
 ## Levers
 

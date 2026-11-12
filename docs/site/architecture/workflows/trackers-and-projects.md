@@ -1,7 +1,6 @@
 # Trackers, projects and boards
 
-A project links tracker tickets to workflows: drop a ticket on a board column and the workflow engine starts
-that column's workflow as a run of the ticket, inside the project on Forge.
+A project links tracker tickets to workflows.
 
 ## In one minute
 

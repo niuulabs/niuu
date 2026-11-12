@@ -44,10 +44,6 @@ flowchart LR
   N["Niuu host<br/>niuu join"] -.-> CH
 ```
 
-Each box is one deployment shape; dotted lines are machines that join one. A joined
-host runs sessions for a Forge; a joined Niuu host offers its whole Forge to a
-Platform.
-
 ## The matrix
 
 | | Mini | Docker | Kubernetes |

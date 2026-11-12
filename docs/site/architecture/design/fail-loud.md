@@ -1,14 +1,13 @@
 # Fail loud
 
-When something configured cannot be done, Niuu stops and says why. It never switches to a weaker path, and it never lets a limit cut work off without counting it.
+When something configured cannot be done, Niuu stops and says why.
 
 ## In one minute
 
-- **Configured but impossible is fatal.** The error names the knob and the fix. A degraded path that keeps running is not allowed.
+- **Configured but impossible is fatal.** The error names the knob and the fix.
 - **Only two escapes:** the operator configured "do without" (`enabled: false`), or an optional read whose absence is normal and reported ("no checkpoint yet"). A second configured implementation is *not* an escape.
 - **A cap needs a real bound** (a context window, a provider's message size, a deadline). If you cannot name it, the cap does not go in.
 - **A hit is loud and counted** through `niuu.cap_telemetry`: an error log naming the knob, and a counter (`ravn.cap.hits`).
-- For an operator: a service that refuses to start or a call that raises is the design working. The message tells you what to change.
 
 ## How it fits
 
@@ -26,7 +25,7 @@ flowchart TD
     must -- yes --> deg["record_degraded<br/>error log + counter, continue"]
 ```
 
-There is no edge from "cannot work" to "run something else". Changing provider is a deploy, not a runtime branch.
+Changing provider is a deploy, not a runtime branch.
 
 ## Why: the incidents behind the rules
 
@@ -41,8 +40,6 @@ Each was found by an operator, late, never by a signal.
 | A 3-turn cap on case continuations | Stopped a case on the turn it asked the operator a question; the question was never saved and the reply became an unrelated task | Hours |
 | A failed memory search returning `None` | Read as "no matching lesson", so the same lesson was recorded again and again | Weeks |
 
-A fallback turns a one-line failure into a data problem that takes weeks to find. Stopping is strictly better.
-
 ## What it looks like in the code
 
 | Where | What is refused | The message tells you to |
@@ -55,7 +52,7 @@ A fallback turns a one-line failure into a data problem that takes weeks to find
 
 ## Recording a hit: `niuu.cap_telemetry`
 
-One module, one set of counters. Do not add a parallel counter or log format.
+Do not add a parallel counter or log format.
 
 | Call | When | Log | Counter | Then |
 |---|---|---|---|---|

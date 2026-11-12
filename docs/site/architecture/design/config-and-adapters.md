@@ -24,7 +24,7 @@ flowchart LR
     builder -- "import_class(path)(**kwargs)" --> inst["adapter instance"]
 ```
 
-The chart never pastes behaviour into `env:`; it renders the config file. Environment variables carry only secrets and the occasional operator override.
+The chart never puts behaviour in `env:`; environment variables carry only secrets and operator overrides.
 
 ## Where settings come from
 
@@ -37,7 +37,7 @@ Forge's `Settings` ([`src/volundr/config.py`](https://github.com/niuulabs/niuu/b
 | 3 | YAML file | `$NIUU_CONFIG`, else `./config.yaml`, else `/etc/volundr/config.yaml` |
 | 4 | `/run/secrets` files | Docker secrets |
 
-Legacy env names stay working through aliases, so a rename never breaks a deployment:
+Legacy env names keep working through aliases:
 
 ```python
 server_host: str = Field(
@@ -61,7 +61,7 @@ storage:
   secret_kwargs_env: {}
 ```
 
-The builder that consumes it is the whole pattern ([`src/niuu/service_runtime.py`](https://github.com/niuulabs/niuu/blob/dev/src/niuu/service_runtime.py)):
+The builder that consumes it ([`src/niuu/service_runtime.py`](https://github.com/niuulabs/niuu/blob/dev/src/niuu/service_runtime.py)):
 
 ```python
 def create_storage_adapter(settings):
@@ -99,11 +99,11 @@ The chart turns each `secretKwargs` entry into an env var (`CREDENTIAL_STORE_SK_
 3. Point config at it: `adapter: mypkg.adapters.my_store.MyStore` plus its `kwargs`.
 4. Test it against the port's contract.
 
-Nothing else changes: no registry, no factory branch. The class can even live outside this repository, as long as it is importable in the image.
+There is no registry or factory branch to update. The class can live outside this repository if it is importable in the image.
 
 ## No magic numbers
 
-A timeout, threshold or count in business logic is a config field with a default and a description that says what bounds it. A real example from the session gateway ([`src/skuld/config.py`](https://github.com/niuulabs/niuu/blob/dev/src/skuld/config.py)):
+A timeout, threshold or count in business logic is a config field with a default and a description that says what bounds it. Example from the session gateway ([`src/skuld/config.py`](https://github.com/niuulabs/niuu/blob/dev/src/skuld/config.py)):
 
 ```python
 class AskConfig(BaseModel):
@@ -114,7 +114,7 @@ class AskConfig(BaseModel):
     )
 ```
 
-A model validator on the session gateway's settings (`SkuldSettings`) refuses to start if `ask.wait_max_s` is not shorter than both engine timeouts, naming the knob to lower or raise. The bound is checked once, at startup, instead of discovered when a call is cut off.
+A model validator on the session gateway's settings (`SkuldSettings`) refuses to start if `ask.wait_max_s` is not shorter than both engine timeouts, naming the knob to lower or raise.
 
 Allowed literals: loop indices, identity values like `0.0` and `1.0`, test fixtures, log text.
 

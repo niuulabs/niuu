@@ -28,11 +28,11 @@ flowchart TB
     outb -- implements --> port
 ```
 
-Arrows are "imports". Nothing points into `adapters/` except the composition root. That is what lets a test hand the domain a fake and lets an operator hand it a different backend.
+Arrows are imports. Only the composition root imports `adapters/`.
 
 ## One package, as it really is
 
-The event bus (`src/sleipnir`) is the cleanest small example:
+The event bus (`src/sleipnir`):
 
 ```text
 src/sleipnir/
@@ -53,7 +53,7 @@ src/sleipnir/
     └── audit_postgres.py, audit_sqlite.py, ...
 ```
 
-Bigger packages bend the shape a little; the direction rule still holds:
+Larger packages place their ports differently; the import direction is the same:
 
 | Package | Where its ports live |
 |---|---|
@@ -63,7 +63,7 @@ Bigger packages bend the shape a little; the direction rule still holds:
 
 ## One port, several adapters
 
-The event bus publisher port is a few lines; every transport implements it.
+Every event bus transport implements the publisher port:
 
 ```python
 # src/sleipnir/ports/events.py
@@ -81,7 +81,7 @@ class SleipnirPublisher(ABC):
 | `sleipnir.adapters.nats_transport.NatsTransport` | A shared NATS broker in a cluster |
 | `sleipnir.adapters.rabbitmq.RabbitMQTransport`, `redis_streams.RedisStreamsTransport`, `webhook.WebhookTransport` | Those brokers / HTTP delivery |
 
-The same pattern repeats across the stack: `CredentialStorePort` (`niuu/ports/credentials.py`) has `MemoryCredentialStore`, `OpenBaoCredentialStore` and `InfisicalCredentialStore`; the workflow engine's `TrackerPort` (`ting/ports/tracker.py`) has Linear, Jira and the native tracker.
+Likewise, `CredentialStorePort` (`niuu/ports/credentials.py`) has `MemoryCredentialStore`, `OpenBaoCredentialStore` and `InfisicalCredentialStore`; the workflow engine's `TrackerPort` (`ting/ports/tracker.py`) has Linear, Jira and the native tracker.
 
 ## Composition roots
 
@@ -94,7 +94,7 @@ The same pattern repeats across the stack: `CredentialStorePort` (`niuu/ports/cr
 | `niuu/service_runtime.py` | Shared builders every service uses (`create_identity_adapter`, `create_storage_adapter`, ...) |
 | `skuld/broker.py` | Session gateway: transports, mesh, channels |
 
-A domain service never calls `import_class` and never reads settings to choose an implementation. If you find yourself writing `if settings.x == "nats"` in a domain file, the choice belongs in the root.
+A domain service never calls `import_class` and never reads settings to choose an implementation. An `if settings.x == "nats"` belongs in the root, not a domain file.
 
 ## Package boundaries
 

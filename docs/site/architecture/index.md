@@ -1,8 +1,7 @@
 # Architecture
 
 How the Niuu stack fits together: which service owns what, how they talk, and
-which levers change their behaviour. Every page is checked against the code and
-links to it.
+which levers change their behaviour.
 
 ## In one minute
 
@@ -10,7 +9,7 @@ links to it.
   `web-next/`. Each service is hexagonal: domain, ports, adapters, one
   composition root.
 - One host process (`niuu platform up`) can mount every service behind a single
-  port; Kubernetes runs the same services as separate charts. The code is the same.
+  port; Kubernetes runs the same services as separate charts.
 - **Forge** owns sessions. It launches each one through a configured pod manager,
   and inside every session the **session gateway** runs the agent runtime and
   streams its output.
@@ -19,19 +18,6 @@ links to it.
 - Services talk over REST, SSE and WebSocket; events go over the **event bus**; agents and
   humans share **collaboration rooms**; flocks talk over the **mesh**; external agents
   over **A2A**.
-
-## Reading order
-
-1. **Stack map** (this area) — start with [services and channels](stack/services.md),
-   then follow [one request end to end](stack/request-flow.md). Keep
-   [product and code names](stack/names.md) open while reading the rest.
-2. [Design principles](design/index.md) — the rules every service follows; read before changing code.
-3. [Forge](forge/index.md), then the [session gateway](session-gateway/index.md) — the session path, which most other areas plug into.
-4. [Communication](communication/index.md) and [Security](security/index.md) — how services and machines talk and prove who
-   they are.
-5. [Models](models/index.md), [Memory](memory/index.md), [Workflows](workflows/index.md) — the services sessions and residents use.
-6. [Deployment modes](deployment/index.md) — how the same services run locally, in Docker and on
-   Kubernetes.
 
 ## Areas
 
@@ -47,17 +33,3 @@ links to it.
 | [Communication](communication/index.md) | Event bus, collaboration rooms, the flock mesh, A2A, SSE and WebSocket APIs |
 | [Models](models/index.md) | Model gateway, model catalog, provider connections, routing |
 | [Memory](memory/index.md) | Memory: sources, pages, retrieval, tenants, hosting |
-
-The agent runtime is being rebuilt; it gets its own area once the new
-runtime lands.
-
-## How these pages are written
-
-| Section | What it holds |
-|---|---|
-| In one minute | The answer, in a few bullets |
-| How it fits | One diagram |
-| Mechanics | Tables and short lists |
-| Levers | Every knob that exists in code, its default and where it is set |
-| Tradeoffs | What a choice gains and costs |
-| Code map | Where each concern lives on `dev` |

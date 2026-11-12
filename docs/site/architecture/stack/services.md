@@ -1,8 +1,5 @@
 # Services and channels
 
-Every service and shared library in the stack, what each one owns, and the
-channels they use to talk to each other.
-
 ## In one minute
 
 - Each top-level package in `src/` is one service or one library. Services register
@@ -138,7 +135,7 @@ On Kubernetes the same apps run as separate Deployments from the charts in
 
 - [One request end to end](request-flow.md)
 - [Product and code names](names.md)
-- [Design principles](../design/index.md) — the hexagonal shape every service shares.
+- [Design principles](../design/index.md)
 - [Forge](../forge/index.md), [Session gateway](../session-gateway/index.md),
   [Communication](../communication/index.md) and
-  [Deployment modes](../deployment/index.md) go deeper on each row.
+  [Deployment modes](../deployment/index.md)

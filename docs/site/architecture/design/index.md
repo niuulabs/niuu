@@ -1,6 +1,6 @@
 # Design principles
 
-The handful of rules every Niuu package follows, and why the system stops instead of quietly getting worse.
+The rules every Niuu package follows.
 
 ## In one minute
 
@@ -25,8 +25,6 @@ flowchart LR
     adapter -. "cap reached" .-> cap["niuu.cap_telemetry<br/>error log + counter"]
 ```
 
-Read it left to right: configuration becomes a typed settings object, the composition root turns its `adapter:` entries into instances, and the domain only ever sees the port. The dotted lines are the two ways a component tells you something is wrong; there is no third, silent one.
-
 ## The principles
 
 | Principle | The rule in one line | Page |
@@ -39,8 +37,6 @@ Read it left to right: configuration becomes a typed settings object, the compos
 | No hidden limits | Every cap has a real bound; every hit is loud and counted | [Fail loud](fail-loud.md) |
 
 ## What enforces them
-
-Some rules are checked by tests on every CI run; the rest are review rules.
 
 | Rule | Enforced by |
 |---|---|
@@ -55,7 +51,7 @@ Some rules are checked by tests on every CI run; the rest are review rules.
 
 ## Levers: swapping an implementation
 
-An operator changes *which* implementation runs by changing one config block. Examples from the Forge chart ([`charts/volundr/values.yaml`](https://github.com/niuulabs/niuu/blob/dev/charts/volundr/values.yaml)):
+Examples from the Forge chart ([`charts/volundr/values.yaml`](https://github.com/niuulabs/niuu/blob/dev/charts/volundr/values.yaml)):
 
 | Knob | Default (mini / chart) | Production example | What it changes |
 |---|---|---|---|
@@ -79,7 +75,7 @@ credentialStore:
       secretKey: token
 ```
 
-Changing provider is a deploy, never a runtime branch: there is no list of "try this, then that". If OpenBao is unreachable, Forge fails; it does not fall back to memory.
+If OpenBao is unreachable, Forge fails; it does not fall back to memory.
 
 ## Tradeoffs
 
@@ -100,9 +96,3 @@ Changing provider is a deploy, never a runtime branch: there is no list of "try 
 | Cap and degradation telemetry | [`src/niuu/cap_telemetry.py`](https://github.com/niuulabs/niuu/blob/dev/src/niuu/cap_telemetry.py) |
 | Limits register | [`docs/operator/limits.md`](https://github.com/niuulabs/niuu/blob/dev/docs/operator/limits.md), [`docs/operator/forge-limits.md`](https://github.com/niuulabs/niuu/blob/dev/docs/operator/forge-limits.md) |
 | Architecture tests | [`tests/test_infrastructure/`](https://github.com/niuulabs/niuu/tree/dev/tests/test_infrastructure) |
-
-## Related
-
-- [Layers and boundaries](layers.md) — the package tree, ports and composition roots
-- [Config and adapters](config-and-adapters.md) — settings models, `adapter:` blocks, chart rendering
-- [Fail loud](fail-loud.md) — no fallbacks, no hidden limits, and where a hit shows up

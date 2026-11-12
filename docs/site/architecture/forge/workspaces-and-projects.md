@@ -35,7 +35,7 @@ flowchart TD
     P -.-> S3
 ```
 
-Each session has its own workspace even when sessions share a project and a
+Each session has its own workspace, even when sessions share a project and a
 repository. The project carries what they share: context, members, receipts and
 memory.
 

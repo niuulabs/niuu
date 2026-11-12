@@ -32,10 +32,6 @@ flowchart LR
   F -- "SSH through the tunnel,<br/>pinned to the host key" --> H
 ```
 
-A node and a guest call *in* over HTTPS with a signature instead of a bearer. A
-registered host calls nothing over HTTP: it keeps an SSH tunnel open, and Forge reaches
-back through it.
-
 ## Joined nodes (`niuu join`)
 
 | Aspect | Rule |

@@ -10,7 +10,7 @@ approve, merge — into a graph that runs on Forge sessions, with people decidin
 - A run is **one Forge unit**: a root session (the run's room, a session gateway with no agent) plus one
   session per stage member, created and started together in one pod, VM or VM slot.
 - Each stage member is a **persona** with a model. Work is offered on the run's mesh; members
-  pick it up by the event types their persona consumes. A team is just a workflow.
+  pick it up by the event types their persona consumes. A team is a workflow.
 - **Gates** wait for a person; only `automated_approval` gates accept an agent's answer.
 - The workflow engine reaches Forge only over HTTP as the run's owner. It never imports Forge code.
 
@@ -34,8 +34,8 @@ flowchart LR
     T -->|gate open| U
 ```
 
-Solid arrows are calls; dotted arrows are reports. The workflow engine decides what is offered next from the
-ledger; the members' session gateways decide whether an offer is theirs and report back through Forge.
+The workflow engine decides what is offered next from the ledger; the members' session gateways
+decide whether an offer is theirs.
 
 ## The model
 

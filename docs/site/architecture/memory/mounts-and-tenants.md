@@ -38,9 +38,6 @@ flowchart LR
     DEP --> T1
 ```
 
-The hosted instance answers for its own store and for every registry entry the
-caller's org may see; a deployment adds entries to that registry.
-
 ## Hosting modes
 
 | Mode | How it starts | Store | Search |
@@ -55,8 +52,6 @@ Memory is one uvicorn worker. Keep the Helm release at one replica unless the
 PVC is `ReadWriteMany`: the files and `search.db` assume one writer.
 
 ## Reading and writing across mounts
-
-The composite adapter is the client side of "several stores as one".
 
 | Operation | Rule |
 |---|---|

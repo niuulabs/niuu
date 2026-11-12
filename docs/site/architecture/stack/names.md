@@ -1,12 +1,11 @@
 # Product and code names
 
-The UI and these docs use product names. Code, routes, config keys, packages,
+The UI uses product names. Code, routes, config keys, packages,
 commands and Helm charts keep older code names. A product rename never changes a
-route or a key, so this page tells you which code name to search for.
+route or a key.
 
 ## In one minute
 
-- Read a product name in the UI or the docs; search the code for its code name.
 - Code names are stable API: `/api/v1/forge/...` is Forge, and `volundr` is its
   package and chart.
 - Some code names are older than the products: Forge's REST prefix is `forge`, but
@@ -42,9 +41,6 @@ route or a key, so this page tells you which code name to search for.
 
 ## Rules for writing
 
-- Prose uses product names, or a plain role name where there is no product
-  (session gateway, event bus).
-- Code names appear only as code: in backticks, code blocks and link URLs.
 - User-facing copy says *resident*.
 - Never rename a route, config key, package, command or chart to match a product
   name.

@@ -63,7 +63,7 @@ instead of answering from the keyword arm alone.
 ## Ranking
 
 All boosts multiply the fused score. `GET /mimir/search?q=…&debug=true` returns
-each page's `score_breakdown`, so a ranking decision can be read, not guessed.
+each page's `score_breakdown`.
 
 | Factor | Default | Effect |
 |---|---|---|

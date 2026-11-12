@@ -2,8 +2,7 @@
 
 Two ways for agents to talk to other agents. The **flock mesh** is direct, signed traffic
 between peers that Forge has certified as members of the same tenant, flock or Workspace.
-**A2A** is the open protocol for talking to agent systems *outside* that circle. The mesh is
-not A2A, and A2A is not the mesh.
+**A2A** is the open protocol for talking to agent systems *outside* that circle.
 
 ## In one minute
 
@@ -29,9 +28,6 @@ flowchart LR
   ext -- "JSON-RPC" --> res[Forge resident A2A]
   wf -- "A2ATaskTool" --> other[External A2A agent]
 ```
-
-The mesh lives inside the platform's trust boundary, proven per message. A2A crosses it,
-authenticated by ordinary bearer credentials at the HTTP edge.
 
 ## Side by side
 

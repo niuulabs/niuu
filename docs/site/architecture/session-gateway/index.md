@@ -15,7 +15,7 @@ everything it says, and exposes it to browsers, Telegram and other agents.
 - Every frame the runtime emits goes to Forge's durable event log first, then
   to whichever clients are connected. A session with no browser open loses
   nothing.
-- The session gateway is plumbing. It owns process lifecycle, runtime auth, delivery,
+- The session gateway owns process lifecycle, runtime auth, delivery,
   transcripts and channels. It does **not** judge what the agent should do,
   decide continuations, or own room semantics.
 - Each session also gets Forge's tools through a built-in `forge` MCP server
@@ -36,11 +36,6 @@ flowchart LR
   SK <-- "rooms, mesh" --> P[Other sessions<br/>and residents]
 ```
 
-Read it from the middle: the broker sits between one runtime process and
-everything else. Clients and Forge talk only to the broker; the runtime talks
-only to the broker (its transport) and to the `forge` MCP server, which
-forwards back to the broker over loopback.
-
 ## What the session gateway owns, and what it does not
 
 | Session gateway owns | Not the session gateway's (who owns it) |
@@ -52,17 +47,9 @@ forwards back to the broker over loopback.
 | Browser WebSocket, Telegram, room and mesh *adapters* | Room membership, routing, replay mechanics (`niuu.collaboration`) |
 | Hosting the `forge` MCP tools for its session | The Forge routes those tools call (Forge) |
 
-This split is the [agent runtime / Niuu boundary](https://github.com/niuulabs/niuu/blob/dev/.claude/rules/ravn-niuu-boundary.md):
+Per the [agent runtime / Niuu boundary](https://github.com/niuulabs/niuu/blob/dev/.claude/rules/ravn-niuu-boundary.md),
 an agent runtime decides that input is needed and how an answer changes its case;
-the session gateway only carries the question and routes the reply back to the exact case.
-
-## Pages in this area
-
-| Page | Answers |
-|---|---|
-| [Runtimes](runtimes.md) | Which agent runtimes exist, how each is driven and authenticated, what each cannot do |
-| [A message's path](message-path.md) | What happens between "send" and the reply: delivery, turn state, steering, interrupts, approvals, transcripts |
-| [Channels, rooms and Forge tools](channels-and-tools.md) | Browser and Telegram channels, rooms and mesh, the `forge` MCP tools, presented files |
+the session gateway carries the question and routes the reply back to the exact case.
 
 ## Inside the broker
 
@@ -98,8 +85,6 @@ session; operators rarely set it by hand.
 | `claude_permission_mode` | `auto` | Claude `--permission-mode` used when `skip_permissions` is on | Forge node config |
 | `forge_mcp.enabled` | `true` | Give the runtime the built-in `forge` MCP server | Session gateway config |
 | `room.enabled` / `mesh.enabled` / `telegram.enabled` | `false` | Turn on room hosting, the mesh peer, the Telegram channel | Forge, per session kind |
-
-Channel, delivery and Forge-tool knobs are on the pages that use them.
 
 ## Tradeoffs
 

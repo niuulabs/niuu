@@ -1,8 +1,7 @@
 # Provider connections
 
 A model Connection is a user's own sign-in or key for a model vendor, stored by
-Forge and handed to that user's sessions at launch. It is how a session's runtime
-is authenticated to its model.
+Forge and handed to that user's sessions at launch.
 
 ## In one minute
 
