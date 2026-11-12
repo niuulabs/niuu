@@ -395,7 +395,7 @@ def _build_up_callback(
                 inspect.Parameter.POSITIONAL_OR_KEYWORD,
                 default=typer.Option(
                     None,
-                    help=f"Force the {svc_name} service on or off{detail}.",
+                    help=f"Force the `{svc_name}` service on or off{detail}.",
                 ),
                 annotation=bool | None,
             )

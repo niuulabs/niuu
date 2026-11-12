@@ -307,7 +307,7 @@ niuu guild pair [OPTIONS] {guild_url}
 | Option | Type | Default | Description |
 | --- | --- | --- | --- |
 | `--allow-plaintext` | flag |  | Let the joining node register a plaintext (http://) instance URL. |
-| `--allow-untrusted-node-auth` | flag |  | Let a node with host_auth.mode: none join even though this Platform runs host_auth.mode: oidc (the Platform would forward real user bearer tokens to it). |
+| `--allow-untrusted-node-auth` | flag |  | Let a node with `host_auth.mode: none` join even though this Platform runs `host_auth.mode: oidc` (the Platform would forward real user bearer tokens to it). |
 
 #### `niuu join`
 
@@ -426,20 +426,20 @@ niuu platform up [OPTIONS]
 | `--host-profile` | STR | `full` | Host profile that decides which route domains are mounted. |
 | `--mounts` | STR |  | Comma-separated route domains to mount instead of the profile default. |
 | `--workspaces-dir` | STR |  | Directory for session workspaces. Mini mode only. |
-| `--audit`, `--no-audit` | flag |  | Force the audit service on or off — Audit log query service. |
-| `--bifrost`, `--no-bifrost` | flag |  | Force the `bifrost` service (model gateway) on or off — Anthropic-compatible LLM proxy. |
-| `--credentials`, `--no-credentials` | flag |  | Force the credentials service on or off — Credential, secret, and MCP metadata service. |
-| `--features`, `--no-features` | flag |  | Force the features service on or off — Feature catalog and preference service. |
-| `--guild`, `--no-guild` | flag |  | Force the `guild` service (Platform) on or off — Shared instance registry and aggregate service. |
-| `--identity`, `--no-identity` | flag |  | Force the identity service on or off — Identity, tenancy, and token service. |
-| `--integrations`, `--no-integrations` | flag |  | Force the integrations service on or off — Integration connection and OAuth service. |
-| `--mimir`, `--no-mimir` | flag |  | Force the `mimir` service (Memory) on or off — Knowledge service. |
-| `--niuu`, `--no-niuu` | flag |  | Force the niuu service on or off — Shared platform services. |
-| `--observatory`, `--no-observatory` | flag |  | Force the observatory service on or off — Observatory registry and live streams. |
-| `--personas`, `--no-personas` | flag |  | Force the personas service on or off — Canonical persona registry service. |
-| `--ting`, `--no-ting` | flag |  | Force the `ting` service (workflow engine) on or off — Autonomous saga coordinator. |
-| `--tracker`, `--no-tracker` | flag |  | Force the tracker service on or off — Tracker issue, status, and repo mapping service. |
-| `--volundr`, `--no-volundr` | flag |  | Force the `volundr` service (Forge) on or off — AI-native development platform. |
+| `--audit`, `--no-audit` | flag |  | Force the `audit` service on or off — Audit log query service. |
+| `--bifrost`, `--no-bifrost` | flag |  | Force the `bifrost` service on or off — AI models: the Anthropic-compatible model gateway. |
+| `--credentials`, `--no-credentials` | flag |  | Force the `credentials` service on or off — Credential, secret, and MCP metadata service. |
+| `--features`, `--no-features` | flag |  | Force the `features` service on or off — Feature catalog and preference service. |
+| `--guild`, `--no-guild` | flag |  | Force the `guild` service on or off — Platform: shared instance registry and aggregate API. |
+| `--identity`, `--no-identity` | flag |  | Force the `identity` service on or off — Identity, tenancy, and token service. |
+| `--integrations`, `--no-integrations` | flag |  | Force the `integrations` service on or off — Integration connection and OAuth service. |
+| `--mimir`, `--no-mimir` | flag |  | Force the `mimir` service on or off — Memory: knowledge sources, pages and retrieval. |
+| `--niuu`, `--no-niuu` | flag |  | Force the `niuu` service on or off — Shared platform services. |
+| `--observatory`, `--no-observatory` | flag |  | Force the `observatory` service on or off — Observatory registry and live streams. |
+| `--personas`, `--no-personas` | flag |  | Force the `personas` service on or off — Canonical persona registry service. |
+| `--ting`, `--no-ting` | flag |  | Force the `ting` service on or off — Work: the workflow engine for workflows, runs and the board. |
+| `--tracker`, `--no-tracker` | flag |  | Force the `tracker` service on or off — Tracker issue, status, and repo mapping service. |
+| `--volundr`, `--no-volundr` | flag |  | Force the `volundr` service on or off — Forge: sessions, projects and compute. |
 
 #### `niuu remote`
 

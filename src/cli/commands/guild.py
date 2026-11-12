@@ -19,13 +19,15 @@ def create_guild_commands(settings: CLISettings) -> typer.Typer:
     """Create the ``guild`` command group."""
     guild_app = typer.Typer(
         name="guild",
-        help="Administer a Guild instance registry.",
+        help="Administer a Platform instance registry.",
         no_args_is_help=True,
     )
 
     @guild_app.command()
     def pair(
-        guild_url: str = typer.Argument(help="Base URL of the Guild to pair a new machine into."),
+        guild_url: str = typer.Argument(
+            help="Base URL of the Platform to pair a new machine into."
+        ),
         allow_plaintext: bool = typer.Option(
             False,
             "--allow-plaintext",
@@ -35,8 +37,8 @@ def create_guild_commands(settings: CLISettings) -> typer.Typer:
             False,
             "--allow-untrusted-node-auth",
             help=(
-                "Let a node with host_auth.mode: none join even though this Guild runs "
-                "host_auth.mode: oidc (Guild would forward real user bearer tokens to it)."
+                "Let a node with `host_auth.mode: none` join even though this Platform runs "
+                "`host_auth.mode: oidc` (the Platform would forward real user bearer tokens to it)."
             ),
         ),
     ) -> None:
@@ -75,7 +77,7 @@ def create_guild_commands(settings: CLISettings) -> typer.Typer:
             False, "--once", help="Send a single heartbeat and exit instead of looping."
         ),
     ) -> None:
-        """Send this host's signed presence heartbeat to the Guild it joined.
+        """Send this host's signed presence heartbeat to the Platform it joined.
 
         Run under a supervisor for continuous presence; `--once` sends a
         single heartbeat (e.g. for cron or manual checks).

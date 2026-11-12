@@ -280,13 +280,13 @@ def build_app(
 
     @app.command()
     def join(
-        guild_url: str = typer.Argument(help="Base URL of the Guild to join."),
-        code: str = typer.Option(..., "--code", help="Pairing code from 'niuu guild pair'."),
+        guild_url: str = typer.Argument(help="Base URL of the Platform to join."),
+        code: str = typer.Option(..., "--code", help="Pairing code from `niuu guild pair`."),
         name: str = typer.Option(
             "", "--name", help="Display name for this node (default: this host's hostname)."
         ),
     ) -> None:
-        """Join this machine to a Guild using a pairing code from an operator."""
+        """Join this machine to a Platform using a pairing code from an operator."""
         import asyncio
         import os
         from pathlib import Path
@@ -339,7 +339,7 @@ def build_app(
 
     @app.command()
     def leave() -> None:
-        """Remove this machine from the Guild it previously joined."""
+        """Remove this machine from the Platform it previously joined."""
         import asyncio
         from pathlib import Path
 
