@@ -14,8 +14,25 @@ credential and charged to its owner; the context pack reached the harness at lau
 the run's owner promoted the decision, a project owner approved it, and it landed at
 `operator` trust with the planner's evidence and the proposal reference; and the run
 and session layers were deleted once their retention (shortened for the proof) had
-passed. Attached memories through the gateway are covered by tests only. Steps 3 and 4
-are not built.
+passed. Attached memories through the gateway are covered by tests only.
+
+Step 3 is built for Linear and was proven live against a stand-in Linear server (a
+real team Linear install needs Linear's OAuth app): a project owner's memory import read
+a ticket and its comments with the project's team connection, kept it as a `tool:linear`
+source with the ticket's URL as evidence, and started the compile workflow; its agent
+added what was new to the subject page, left the conflicting date as an open
+disagreement, and appended a timeline row citing the source and the ticket's URL. A
+re-run stored nothing new. That run found the compile agent rewriting an operator's page
+under a write prefix; a lower trust now proposes such a rewrite. GitHub and Slack
+connectors, a real Linear install, and scheduling beyond the import's own polling are
+not built. Step 4 is not built.
+
+Step 3 decisions: connectors run in Ting (the only service that reads a project's team
+integrations with the project's credential, recording each use) and write through the
+gateway's connector route at `tool` trust; compile runs when an import brought new
+sources, so an import's poll interval is its schedule; compile writes are `agent` trust
+through the compile session's own `memory` server, so write prefixes, proposals and the
+trust rules apply to it like any agent.
 
 It reworks Mímir. Today's flows are not kept for their own sake: what stays is
 what this design needs.
