@@ -72,6 +72,7 @@ from volundr.adapters.inbound.rest_integrations import create_canonical_integrat
 from volundr.adapters.inbound.rest_issues import create_canonical_issues_router
 from volundr.adapters.inbound.rest_memory_context import create_memory_context_router
 from volundr.adapters.inbound.rest_memory_gateway import create_memory_gateway_router
+from volundr.adapters.inbound.rest_memory_proposals import create_memory_proposals_router
 from volundr.adapters.inbound.rest_mesh_identity import create_mesh_identity_router
 from volundr.adapters.inbound.rest_message_delivery import create_message_delivery_router
 from volundr.adapters.inbound.rest_notifications import create_notifications_router
@@ -2433,6 +2434,17 @@ def create_app(
                     prefix="/api/v1/forge",
                 )
             )
+            if project_service is not None and project_member_repository is not None:
+                # The memory gateway tells a project's deciders that a proposal waits.
+                app.include_router(
+                    create_memory_proposals_router(
+                        session_service,
+                        project_service,
+                        project_member_repository,
+                        notification_service,
+                        prefix="/api/v1/forge",
+                    )
+                )
             app.include_router(
                 create_message_delivery_router(PostgresMessageDelivery(pool), session_service)
             )

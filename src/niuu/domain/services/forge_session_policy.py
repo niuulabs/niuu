@@ -174,6 +174,9 @@ ROUTE_POLICIES: tuple[RoutePolicy, ...] = (
     # What the session's memory layers are, asked by the memory gateway with the session's
     # own credential: Forge's live-session check is the gateway's proof of the session.
     RoutePolicy("GET", f"{_S}/memory-context", FORGE_MEMORY_SCOPE, Binding.OWN),
+    # The memory gateway tells the session's project's deciders that a proposal the
+    # session made waits for them, with the session's own credential.
+    RoutePolicy("POST", f"{_S}/memory/proposals", FORGE_MEMORY_SCOPE, Binding.OWN),
     # The Forge-hosted MCP. Each tool re-enters this allow-list as a REST call.
     RoutePolicy("POST", f"{FORGE_PREFIX}/mcp", None, Binding.NONE),
 )
