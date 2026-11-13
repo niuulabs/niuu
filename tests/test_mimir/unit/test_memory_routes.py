@@ -72,7 +72,6 @@ def _forge_answer(tenant: str = "acme") -> dict:
         "project_id": PROJECT_ID,
         "workflow_run_id": None,
         "project_memory": {"write_prefixes": ["decisions/"]},
-        "model": "claude-fable-5-1",
         "objective": None,
         "project_brief": None,
         "since": None,

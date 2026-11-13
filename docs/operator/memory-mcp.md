@@ -35,9 +35,8 @@ session's capability text.
 
 - The pack is fetched **once per broker start**. A resumed harness gets the same text, not
   a fresh fetch.
-- What did not fit the pack's budget is listed in `omitted`; the broker logs the count
-  (warning, `skuld.broker`) and the gateway counts it. A pack with empty `text` and
-  `omitted` entries is a real pack: every entry was too large for the budget.
+- The pack is not sized from the model's context window: it holds everything the gateway
+  selects. The answer is `{"text": "..."}`; an answer without a `text` string stops the start.
 - If the gateway cannot be reached, refuses the credential, times out
   (`memory.context_pack_timeout_s`) or answers a malformed pack, the broker does not
   start. `/ready` reports `startup_state: failed` with an error naming

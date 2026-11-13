@@ -246,7 +246,7 @@ memory:
       signing_key_file: /etc/mimir-memory/acme-brain/signing-key
   tenants:
     acme: acme-brain                         # tenant id -> system name
-  service_auth:                              # the gateway as a service (Forge, Bifröst catalog)
+  service_auth:                              # the gateway as a service (Forge)
     adapter: niuu.adapters.outbound.http_auth.FileBearerTokenAuthAdapter
     token_file: /var/run/secrets/memory/token
   bifrost_url: http://bifrost:8080
@@ -254,8 +254,6 @@ memory:
   ask_enabled: true
   answer_model: claude-fable-5-1             # memory_ask answers with this model
   ask_retrieval_count: 10
-  context_pack_share: 0.05                   # of the session model's context window
-  chars_per_token: 4
   retention_days: 14
   retention_sweep_seconds: 3600
   org_admin_roles: [volundr:admin]
@@ -264,7 +262,7 @@ memory:
 
 In the chart these come from `config.memory` (`forgeBaseUrl`, `systems[]` with
 `mcpUrl`, `apiTokenSecret`, `signingKeySecret`, `tenants`, `serviceAuth`,
-`bifrostUrl`, `answerModel`, `askEnabled`, `contextPackShare`, `retentionDays`,
+`bifrostUrl`, `answerModel`, `askEnabled`, `retentionDays`,
 `retentionSweepSeconds`, `orgAdminRoles`, `connectorServiceSubjects` and the optional
 timeouts); each
 system's two secrets are mounted under `/etc/mimir-memory/<name>/`. The chart
@@ -296,14 +294,11 @@ record, and an answer that says something must cite one, or it is refused and
 counted (`memory.ask.citations`). Disagreements between layers and a full
 retrieval are listed as gaps. The answer is never stored.
 
-**Context pack.** Its budget is the session model's `context_window` from
-`GET {bifrost_url}/models/{id}` (read with `service_auth`) times
-`context_pack_share`; a model without `context_window` is a 502 naming it. It
-holds the pages the session's objective and project brief lead to, layer by
-layer, with their current facts, then the pages and facts changed in the
-project and org layers since the owner's previous session in the project. What
-does not fit is listed in `omitted` (and in a closing line of the pack) and
-counted (`memory.context_pack_share`).
+**Context pack.** Unbudgeted: it holds everything it selects, and the answer is
+`{"text": "..."}`. That is the pages the session's objective and project brief
+lead to, layer by layer, with their current facts, then the pages and facts
+changed in the project and org layers since the owner's previous session in the
+project.
 
 **People routes.** A person's own login, through Mímir's identity adapter (in
 mini mode without auth, the configured dev principal); a session or workload

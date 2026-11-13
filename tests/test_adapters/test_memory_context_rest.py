@@ -63,7 +63,6 @@ class TestAnswer:
     async def test_names_the_layers_of_a_session_in_a_project_and_run(self, rig: Rig) -> None:
         project = await rig.project()
         session, credential = await rig.started(
-            model="claude-fable-5-1",
             coordination=SessionCoordination(project_id=project.id, objective="Cut over booking"),
             workload_config={WORKFLOW_RUN_ID_KEY: "run-7"},
         )
@@ -80,7 +79,6 @@ class TestAnswer:
             "project_id": str(project.id),
             "workflow_run_id": "run-7",
             "project_memory": {"write_prefixes": list(PREFIXES)},
-            "model": "claude-fable-5-1",
             "objective": "Cut over booking",
             "project_brief": None,
             "since": None,
@@ -105,7 +103,7 @@ class TestAnswer:
         assert body["project_id"] is None
         assert body["project_memory"] is None
         assert body["workflow_run_id"] is None
-        assert body["model"] is None
+        assert "model" not in body
         assert body["objective"] is None
         assert body["project_brief"] is None
         assert body["since"] is None

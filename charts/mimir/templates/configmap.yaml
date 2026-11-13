@@ -107,12 +107,6 @@ data:
       {{- if not (kindIs "invalid" .askRetrievalCount) }}
       ask_retrieval_count: {{ .askRetrievalCount }}
       {{- end }}
-      {{- if not (kindIs "invalid" .contextPackShare) }}
-      context_pack_share: {{ .contextPackShare }}
-      {{- end }}
-      {{- if not (kindIs "invalid" .charsPerToken) }}
-      chars_per_token: {{ .charsPerToken }}
-      {{- end }}
       {{- if not (kindIs "invalid" .retentionDays) }}
       retention_days: {{ .retentionDays }}
       {{- end }}

@@ -186,8 +186,7 @@ route it does not carry).
 ### The session's memory context
 
 `GET /sessions/{id}/memory-context`, with the session's own credential, adds what the gateway
-needs for the session's context pack: `model` (the model it was launched with, or null),
-`objective` (its coordination objective, or null), `project_brief` (the project's brief, or
+needs for the session's context pack: `objective` (its coordination objective, or null), `project_brief` (the project's brief, or
 null), `since` (when this owner's previous session in the same project began, or null for the
 first) and `attached`, one entry per memory mount of the launch:
 

@@ -165,16 +165,6 @@ class ManagedModelConfig(BaseModel):
     effort_note: str = Field(
         default="", description="Model-specific effort behavior shown to users."
     )
-    context_window: int | None = Field(
-        default=None,
-        gt=0,
-        description=(
-            "Input tokens the model accepts, from the vendor's documented limit. Null means "
-            "no documented limit is recorded; it is never a guess. A consumer that needs the "
-            "window for a model with null (the memory gateway sizing a context pack) refuses "
-            "naming this field, so set it here to enable that model."
-        ),
-    )
 
     @model_validator(mode="after")
     def resolve_effort_options(self) -> ManagedModelConfig:
@@ -193,13 +183,7 @@ class ManagedModelConfig(BaseModel):
 
 
 def _default_models() -> list[ManagedModelConfig]:
-    """Built-in Bifrost model catalog used when no explicit catalog is configured.
-
-    ``context_window`` is set only where the vendor's documented limit is stated in this
-    catalog (the 1M-token models). Every other entry leaves it null: no limit is recorded
-    for it here, and a number is never guessed. Set it in ``models`` / ``additional_models``
-    from the vendor's documentation to enable a consumer that needs the window.
-    """
+    """Built-in Bifrost model catalog used when no explicit catalog is configured."""
     return [
         ManagedModelConfig(
             id="openai-codex/gpt-6-astra",
@@ -233,9 +217,6 @@ def _default_models() -> list[ManagedModelConfig]:
             ),
             # Claude Fable 5.1 is $10 in / $50 out per 1M tokens (blended shown).
             cost_per_million_tokens=30.0,
-            # 1M-token window: the vendor's documented limit, stated in the description above
-            # and in Forge's `session_usage.model_windows` (LEX-1421 model contract).
-            context_window=1_000_000,
             session_definition="skuldClaude",
             supports_tools=True,
             supports_thinking=True,
@@ -256,9 +237,6 @@ def _default_models() -> list[ManagedModelConfig]:
             ),
             # Claude Opus 5.5 is $4 in / $20 out per 1M tokens (blended shown).
             cost_per_million_tokens=12.0,
-            # 1M-token window: the vendor's documented limit, stated in the description above
-            # and in Forge's `session_usage.model_windows` (LEX-1421 model contract).
-            context_window=1_000_000,
             session_definition="skuldClaude",
             supports_tools=True,
             supports_thinking=True,
@@ -296,8 +274,6 @@ def _default_models() -> list[ManagedModelConfig]:
             ),
             # GPT-6 Astra is $10 in / $50 out per 1M tokens; use the output rate.
             cost_per_million_tokens=50.0,
-            # 1M-token window: the vendor's documented limit, stated in the description above.
-            context_window=1_000_000,
             session_definition="skuldCodex",
             supports_tools=True,
             supports_thinking=True,
@@ -315,8 +291,6 @@ def _default_models() -> list[ManagedModelConfig]:
             ),
             # GPT-6 Sol is $2 in / $10 out per 1M tokens; use the output rate.
             cost_per_million_tokens=10.0,
-            # 1M-token window: the vendor's documented limit, stated in the description above.
-            context_window=1_000_000,
             session_definition="skuldCodex",
             supports_tools=True,
             supports_thinking=True,
@@ -334,8 +308,6 @@ def _default_models() -> list[ManagedModelConfig]:
             ),
             # GPT-6 Luna is $0.10 in / $0.50 out per 1M tokens; use the output rate.
             cost_per_million_tokens=0.5,
-            # 1M-token window: the vendor's documented limit, stated in the description above.
-            context_window=1_000_000,
             session_definition="skuldCodex",
             supports_tools=True,
             supports_thinking=True,
@@ -415,8 +387,6 @@ def _default_models() -> list[ManagedModelConfig]:
             ),
             # Muse Spark 1.3 is $1.25 in / $4.25 out per 1M tokens; use the output rate.
             cost_per_million_tokens=4.25,
-            # 1M-token window: the vendor's documented limit, stated in the description above.
-            context_window=1_000_000,
             session_definition="skuldMuse",
             supports_tools=True,
             supports_thinking=True,
@@ -430,8 +400,6 @@ def _default_models() -> list[ManagedModelConfig]:
             color="#0866FF",
             description="Meta Muse Spark 1.2 — the previous Muse Code model; 1M-token context.",
             cost_per_million_tokens=4.25,
-            # 1M-token window: the vendor's documented limit, stated in the description above.
-            context_window=1_000_000,
             session_definition="skuldMuse",
             supports_tools=True,
             supports_thinking=True,

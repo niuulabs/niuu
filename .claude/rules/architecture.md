@@ -211,7 +211,7 @@ non-Forge service that accepts this credential, on exactly three routes:
 identity adapter, refuse any credential carrying `workload_session_id` or that
 `credential_allows_route` denies, and pass the person's `Authorization` on to Forge. Its
 own service credential (`memory.service_auth`) is used only for
-`POST /api/v1/forge/memory/ended` and the Bifröst catalog. It does not verify the token
+`POST /api/v1/forge/memory/ended`. It does not verify the token
 itself. It reads the unverified `workload_session_id` only to address
 `GET /api/v1/forge/sessions/{id}/memory-context` (scope `forge:memory`, the session's own
 only), presents the same token there, and treats Forge's 200 as the verification; any

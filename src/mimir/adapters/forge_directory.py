@@ -98,9 +98,9 @@ def _context(session_id: str, body: Any) -> SessionMemoryContext:
             )
         prefixes = tuple(str(p) for p in memory["write_prefixes"])
     run_id = body.get("workflow_run_id")
-    if "attached" not in body or "model" not in body:
+    if "attached" not in body:
         raise SessionNotConfirmedError(
-            "Forge's memory context has no 'attached' or 'model' (contract C4); upgrade Forge "
+            "Forge's memory context has no 'attached' (contract C4); upgrade Forge "
             "to a version that serves memory-context v2"
         )
     return SessionMemoryContext(
@@ -111,7 +111,6 @@ def _context(session_id: str, body: Any) -> SessionMemoryContext:
         project_id=project_id.lower() if project_id else None,
         workflow_run_id=str(run_id).lower() if run_id else None,
         project_write_prefixes=prefixes,
-        model=_optional_text(body, "model"),
         objective=_optional_text(body, "objective"),
         project_brief=_optional_text(body, "project_brief"),
         since=_since(body.get("since")),

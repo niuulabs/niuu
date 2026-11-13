@@ -77,9 +77,7 @@ def _broker(tmp_path: Path, *, pack: bool = True, **overrides: Any) -> Broker:
     """A broker; by default the context pack startup() would have fetched is already in."""
     broker = Broker(settings=_settings(tmp_path, **overrides))
     if pack:
-        broker._memory_context_pack = ContextPack(
-            text=PACK_TEXT, budget_tokens=1000, used_tokens=20, omitted=()
-        )
+        broker._memory_context_pack = ContextPack(text=PACK_TEXT)
     return broker
 
 
@@ -572,13 +570,7 @@ PACK_PATH = "/api/v1/mimir/memory/context-pack"
 
 
 def _pack_body(**overrides: Any) -> dict[str, Any]:
-    return {
-        "text": PACK_TEXT,
-        "budget_tokens": 1000,
-        "used_tokens": 20,
-        "omitted": [],
-        **overrides,
-    }
+    return {"text": PACK_TEXT, **overrides}
 
 
 class PackGateway:
@@ -760,9 +752,8 @@ class TestContextPackAtStart:
             (lambda _r: httpx.Response(500, json={"detail": "entity store down"}), "entity store"),
             (lambda _r: httpx.Response(403, json={"detail": "no forge:memory"}), "refused"),
             (lambda _r: httpx.Response(200, text="<html>"), "invalid JSON"),
-            (lambda _r: httpx.Response(200, json={"text": PACK_TEXT}), "omitted"),
+            (lambda _r: httpx.Response(200, json={}), "text"),
             (lambda _r: httpx.Response(200, json=_pack_body(text=None)), "text"),
-            (lambda _r: httpx.Response(200, json=_pack_body(budget_tokens="x")), "budget_tokens"),
         ],
     )
     async def test_a_gateway_failure_stops_startup_naming_the_url_and_the_reason(
@@ -822,39 +813,15 @@ class TestContextPackAtStart:
         assert failed["metadata"]["startup_failed"] is True
         assert "context-pack" in failed["metadata"]["error"]
 
-    async def test_an_empty_text_with_omitted_entries_is_a_real_pack_and_is_logged(
-        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
-    ) -> None:
-        omitted = [{"ref": "entity:checkout", "tokens": 5000}, {"ref": "entity:cart"}]
-        fake = PackGateway(
-            lambda _r: httpx.Response(
-                200, json=_pack_body(text="", budget_tokens=10, used_tokens=0, omitted=omitted)
-            )
-        )
+    async def test_an_empty_text_is_a_real_pack_and_adds_no_heading(self, tmp_path: Path) -> None:
+        fake = PackGateway(lambda _r: httpx.Response(200, json=_pack_body(text="")))
         broker = _unfetched(tmp_path, fake)
-        with caplog.at_level("INFO", logger="skuld.broker"):
-            await broker.startup()
+        await broker.startup()
         try:
             assert broker.startup_status()["startup_state"] == "ready"
             assert broker._memory_context_pack is not None
-            assert list(broker._memory_context_pack.omitted) == omitted
-            assert "left out 2 entries" in caplog.text
+            assert broker._memory_context_pack.text == ""
             assert "## Memory context at launch" not in _claude_prompt(broker)
-        finally:
-            await broker.shutdown()
-
-    async def test_omitted_entries_are_logged_beside_a_pack_with_text(
-        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
-    ) -> None:
-        fake = PackGateway(
-            lambda _r: httpx.Response(200, json=_pack_body(omitted=[{"ref": "entity:cart"}]))
-        )
-        broker = _unfetched(tmp_path, fake)
-        with caplog.at_level("INFO", logger="skuld.broker"):
-            await broker.startup()
-        try:
-            assert "left out 1 entries" in caplog.text
-            assert PACK_TEXT in _claude_prompt(broker)
         finally:
             await broker.shutdown()
 
@@ -876,18 +843,6 @@ class TestContextPackAtStart:
         broker = _broker(tmp_path, pack=False)
         with pytest.raises(RuntimeError, match="context pack was not fetched"):
             broker._session_tools()
-
-    async def test_the_client_rejects_a_boolean_token_count(self) -> None:
-        client = MemoryGatewayClient(
-            base_url=GATEWAY,
-            token=FORGE_CREDENTIAL,
-            timeout_s=5,
-            transport=httpx.MockTransport(
-                lambda _r: httpx.Response(200, json=_pack_body(used_tokens=True))
-            ),
-        )
-        with pytest.raises(Exception, match="used_tokens"):
-            await client.context_pack(timeout_s=5)
 
     async def test_the_error_type_is_the_one_startup_catches(self, tmp_path: Path) -> None:
         broker = _unfetched(tmp_path, PackGateway(lambda _r: httpx.Response(500, text="boom")))

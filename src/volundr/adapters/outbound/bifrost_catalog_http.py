@@ -10,16 +10,14 @@ from niuu.domain.model_catalog import (
     ManagedModel,
     ManagedModelProvider,
     ManagedModelTier,
-    parse_context_window,
 )
 from niuu.ports.http_auth import HttpAuthPort
 from volundr.ports.bifrost_catalog import BifrostCatalogPort
 
 
 def _coerce_model(payload: dict[str, Any]) -> ManagedModel:
-    model_id = str(payload.get("id") or "").strip()
     return ManagedModel(
-        id=model_id,
+        id=str(payload.get("id") or "").strip(),
         name=str(payload.get("name") or "").strip(),
         vendor=str(payload.get("vendor") or "").strip(),
         provider=ManagedModelProvider(
@@ -33,7 +31,6 @@ def _coerce_model(payload: dict[str, Any]) -> ManagedModel:
         session_definition=payload.get("session_definition"),
         supports_tools=bool(payload.get("supports_tools", True)),
         supports_thinking=bool(payload.get("supports_thinking", True)),
-        context_window=parse_context_window(payload.get("context_window"), model_id=model_id),
         enabled=bool(payload.get("enabled", True)),
         aliases=tuple(str(item) for item in payload.get("aliases") or []),
         provider_keys=tuple(str(item) for item in payload.get("provider_keys") or []),

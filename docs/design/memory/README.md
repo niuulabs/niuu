@@ -14,9 +14,8 @@ credential and charged to its owner; the context pack reached the harness at lau
 the run's owner promoted the decision, a project owner approved it, and it landed at
 `operator` trust with the planner's evidence and the proposal reference; and the run
 and session layers were deleted once their retention (shortened for the proof) had
-passed. Attached memories through the gateway are covered by tests only. Catalog
-models without a `context_window` (for example `gpt-5.6-terra`) cannot start a session
-with memory on until one is set. Steps 3 and 4 are not built.
+passed. Attached memories through the gateway are covered by tests only. Steps 3 and 4
+are not built.
 
 It reworks Mímir. Today's flows are not kept for their own sake: what stays is
 what this design needs.
@@ -240,8 +239,6 @@ The instructions every harness gets, in full:
 entities in the project brief and the session's objective, their open
 threads, the facts that hold now, and what changed in the project since the
 session owner's last session. It goes to the harness with its instructions.
-Its size comes from the model's context window in the Bifröst catalog. What is
-left out is listed and counted, never dropped silently.
 
 ## 6. The memory gateway
 
@@ -495,10 +492,9 @@ Decided while building step 2:
   Nothing retrieved means no model call.
 - **The context pack** holds the pages the objective and project brief lead
   to, with their current facts, then the changes to the project and org layers
-  since the owner's previous session in the project. Its budget is the
-  catalog's `context_window` for the session's model times
-  `memory.context_pack_share`. Open threads are not in it: threads left in
-  step 0. It is built by the gateway, not gbrain's `context_pack`, which reads
+  since the owner's previous session in the project. It is not sized from
+  a model's context window: it holds everything it selects. Open threads are not
+  in it: threads left in step 0. It is built by the gateway, not gbrain's `context_pack`, which reads
   across every layer.
 - **Retention** is a gateway sweeper. It asks Forge when sessions and runs
   ended (`POST /api/v1/forge/memory/ended`, the gateway's service credential)

@@ -531,7 +531,6 @@ class SessionMemoryContext:
     project_id: str | None
     workflow_run_id: str | None
     project_write_prefixes: tuple[str, ...] = field(default_factory=tuple)
-    model: str | None = None
     objective: str | None = None
     project_brief: str | None = None
     since: datetime | None = None

@@ -23,7 +23,6 @@ def _body(**overrides) -> dict:
         "project_id": PROJECT_ID,
         "workflow_run_id": None,
         "project_memory": {"write_prefixes": ["decisions/", "runbooks/"]},
-        "model": "claude-fable-5-1",
         "objective": None,
         "project_brief": None,
         "since": None,
@@ -129,7 +128,6 @@ async def test_memory_context_v2_fields_are_read(directory) -> None:
     )
     respx.get(URL).mock(return_value=httpx.Response(200, json=body))
     found = await directory.memory_context(SESSION_ID, "tok")
-    assert found.model == "claude-fable-5-1"
     assert found.workflow_run_id == "a1b2c3d4-0000-4000-8000-000000000123"
     assert found.objective == "Change the booking cut-over"
     assert found.since is not None and found.since.isoformat() == "2026-11-01T09:00:00+00:00"
@@ -157,7 +155,7 @@ async def test_memory_context_v2_fields_are_read(directory) -> None:
             ]
         },
         {"since": "yesterday"},
-        {"model": 7},
+        {"objective": 7},
     ],
 )
 @respx.mock

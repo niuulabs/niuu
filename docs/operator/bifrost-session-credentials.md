@@ -66,21 +66,3 @@ Bifröst (the shared host), it admits a session credential on these three routes
 only, and only with `forge:model`.
 
 The timeout is listed in [limits.md](limits.md).
-
-# Model context windows in the catalog
-
-Each catalog model has an optional `context_window`: the input tokens the model
-accepts, from the vendor's documented limit. It is returned by `GET /models` and
-`GET /models/{id}` (and read by Forge and Niuu's catalog clients).
-
-- A model with a documented limit carries it. The shipped default catalog sets
-  `1000000` for Claude Fable 5.1, Claude Opus 5.5, GPT-6 Astra, GPT-6 Sol,
-  GPT-6 Luna, Muse Spark 1.3 and Muse Spark 1.2, whose catalog descriptions
-  state a 1M-token context.
-- Every other model answers `null`: no limit is recorded for it. It is never
-  defaulted. A consumer that needs the window (the memory gateway sizing a
-  context pack) refuses for that model, naming `context_window`; set it on the
-  model in `models` / `additional_models` from the vendor's documentation to
-  enable it.
-- A catalog answer with a `context_window` that is not a positive integer or
-  `null` is refused by the clients, naming the model.

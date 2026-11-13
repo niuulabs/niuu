@@ -305,24 +305,7 @@ class ForgeSessionMixin:
                 "memory"
             ) from exc
         self._memory_context_pack = pack
-        if pack.omitted:
-            logger.warning(
-                "memory context pack from %s left out %d entries that did not fit its "
-                "%d-token budget (%d used): %s",
-                url,
-                len(pack.omitted),
-                pack.budget_tokens,
-                pack.used_tokens,
-                pack.omitted,
-            )
-        logger.info(
-            "memory context pack loaded from %s: %d characters, %d of %d tokens, %d omitted",
-            url,
-            len(pack.text),
-            pack.used_tokens,
-            pack.budget_tokens,
-            len(pack.omitted),
-        )
+        logger.info("memory context pack loaded from %s: %d characters", url, len(pack.text))
 
     def _memory_context_text(self) -> str:
         """The fetched pack's text; memory enabled without a fetched pack is a bug."""

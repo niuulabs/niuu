@@ -444,15 +444,9 @@ def _build_memory_router(
     )
     answers = MemoryAnswers(
         gateway,
-        BifrostAnswerModel(
-            memory.bifrost_url,
-            timeout_seconds=memory.bifrost_timeout_seconds,
-            service_auth=service_auth,
-        ),
+        BifrostAnswerModel(memory.bifrost_url, timeout_seconds=memory.bifrost_timeout_seconds),
         answer_model=memory.answer_model if memory.ask_enabled else "",
         retrieval_count=memory.ask_retrieval_count,
-        context_pack_share=memory.context_pack_share,
-        chars_per_token=memory.chars_per_token,
     )
     curation = Curation(
         gateway,

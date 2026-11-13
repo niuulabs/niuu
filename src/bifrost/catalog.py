@@ -72,7 +72,6 @@ def list_models(config: BifrostConfig) -> list[ManagedModel]:
                 effort_levels=tuple(model.effort_levels or []),
                 default_effort=model.default_effort,
                 effort_note=model.effort_note,
-                context_window=model.context_window,
                 enabled=model.enabled,
                 aliases=tuple(sorted(aliases_by_model.get(model.id, []))),
                 provider_keys=tuple(provider_keys),
@@ -107,7 +106,6 @@ def list_models(config: BifrostConfig) -> list[ManagedModel]:
                     "effort_levels": [],
                     "default_effort": "",
                     "effort_note": "",
-                    "context_window": None,
                     "enabled": True,
                 },
             )()
@@ -128,7 +126,6 @@ def list_models(config: BifrostConfig) -> list[ManagedModel]:
                 effort_levels=tuple(model.effort_levels or []),
                 default_effort=model.default_effort,
                 effort_note=model.effort_note,
-                context_window=model.context_window,
                 enabled=model.enabled,
                 aliases=tuple(sorted(aliases_by_model.get(model.id, []))),
                 provider_keys=tuple(provider_keys),

@@ -5,7 +5,7 @@
 ``CallToolResult``. Both carry ``Authorization: Bearer <the session's forge_session
 credential>``: the credential lives here, in the broker, and never reaches the agent.
 ``GET {gateway_url}/memory/context-pack`` answers the session's launch context
-(``{"text", "budget_tokens", "used_tokens", "omitted"}``), fetched once per broker start.
+(``{"text"}``), fetched once per broker start.
 Every failure is a typed error naming the gateway and what went wrong; nothing here
 turns a failure into an empty tool list or an empty result.
 """
@@ -44,17 +44,9 @@ class MemoryContextPackError(MemoryGatewayError):
 
 @dataclass(frozen=True)
 class ContextPack:
-    """What the gateway chose to tell a session at launch.
-
-    ``omitted`` lists what did not fit the budget. An empty ``text`` with ``omitted``
-    entries is a real pack (everything was too big for the budget), and an empty
-    ``text`` with nothing omitted is a project the gateway holds nothing about yet.
-    """
+    """What the gateway chose to tell a session at launch."""
 
     text: str
-    budget_tokens: int
-    used_tokens: int
-    omitted: tuple[Any, ...]
 
 
 def _detail(response: httpx.Response) -> str:
@@ -185,28 +177,9 @@ class MemoryGatewayClient:
         """The session's launch context; a pack missing a field is an error, not a pack."""
         payload = await self._request("GET", CONTEXT_PACK_SEGMENT, timeout_s=timeout_s)
         text = payload.get("text")
-        omitted = payload.get("omitted")
-        budget = payload.get("budget_tokens")
-        used = payload.get("used_tokens")
         if not isinstance(text, str):
             raise MemoryGatewayError(
                 f"the memory gateway at {self._base_url} answered the context pack without "
                 "a text string"
             )
-        if not isinstance(omitted, list):
-            raise MemoryGatewayError(
-                f"the memory gateway at {self._base_url} answered the context pack without "
-                "an omitted list, so what was left out cannot be reported"
-            )
-        for name, value in (("budget_tokens", budget), ("used_tokens", used)):
-            if isinstance(value, bool) or not isinstance(value, int):
-                raise MemoryGatewayError(
-                    f"the memory gateway at {self._base_url} answered the context pack "
-                    f"without an integer {name}"
-                )
-        return ContextPack(
-            text=text,
-            budget_tokens=budget,
-            used_tokens=used,
-            omitted=tuple(omitted),
-        )
+        return ContextPack(text=text)

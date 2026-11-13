@@ -13,22 +13,19 @@ record of the retrieved set, and an answer that says something must cite it, or
 the answer is refused and counted. Disagreements found in the retrieved set are
 listed as gaps. An answer is never stored, so it is never evidence.
 
-**Context pack.** Sized from the session model's context window in the Bifröst
-catalog times ``memory.context_pack_share``. It holds the entities that the
+**Context pack.** Holds everything it selects, unbudgeted: the entities that the
 project brief and the session's objective lead to (their pages, layer by layer,
 and the facts that hold now), then what changed in the project and the org since
-the owner's previous session. What does not fit is listed and counted, never
-dropped silently.
+the owner's previous session.
 """
 
 from __future__ import annotations
 
 import json
-import math
 import re
 from collections.abc import Sequence
-from dataclasses import dataclass, field
-from typing import Any, NoReturn
+from dataclasses import dataclass
+from typing import NoReturn
 
 from mimir.memory.gateway import (
     Disagreement,
@@ -45,7 +42,6 @@ from niuu.cap_telemetry import record_cap_hit, require_complete
 
 ANSWER_KNOB = "memory.answer_model"
 RETRIEVAL_KNOB = "memory.ask_retrieval_count"
-PACK_KNOB = "memory.context_pack_share"
 CITATION_KNOB = "memory.ask.citations"
 
 _SYSTEM = (
@@ -62,10 +58,6 @@ _FENCE = re.compile(r"^```(?:json)?\s*(?P<body>.*?)\s*```$", re.DOTALL)
 
 class AnswerRefusedError(MemoryStoreError):
     """The model's answer broke the rules (uncited, citing outside retrieval, malformed)."""
-
-
-class ContextPackError(MemoryStoreError):
-    """The context pack cannot be built. The message names the knob or fact that is missing."""
 
 
 # ---------------------------------------------------------------------------
@@ -111,19 +103,14 @@ class PackItem:
 @dataclass(frozen=True)
 class ContextPack:
     text: str
-    budget_tokens: int
-    used_tokens: int
-    omitted: tuple[dict[str, Any], ...] = field(default_factory=tuple)
 
 
 class MemoryAnswers:
     """Args:
     gateway: the memory gateway.
-    model: answer calls and the model catalog.
+    model: the answer calls.
     answer_model: the model memory_ask answers with (``memory.answer_model``).
     retrieval_count: search hits memory_ask reads (``memory.ask_retrieval_count``).
-    context_pack_share: share of the session model's context window the pack may take.
-    chars_per_token: characters per token the pack is measured with.
     """
 
     def __init__(
@@ -133,21 +120,13 @@ class MemoryAnswers:
         *,
         answer_model: str,
         retrieval_count: int,
-        context_pack_share: float,
-        chars_per_token: int,
     ) -> None:
         if retrieval_count < 1:
             raise ValueError(f"{RETRIEVAL_KNOB} must be at least 1")
-        if not 0 < context_pack_share <= 1:
-            raise ValueError(f"{PACK_KNOB} must be in (0, 1]")
-        if chars_per_token < 1:
-            raise ValueError("memory.chars_per_token must be at least 1")
         self._gateway = gateway
         self._model = model
         self._answer_model = answer_model.strip()
         self._retrieval_count = retrieval_count
-        self._share = context_pack_share
-        self._chars_per_token = chars_per_token
 
     @property
     def asks(self) -> bool:
@@ -315,80 +294,18 @@ class MemoryAnswers:
 
     # -- context pack ----------------------------------------------------
 
-    def _tokens(self, text: str) -> int:
-        return math.ceil(len(text) / self._chars_per_token)
-
     async def context_pack(self, session: Session) -> ContextPack:
-        context = session.view.context
-        if not context.model:
-            raise ContextPackError(
-                f"Forge named no model for session {context.session_id}, so the context pack "
-                "cannot be sized from its context window"
-            )
-        window = await self._model.context_window(context.model)
-        budget = math.floor(window * self._share)
-        items, omitted = await self._pack_items(session)
+        items = await self._pack_items(session)
         header = (
             "Memory context for this session (layers: "
             + ", ".join(layer.id for layer in session.layers)
             + "). Read more with memory_entity, memory_search and memory_ask."
         )
-        reserve = self._tokens(self._footer(len(items) + 1, budget))
-        used = self._tokens(header)
-        lines = [header]
-        cut: list[dict[str, Any]] = []
-        if used + reserve > budget:
-            heading = PackItem("header", "", "", header)
-            cut = [self._omission(item, "budget") for item in (heading, *items)]
-            lines, used = [], 0
-        else:
-            for item in items:
-                cost = self._tokens("\n" + item.text)
-                if used + cost + reserve > budget:
-                    cut.append(self._omission(item, "budget"))
-                    continue
-                lines.append(item.text)
-                used += cost
-        if cut:
-            footer = self._footer(len(cut), budget)
-            if lines:
-                lines.append(footer)
-                used += self._tokens("\n" + footer)
-            wanted = used + sum(int(o["tokens"]) for o in cut)
-            record_cap_hit(
-                PACK_KNOB,
-                f"the memory context pack of session {context.session_id} left out "
-                f"{len(cut)} record(s) ({wanted} tokens wanted, {budget} allowed: "
-                f"{self._share} of {context.model}'s {window}-token window). Raise "
-                f"{PACK_KNOB} if what was left out matters",
-            )
-        return ContextPack(
-            text="\n".join(lines),
-            budget_tokens=budget,
-            used_tokens=used,
-            omitted=(*omitted, *cut),
-        )
+        return ContextPack(text="\n".join([header, *(item.text for item in items)]))
 
-    @staticmethod
-    def _footer(count: int, budget: int) -> str:
-        return (
-            f"{count} record(s) did not fit this pack's budget of {budget} tokens; read them "
-            "with memory_entity and memory_search."
-        )
-
-    def _omission(self, item: PackItem, reason: str) -> dict[str, Any]:
-        return {
-            "kind": item.kind,
-            "layer": item.layer,
-            "ref": item.ref,
-            "tokens": self._tokens(item.text),
-            "reason": reason,
-        }
-
-    async def _pack_items(self, session: Session) -> tuple[list[PackItem], list[dict[str, Any]]]:
+    async def _pack_items(self, session: Session) -> list[PackItem]:
         context = session.view.context
         items: list[PackItem] = []
-        omitted: list[dict[str, Any]] = []
         subjects: list[str] = []
         attached: list[tuple[str, str]] = []
         limit = self._gateway.default_result_count
@@ -397,13 +314,10 @@ class MemoryAnswers:
                 continue
             hits = await self._gateway.search(session, text, kinds=[HitKind.PAGE], limit=limit)
             if len(hits) >= limit:
-                reason = (
-                    f"only the top {limit} pages the session's {label} leads to were considered; "
-                    "raise memory.default_result_count to consider more"
-                )
-                record_cap_hit("memory.default_result_count", f"context pack: {reason}")
-                omitted.append(
-                    {"kind": "entities", "layer": "", "ref": label, "tokens": 0, "reason": reason}
+                record_cap_hit(
+                    "memory.default_result_count",
+                    f"context pack: only the top {limit} pages the session's {label} leads to "
+                    "were considered; raise memory.default_result_count to consider more",
                 )
             for hit in hits:
                 if hit.layer.kind is LayerKind.ATTACHED:
@@ -444,10 +358,6 @@ class MemoryAnswers:
                         f"{fact.statement} (fact:{fact.id})",
                     )
                 )
-            omitted += [
-                {"kind": "facts", "layer": "", "ref": subject, "tokens": 0, "reason": o.detail}
-                for o in card.omitted
-            ]
         if context.since is not None:
             long_lived = [
                 layer
@@ -476,4 +386,4 @@ class MemoryAnswers:
                             f"{labelled.fact.statement} (fact:{labelled.fact.id})",
                         )
                     )
-        return items, omitted
+        return items

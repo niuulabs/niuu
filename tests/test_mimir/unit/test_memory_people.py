@@ -427,12 +427,6 @@ class TestPromotions:
 
 class TestContextPackRoute:
     def test_a_session_gets_its_pack_and_a_persons_login_is_refused(self, tmp_path, forge) -> None:
-        _, router = forge
-        router.get(f"{BIFROST}/models/claude-fable-5-1").mock(
-            return_value=httpx.Response(
-                200, json={"id": "claude-fable-5-1", "context_window": 4000}
-            )
-        )
         with _client(tmp_path) as client:
             pack = client.get("/mimir/memory/context-pack", headers=_session())
             person = client.get(
@@ -441,21 +435,9 @@ class TestContextPackRoute:
             anonymous = client.get("/mimir/memory/context-pack")
         assert pack.status_code == 200, pack.text
         body = pack.json()
-        assert body["budget_tokens"] == 200 and body["used_tokens"] <= 200
+        assert set(body) == {"text"}
         assert body["text"].startswith("Memory context for this session")
         assert person.status_code == 401 and anonymous.status_code == 401
-
-    def test_a_catalog_without_a_window_is_a_502_naming_it(self, tmp_path, forge) -> None:
-        _, router = forge
-        router.get(f"{BIFROST}/models/claude-fable-5-1").mock(
-            return_value=httpx.Response(
-                200, json={"id": "claude-fable-5-1", "context_window": None}
-            )
-        )
-        with _client(tmp_path) as client:
-            response = client.get("/mimir/memory/context-pack", headers=_session())
-        assert response.status_code == 502
-        assert "context_window" in response.json()["detail"]
 
 
 class TestStartup:

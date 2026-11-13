@@ -2,7 +2,7 @@
 
 ``GET /sessions/{session_id}/memory-context`` tells the memory gateway which layers a session
 has: its owner, tenant, project, workflow run and the project layer's write prefixes, and what
-it needs for the session's context pack: its model, objective, the project's brief, when this
+it needs for the session's context pack: its objective, the project's brief, when this
 owner's previous session in the project began (``since``) and the memories the launch attached
 (``attached``). The gateway calls it on every request with the session's own ``forge_session``
 credential, so Forge's live-session check (session exists, same launch, not stopped or
@@ -72,7 +72,6 @@ class MemoryContextResponse(BaseModel):
     project_id: UUID | None
     workflow_run_id: str | None
     project_memory: ProjectMemoryResponse | None
-    model: str | None = Field(description="The model the session was launched with")
     objective: str | None = Field(description="The session's coordination objective")
     project_brief: str | None = Field(description="The project's brief")
     since: datetime | None = Field(
@@ -141,7 +140,6 @@ def create_memory_context_router(
                 if project_memory is None
                 else ProjectMemoryResponse(write_prefixes=list(project_memory.write_prefixes))
             ),
-            model=context.model,
             objective=context.objective,
             project_brief=context.project_brief,
             since=context.since,

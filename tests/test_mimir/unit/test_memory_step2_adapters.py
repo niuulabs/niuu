@@ -23,14 +23,13 @@ from mimir.memory.models import (
     RecordNotFoundError,
     RevisionConflictError,
 )
-from mimir.ports.answer_model import AnswerModelError, ModelCatalogError
+from mimir.ports.answer_model import AnswerModelError
 from mimir.ports.people_directory import (
     ForgeUnavailableError,
     NotVisibleError,
     Person,
     PersonRefusedError,
 )
-from niuu.adapters.outbound.http_auth import NoAuthHeaderAdapter
 from niuu.domain.mimir_facts import TrustLevel
 from tests.test_mimir.unit.fakes import InMemoryMimirAdapter
 
@@ -135,17 +134,9 @@ class TestForgePeopleDirectory:
 # ---------------------------------------------------------------------------
 
 
-class _RefusedAuth(NoAuthHeaderAdapter):
-    invalidated = 0
-
-    def invalidate(self) -> bool:
-        type(self).invalidated += 1
-        return True
-
-
 @pytest.fixture
 async def bifrost():
-    model = BifrostAnswerModel(BIFROST + "/", timeout_seconds=5, service_auth=_RefusedAuth())
+    model = BifrostAnswerModel(BIFROST + "/", timeout_seconds=5)
     yield model
     await model.close()
 
@@ -185,40 +176,11 @@ class TestBifrostAnswerModel:
         reply = await bifrost.answer(model="m", system="s", prompt="p", credential="t")
         assert reply.content == "hi" and len(reply.tool_calls) == 1
 
-    @pytest.mark.parametrize(
-        ("response", "match"),
-        [
-            (httpx.Response(401), "401"),
-            (httpx.Response(200, text="x"), "not JSON"),
-            (httpx.Response(200, json={"context_window": 0}), "positive"),
-            (httpx.Response(200, json={"context_window": True}), "positive"),
-        ],
-    )
-    @respx.mock
-    async def test_an_unusable_catalog_answer_is_an_error(self, bifrost, response, match) -> None:
-        respx.get(f"{BIFROST}/models/vendor%2Fmodel").mock(return_value=response)
-        with pytest.raises(ModelCatalogError, match=match):
-            await bifrost.context_window("vendor/model")
-
-    @respx.mock
-    async def test_a_refused_service_credential_is_dropped(self, bifrost) -> None:
-        respx.get(f"{BIFROST}/models/m").mock(return_value=httpx.Response(403))
-        before = _RefusedAuth.invalidated
-        with pytest.raises(ModelCatalogError):
-            await bifrost.context_window("m")
-        assert _RefusedAuth.invalidated == before + 1
-
-    @respx.mock
-    async def test_an_unreachable_catalog_is_an_error(self, bifrost) -> None:
-        respx.get(f"{BIFROST}/models/m").mock(side_effect=httpx.ConnectError("refused"))
-        with pytest.raises(ModelCatalogError, match="could not be read"):
-            await bifrost.context_window("m")
-
     def test_settings_are_checked(self) -> None:
         with pytest.raises(ValueError, match="bifrost_url"):
-            BifrostAnswerModel("", timeout_seconds=1, service_auth=NoAuthHeaderAdapter())
+            BifrostAnswerModel("", timeout_seconds=1)
         with pytest.raises(ValueError, match="timeout"):
-            BifrostAnswerModel(BIFROST, timeout_seconds=0, service_auth=NoAuthHeaderAdapter())
+            BifrostAnswerModel(BIFROST, timeout_seconds=0)
 
 
 # ---------------------------------------------------------------------------

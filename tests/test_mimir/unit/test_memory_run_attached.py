@@ -37,7 +37,6 @@ from mimir.memory.tools import MemoryTools, instructions
 from mimir.ports.attached_memory import AttachedMemories, AttachedMemoryError
 from mimir.ports.memory_backend import MemoryBackend
 from mimir.registry import MimirRegistryEntry, MimirRegistryStore
-from niuu.adapters.outbound.http_auth import NoAuthHeaderAdapter
 from niuu.cap_telemetry import cap_hit_counts, reset_cap_hits
 from niuu.domain.mimir_facts import TrustLevel
 from tests.test_mimir.unit.fakes import InMemoryMimirAdapter
@@ -418,16 +417,12 @@ def test_evidence_can_cite_a_proposal() -> None:
 
 class TestAnswersOverAttachedLayers:
     async def test_ask_cites_an_attached_page_and_the_pack_holds_it(self, brain, gateway) -> None:
-        model = BifrostAnswerModel(
-            "http://bifrost.test", timeout_seconds=5, service_auth=NoAuthHeaderAdapter()
-        )
+        model = BifrostAnswerModel("http://bifrost.test", timeout_seconds=5)
         answers = MemoryAnswers(
             gateway,
             model,
             answer_model="m",
             retrieval_count=5,
-            context_pack_share=0.5,
-            chars_per_token=4,
         )
         with respx.mock(assert_all_called=False) as router:
             router.post(MCP).mock(side_effect=brain.handle)
@@ -452,10 +447,7 @@ class TestAnswersOverAttachedLayers:
                     },
                 )
             )
-            router.get("http://bifrost.test/models/m").mock(
-                return_value=httpx.Response(200, json={"context_window": 100_000})
-            )
-            session = await gateway.open(_context(model="m", objective="booking cut-over"))
+            session = await gateway.open(_context(objective="booking cut-over"))
             answer = await answers.ask(session, "booking cut-over", layers=None, credential="t")
             pack = await answers.context_pack(session)
         assert answer.citations == (("attached:vendor", "guides/booking.md"),)

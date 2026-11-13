@@ -42,7 +42,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 
 from identity.adapters.http_auth import presented_actor
-from mimir.memory.answers import ContextPackError, MemoryAnswers
+from mimir.memory.answers import MemoryAnswers
 from mimir.memory.curation import Curation, CurationRefusedError, DecisionError
 from mimir.memory.gateway import LayerUnavailableError, MemoryGateway, Session
 from mimir.memory.models import (
@@ -55,7 +55,6 @@ from mimir.memory.models import (
 from mimir.memory.retention import RetentionSweeper
 from mimir.memory.systems import MemorySystems, TenantNotConfiguredError
 from mimir.memory.tools import MemoryTools, UnknownToolError, instructions
-from mimir.ports.answer_model import ModelCatalogError
 from mimir.ports.attached_memory import AttachedMemories
 from mimir.ports.people_directory import (
     ForgeUnavailableError,
@@ -421,14 +420,9 @@ class MemoryRouter:
                 raise HTTPException(status_code=503, detail="this gateway builds no context packs")
             try:
                 pack = await self._answers.context_pack(session)
-            except (ContextPackError, ModelCatalogError, MemoryStoreError, FactError) as exc:
+            except (MemoryStoreError, FactError) as exc:
                 raise HTTPException(status_code=502, detail=str(exc)) from exc
-            return {
-                "text": pack.text,
-                "budget_tokens": pack.budget_tokens,
-                "used_tokens": pack.used_tokens,
-                "omitted": list(pack.omitted),
-            }
+            return {"text": pack.text}
 
         @router.post("/memory/sources")
         async def connector_source(request: Request) -> dict[str, Any]:

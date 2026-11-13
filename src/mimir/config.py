@@ -185,17 +185,17 @@ class MemoryGatewayConfig(BaseModel):
             "How many results memory_search and list reads return when the caller names no "
             "`limit`. A default, not a cap: a caller may ask for more. The context pack "
             "considers this many pages for the session's objective and for its project brief; "
-            "reaching it is listed in the pack's `omitted` and counted."
+            "reaching it is counted (memory.default_result_count on the cap counter)."
         ),
     )
     service_auth: dict[str, Any] | None = Field(
         default=None,
         description=(
             "How the gateway authenticates as a service, to Forge's "
-            "POST /api/v1/forge/memory/ended (the retention sweep) and to the Bifröst model "
-            "catalog: a dynamic niuu.ports.http_auth.HttpAuthPort adapter, e.g. {adapter: "
+            "POST /api/v1/forge/memory/ended (the retention sweep): a dynamic "
+            "niuu.ports.http_auth.HttpAuthPort adapter, e.g. {adapter: "
             "niuu.adapters.outbound.http_auth.WorkloadIdentityBearerTokenAuthAdapter, "
-            "audiences: [forge, bifrost]} on a cluster, or {adapter: "
+            "audiences: [forge]} on a cluster, or {adapter: "
             "niuu.adapters.outbound.http_auth.NoAuthHeaderAdapter} in mini mode without auth. "
             "Required when enabled."
         ),
@@ -214,10 +214,9 @@ class MemoryGatewayConfig(BaseModel):
     bifrost_url: str = Field(
         default="",
         description=(
-            "Bifröst's base URL. The context pack reads the session model's context_window "
-            "from GET {bifrost_url}/models/{id}; memory_ask answers through "
-            "POST {bifrost_url}/v1/messages with the session's own credential, charged to "
-            "the session's owner. Required when enabled."
+            "Bifröst's base URL. memory_ask answers through POST {bifrost_url}/v1/messages "
+            "with the session's own credential, charged to the session's owner. Required "
+            "when enabled."
         ),
     )
     bifrost_timeout_seconds: float = Field(
@@ -251,25 +250,6 @@ class MemoryGatewayConfig(BaseModel):
             "about each hit page's subject). Bounded by what the answer model's context can "
             "hold. When a search returns this many, the answer lists it as a gap and the hit "
             "is counted."
-        ),
-    )
-    context_pack_share: float = Field(
-        default=0.05,
-        gt=0,
-        le=1,
-        description=(
-            "Share of the session model's context window (Bifröst catalog context_window) the "
-            "launch context pack may take. Bounded by what the harness needs besides it: its "
-            "own system prompt and tools, and the session's work. What does not fit is listed "
-            "in the pack's `omitted` and counted."
-        ),
-    )
-    chars_per_token: int = Field(
-        default=4,
-        ge=1,
-        description=(
-            "Characters per token the context pack is measured with: a character-count "
-            "estimate, as gbrain budgets, not a tokenizer."
         ),
     )
     retention_days: float = Field(

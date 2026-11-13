@@ -11,13 +11,11 @@ import pytest
 import respx
 
 from mimir.adapters.bifrost_answers import BifrostAnswerModel
-from mimir.memory.answers import AnswerRefusedError, ContextPackError, MemoryAnswers
+from mimir.memory.answers import AnswerRefusedError, MemoryAnswers
 from mimir.memory.gateway import MemoryGateway
 from mimir.memory.models import Attribution, Evidence, PageWrite
 from mimir.memory.systems import MemorySystems
 from mimir.memory.tools import MemoryTools
-from mimir.ports.answer_model import ModelCatalogError
-from niuu.adapters.outbound.http_auth import NoAuthHeaderAdapter
 from niuu.cap_telemetry import OutputTruncatedError, cap_hit_counts, reset_cap_hits
 from niuu.domain.mimir_facts import TrustLevel
 from tests.test_mimir.unit.memory_fakes import (
@@ -30,7 +28,6 @@ from tests.test_mimir.unit.memory_fakes import (
 )
 
 BIFROST = "http://bifrost.test"
-MODEL = "claude-fable-5-1"
 ANSWERER = "answer-model-1"
 URL = "url:https://linear.app/acme/LIN-482"
 PROJECT = f"project:{PROJECT_ID}"
@@ -60,11 +57,9 @@ def _answers(gateway, **overrides) -> MemoryAnswers:
     settings = {
         "answer_model": ANSWERER,
         "retrieval_count": 5,
-        "context_pack_share": 0.5,
-        "chars_per_token": 4,
         **overrides,
     }
-    model = BifrostAnswerModel(BIFROST, timeout_seconds=5, service_auth=NoAuthHeaderAdapter())
+    model = BifrostAnswerModel(BIFROST, timeout_seconds=5)
     return MemoryAnswers(gateway, model, **settings)
 
 
@@ -270,92 +265,47 @@ class TestAsk:
 
 
 class TestContextPack:
-    def _catalog(self, router, window) -> respx.Route:
-        return router.get(f"{BIFROST}/models/{MODEL}").mock(
-            return_value=httpx.Response(200, json={"id": MODEL, "context_window": window})
-        )
-
-    async def test_it_is_sized_from_the_catalog_window_and_holds_the_objectives_entities(
+    async def test_it_holds_the_objectives_entities_and_makes_no_catalog_call(
         self, services, gateway
     ) -> None:
         _, router = services
-        catalog = self._catalog(router, 200_000)
-        ctx = replace(context(), model=MODEL, objective="change the booking cut-over plan")
+        ctx = replace(context(), objective="change the booking cut-over plan")
         session = await gateway.open(ctx)
         await _seed(session, "plans/booking-cutover", "The cut-over runs on Friday.")
-        pack = await _answers(gateway, context_pack_share=0.05).context_pack(session)
-        assert pack.budget_tokens == 10_000
+        pack = await _answers(gateway).context_pack(session)
         assert "plans/booking-cutover" in pack.text and "Friday" in pack.text
-        assert 0 < pack.used_tokens <= pack.budget_tokens
-        assert pack.omitted == ()
-        assert catalog.called
+        assert not router.calls or all(
+            "/models/" not in str(call.request.url) for call in router.calls
+        )
 
-    async def test_what_does_not_fit_is_listed_and_counted(self, services, gateway) -> None:
-        _, router = services
-        self._catalog(router, 2000)
-        ctx = replace(context(), model=MODEL, objective="booking cut-over")
-        session = await gateway.open(ctx)
-        await _seed(session, "plans/booking-cutover", "booking cut-over " + "x" * 2000)
-        await _seed(session, "people/ines", "Ines owns the booking cut-over.")
-        pack = await _answers(gateway, context_pack_share=0.1).context_pack(session)
-        assert pack.budget_tokens == 200
-        assert pack.used_tokens <= 200
-        assert [o["ref"] for o in pack.omitted] == ["plans/booking-cutover"]
-        assert pack.omitted[0]["reason"] == "budget" and pack.omitted[0]["tokens"] > 200
-        assert "people/ines" in pack.text
-        assert "did not fit" in pack.text
-        assert cap_hit_counts()["memory.context_pack_share"] == 1
-
-    async def test_a_budget_too_small_for_anything_is_an_empty_pack_listing_all(
+    async def test_a_large_page_is_kept_whole_and_nothing_is_counted_as_left_out(
         self, services, gateway
     ) -> None:
-        _, router = services
-        self._catalog(router, 100)
-        session = await gateway.open(replace(context(), model=MODEL))
-        pack = await _answers(gateway, context_pack_share=0.1).context_pack(session)
-        assert pack.text == "" and pack.used_tokens == 0 and pack.budget_tokens == 10
-        assert [o["kind"] for o in pack.omitted] == ["header"]
-        assert cap_hit_counts()["memory.context_pack_share"] == 1
+        ctx = replace(context(), objective="booking cut-over")
+        session = await gateway.open(ctx)
+        body = "booking cut-over " + "x" * 20_000
+        await _seed(session, "plans/booking-cutover", body)
+        await _seed(session, "people/ines", "Ines owns the booking cut-over.")
+        pack = await _answers(gateway).context_pack(session)
+        assert body in pack.text
+        assert "people/ines" in pack.text
+        assert "did not fit" not in pack.text
+        assert cap_hit_counts() == {}
+
+    async def test_a_session_with_nothing_to_lead_to_gets_just_the_header(
+        self, services, gateway
+    ) -> None:
+        session = await gateway.open(context())
+        pack = await _answers(gateway).context_pack(session)
+        assert pack.text.startswith("Memory context for this session")
+        assert "##" not in pack.text
 
     async def test_changes_since_the_owners_last_session_are_listed(
         self, services, gateway
     ) -> None:
-        _, router = services
-        self._catalog(router, 200_000)
         session = await gateway.open(context())
         await _seed(session, "runbooks/deploy", "Deploy with the blue/green script.")
         since = datetime(2026, 1, 1, tzinfo=UTC)
-        session = await gateway.open(replace(context(), model=MODEL, since=since))
+        session = await gateway.open(replace(context(), since=since))
         pack = await _answers(gateway).context_pack(session)
         assert f"changed [{PROJECT}] runbooks/deploy" in pack.text
-
-    async def test_a_model_without_a_window_is_an_error_naming_the_knob(
-        self, services, gateway
-    ) -> None:
-        _, router = services
-        self._catalog(router, None)
-        session = await gateway.open(replace(context(), model=MODEL))
-        with pytest.raises(ModelCatalogError, match="context_window"):
-            await _answers(gateway).context_pack(session)
-
-    async def test_an_unknown_model_or_no_model_is_an_error(self, services, gateway) -> None:
-        _, router = services
-        router.get(f"{BIFROST}/models/{MODEL}").mock(return_value=httpx.Response(404))
-        with pytest.raises(ModelCatalogError, match="not in the Bifröst catalog"):
-            await _answers(gateway).context_pack(
-                await gateway.open(replace(context(), model=MODEL))
-            )
-        with pytest.raises(ContextPackError, match="no model"):
-            await _answers(gateway).context_pack(await gateway.open(context()))
-
-
-def test_answers_refuse_a_share_outside_0_to_1(services) -> None:
-    with pytest.raises(ValueError, match="context_pack_share"):
-        MemoryAnswers(
-            None,  # type: ignore[arg-type]
-            BifrostAnswerModel(BIFROST, timeout_seconds=1, service_auth=NoAuthHeaderAdapter()),
-            answer_model=ANSWERER,
-            retrieval_count=1,
-            context_pack_share=1.5,
-            chars_per_token=4,
-        )

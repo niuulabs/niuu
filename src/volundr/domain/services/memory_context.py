@@ -12,7 +12,7 @@ memory_write_prefixes``, set by a project owner), not the prefixes of the mounts
 attaches. A session with no project has no project layer, so ``project_memory`` is ``None``.
 
 The answer also carries what the gateway needs to build the session's context pack: the
-session's model, its objective, the project's brief and ``since`` (when this owner's previous
+session's objective, the project's brief and ``since`` (when this owner's previous
 session in the project began), and the memories attached to the launch (``attached``): the
 project's mounts, the launch spec's and the session's own, each with the access limit the
 gateway enforces. When Forge is given the gateway, those limits are the gateway's to hold, so
@@ -78,7 +78,6 @@ class SessionMemoryContext:
     project_id: UUID | None
     workflow_run_id: str | None
     project_memory: ProjectMemoryContext | None
-    model: str | None = None
     objective: str | None = None
     project_brief: str | None = None
     since: datetime | None = None
@@ -206,7 +205,6 @@ class MemoryContextService:
             project_id=None,
             workflow_run_id=str(run_id) if run_id else None,
             project_memory=None,
-            model=session.model or None,
             attached=attached_mounts(session.workload_config.get("mimir")),
         )
         if session.coordination is None:
@@ -232,7 +230,6 @@ class MemoryContextService:
             project_id=project_id,
             workflow_run_id=context.workflow_run_id,
             project_memory=ProjectMemoryContext(write_prefixes=project.memory_write_prefixes),
-            model=context.model,
             objective=session.coordination.objective or None,
             project_brief=project.brief or None,
             since=await self._previous_session_started(session, project_id, credential),

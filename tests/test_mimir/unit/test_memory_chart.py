@@ -72,7 +72,6 @@ def test_an_enabled_gateway_renders_its_systems_tenants_and_secret_mounts(
                 "systems": [{**_SYSTEM, "recallLimit": 100, "pageSize": 50}],
                 "tenants": {"acme": "acme-brain"},
                 **_STEP2,
-                "contextPackShare": 0.1,
                 "retentionDays": 7,
                 "retentionSweepSeconds": 600,
                 "orgAdminRoles": ["admin"],
@@ -84,7 +83,6 @@ def test_an_enabled_gateway_renders_its_systems_tenants_and_secret_mounts(
     assert memory["service_auth"] == _STEP2["serviceAuth"]
     assert memory["bifrost_url"] == "http://bifrost:8080"
     assert memory["ask_enabled"] is True and memory["answer_model"] == "answer-model-1"
-    assert memory["context_pack_share"] == 0.1
     assert (memory["retention_days"], memory["retention_sweep_seconds"]) == (7, 600)
     assert memory["org_admin_roles"] == ["admin"]
     assert memory["connector_service_subjects"] == ["ting"]
