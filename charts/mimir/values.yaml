@@ -325,6 +325,7 @@ config:
     #   adminTokenSecret: {name: acme-brain-admin, key: token}      # gbrain's GBRAIN_ADMIN_BOOTSTRAP_TOKEN:
     #                                       # creates each layer's gbrain source and client
     #   signingKeySecret: {name: acme-memory-seal, key: key}        # seals trust and layer
+    #     (add `create: true` to have the chart create it once and keep it)
     #   timeoutSeconds / pageSize / recallLimit / timelineLimit: optional, null = default
     systems: []
     # -- Tenant id -> the `name` of the system holding that org's layers.

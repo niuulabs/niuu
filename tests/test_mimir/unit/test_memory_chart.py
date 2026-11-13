@@ -153,3 +153,36 @@ def test_the_backend_is_still_required(tmp_path: Path) -> None:
     )
     assert rendered.returncode != 0
     assert "config.backend.mcpUrl is required" in rendered.stderr
+
+
+def _signing_secrets(docs: list[dict]) -> list[dict]:
+    return [
+        d
+        for d in docs
+        if d["kind"] == "Secret" and d["metadata"]["name"] == _SYSTEM["signingKeySecret"]["name"]
+    ]
+
+
+def test_the_chart_creates_a_signing_key_it_is_asked_to_and_keeps_it(tmp_path: Path) -> None:
+    system = {**_SYSTEM, "signingKeySecret": {**_SYSTEM["signingKeySecret"], "create": True}}
+    memory = {
+        "enabled": True,
+        "forgeBaseUrl": "http://volundr:8080",
+        "systems": [system],
+        "tenants": {"acme": "acme-brain"},
+        **_STEP2,
+    }
+    (secret,) = _signing_secrets(_docs(_helm(tmp_path, memory)))
+    assert secret["metadata"]["annotations"]["helm.sh/resource-policy"] == "keep"
+    assert len(secret["data"]["key"]) >= 64
+
+
+def test_a_named_signing_key_is_not_created_by_the_chart(tmp_path: Path) -> None:
+    memory = {
+        "enabled": True,
+        "forgeBaseUrl": "http://volundr:8080",
+        "systems": [_SYSTEM],
+        "tenants": {"acme": "acme-brain"},
+        **_STEP2,
+    }
+    assert _signing_secrets(_docs(_helm(tmp_path, memory))) == []

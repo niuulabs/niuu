@@ -14,7 +14,7 @@ data:
     : "${GBRAIN_DATABASE_URL:?Set GBRAIN_DATABASE_URL in existingSecret}"
     {{- end }}
     if [ ! -f /data/.gbrain/config.json ]; then
-      gbrain init {{ if eq .Values.engine "pglite" }}--pglite{{ else }}--non-interactive{{ end }} {{ if .Values.embedding.enabled }}--embedding-model {{ required "embedding.model is required" .Values.embedding.model | squote }} --embedding-dimensions {{ .Values.embedding.dimensions }}{{ else }}--no-embedding{{ end }}
+      gbrain init {{ if eq .Values.engine "pglite" }}--pglite{{ else }}--non-interactive{{ end }} --db-only {{ if .Values.embedding.enabled }}--embedding-model {{ required "embedding.model is required" .Values.embedding.model | squote }} --embedding-dimensions {{ .Values.embedding.dimensions }}{{ else }}--no-embedding{{ end }}
     fi
     bun -e 'const p="/data/.gbrain/config.json"; const c=await Bun.file(p).json(); const extra=await Bun.file("/etc/gbrain/config.json").json(); await Bun.write(p,JSON.stringify({...c,...extra}));'
     {{- if .Values.connection.enabled }}
