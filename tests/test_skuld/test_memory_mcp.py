@@ -463,7 +463,9 @@ class TestRoutes:
             listing = await client.get("/api/memory-mcp/tools")
         assert call.json()["isError"] is True
         assert GATEWAY in call.json()["content"][0]["text"]
-        assert "connection refused" in call.json()["content"][0]["text"]
+        # The transport's own error text stays in the broker log, not in the answer.
+        assert "could not be reached" in call.json()["content"][0]["text"]
+        assert "connection refused" not in call.json()["content"][0]["text"]
         assert listing.status_code == 502
         assert GATEWAY in listing.json()["detail"]
         assert "tools" not in listing.json()
@@ -1084,3 +1086,16 @@ class TestStdioProfile:
                     "1",
                 ]
             )
+
+
+@pytest.mark.parametrize("name", ["../tools", "memory_ask/../x", "Memory_Ask", "a" * 65, ""])
+async def test_a_tool_name_the_gateway_could_not_serve_is_refused_before_any_request(
+    name: str,
+) -> None:
+    from skuld.memory_mcp.gateway import MemoryGatewayClient, UnknownMemoryToolError
+
+    client = MemoryGatewayClient(
+        base_url="http://gateway.invalid/api/v1/mimir", token="t", timeout_s=1.0
+    )
+    with pytest.raises(UnknownMemoryToolError):
+        await client.call_tool(name, {})

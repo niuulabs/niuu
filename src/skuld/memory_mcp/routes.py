@@ -43,11 +43,12 @@ def register_memory_mcp_routes(
 
     @app.get(MEMORY_MCP_TOOLS_PATH, dependencies=list(dependencies))
     async def list_memory_mcp_tools() -> dict[str, Any]:
+        gateway = _gateway()
         try:
-            return await _gateway().list_tools()
+            return await gateway.list_tools()
         except MemoryGatewayError as exc:
             logger.error("memory-mcp: listing tools failed: %s", exc)
-            raise HTTPException(BAD_GATEWAY, str(exc)) from exc
+            raise HTTPException(BAD_GATEWAY, exc.public) from exc
 
     @app.post(MEMORY_MCP_TOOLS_PATH + "/{name}", dependencies=list(dependencies))
     async def call_memory_mcp_tool(name: str, request: Request) -> dict[str, Any]:
@@ -73,6 +74,7 @@ def register_memory_mcp_routes(
                 if isinstance(exc, MemoryCredentialRefusedError)
                 else "Memory is unavailable"
             )
-            return {"content": [{"type": "text", "text": f"{prefix}: {exc}"}], "isError": True}
+            text = f"{prefix}: {exc.public}"
+            return {"content": [{"type": "text", "text": text}], "isError": True}
         logger.info("memory-mcp: %s -> %s", safe_name, "error" if result.get("isError") else "ok")
         return result

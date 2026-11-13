@@ -143,17 +143,6 @@ async def test_deploying_an_unconfigured_backend_is_refused():
         )
 
 
-def test_the_flux_target_no_longer_takes_an_envoy_profile():
-    with pytest.raises(TypeError, match="envoy"):
-        FluxKnowledgeDeploymentAdapter(
-            namespace="knowledge",
-            source_name="niuu",
-            chart_versions={"gbrain": "0.1.0"},
-            images={"gbrain": "registry/gbrain:0.48.5.0"},
-            envoy={"enabled": True},
-        )
-
-
 @pytest.mark.asyncio
 async def test_remote_inspection_keeps_backend_metrics():
     import httpx

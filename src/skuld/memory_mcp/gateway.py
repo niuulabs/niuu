@@ -12,6 +12,7 @@ turns a failure into an empty tool list or an empty result.
 
 from __future__ import annotations
 
+import re
 import urllib.parse
 from dataclasses import dataclass
 from typing import Any
@@ -19,15 +20,27 @@ from typing import Any
 import httpx
 
 TOOLS_SEGMENT = "memory/tools"
+#: The shape of every tool name the gateway serves (memory_search, memory_ask, …). A name
+#: outside it is refused here, before any request, so nothing the agent sends shapes the
+#: gateway URL beyond one plain path segment.
+TOOL_NAME = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 CONTEXT_PACK_SEGMENT = "memory/context-pack"
 
 
 class MemoryGatewayError(Exception):
-    """The gateway could not be reached, refused the call or answered nonsense."""
+    """The gateway could not be reached, refused the call or answered nonsense.
 
-    def __init__(self, message: str, *, status: int | None = None) -> None:
+    ``public`` is what the agent is told: built from configuration, the HTTP status and the
+    gateway's own ``detail`` only. The full message, which may carry a transport
+    exception's text, goes to the broker log and never back to the caller.
+    """
+
+    def __init__(
+        self, message: str, *, status: int | None = None, public: str | None = None
+    ) -> None:
         super().__init__(message)
         self.status = status
+        self.public = message if public is None else public
 
 
 class MemoryCredentialRefusedError(MemoryGatewayError):
@@ -111,10 +124,17 @@ class MemoryGatewayClient:
                 timeout=httpx.USE_CLIENT_DEFAULT if timeout_s is None else timeout_s,
             )
         except httpx.HTTPError as exc:
+            remedy = (
+                "check memory.gateway_url (SKULD__MEMORY__GATEWAY_URL) and that the gateway "
+                "is running"
+            )
             raise MemoryGatewayError(
                 f"the memory gateway at {self._base_url} could not be reached "
-                f"({type(exc).__name__}: {exc}); check memory.gateway_url "
-                "(SKULD__MEMORY__GATEWAY_URL) and that the gateway is running"
+                f"({type(exc).__name__}: {exc}); {remedy}",
+                public=(
+                    f"the memory gateway at {self._base_url} could not be reached; {remedy}. "
+                    "The session's broker log has the details"
+                ),
             ) from exc
         if response.status_code in (401, 403):
             raise MemoryCredentialRefusedError(
@@ -135,7 +155,8 @@ class MemoryGatewayClient:
             payload = response.json()
         except ValueError as exc:
             raise MemoryGatewayError(
-                f"the memory gateway at {self._base_url} sent invalid JSON: {exc}"
+                f"the memory gateway at {self._base_url} sent invalid JSON: {exc}",
+                public=f"the memory gateway at {self._base_url} sent invalid JSON",
             ) from exc
         if not isinstance(payload, dict):
             raise MemoryGatewayError(
@@ -162,6 +183,8 @@ class MemoryGatewayClient:
 
     async def call_tool(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         """The gateway's MCP ``CallToolResult`` for one tool call."""
+        if not TOOL_NAME.fullmatch(name):
+            raise UnknownMemoryToolError(f"unknown memory tool: {name!r}", status=404)
         quoted = urllib.parse.quote(name, safe="")
         payload = await self._request(
             "POST", f"{TOOLS_SEGMENT}/{quoted}", body=arguments, tool=name
