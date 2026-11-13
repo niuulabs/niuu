@@ -152,7 +152,7 @@ class FakeSystems:
         self._backend = backend
         self._tenant = tenant
 
-    def for_tenant(self, tenant_id: str):
+    async def for_tenant(self, tenant_id: str, *, provision: bool = True):
         if tenant_id != self._tenant:
             raise TenantNotConfiguredError(f"org {tenant_id!r} has no memory system")
         return "acme-brain", self._backend

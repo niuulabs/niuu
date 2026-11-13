@@ -454,15 +454,17 @@ async def _run_mimir_ingest(
     typer.echo("The source is stored; write its wiki pages with mimir_write.")
 
 
-def _memory_system(tenant: str):
-    """The configured memory systems and the one holding *tenant*'s layers."""
-    from mimir.memory.systems import MemorySystems, TenantNotConfiguredError
+async def _memory_system(tenant: str):
+    """The memory systems and the one holding *tenant*'s layers: a configured one, or the
+    org's provisioned one. An operator command never starts provisioning."""
+    from mimir.app import build_memory_systems
+    from mimir.memory.systems import MemorySystemUnavailableError
 
-    config = MimirServiceConfig()
-    systems = MemorySystems.from_config(config.memory.systems, config.memory.tenants)
+    systems = build_memory_systems(MimirServiceConfig().memory)
     try:
-        _, backend = systems.for_tenant(tenant)
-    except TenantNotConfiguredError as exc:
+        _, backend = await systems.for_tenant(tenant, provision=False)
+    except MemorySystemUnavailableError as exc:
+        await systems.close()
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=1) from exc
     return systems, backend
@@ -500,10 +502,10 @@ def import_wiki_command(
     from niuu.domain.mimir_facts import AuthorKind, FactAuthor, FactCaller
 
     target = _target_layer(layer)
-    systems, backend = _memory_system(tenant)
     caller = FactCaller(FactAuthor(AuthorKind.OPERATOR, operator))
 
     async def _run():
+        systems, backend = await _memory_system(tenant)
         try:
             return await import_wiki(backend, root.expanduser(), target, caller)
         finally:
@@ -531,9 +533,9 @@ def list_proposals_command(
     from mimir.memory.gateway import list_proposals
 
     target = _target_layer(layer)
-    systems, backend = _memory_system(tenant)
 
     async def _run():
+        systems, backend = await _memory_system(tenant)
         try:
             return await list_proposals(backend, target, limit=limit)
         finally:

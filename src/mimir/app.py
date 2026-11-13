@@ -33,10 +33,11 @@ from identity.adapters.jwks import JwksBearerAuthenticationAdapter
 from mimir.adapters.memory_graph_rest import MemoryGraphRouter
 from mimir.adapters.memory_rest import MemoryRouter, is_session_route
 from mimir.backend import build_backend
-from mimir.config import MimirServiceConfig
+from mimir.config import MemoryGatewayConfig, MimirServiceConfig
 from mimir.facts import FactCallerResolver, FactService
 from mimir.live_activity import LiveActivityRecorder
 from mimir.mcp import MimirMcpServer
+from mimir.memory.systems import MemorySystems
 from mimir.registry import MimirRegistryStore
 from mimir.router import MimirRouter
 from niuu.domain.services.token_scope import credential_allows_route
@@ -305,11 +306,14 @@ def create_app(config: MimirServiceConfig) -> FastAPI:
     @app.get("/mimir/health", include_in_schema=False)
     @app.get("/api/v1/mimir/health", include_in_schema=False)
     async def health() -> dict[str, object]:
-        return {
+        body: dict[str, object] = {
             "status": "healthy",
             "name": config.name,
             "role": config.role,
         }
+        if memory_router is not None:
+            body["memory"] = memory_router.systems_health()
+        return body
 
     @app.get("/settings", response_model=SettingsProviderSchema)
     @app.get("/mimir/settings", response_model=SettingsProviderSchema, include_in_schema=False)
@@ -405,6 +409,58 @@ def _service_auth(spec: dict | None):
     return auth
 
 
+#: The backend of every provisioned memory system (the deployment port deploys gbrain only).
+_PROVISIONED_BACKEND = "mimir.backends.gbrain.GBrainBackend"
+
+
+def build_memory_systems(memory: MemoryGatewayConfig) -> MemorySystems:
+    """The gateway's memory systems: ``memory.systems``/``memory.tenants`` and, when
+    ``memory.provisioning`` is set, the systems it provisions per org.
+
+    Raises MimirConfigurationError when any part cannot be built.
+    """
+    from mimir.exceptions import MimirConfigurationError
+    from mimir.memory.systems import ProvisionedSystems, backend_class
+    from mimir.ports.deployment import KnowledgeDeploymentPort, MemorySystemRecord
+    from niuu.utils import import_class
+
+    provisioned = None
+    spec = memory.provisioning
+    if spec is not None:
+        where = "memory.provisioning.deployment"
+        dotted = str(spec.deployment["adapter"])
+        try:
+            target_cls = import_class(dotted)
+        except (ImportError, AttributeError, ValueError) as exc:
+            raise MimirConfigurationError(
+                f"{where} adapter {dotted!r} cannot be imported: {exc}"
+            ) from exc
+        if not isinstance(target_cls, type) or not issubclass(target_cls, KnowledgeDeploymentPort):
+            raise MimirConfigurationError(
+                f"{where} adapter {dotted!r} is not a KnowledgeDeploymentPort"
+            )
+        kwargs = {k: v for k, v in spec.deployment.items() if k != "adapter"}
+        try:
+            target = target_cls(**kwargs)
+        except (TypeError, ValueError) as exc:
+            raise MimirConfigurationError(f"{where} could not be built: {exc}") from exc
+        backend_cls = backend_class(_PROVISIONED_BACKEND, where="memory.provisioning")
+        backend_kwargs = dict(spec.backend)
+
+        def build(record: MemorySystemRecord):
+            return backend_cls(
+                record.mcp_url,
+                admin_token=record.admin_token,
+                signing_key=record.signing_key,
+                **backend_kwargs,
+            )
+
+        provisioned = ProvisionedSystems(
+            target, build=build, retry_after_seconds=spec.retry_after_seconds
+        )
+    return MemorySystems.from_config(memory.systems, memory.tenants, provisioned=provisioned)
+
+
 def _build_memory_router(
     config: MimirServiceConfig,
     *,
@@ -433,13 +489,12 @@ def _build_memory_router(
     from mimir.memory.graph import KnowledgeGraph
     from mimir.memory.readers import PersonReader
     from mimir.memory.retention import RetentionSweeper
-    from mimir.memory.systems import MemorySystems
 
     service_auth = _service_auth(memory.service_auth)
     directory = ForgeSessionDirectory(
         memory.forge_base_url, timeout_seconds=memory.forge_timeout_seconds
     )
-    systems = MemorySystems.from_config(memory.systems, memory.tenants)
+    systems = build_memory_systems(memory)
     attached = RegistryAttachedMemories(
         registry_store, platform_tenant_id=config.platform_tenant_id
     )

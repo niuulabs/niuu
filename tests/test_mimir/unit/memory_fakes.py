@@ -24,10 +24,12 @@ It is not a live gbrain: the real brain was not run for these tests.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, ClassVar
 from urllib.parse import parse_qs
 
 import httpx
@@ -37,6 +39,14 @@ import yaml
 from mimir.adapters.gbrain_layers import source_id_of
 from mimir.backends.gbrain import GBrainBackend
 from mimir.memory.models import SessionMemoryContext
+from mimir.ports.deployment import (
+    DeploymentRequest,
+    KnowledgeDeploymentPort,
+    MemoryProvisioningError,
+    MemorySystemPhase,
+    MemorySystemRecord,
+    memory_system_name,
+)
 from mimir.ports.session_directory import SessionDirectory, SessionNotConfirmedError
 
 BASE = "https://brain.test"
@@ -744,3 +754,86 @@ class FakeDirectory(SessionDirectory):
         if found is None:
             raise SessionNotConfirmedError(f"Forge answered 404 for session {session_id}")
         return found
+
+
+# ---------------------------------------------------------------------------
+# Provisioning
+# ---------------------------------------------------------------------------
+
+
+class FakeMemoryDeployment(KnowledgeDeploymentPort):
+    """A deployment target that provisions memory systems in memory.
+
+    Built by config (``memory.provisioning.deployment``) too: each instance registers
+    under its ``instance`` name so a test reaches the one the app built.
+    """
+
+    provisions_memory_systems = True
+    instances: ClassVar[dict[str, FakeMemoryDeployment]] = {}
+
+    def __init__(self, *, instance: str = "default", mcp_url: str = MCP) -> None:
+        self.mcp_url = mcp_url
+        self.records: dict[str, MemorySystemRecord] = {}
+        self.provision_calls: list[str] = []
+        self.read_calls: list[str] = []
+        self.created = 0
+        self.error = ""
+        self.gate: asyncio.Event | None = None
+        self.closed = False
+        FakeMemoryDeployment.instances[instance] = self
+
+    async def list_deployments(self, *, tenant_id: str = "") -> dict[str, Any]:
+        return {"releases": []}
+
+    async def deploy(self, request: DeploymentRequest) -> dict[str, Any]:
+        raise NotImplementedError
+
+    async def provision_memory_system(self, tenant_id: str) -> MemorySystemRecord:
+        self.provision_calls.append(tenant_id)
+        if self.gate is not None:
+            await self.gate.wait()
+        if self.error:
+            raise MemoryProvisioningError(self.error)
+        if tenant_id not in self.records:
+            self.created += 1
+            self.records[tenant_id] = MemorySystemRecord(
+                tenant_id=tenant_id,
+                name=memory_system_name(tenant_id),
+                phase=MemorySystemPhase.PREPARING,
+                message="installing",
+            )
+            return replace(self.records[tenant_id], started=True)
+        return self.records[tenant_id]
+
+    async def memory_system(self, tenant_id: str) -> MemorySystemRecord | None:
+        self.read_calls.append(tenant_id)
+        if self.error:
+            raise MemoryProvisioningError(self.error)
+        return self.records.get(tenant_id)
+
+    async def memory_systems(self) -> list[MemorySystemRecord]:
+        if self.error:
+            raise MemoryProvisioningError(self.error)
+        return list(self.records.values())
+
+    def make_ready(self, tenant_id: str, *, name: str = "") -> None:
+        self.records[tenant_id] = MemorySystemRecord(
+            tenant_id=tenant_id,
+            name=name or memory_system_name(tenant_id),
+            phase=MemorySystemPhase.READY,
+            message="ready",
+            mcp_url=self.mcp_url,
+            admin_token=ADMIN_TOKEN,
+            signing_key=SIGNING_KEY,
+        )
+
+    def make_failed(self, tenant_id: str, message: str) -> None:
+        self.records[tenant_id] = MemorySystemRecord(
+            tenant_id=tenant_id,
+            name=memory_system_name(tenant_id),
+            phase=MemorySystemPhase.FAILED,
+            message=message,
+        )
+
+    async def close(self) -> None:
+        self.closed = True

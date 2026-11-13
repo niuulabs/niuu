@@ -131,6 +131,80 @@ class MimirFactsConfig(BaseModel):
     )
 
 
+class MemoryProvisioningConfig(BaseModel):
+    """Per-org memory systems provisioned on an org's first use (``memory.provisioning``).
+
+    An org not in ``memory.tenants`` gets its own gbrain, deployed through the knowledge
+    deployment port, when a member of the org first uses memory: a session Forge
+    confirmed, or a person through their own login. A connector names the org itself and
+    never starts one. Until it answers, requests for the org get a 503 with
+    ``Retry-After`` saying its memory is being prepared.
+    """
+
+    deployment: dict[str, Any] = Field(
+        description=(
+            "The deployment target, a dynamic mimir.ports.deployment.KnowledgeDeploymentPort "
+            "adapter that provisions memory systems: {adapter: "
+            "mimir.adapters.flux.FluxKnowledgeDeploymentAdapter, namespace: memory, "
+            "source_name: niuu, chart_versions: {gbrain: ...}, images: {gbrain: ...}} on "
+            "Kubernetes, or {adapter: mimir.adapters.local.LocalKnowledgeDeploymentAdapter, "
+            "root: ..., gbrain_command: [...]} on this computer. The other keys are its "
+            "constructor arguments."
+        ),
+    )
+    retry_after_seconds: float = Field(
+        default=30.0,
+        gt=0,
+        description=(
+            "What a request for an org whose memory system is being prepared is told to wait "
+            "(its Retry-After). A deployment takes minutes on Kubernetes (a database and a "
+            "gbrain start), seconds on this computer."
+        ),
+    )
+    backend: dict[str, Any] = Field(
+        default_factory=dict,
+        description=(
+            "Extra mimir.backends.gbrain.GBrainBackend arguments for every provisioned "
+            "system (timeout_seconds, page_size, recall_limit, timeline_limit, ...). Its "
+            "mcp_url, admin token and signing key come from the deployment and cannot be "
+            "set here."
+        ),
+    )
+
+    @field_validator("deployment")
+    @classmethod
+    def _deployment_named(cls, deployment: dict[str, Any]) -> dict[str, Any]:
+        if not str(deployment.get("adapter") or "").strip():
+            raise ValueError(
+                "memory.provisioning.deployment has no 'adapter': name a "
+                "KnowledgeDeploymentPort that provisions memory systems, e.g. "
+                "mimir.adapters.flux.FluxKnowledgeDeploymentAdapter"
+            )
+        return deployment
+
+    @field_validator("backend")
+    @classmethod
+    def _backend_without_connection(cls, backend: dict[str, Any]) -> dict[str, Any]:
+        owned = sorted(
+            set(backend)
+            & {
+                "adapter",
+                "mcp_url",
+                "base_url",
+                "admin_token",
+                "admin_token_file",
+                "signing_key",
+                "signing_key_file",
+            }
+        )
+        if owned:
+            raise ValueError(
+                f"memory.provisioning.backend sets {', '.join(owned)}, which each provisioned "
+                "system's deployment supplies; remove them"
+            )
+        return backend
+
+
 class MemoryGatewayConfig(BaseModel):
     """The memory gateway (docs/design/memory): sessions' ``memory`` tools over their layers,
     the context pack, the people routes for search, proposals and promotions, and retention.
@@ -175,8 +249,17 @@ class MemoryGatewayConfig(BaseModel):
         default_factory=dict,
         description=(
             "Tenant id -> the name of the system that holds that org's layers (one memory "
-            "system per org). A session whose tenant is not listed is refused, naming this "
-            "setting."
+            "system per org). The operator's override: a listed org always uses its system. "
+            "An org not listed is refused, naming this setting, unless memory.provisioning "
+            "is set."
+        ),
+    )
+    provisioning: MemoryProvisioningConfig | None = Field(
+        default=None,
+        description=(
+            "Provision a memory system for an org that is not in `tenants` on its first use "
+            "(docs/operator/mimir.md, Provisioned memory systems). None (the default): no "
+            "provisioning, an unmapped org is refused."
         ),
     )
     default_result_count: int = Field(

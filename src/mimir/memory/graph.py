@@ -178,7 +178,7 @@ class KnowledgeGraph:
         """The graph of *layers* of org *tenant_id*: from the cache while it is fresh.
 
         Raises:
-            TenantNotConfiguredError: the org has no memory system.
+            MemorySystemUnavailableError: the org has no usable memory system.
             GraphLayerError: a layer could not be read.
         """
         key = (tenant_id, frozenset(item.layer.id for item in layers))
@@ -205,7 +205,7 @@ class KnowledgeGraph:
     # -- reads -----------------------------------------------------------
 
     async def _build(self, tenant_id: str, layers: Sequence[ReadableLayer]) -> dict[str, Any]:
-        _, backend = self._systems.for_tenant(tenant_id)
+        _, backend = await self._systems.for_tenant(tenant_id, provision=True)
         nearest = sorted(layers, key=lambda item: item.layer.distance)
 
         async def list_pages(item: ReadableLayer):

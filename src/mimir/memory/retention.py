@@ -22,7 +22,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 
 from mimir.memory.models import EPHEMERAL_LAYER_KINDS, Layer, LayerKind, MemoryStoreError
-from mimir.memory.systems import MemorySystems
+from mimir.memory.systems import MemoryProvisioningFailedError, MemorySystems
 from mimir.ports.layer_lifetimes import (
     LayerLifetimes,
     LifeState,
@@ -118,9 +118,19 @@ class RetentionSweeper:
             await asyncio.sleep(self._interval)
 
     async def sweep(self) -> list[SweepReport]:
-        """One pass over every system. A system that fails is counted and skipped."""
+        """One pass over every system, configured and provisioned. A system that fails
+        (or the provisioned list, when it cannot be read) is counted and skipped."""
         reports = []
-        for name, backend in self._systems.items():
+        systems = self._systems.items()
+        try:
+            provisioned, unusable = await self._systems.provisioned()
+        except MemoryProvisioningFailedError as exc:
+            provisioned, unusable = [], [exc]
+        systems.extend(provisioned)
+        for exc in unusable:
+            self.failed_sweeps += 1
+            record_degraded(SWEEP_PATH, f"{exc}; retrying in {self._interval:g} s")
+        for name, backend in systems:
             try:
                 reports.append(await self.sweep_system(name, backend))
             except SweepFailedError as exc:

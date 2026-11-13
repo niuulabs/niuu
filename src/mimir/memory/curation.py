@@ -158,8 +158,8 @@ class Curation:
             "approvers and owners"
         )
 
-    def _system(self, tenant_id: str) -> tuple[str, MemoryBackend]:
-        return self._gateway.systems.for_tenant(tenant_id)
+    async def _system(self, tenant_id: str) -> tuple[str, MemoryBackend]:
+        return await self._gateway.systems.for_tenant(tenant_id, provision=True)
 
     @staticmethod
     def _decider(person: Person) -> FactCaller:
@@ -172,7 +172,7 @@ class Curation:
     ) -> list[Proposal]:
         layer = self.proposal_layer(layer_id)
         await self._require_decider(person, layer)
-        system, backend = self._system(person.tenant_id)
+        system, backend = await self._system(person.tenant_id)
         try:
             return await list_proposals(backend, layer, limit=limit)
         except (MemoryBackendError, FactBackendError) as exc:
@@ -217,7 +217,7 @@ class Curation:
             layers = [(layer, name)]
         else:
             layers = await self.deciding_layers(person)
-        system, backend = self._system(person.tenant_id)
+        system, backend = await self._system(person.tenant_id)
         items: list[ReviewItem] = []
         more: list[str] = []
         for layer, _name in layers:
@@ -280,7 +280,7 @@ class Curation:
     async def approve(self, person: Person, layer_id: str, proposal_id: str) -> Decided:
         layer = self.proposal_layer(layer_id)
         await self._require_decider(person, layer)
-        system, backend = self._system(person.tenant_id)
+        system, backend = await self._system(person.tenant_id)
         proposal = await self._pending(backend, system, layer, proposal_id)
         decider = self._decider(person)
         claimed = replace(
@@ -321,7 +321,7 @@ class Curation:
             raise MemoryValidationError("rejecting a proposal needs a reason")
         layer = self.proposal_layer(layer_id)
         await self._require_decider(person, layer)
-        system, backend = self._system(person.tenant_id)
+        system, backend = await self._system(person.tenant_id)
         proposal = await self._pending(backend, system, layer, proposal_id)
         decided = replace(
             proposal,
@@ -458,7 +458,7 @@ class Curation:
             await self._people.project_role(target.key, person)
         if not refs:
             raise MemoryValidationError("name the records to promote (refs)")
-        system, backend = self._system(owned.tenant_id)
+        system, backend = await self._system(owned.tenant_id)
         drafts = [await self._promotion(backend, source, target, ref) for ref in refs]
         caller = FactCaller(FactAuthor(AuthorKind.PERSON, person.user_id))
         created: list[Proposal] = []
