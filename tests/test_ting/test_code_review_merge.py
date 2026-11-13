@@ -69,9 +69,11 @@ async def pass_both_and_approve(run: Run) -> None:
 # --- shape --------------------------------------------------------------------------
 
 
-def test_it_is_the_only_shipped_workflow_and_uses_only_the_three_shipped_personas() -> None:
-    (workflow,) = load_system_workflows()
+def test_it_is_a_shipped_workflow_and_uses_only_the_three_shipped_personas() -> None:
+    # The other shipped workflow, Memory compile, is started by Ting after a memory import.
+    workflow, memory_compile = sorted(load_system_workflows(), key=lambda item: item.name)
 
+    assert memory_compile.name == "Memory compile"
     assert workflow.name == NAME
     assert set(workflow.persona_dependencies) == MEMBERS
     assert not workflow.workflow_dependencies

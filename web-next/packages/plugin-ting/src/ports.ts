@@ -726,3 +726,32 @@ export interface ITingSettingsService {
 export interface IAuditLogService {
   listAuditEntries(filter?: AuditFilter): Promise<AuditEntry[]>;
 }
+
+/** A project's tickets brought into its memory (Ting's memory imports). */
+export interface MemoryImport {
+  id: string;
+  projectId: string;
+  connector: 'linear';
+  /** The project's team integration it reads with. */
+  connectionId: string;
+  /** The tracker's id of what it reads (a Linear project id). */
+  trackerProjectId: string;
+  compile: boolean;
+  lastRunAt: string | null;
+  lastError: string;
+}
+
+/** The service key memory imports are wired under. */
+export const MEMORY_IMPORTS_SERVICE_KEY = 'ting.memoryImports';
+
+/** A project owner's memory imports, with their own login. */
+export interface IMemoryImportsService {
+  list(projectId: string): Promise<MemoryImport[]>;
+  create(input: {
+    projectId: string;
+    connectionId: string;
+    trackerProjectId: string;
+    compile: boolean;
+  }): Promise<MemoryImport>;
+  remove(importId: string): Promise<void>;
+}

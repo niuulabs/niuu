@@ -38,6 +38,11 @@ def test_configured_adapter_must_implement_the_port():
         resolve_mimir_connection(adapter="builtins.dict", url="https://wrong-store.test")
 
 
+def test_a_connection_with_nothing_to_connect_to_is_refused():
+    with pytest.raises(ValueError, match="no adapter or url; configure its connection"):
+        resolve_mimir_connection()
+
+
 def test_registry_mount_carries_workload_auth_as_plain_kwargs():
     from mimir.domain import MimirAuth
 
@@ -83,10 +88,10 @@ def test_a_ref_with_no_connection_and_no_registry_entry_raises(tmp_path):
     from mimir.connections import resolve_mimir_registry_refs
     from mimir.registry import MimirRegistryEntry
 
-    path = _registry(tmp_path, MimirRegistryEntry(id="known", name="known", path="/k"))
+    path = _registry(tmp_path, MimirRegistryEntry(id="known", name="known", url="https://k.test"))
     refs = {"registry_refs": [{"mount_name": "lost", "registry_entry_id": "gone"}]}
 
-    with pytest.raises(ValueError, match="'gone' has no adapter, url or path.*registry.json"):
+    with pytest.raises(ValueError, match="'gone' has no adapter or url.*registry.json"):
         resolve_mimir_registry_refs(refs, registry_path=path)
     with pytest.raises(ValueError, match="none is configured: set registry_path"):
         resolve_mimir_registry_refs(refs, registry_path="")

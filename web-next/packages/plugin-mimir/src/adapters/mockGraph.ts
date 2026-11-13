@@ -2,7 +2,7 @@
  * Deterministic synthetic memory graph for the mock Mímir adapter.
  *
  * The hand-written `MOCK_PAGES` in `mock.ts` are a handful of hero pages —
- * enough to exercise pages/search/lint views, not enough to make the 3D
+ * enough to exercise pages/search views, not enough to make the 3D
  * memory scene look like a real knowledge base with hundreds of pages and
  * thousands of links. This module fills that in: a seeded, reproducible
  * population of pages spread across the mock mounts and the full memory-kind
@@ -33,8 +33,7 @@ export type MemoryKind =
   | 'directive'
   | 'preference'
   | 'goal'
-  | 'observation'
-  | 'thread';
+  | 'observation';
 
 export const ENTITY_MEMORY_KINDS: readonly MemoryKind[] = [
   'person',
@@ -53,7 +52,6 @@ export const MEMORY_KINDS: readonly MemoryKind[] = [
   'preference',
   'goal',
   'observation',
-  'thread',
 ];
 
 // ---------------------------------------------------------------------------
@@ -257,8 +255,6 @@ function titleFor(kind: MemoryKind, rng: Rng): string {
       return `Ship ${pick(rng, ADJ)} ${pick(rng, NOUN)} by Q${intBetween(rng, 1, 4)}`;
     case 'observation':
       return `${pick(rng, NOUN)} tends to drive ${pick(rng, NOUN)}`;
-    case 'thread':
-      return `Thread: ${pick(rng, NOUN)} vs ${pick(rng, NOUN)}`;
     case 'topic':
     default:
       return `${pick(rng, ADJ)} ${pick(rng, NOUN)}`;
@@ -410,7 +406,7 @@ function generateEdges(
     const reverseKey = `${target}->${source}`;
     if (seen.has(key) || seen.has(reverseKey)) return;
     seen.add(key);
-    edges.push({ source, target, type: edgeType() });
+    edges.push({ source, target, relation: edgeType() });
   }
 
   // Only synthetic nodes originate new edges — seed nodes may be targets,
@@ -435,12 +431,14 @@ function generateEdges(
   // Guarantee at least one contradiction edge even if the random roll never
   // produced one — the scene's dashed-amber styling needs a demo case.
   if (
-    !edges.some((edge) => (CONTRADICTION_EDGE_KINDS as readonly string[]).includes(edge.type ?? ''))
+    !edges.some((edge) =>
+      (CONTRADICTION_EDGE_KINDS as readonly string[]).includes(edge.relation ?? ''),
+    )
   ) {
     const a = syntheticStart < allNodes.length ? syntheticStart : 0;
     const b = allNodes.length > a + 1 ? a + 1 : 0;
     if (allNodes[a] && allNodes[b] && a !== b) {
-      edges.push({ source: allNodes[a]!.id, target: allNodes[b]!.id, type: 'contradicts' });
+      edges.push({ source: allNodes[a]!.id, target: allNodes[b]!.id, relation: 'contradicts' });
     }
   }
 

@@ -1,34 +1,25 @@
 # Mímir — the well of knowledge
 
-Mímir is the platform's compounding knowledge base: a markdown wiki that agents
-read, write, and learn from between sessions. Raw material flows in as
-immutable **sources**; agents synthesise it into **pages** whose format
-separates rewritable belief from append-only evidence; retrieval, ranking, a
-link graph, and a write-time learning loop make that knowledge findable and
-self-correcting.
+Mímir is the platform's knowledge service. Agents read, write, and ingest
+knowledge through it between sessions. Raw material flows in as immutable
+**sources**; agents synthesise it into **pages**. Mímir does not store any of
+this itself. It serves one configured **backend**, today a gbrain instance, over
+HTTP and MCP.
 
 This guide covers how it works, every way to use it, all configuration, and
-the deployment options.
+the deployment options. Where memory is going next is in
+[docs/design/memory/README.md](../design/memory/README.md).
 
 ---
 
 ## 1. The data model
 
-A Mímir store is a plain directory (default `~/.ravn/mimir`) — no database is
-the system of record, and it is deliberately **not** git-backed (history lives
-in the format instead; `git init` it yourself if you want snapshots):
+Mímir holds no knowledge on disk. The backend holds the pages and sources.
+Mímir's own state directory (`path`, default `~/.ravn/mimir`) has two things:
 
 ```
 ~/.ravn/mimir/
-  wiki/                 # the knowledge itself, one markdown file per page
-    index.md            # content catalog (maintained automatically)
-    log.md              # append-only activity log
-    entities/…          # people / projects / orgs / tech (wikilink targets)
-    technical/… etc.    # other categories
-  raw/                  # immutable ingested sources (JSON, content-hashed)
-  threads/              # work-thread state (YAML + notes)
-  evals/                # captured search queries + latest eval report
-  search.db             # disposable hybrid search index (rebuilt on startup)
+  evals/                # captured search queries and the latest eval report
   .mimir-registry.json  # known mounts (multi-Mímir federation)
 ```
 
@@ -41,106 +32,68 @@ Every page has YAML frontmatter (`type`, `confidence`, `entity_type`,
   `### Relationships` (wikilinks, optionally typed:
   `- [[acme-corp]] — rel: works_at — lead engineer`), `### Assessment`.
 - **`## Timeline`** — append-only evidence:
-  `- YYYY-MM-DD: what happened. [Source: who, where, when]`. Entries are never
-  edited or deleted; the linter (L09) detects tampering.
+  `- YYYY-MM-DD: what happened. [Source: who, where, when]`.
 
-This split is the core idea: beliefs can be rewritten as understanding
-matures, but the evidence trail — including *belief revisions* — is permanent.
+Beliefs can be rewritten as understanding matures. The evidence trail is not
+edited.
 
 ---
 
-## 2. Retrieval: what happens on a search
+## 2. Retrieval
 
-A query to `GET /mimir/search?q=…` (or `mimir_search`) runs this pipeline:
+A query to `GET /mimir/search?q=…` (or `mimir_search`) goes to the backend, and
+the backend ranks. Mímir adds no ranking of its own. With `debug=true` each
+result carries the `score` and `score_breakdown` the backend reports.
 
-1. **Hybrid index** — SQLite FTS5 (BM25) and, when an embedding model is
-   configured, a sqlite-vec KNN arm over chunk embeddings; the two rankings
-   merge via reciprocal rank fusion. Pages are chunked by `##` heading; the
-   index over-fetches `limit × overfetch_factor` candidates.
-2. **Relational arm** — entity names recognised in the query inject that
-   entity page and its 1-hop link-graph neighbourhood as candidates, even when
-   no keywords match ("who uses Mimir?" works).
-3. **Ranking boosts** (all in `RankingConfig`, all eval-validated): recency
-   decay, title match, zone weighting (compiled-truth chunks above timeline
-   evidence), page-type weights, graph entity boost. Confidence and backlink
-   boosts exist but default to neutral — the ablation showed they hurt
-   precision under hybrid retrieval.
-4. **Debug** — add `debug=true` and every result carries `score` plus a
-   per-factor `score_breakdown`.
-
-Quality is measured, not assumed: a 62-query golden set
-(`tests/test_mimir/evals/`) gates CI. Current numbers — FTS-only
-P@5 ≈ 0.46; hybrid (all-MiniLM-L6-v2) **P@5 0.976 / MRR 0.884 /
-recall@10 0.984**.
+Quality is measured against a golden set of 62 queries in
+`tests/test_mimir/evals/` (a corpus and `golden.yaml`). The eval scores a store
+that is already populated with that corpus:
 
 ```bash
-uv sync --extra embeddings        # hybrid needs sentence-transformers
-uv run python -m mimir eval                      # golden-set eval (FTS-only)
-uv run python -m mimir eval --embedding-model all-MiniLM-L6-v2
-uv run python -m mimir eval --against baseline.json --fail-on-regression
-uv run python -m mimir eval replay --capture ~/.ravn/mimir/evals/queries-2026-W24.jsonl
+uv run python -m mimir eval --backend '{"adapter": "mimir.adapters.gbrain.GBrainMimirAdapter", "mcp_url": "…", "api_token_file": "…"}'
+uv run python -m mimir eval --backend '…' --against baseline.json --fail-on-regression
+uv run python -m mimir eval replay --backend '…' --capture ~/.ravn/mimir/evals/queries-2026-W24.jsonl
 ```
 
-Without the embeddings extra everything degrades gracefully to FTS-only.
+`--backend` is required. There is no default store to score. The eval does not
+load the corpus into the store.
 
 ---
 
-## 3. The learning loop
-
-Modeled on Hindsight's retain/reflect, fully deterministic (zero LLM calls):
-
-- **Evidence-counted beliefs** — every Key Fact is scored against the page's
-  timeline entries and raw sources: a proof count and a freshness trend
-  (`new / strengthening / stable / weakening / stale`). Surface via
-  `GET /mimir/evidence?path=…`. Thresholds live in `EvidenceConfig`.
-- **Write-time consolidation ("micro-dream")** — every `ingest` finds the
-  pages the new source bears on and recomputes their evidence immediately
-  (`consolidate_on_ingest`, on by default).
-- **Belief revision with journey** — `POST /mimir/page/revise` rewrites a fact
-  in Compiled Truth *and* appends
-  `belief revised: "old" → "new". [Source: …]` to the Timeline, so "what did
-  we used to believe?" stays answerable.
-
----
-
-## 4. The Retrieval Reflex (on by default)
+## 3. The Retrieval Reflex
 
 A zero-LLM scanner runs on agent turns: capitalised names and `@handles` in
 the incoming message are matched against the Mímir entity index
 (`GET /mimir/entities/index`) and up to `max_pointers` compact pointers are
-prefixed to the turn — never page bodies:
+prefixed to the turn, never page bodies:
 
 ```
 Mimir knows (pointers only — use mimir_read for details):
 [[mimir]] (technology, high confidence, updated 2026-06-12) — mimir_read entities/mimir.md
 ```
 
-Hook point: the Skuld broker (messages forwarded to CLI agents). Per-session dedupe, ~1 ms per turn at
-1k entities, fail-open (a dead Mímir never blocks a turn). Each injection
-logs `mimir.reflex.injected session=<id> slugs=[…]` for follow-up-rate
-measurement.
+Hook point: the Skuld broker (messages forwarded to CLI agents). Per-session dedupe.
+Each injection logs `mimir.reflex.injected session=<id> slugs=[…]` for
+follow-up-rate measurement.
 
 **Base URL resolution**: explicit `reflex.base_url` → first HTTP mimir
 instance → derived from `volundr_api_url` as `{platform}/api/v1`
-(Skuld brokers get this automatically). If nothing resolves, the reflex stays
-inert with a single warning. Disable with `reflex.enabled: false`
+(Skuld brokers get this automatically). Disable with `reflex.enabled: false`
 (`SKULD__REFLEX__ENABLED=false` for brokers).
 
 ---
 
-## 5. Using Mímir
+## 4. Using Mímir
 
 ### From agents
 
 | Surface | Tools |
 |---|---|
-| **MCP** (`python -m mimir mcp --path ~/.ravn/mimir`) | `mimir_search`, `mimir_read`, `mimir_write`, `mimir_ingest`, `mimir_read_source`, `mimir_lint`, `mimir_stats`, `mimir_related` |
-| **Shell shims** (generated per Skuld session in `.skuld-tools/bin/`) | same eight commands, backed by `mimir.bridge`; work against a local path or an HTTP URL via `RAVN_MIMIR_PATH` |
-| **Tool classes** | `MimirIngestTool`, `MimirReadTool`, `MimirWriteTool`, `MimirSearchTool`, `MimirLintTool` (permission-gated: `mimir:read` / `mimir:write`) for a runtime that embeds Mímir as tools |
+| **MCP** (`python -m mimir mcp`) | `mimir_search`, `mimir_read`, `mimir_write`, `mimir_ingest`, `mimir_read_source`, `mimir_stats`, plus the `mimir_fact_*` tools |
+| **Shell shims** (generated per Skuld session in `.skuld-tools/bin/`) | `ingest`, `search`, `read`, `read-source`, `write`, `publish-artifact`, `publish-files`, `list`, backed by `mimir.bridge`; work against the Mímir named by the session's `RAVN_CONFIG` (`mimir.instances`) |
 
-`mimir_related --path entities/alice.md --depth 2 [--rel works_at]` traverses
-the wikilink graph in both directions — use it for relationship questions
-instead of keyword search.
+`python -m mimir mcp` serves the Mímir named by `RAVN_CONFIG` (`mimir.instances`),
+or the one in `--adapter-config <instance.yaml>`. It takes no `--path`.
 
 ### Over HTTP
 
@@ -148,65 +101,42 @@ Mounted at `/mimir` and `/api/v1/mimir`. Highlights:
 
 | Endpoint | Purpose |
 |---|---|
-| `GET /search?q=&debug=` · `GET /page?path=` · `PUT /page` · `POST /ingest` | core read/write |
-| `GET /related?path=&depth=&rel=` · `GET /entities/index` · `GET /graph` | link graph (traversal, reflex feed, visualiser) |
-| `GET /evidence?path=` · `POST /page/revise` | learning loop |
-| `GET /lint` · `POST /lint/fix` · `GET /doctor` · `POST /doctor/fix` | health |
+| `GET /search?q=&debug=` · `GET /page?path=` · `PUT /page` · `DELETE /page` · `POST /ingest` | core read/write |
+| `GET /sources` · `GET /source` · `GET /page/sources` · `POST /sources/ingest/url` · `POST /sources/ingest/file` | sources |
+| `GET /entities/index` · `GET /entities` · `GET /graph` | entities (reflex feed) and the link graph (visualiser) |
 | `GET /eval/latest` · `GET /eval/queries` | analytics (eval report + live query traffic) |
-| `GET /stats` · `GET /pages` · `GET /sources` · registry endpoints | catalog & federation |
+| `GET /stats` · `GET /pages` · registry endpoints | catalog & federation |
+| `GET /instances/inspect` · `/deployments` | instance inspection and knowledge deployments |
+| `GET /activity` · `GET /activity/live` | durable activity log and live read/write presence |
 
 ### From the web UI
 
-Nine tabs under the Mímir rune: **Overview** (KPIs, mounts, live activity —
-writes appear within 5 s) · **Pages** (tree + zone editor) · **Sources**
-(ingest form + raw records) · **Search** (FTS/semantic/hybrid toggle + debug
-score breakdown) · **Graph** (force-directed, degree-scaled nodes, pan/zoom) ·
-**Registry** (mount CRUD) · **Health**
-(doctor checklist + lint detail with fixes) · **Analytics** (eval metrics,
+Tabs under the Mímir rune: **Overview** (KPIs, mounts, live activity) ·
+**Pages** (tree + zone editor) · **Sources** (ingest form + raw records) ·
+**Search** (with debug score breakdown) · **Graph** (force-directed, degree-scaled
+nodes, pan/zoom) · **Registry** (mount CRUD) · **Analytics** (eval metrics,
 query traffic).
 
 ---
 
-## 6. Health: lint and doctor
-
-- **Lint (L01–L12)** — wiki hygiene: orphans, contradictions, concept gaps,
-  broken wikilinks (fuzzy auto-fix), missing attribution, thin pages, stale
-  content, timeline tampering, index drift, invalid frontmatter. Auto-fixable:
-  L05, L11, L12.
-- **Doctor (D01–D08)** — instance health: root/writability, index sync,
-  search-index consistency, embedding stack, registry mount reachability, lint
-  summary, orphaned raw sources, end-to-end smoke search.
-
-```bash
-uv run python -m mimir doctor [--path …] [--fix] [--json]   # exit 0/1/2
-```
-
-`--fix` applies only the safe subset (rebuild search index, lint auto-fixes).
-Exit codes make it cron-friendly.
-
----
-
-## 7. Configuration reference
+## 5. Configuration reference
 
 Every setting below is reachable in every deployment mode, sourced in this
 order (first wins):
 
-1. **Constructor / CLI flags** — `python -m mimir serve --embedding-model …
+1. **Constructor / CLI flags** — `python -m mimir serve --backend '{…}'
    --no-eval-capture …` (flags not given fall through)
 2. **Environment** — `MIMIR__`-prefixed with `__` nesting:
-   `MIMIR__EMBEDDING_MODEL=all-MiniLM-L6-v2`,
-   `MIMIR__RANKING__TITLE_MATCH_BOOST=1.5`, `MIMIR__EVAL_CAPTURE=false`
+   `MIMIR__BACKEND='{"adapter": "…", "mcp_url": "…"}'`, `MIMIR__EVAL_CAPTURE=false`
 3. **YAML file** — `$MIMIR_CONFIG` if set, else `./mimir.yaml` or
    `/etc/mimir/config.yaml`:
 
 ```yaml
-embedding_model: all-MiniLM-L6-v2
+backend:
+  adapter: mimir.adapters.gbrain.GBrainMimirAdapter
+  mcp_url: http://gbrain.niuu.svc.cluster.local:3131/mcp
+  api_token_file: /run/secrets/gbrain/token
 eval_capture: true
-ranking:
-  overfetch_factor: 4
-  confidence_boosts: { high: 1.15, low: 0.85 }   # opt back in if you want it
-evidence:
-  stale_after_days: 90
 ```
 
 The platform plugin constructs the config with no arguments, so env vars and
@@ -216,45 +146,32 @@ the YAML file are how you configure Mímir inside `./start-dev` / Kubernetes.
 
 | Field | Default | Notes |
 |---|---|---|
-| `path` | `~/.ravn/mimir` | store root |
+| `backend` | **required, no default** | the store this service serves: `adapter` (a fully-qualified `MimirPort` class) plus its constructor kwargs. A service with none fails at startup naming this setting |
+| `path` | `~/.ravn/mimir` | state directory: the mount registry and `evals/`. Holds no knowledge |
 | `host` / `port` | `0.0.0.0` / `7477` | standalone bind |
 | `name` / `role` | `local` / `local` | role ∈ `local` \| `shared` \| `domain` |
 | `categories` | `None` | category filter for domain-scoped instances |
 | `announce_url` | `None` | public URL of this instance; the mount registry lists it as a remote mount there |
-| `search_db` | `<path>/search.db` | disposable; safe to delete |
-| `embedding_model` | `None` | e.g. `all-MiniLM-L6-v2`; None = FTS-only |
 | `eval_capture` | **`True`** | search queries → `evals/*.jsonl` (Analytics + replay); disable for privacy-sensitive deployments |
-| `ranking` | see below | |
-| `evidence` | see below | |
+| `deployment` | `None` | dynamic knowledge deployment adapter (see §7) |
+| `facts` | `None` | typed facts (see below) |
 
-### `RankingConfig`
-
-| Field | Default | Field | Default |
-|---|---|---|---|
-| `enabled` | `True` | `zone_weights` | `{timeline: 0.9}` |
-| `overfetch_factor` | `4` | `graph_injection_base` | `0.3` |
-| `recency_half_life_days` | `90` | `graph_entity_boost` | `1.5` |
-| `recency_floor` | `0.5` | `graph_neighbor_boost` | `1.0` (neutral by ablation) |
-| `title_match_boost` | `1.25` | `confidence_boosts` | `{}` (neutral by ablation) |
-| `page_type_weights` | `{directive: 1.1, decision: 1.1}` | `backlink_alpha` | `0.0` (neutral by ablation) |
-
-Change a boost → run `uv run python scripts/mimir_ranking_ablation.py
-[--embedding-model …]` and keep only what moves P@5/MRR.
-
-### `EvidenceConfig`
-
-`min_token_overlap=2`, `weakening_after_days=60`, `stale_after_days=90`,
-`strengthening_min_proofs=3`, `consolidate_on_ingest=True`.
+`backend` for gbrain takes `mcp_url`, `api_token` or `api_token_file`,
+`ingest_url`, `timeout_seconds`, `search_limit`, `think_model` and
+`query_expansion`. Read `GBrainMimirAdapter.__init__` for their meaning.
 
 ### Reflex (`mimir.reflex` / Skuld `reflex`, env `SKULD__REFLEX__*`)
 
-`enabled=True`, `max_pointers=5`, `cache_ttl_seconds=300`,
-`timeout_seconds=5`, `base_url=""` (auto-derived; see §4).
+`enabled`, `max_pointers=5`, `cache_ttl_seconds=300`, `timeout_seconds=5`,
+`base_url=""` (auto-derived; see §3). The client `mimir.reflex` block is off
+unless you enable it. Skuld's `reflex` is on by default.
 
 ### Client-side `MimirConfig` (a host that mounts Mímir)
 
-`enabled`, `path`, `categories`, `search`, `instances` (HTTP mounts),
+`enabled`, `instances` (each a `MimirPort` adapter with kwargs, or an HTTP `url`),
 `write_routing` (prefix → mount rules), `read_retry`, and `reflex`.
+`enabled: true` with no `instances` is a configuration error, and there is no
+implicit local store.
 
 ---
 
@@ -305,37 +222,244 @@ facts:
 Omit `facts` to serve no fact tools. With `facts` set, a backend that cannot be
 built stops startup. Limits that apply are in [limits.md](limits.md).
 
-## 8. Deployment options
+## Memory gateway (`memory:`)
+
+The memory gateway serves a Forge session's `memory` tools over its layers:
+`session:<id>`, `run:<id>` when the session is a member of a workflow run,
+`project:<id>` when it has a project, `attached:<name>` for each memory its
+project or launch spec attaches, and `org`
+([design](../design/memory/README.md), steps 1 and 2). It also builds the
+launch context pack, lets people decide proposals and promote records, and
+deletes run and session layers after their retention. It is off unless
+`memory.enabled`.
+
+```yaml
+memory:
+  enabled: true
+  forge_base_url: http://volundr:8080        # asked about the session on every call
+  forge_timeout_seconds: 10
+  systems:                                   # one gbrain per org
+    - name: acme-brain
+      adapter: mimir.backends.gbrain.GBrainBackend
+      mcp_url: http://acme-brain:3131/mcp
+      admin_token_file: /etc/mimir-memory/acme-brain/admin-token  # gbrain GBRAIN_ADMIN_BOOTSTRAP_TOKEN
+      signing_key_file: /etc/mimir-memory/acme-brain/signing-key
+  tenants:
+    acme: acme-brain                         # tenant id -> system name
+  service_auth:                              # the gateway as a service (Forge)
+    adapter: niuu.adapters.outbound.http_auth.FileBearerTokenAuthAdapter
+    token_file: /var/run/secrets/memory/token
+  retention_days: 14
+  retention_sweep_seconds: 3600
+  org_admin_roles: [volundr:admin]
+  connector_service_subjects: [ting]         # who may write connector sources
+```
+
+Each layer is its own gbrain source (`org`, and `p-`/`r-`/`s-` plus a hash of the
+layer for projects, runs and sessions), written through its own gbrain client
+(`mimir-layer-<layer>`, client credentials bound to that source). The gateway creates
+both on a layer's first write with gbrain's owner bootstrap token and keeps no layer
+secret: any replica recovers the same client from gbrain. Deleting a layer removes its
+source and revokes its client. gbrain must allow `sources_add` over MCP (no managed
+persistence). Search sends one `query` per layer source and caps nothing: gbrain's own
+`search.searchLimit` decides how many hits each layer returns. People search with
+`GET …/memory/search?q=…[&project_id=…]`.
+
+In the chart these come from `config.memory` (`forgeBaseUrl`, `systems[]` with
+`mcpUrl`, `adminTokenSecret`, `signingKeySecret`, `tenants`, `serviceAuth`,
+`retentionDays`,
+`retentionSweepSeconds`, `orgAdminRoles`, `connectorServiceSubjects` and the optional
+timeouts); each
+system's two secrets are mounted under `/etc/mimir-memory/<name>/`. The chart
+renders `serviceAuth` as given and does not project a ServiceAccount token, so
+mount whatever the chosen adapter reads. In mini mode without auth use
+`niuu.adapters.outbound.http_auth.NoAuthHeaderAdapter`. Startup fails on a system
+that cannot be built, a tenant naming a missing system, a system lacking a
+capability its layers need, and a missing `service_auth`. A session whose org is not in
+`tenants` gets a 503 naming `memory.tenants`.
+
+**Session routes.** `GET {base}/memory/tools` (instructions and tool
+definitions), `POST {base}/memory/tools/{name}` (one call, an MCP
+`CallToolResult`) and `GET {base}/memory/context-pack`, on `/mimir` and
+`/api/v1/mimir`. The caller sends the session's `forge_session` credential; the
+gateway reads `workload_session_id` from it and asks Forge
+(`GET /api/v1/forge/sessions/{id}/memory-context`, scope `forge:memory`) with
+the same token. Anything but Forge's 200 is a 401, so a person's login is
+refused here. Mímir's own identity checks skip exactly these three routes and
+nothing else.
+
+**No model-written answers.** The gateway never writes an answer with a model.
+Each memory system (gbrain) has its own search and synthesis; Niuu searches every
+system that holds one of the reader's layers and collates the hits. The agent tool
+`memory_search` and the people route `GET {base}/memory/search` (below) do that.
+
+**Context pack.** Unbudgeted: it holds everything it selects, and the answer is
+`{"text": "..."}`. That is the pages the session's objective and project brief
+lead to, layer by layer, with their current facts, then the pages and facts
+changed in the project and org layers since the owner's previous session in the
+project.
+
+**People routes.** A person's own login, through Mímir's identity adapter (in
+mini mode without auth, the configured dev principal); a session or workload
+credential is a 403. Forge is asked with the person's own `Authorization`.
+
+- `GET {base}/memory/search?q=<text>[&project_id=<id>]` — searches the layers the
+  person reads in every memory system that holds one: the org and every project they
+  are on, or, with `project_id`, that project, the memories it attaches and the org (a
+  project they are not on is a 404). The answer is `{"query": ..., "hits": [{"layer":
+  "project:<id>", "layer_name": "...", "kind": "page"|"source", "ref": ..., "title": ...,
+  "snippet": ...}]}` in the gateway's order (each system ranks its own hits; they are
+  interleaved by rank). A source's `ref` is `source:<id>`. The route takes no limit and
+  adds no cap: it returns every hit the memory systems return. A blank `q` is a 422.
+- `GET {base}/memory/proposals?layer=project:<id>|org[&limit=n]` — pending
+  proposals, for a project member with role `approver` or `owner` (Forge
+  `GET /api/v1/forge/projects/{id}/role`; tenant admins are owners) or, for the
+  org, a holder of one of `org_admin_roles`. Other members get 403, a non-member
+  404. Every pending proposal is returned unless the caller names a `limit`.
+- `GET {base}/memory/review[?layer=...][&limit=n]` — every proposal waiting on the person,
+  oldest first, across the layers they decide (or one `layer`). With a `limit`, each layer
+  is read up to it and `more` names the layers that reached it; without one, `more` is
+  empty.
+- `POST {base}/memory/proposals/{id}/approve` `{"layer": ...}` — applies the
+  change at `operator` trust as the approver, with the proposal's evidence plus
+  `proposal:<layer>/<id>`, whose record names the proposer. A change that no
+  longer applies (the page moved on, a person-level fact) is a 409 and the
+  proposal stays pending.
+- `POST {base}/memory/proposals/{id}/reject` `{"layer": ..., "reason": ...}` —
+  records the reason.
+- `POST {base}/memory/promotions`
+  `{"from": "session:<id>|run:<id>", "refs": [...], "to": "project:<id>|org"}` —
+  proposes those records to the target; only the session's owner (Forge
+  `GET /api/v1/forge/sessions/{id}`) or the run's owner
+  (`GET /api/v1/forge/memory/runs/{id}`) may. Returns the proposals created.
+
+Decided proposals move from `l/_proposals/<layer>/` to `l/_decided/<layer>/` and
+stay there, so the evidence reference resolves.
+
+**Knowledge graph.** `GET {base}/memory/graph[?layers=org,project:<id>]` is the
+graph behind the 3D memory scene. It is a people route (a person's own login; session,
+workload and connector credentials get 403), and it covers the layers that person can
+read: the org layer and every project Forge lists for them (`GET /api/v1/forge/projects`
+with their own `Authorization`, which returns member projects only). There is no person
+layer yet. `?layers=` narrows to a subset of those and never widens: a layer they cannot
+read is a 404. The answer is `{layers, nodes, edges, unresolved}`. Nodes are the pages of
+those layers (`id` is `<layer>/<path>`, `kind` is `decision|person|service|ticket|runbook|page`
+from the page type or first folder, `summary` the first sentence of the compiled truth,
+`first_seen` / `changed_at` the oldest and newest timeline row) and the sources their
+timelines cite (`<layer>/_sources/<id>`, kind `ticket` or `source`). Edges are read from
+page text, never from gbrain's links: `[[slug]] — rel: <verb> — …` is a `<verb>` edge, any
+other `[[slug]]` is `mentions`, and a timeline row citing `source:<id>` is a `cites` edge
+dated by the row (`since`; a link's `since` is the oldest timeline row that links it, else
+null). A link resolves to the nearest readable layer holding the page (its own layer, then
+project, then org); a link to no readable page is listed under `unresolved`, not drawn.
+A layer that cannot be read fails the whole response (502 naming the layer). Every page
+and source of each layer is read; the graph has no record cap. Reads run `memory.graph_concurrency` (default 8) at a time,
+and a graph is kept per org and layer set for `memory.graph_cache_seconds` (default 30,
+the most a graph may be stale; 0 rebuilds every time). In the chart: `graphCacheSeconds`,
+`graphConcurrency`.
+
+**Connector route.** `POST {base}/memory/sources` lets an import service (Ting's
+Linear import) keep what it fetched as an immutable source. Only a platform
+service credential is admitted: a verified workload-identity token, unscoped,
+whose actor (`act.sub`) is one of `memory.connector_service_subjects` (empty
+admits nobody and the 403 names the setting). People, session credentials,
+scoped tokens and other services get 403, and a connector credential is
+refused on the session and people routes. With the allow-all identity of local
+mini mode nothing verifies callers, so the local caller passes, still never
+with a session or scoped credential. The body is `{tenant_id, layer, connector,
+external_id, title, content, kind, origin_url, fetched_at, upstream_updated_at}`
+(all required; the two times are ISO 8601). `layer` is `project:<id>` or `org`,
+anything else is a 400, and the org must be in `memory.tenants` (503 naming it
+otherwise). The source is written at `tool` trust, author `tool:<connector>`,
+evidence `url:<origin_url>`. A source is named by its content, so the same
+content already in that layer answers `new: false` and a ticket that changed
+(a new comment) is a new source beside the old one. The answer is
+`{"source_id", "layer", "new"}`. Each write is logged and counted as
+`memory.connector.sources{connector,new}`; `external_id` and the two times are
+logged, not stored.
+
+**Attached layers.** Each attachment Forge names (`registry_entry_id`) is opened
+from this gateway's own mount registry for the session's org: an entry of that
+org, or a global entry when the org is the platform's own. A disabled or missing
+entry fails the session's calls naming the layer. An attached store holds pages
+only, reads as unattested (it has no sealed attribution), and takes writes only
+as the attachment says: `read` refuses every write, `read_write` takes pages and
+timeline rows under its write prefixes and refuses the rest. Nothing written to
+an attached layer becomes a proposal. Every write adds a timeline row naming
+its author, trust and evidence.
+
+**Retention.** Every `retention_sweep_seconds` the gateway lists each system's
+namespaces, asks Forge (`POST /api/v1/forge/memory/ended`, as the service) which
+of their sessions and runs are active, ended (and when) or gone, and deletes the
+run and session layers (with their proposal namespaces) that ended
+`retention_days` ago or that Forge no longer knows. A sweep that cannot ask
+Forge or list a system deletes nothing there, logs at error, is counted as
+`memory.retention_sweep` on the degraded counter, and runs again next interval.
+
+**Write rules.** An agent writes the session layer, and the run layer of a run
+its session is a member of; writes project pages and timeline rows only under
+the project's write prefixes; everything else for the project, and everything
+for the org, is recorded as a proposal for the layer's owner. Attached layers
+follow their attachment (above). A refused write (a layer the session does not have, tool output as a
+source, a proposal for something it may write, a fact replacing one in another
+layer) is a tool error naming the rule and is counted as
+`memory.write_rules.<rule>` on the cap counter. Sessions write at `agent` trust.
+
+**On gbrain**, each layer is a slug namespace in the org's one source
+(`l/org/…`, `l/project-<id>/…`, `l/session-<id>/…`), proposals are pages under
+`l/_proposals/<layer>/<id>`, and every page, timeline row, source and fact
+carries its author, trust, evidence and layer sealed with `signing_key_file`. A
+record written to gbrain directly reads as unattested, at the lowest trust; a
+fact without a seal belongs to no layer and is never returned. `think` is never
+called. Reads page through gbrain with `offset` until the caller's count is met;
+`recall_limit` (gbrain's 100 rows per call) and `timeline_limit` are reported
+and counted when reached (`memory.systems[].recall_limit`, `.timeline_limit`).
+
+**Operator commands.**
+
+```bash
+# Import a retired Markdown wiki (wiki/, raw/) into a layer at operator trust.
+python -m mimir import-wiki --root /data/old-wiki --tenant acme --layer project:<id> --operator jozef
+# Pending proposals for a layer (decide them with the people routes above).
+python -m mimir list-proposals --tenant acme --layer org --limit 50
+```
+
+The import stops at the first page it cannot import, naming the file; files
+that are not pages and tool-output sources are listed as not imported. Running
+it again skips pages already imported unchanged.
+
+## 6. Deployment options
 
 1. **Inside the platform (default)** — the `mimir` plugin mounts on the niuu
-   host at `/api/v1/mimir`; `./start-dev` gives you everything locally.
-2. **Standalone service** — `python -m mimir serve --path … --port 7477
+   host at `/api/v1/mimir`. It needs `MIMIR__BACKEND` (or `backend:` in the
+   config file) like any other Mímir.
+2. **Standalone service** — `python -m mimir serve --backend '{…}' --port 7477
    [--name shared --role shared --announce-url https://…]`; announces itself
    on Sleipnir for discovery when a URL is given.
 3. **MCP stdio** — `python -m mimir mcp` for Claude Code / Codex without any
    running service (configure in `.mcp.json`).
-4. **Kubernetes** — Helm chart at `charts/niuu/charts/mimir-*.tgz`
-   (Deployment, PVC, Ingress, HPA).
+4. **Kubernetes** — Helm chart at `charts/mimir` (also a dependency of
+   `charts/niuu`). It renders the required backend from
+   `config.backend.mcpUrl` and `config.backend.apiTokenSecret`, and refuses to
+   render without them. The chart's PVC holds only the state directory.
 5. **Federation (multi-mount)** — several Mímirs (e.g. `local` + team
    `shared` + a `domain` instance scoped to categories) registered in
    `.mimir-registry.json`; reads merge across mounts by priority, writes route
    by path prefix (`write_routing`), discovery via the registry API. Auth:
    bearer token in dev, SPIFFE-ready (`auth_ref`) for production.
 
-**Backup** = copy the directory. `search.db` and the link graph are derived
-state; the markdown + `raw/` JSON are the only things that matter.
+**Backup** = back up the backend (gbrain's PGlite directory or PostgreSQL
+database). Mímir's state directory holds only the registry and eval captures.
 
 ---
 
-## 9. Operational runbook
+## 7. Operational runbook
 
 | Situation | Do |
 |---|---|
 | Search results look wrong | `GET /search?q=…&debug=true` and read the breakdown; check Analytics zero-result list |
-| Anything feels off | `python -m mimir doctor` → `--fix` for the safe repairs |
-| Changed ranking/search code | `python -m mimir eval --against tests/test_mimir/evals/baseline.json --fail-on-regression` (CI enforces this) |
-| Improved retrieval intentionally | refresh the baseline: `python -m mimir eval --json --out tests/test_mimir/evals/baseline.json` |
-| Index corruption suspected | delete `search.db`; it rebuilds on startup |
+| Service will not start | Read the error: it names `MIMIR__BACKEND` (or `--backend`) when no store is set, or the adapter that could not be built |
+| Changed the backend or its retrieval settings | `python -m mimir eval --backend '{…}' --against tests/test_mimir/evals/baseline.json` against a store loaded with the golden corpus |
 | Want reflex off for a session | `SKULD__REFLEX__ENABLED=false` (broker) / `mimir.reflex.enabled: false` (client config) |
 | Measuring reflex usefulness | grep logs for `mimir.reflex.injected`, correlate with subsequent `mimir_read` calls |
 
@@ -343,7 +467,7 @@ state; the markdown + `raw/` JSON are the only things that matter.
 
 The Graph view projects stored pages into a shared contract via `MimirPort.get_graph()`.
 Nodes carry an opaque ID, original page path, mount, title, summary, category, and kind.
-Kind uses the stored entity subtype or page type (otherwise `thread` or `page`);
+Kind uses the stored entity subtype or page type (otherwise `page`);
 category retains organizational labels such as `research`, `concepts`, or `notes`.
 The all-mounts view keeps pages with identical paths in separate mounts distinct.
 
@@ -366,20 +490,18 @@ frontmatter. This exposes stored links rather than a native gbrain vector/graph
 index. Indexed adapters can override `get_graph()` with the same contract. Large
 remote corpora incur one page read per listed page; the current browser layout uses
 quadratic pairwise repulsion. Bulk extraction and an indexed worker layout are the
-upgrade paths when corpus size makes those costs material. WikiLLM has no adapter
-in this checkout; a future adapter can implement the same port.
+upgrade paths when corpus size makes those costs material.
 
 ### Instance inspection and Flux deployment
 
-Analytics includes a mount-scoped inspection section. Markdown Mimir reports
-page/source counts and its recorded write/lint timestamps. gbrain reports its
+Analytics includes a mount-scoped inspection section. gbrain reports its
 HTTP health, version, storage engine, and page/category counts. Unreported fields
 are displayed as unavailable; the MCP adapter does not currently retrieve
 embedding coverage or synthesis history. This does not imply
-those activities have never happened. WikiLLM adapters without an inspection
-implementation report the capability as unsupported.
+those activities have never happened. An adapter without an inspection
+implementation reports the capability as unsupported.
 
-Registry can request new `mimir` and `gbrain` Helm releases through
+Registry can request new `gbrain` Helm releases through
 `mimir.adapters.flux.FluxKnowledgeDeploymentAdapter`. Configure the dynamic
 `deployment` map in Mimir service configuration (or `knowledgeDeployment` in the
 Mimir chart) with these constructor arguments:
@@ -387,8 +509,8 @@ Mimir chart) with these constructor arguments:
 - `adapter`: `mimir.adapters.flux.FluxKnowledgeDeploymentAdapter`
 - `namespace`: the pre-existing namespace receiving HelmRelease objects
 - `source_name` and optional `source_namespace`: the existing Flux HelmRepository
-- `chart_versions`: mapping from enabled backend names to published chart versions
-- `images`: mapping from enabled backend names to full image references with tags
+- `chart_versions`: mapping from `gbrain` to its published chart version
+- `images`: mapping from `gbrain` to its full image reference with tag
 - `cluster`: display name for the configured cluster
 - `in_cluster`: defaults to true; local operators can explicitly set false and
   supply `kube_context` to select a configured kubeconfig context
@@ -405,7 +527,8 @@ The form creates a release and polls its actual Flux conditions. It does not
 claim readiness while the observed generation is stale. gbrain is always created
 with external PostgreSQL; the operator-provisioned Secret must contain
 `GBRAIN_DATABASE_URL` and `GBRAIN_ADMIN_BOOTSTRAP_TOKEN`. PostgreSQL itself is not
-provisioned by this flow. Mimir keeps its existing Markdown/PVC storage model.
+provisioned by this flow. `gbrain` is the only backend a deployment target
+creates.
 
 Deployment and attachment are separate: after readiness, connect the new backend
 as a mount using its appropriate adapter and scoped credentials. The flow does

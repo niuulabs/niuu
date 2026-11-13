@@ -6,7 +6,7 @@
  * the scene's `answers` prop.
  */
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { useMemorySearch, usePagesForPaths, useEvidenceForPaths } from './useMemory';
+import { useMemorySearch, usePagesForPaths } from './useMemory';
 import { quoteKeyFacts, type QuotedFact } from '../domain/quoteFacts';
 import { nodeIndex } from '../domain/graphIndex';
 import type { MimirGraph } from '../domain/api-types';
@@ -59,14 +59,13 @@ export function useMemoryAsk(
   const topPaths = useMemo(() => rows.slice(0, MAX_ANSWER_PAGES).map((r) => r.path), [rows]);
 
   const pagesByPath = usePagesForPaths(topPaths, mountName);
-  const { byPath: evidenceByPath } = useEvidenceForPaths(topPaths);
 
   const pages = useMemo<Page[]>(
     () => topPaths.map((p) => pagesByPath.get(p)).filter((p): p is Page => Boolean(p)),
     [topPaths, pagesByPath],
   );
 
-  const quoted = useMemo(() => quoteKeyFacts(pages, evidenceByPath), [pages, evidenceByPath]);
+  const quoted = useMemo(() => quoteKeyFacts(pages), [pages]);
 
   const index = useMemo(() => nodeIndex(graph), [graph]);
   const answers = useMemo<AskAnswer[]>(() => {

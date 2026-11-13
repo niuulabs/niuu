@@ -1326,6 +1326,55 @@ class WorkflowStepsConfig(BaseModel):
     )
 
 
+class MemoryImportsConfig(BaseModel):
+    """Connectors that import a project's tickets into its memory, and compile them."""
+
+    enabled: bool = Field(
+        default=False,
+        description=(
+            "Serve the memory import routes (/api/v1/ting/memory/imports) and run the import "
+            "loop. Off by default: an import also needs the memory gateway, so with this on "
+            "gateway_url is required and Ting does not start without it."
+        ),
+    )
+    gateway_url: str = Field(
+        default="",
+        description=(
+            "The Mimir API prefix the memory gateway's connector route lives under, for "
+            "example http://mimir:8080/api/v1/mimir (Ting posts to {gateway_url}/memory/sources). "
+            "Required when enabled."
+        ),
+    )
+    gateway_auth: HttpAuthAdapterConfig = Field(
+        default_factory=HttpAuthAdapterConfig,
+        description=(
+            "Credential Ting presents to the memory gateway when it writes a source. The "
+            "gateway admits only a platform service whose subject is in "
+            "memory.connector_service_subjects, so production uses "
+            "WorkloadIdentityBearerTokenAuthAdapter with audience mimir for the ting workload; "
+            "with the allow-all identity of local mini mode, no credential is needed."
+        ),
+    )
+    gateway_timeout_seconds: float = Field(
+        default=30.0,
+        gt=0.0,
+        description=(
+            "Seconds the memory gateway has to accept one source. Real bound: a source is one "
+            "database write behind one HTTP request; a slower answer is a gateway fault, so the "
+            "run fails, records last_error and the import runs again next interval."
+        ),
+    )
+    poll_seconds: float = Field(
+        default=300.0,
+        gt=0.0,
+        description=(
+            "Seconds between runs of every import: the import's schedule. It is when to look "
+            "again, never a cap on what a run reads: a run reads every ticket changed since its "
+            "cursor. Real bound: how stale a project's memory may be behind its tracker."
+        ),
+    )
+
+
 class Settings(BaseSettings):
     """Application settings.
 
@@ -1431,6 +1480,7 @@ class Settings(BaseSettings):
     review_widgets: ReviewWidgetsConfig = Field(default_factory=ReviewWidgetsConfig)
     workflow_execution: WorkflowExecutionConfig = Field(default_factory=WorkflowExecutionConfig)
     workflow_steps: WorkflowStepsConfig = Field(default_factory=WorkflowStepsConfig)
+    memory_imports: MemoryImportsConfig = Field(default_factory=MemoryImportsConfig)
     telegram: TelegramConfig = Field(default_factory=TelegramConfig)
     webhook: WebhookConfig = Field(default_factory=WebhookConfig)
     notification: NotificationConfig = Field(default_factory=NotificationConfig)

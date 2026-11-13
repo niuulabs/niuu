@@ -1,25 +1,21 @@
 #!/usr/bin/env python3
-"""Score gbrain and Mímir on the same golden set (NIU-1133).
+"""Score gbrain on the golden set (NIU-1133).
 
-The question this answers is narrow and falsifiable: **does gbrain's retrieval
-beat Mímir's on our own corpus?** Both stores are handed the same pages, asked
-the same queries, and scored by the same code (``mimir.eval.evaluate_adapter``),
-so any metric difference is a retrieval difference.
+The question this answers is narrow and falsifiable: **how well does gbrain's
+retrieval do on our own corpus?** The corpus is written into the brain, every
+golden query is asked, and the answers are scored by
+``mimir.eval.evaluate_adapter`` (P@5, recall@10, MRR). Compare two brains by
+running this twice and diffing the ``--out`` reports with
+``python -m mimir eval --against``.
 
-Synthesis (``--think``) is not a comparison — Mímir has no counterpart. Both
-``MimirPort`` implementations return ``answer=""`` and ``src/mimir/`` contains
-no model at all, because Mímir's synthesis is precomputed: a Ravn writes the
-Compiled Truth zone using the Ravn's own model. ``--think`` exists so the
-capability can be looked at before anyone decides whether we want it.
+``--think`` scores gbrain's synthesis (a composed answer with citations) on the
+pages it cites. It is not a retrieval comparison; it exists so the capability
+can be looked at before anyone decides whether we want it.
 
 Usage::
 
-    # gbrain vs Mímir-with-embeddings, side by side
     uv run python scripts/gbrain_bakeoff.py \\
-        --mcp-url http://127.0.0.1:3141/mcp --token "$GBRAIN_TOKEN" \\
-        --baseline \\
-        --embedding-model Qwen/Qwen3-Embedding-0.6B \\
-        --embedding-base-url https://qwen3-embedding-vllm.valaskjalf.asgard.niuu.world/v1
+        --mcp-url http://127.0.0.1:3141/mcp --token "$GBRAIN_TOKEN" --out report.json
 
     # show what gbrain's synthesis produces, on our own vLLM
     uv run python scripts/gbrain_bakeoff.py \\
@@ -60,14 +56,12 @@ from mimir.eval import (  # noqa: E402
     EvalReport,
     GoldenQuery,
     QueryEval,
-    compare_reports,
     evaluate_adapter,
     load_golden_set,
     mrr,
     normalise_path,
     precision_at_k,
     recall_at_k,
-    run_eval,
     validate_golden_paths,
 )
 
@@ -90,11 +84,8 @@ async def ingest_corpus(adapter: GBrainMimirAdapter, corpus_dir: Path) -> int:
 async def eval_synthesis(args: argparse.Namespace, queries: list[GoldenQuery]) -> None:
     """Score gbrain's composed answers against the golden set.
 
-    Mímir has no synthesis to compare against — both ``MimirPort``
-    implementations return ``answer=""`` and ``src/mimir/`` holds no model at
-    all — so this is not a bake-off. It measures gbrain's ``think`` on its own
-    terms, against the one label we already have: which pages *should* answer
-    each question.
+    It measures gbrain's ``think`` on its own terms, against the one label we
+    already have: which pages *should* answer each question.
 
     What is measured is **citation accuracy**, not prose quality: of the pages
     ``think`` cites, how many are the ones the golden set names. That is
@@ -169,9 +160,7 @@ async def eval_synthesis(args: argparse.Namespace, queries: list[GoldenQuery]) -
         await adapter.close()
 
     print("\n=== think: citation accuracy against the golden set ===")
-    report = EvalReport(
-        generated_at="", corpus=str(args.corpus), embedding_model=args.think_model, queries=scored
-    )
+    report = EvalReport(generated_at="", corpus=str(args.corpus), queries=scored)
     print(report.format_text())
     attempted = len(sample)
     print(f"\n  synthesis succeeded : {len(scored)}/{attempted}")
@@ -204,7 +193,6 @@ async def score_gbrain(
             adapter,
             queries,
             corpus=str(args.corpus),
-            embedding_model="gbrain (built-in)",
         )
     finally:
         await adapter.close()
@@ -252,14 +240,6 @@ async def main() -> int:
         action="store_true",
         help="the brain already holds the corpus; only run the queries",
     )
-    parser.add_argument(
-        "--baseline",
-        action="store_true",
-        help="also score Mímir on the same golden set and diff the two",
-    )
-    parser.add_argument("--embedding-model", default=None, help="baseline embedding model")
-    parser.add_argument("--embedding-base-url", default="", help="baseline embedding endpoint")
-    parser.add_argument("--embedding-api-key", default="")
     parser.add_argument("--out", type=Path, default=None, help="write the gbrain report as JSON")
     args = parser.parse_args()
 
@@ -280,20 +260,6 @@ async def main() -> int:
     if args.out is not None:
         args.out.write_text(json.dumps(gbrain_report.to_dict(), indent=2), encoding="utf-8")
 
-    if not args.baseline:
-        return 0
-
-    mimir_report = await run_eval(
-        args.corpus,
-        args.golden,
-        embedding_model=args.embedding_model,
-        embedding_base_url=args.embedding_base_url,
-        embedding_api_key=args.embedding_api_key,
-    )
-    print("\n=== Mímir ===")
-    print(mimir_report.format_text())
-    print("\n=== gbrain vs Mímir (positive = gbrain ahead) ===")
-    print(compare_reports(gbrain_report, mimir_report).format_text())
     return 0
 
 

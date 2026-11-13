@@ -122,7 +122,9 @@ def create_project_memory(
     directory = directory_class(**kwargs)
     if not isinstance(directory, MemoryMountDirectory):
         raise TypeError("projects.memory.directory_adapter must implement MemoryMountDirectory")
-    return repository, ProjectMemoryResolver(repository, directory)
+    return repository, ProjectMemoryResolver(
+        repository, directory, gateway_holds_limits=bool(settings.memory.gateway_url)
+    )
 
 
 def _create_forge_session_tokens(
@@ -392,6 +394,46 @@ def require_presented_file_uploads(
         "credential: enable forge_mcp.session_tokens and, for pod managers that do not "
         "deliver it themselves (Flux, Kubernetes), set "
         "forge_mcp.session_tokens.projection_adapter"
+    )
+
+
+def require_memory_credentials(settings: Settings, *, delivers_session_credential: bool) -> None:
+    """Refuse a memory gateway that no session broker could authenticate to.
+
+    A session's memory server calls the gateway with the session's own Forge credential
+    (scope ``forge:memory``), which the gateway checks with Forge. Sessions that hold no
+    credential would start a memory server that every call of fails, so the combination is
+    refused at startup. So is a Forge that verifies its callers but cannot tell which one is
+    the gateway (``memory.gateway_service_subject``): the retention sweep would be refused.
+    """
+    if not settings.memory.gateway_url:
+        return
+    if (
+        settings.identity.adapter not in ALLOW_ALL_IDENTITY_ADAPTERS
+        and not settings.memory.gateway_service_subject
+    ):
+        raise RuntimeError(
+            "memory.gateway_url is set, but memory.gateway_service_subject is empty: only "
+            "the memory gateway's own service credential may tell Forge when run and session "
+            "layers ended (POST /api/v1/forge/memory/ended), and Forge cannot tell which "
+            "caller that is. Set it to the gateway's workload subject (for example "
+            "system:serviceaccount:niuu:mimir), or clear memory.gateway_url to run sessions "
+            "without a memory server"
+        )
+    if not settings.forge_mcp.session_tokens.enabled:
+        raise RuntimeError(
+            "memory.gateway_url is set, but forge_mcp.session_tokens.enabled is false: the "
+            "memory server authenticates to the gateway with the session's Forge credential. "
+            "Enable forge_mcp.session_tokens, or clear memory.gateway_url to run sessions "
+            "without a memory server"
+        )
+    if delivers_session_credential:
+        return
+    raise RuntimeError(
+        "memory.gateway_url is set, but this pod manager does not hand session brokers "
+        "their Forge credential. For pod managers that do not deliver it themselves (Flux, "
+        "Kubernetes) set forge_mcp.session_tokens.projection_adapter, or clear "
+        "memory.gateway_url to run sessions without a memory server"
     )
 
 
@@ -985,6 +1027,15 @@ def _create_contributors(
         )
         logger.info("Session contributor: model_gateway (auto-wired)")
 
+    # Every session runs Skuld's memory server when Forge is given the memory gateway.
+    if not _has_contributor("memory_server") and settings.memory.gateway_url:
+        from volundr.adapters.outbound.contributors.memory_server import (
+            MemoryServerContributor,
+        )
+
+        contributors.append(MemoryServerContributor(gateway_url=settings.memory.gateway_url))
+        logger.info("Session contributor: memory_server (auto-wired)")
+
     # Auto-wire LocalMountContributor from local_mounts config
     lm = settings.local_mounts
     local_mount_contributor = LocalMountContributor(
@@ -1021,7 +1072,9 @@ def _create_contributors(
     from volundr.adapters.outbound.contributors.session_mcp import SessionMCPContributor
 
     if not _has_contributor("session_mcp"):
-        contributors.append(SessionMCPContributor(**ports))
+        contributors.append(
+            SessionMCPContributor(memory_gateway_url=settings.memory.gateway_url, **ports)
+        )
         logger.info("Session contributor: session_mcp (auto-wired)")
 
     return contributors

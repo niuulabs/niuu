@@ -9,15 +9,7 @@ const ENTITY_LEAF_KINDS = [
   'organization',
   'strategy',
 ];
-const DIRECT_LEAF_KINDS = [
-  'topic',
-  'decision',
-  'directive',
-  'preference',
-  'goal',
-  'observation',
-  'thread',
-];
+const DIRECT_LEAF_KINDS = ['topic', 'decision', 'directive', 'preference', 'goal', 'observation'];
 
 describe('kindGroup', () => {
   it('folds every entity sub-type (and the "entity" kind itself) into "entity"', () => {

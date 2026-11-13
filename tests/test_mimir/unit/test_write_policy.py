@@ -10,26 +10,18 @@ import typer
 
 from mimir.__main__ import _with_write_policy
 from mimir.adapters.composite import CompositeMimirAdapter
-from mimir.adapters.markdown import MarkdownMimirAdapter
 from mimir.domain import MimirMount, WriteRouting
 from mimir.exceptions import MimirWriteRefusedError
 from mimir.mcp import MimirMcpServer
 from niuu.domain.mimir import MimirSource, compute_content_hash
+from tests.test_mimir.unit.fakes import InMemoryMimirAdapter
 
 PAGE = "---\ntitle: T\nsummary: s\ncategory: project\n---\n\nbody\n"
 
 
 def _port() -> MagicMock:
     port = MagicMock()
-    for name in (
-        "upsert_page",
-        "delete_page",
-        "ingest",
-        "lint",
-        "update_thread_state",
-        "assign_thread_owner",
-        "update_thread_weight",
-    ):
+    for name in ("upsert_page", "delete_page", "ingest"):
         setattr(port, name, AsyncMock(return_value=[] if name == "ingest" else None))
     return port
 
@@ -67,28 +59,19 @@ async def test_a_read_only_mount_refuses_every_write_and_counts_them():
         await composite.ingest(_source())
     with pytest.raises(MimirWriteRefusedError):
         await composite.ingest_to(_source(), "notes")
-    with pytest.raises(MimirWriteRefusedError):
-        await composite.lint(fix=True)
-    with pytest.raises(MimirWriteRefusedError):
-        await composite.update_thread_state("project/a.md", MagicMock())
-    with pytest.raises(MimirWriteRefusedError):
-        await composite.assign_thread_owner("project/a.md", "me")
-    with pytest.raises(MimirWriteRefusedError):
-        await composite.update_thread_weight("project/a.md", 1.0)
 
-    assert composite.write_refusals == {"notes": 8}
-    for name in ("upsert_page", "delete_page", "ingest", "lint", "update_thread_state"):
+    assert composite.write_refusals == {"notes": 4}
+    for name in ("upsert_page", "delete_page", "ingest"):
         getattr(port, name).assert_not_awaited()
 
 
-async def test_reads_and_a_report_only_lint_still_work_on_a_read_only_mount():
+async def test_reads_still_work_on_a_read_only_mount():
     port = _port()
-    port.lint.return_value = MagicMock(issues=[], pages_checked=3)
+    port.list_pages = AsyncMock(return_value=[])
     composite = _composite(port, read_only=True)
 
-    report = await composite.lint(fix=False)
-
-    assert report.pages_checked == 3 and composite.write_refusals == {}
+    assert await composite.list_pages() == []
+    assert composite.write_refusals == {}
 
 
 async def test_a_prefix_mount_writes_inside_its_prefixes_and_refuses_outside():
@@ -110,8 +93,6 @@ async def test_a_write_that_cannot_be_confined_to_prefixes_is_refused():
     composite = _composite(_port(), write_prefixes=("project/",))
     with pytest.raises(MimirWriteRefusedError, match="cannot be confined"):
         await composite.ingest(_source())
-    with pytest.raises(MimirWriteRefusedError, match="cannot be confined"):
-        await composite.lint(fix=True)
 
 
 async def test_a_mount_without_a_policy_writes_as_before():
@@ -138,20 +119,21 @@ async def _call(server: MimirMcpServer, name: str, arguments: dict) -> dict:
     return response["result"]
 
 
-async def test_the_mcp_tool_returns_the_refusal_as_a_tool_error(tmp_path):
-    adapter = _with_write_policy(MarkdownMimirAdapter(root=tmp_path), "notes", True, [])
+async def test_the_mcp_tool_returns_the_refusal_as_a_tool_error():
+    inner = InMemoryMimirAdapter()
+    adapter = _with_write_policy(inner, "notes", True, [])
     server = MimirMcpServer(adapter=adapter, name="notes")
 
     refused = await _call(server, "mimir_write", {"path": "project/a.md", "content": "x"})
 
     assert refused["isError"] is True
     assert "Write refused" in refused["content"][0]["text"]
-    assert not (tmp_path / "wiki" / "project" / "a.md").exists()
+    assert inner.pages == {}
     assert adapter.write_refusals == {"notes": 1}
 
 
-async def test_the_mcp_tool_writes_inside_the_prefixes_only(tmp_path):
-    adapter = _with_write_policy(MarkdownMimirAdapter(root=tmp_path), "notes", False, ["project/"])
+async def test_the_mcp_tool_writes_inside_the_prefixes_only():
+    adapter = _with_write_policy(InMemoryMimirAdapter(), "notes", False, ["project/"])
     server = MimirMcpServer(adapter=adapter, name="notes")
 
     ok = await _call(server, "mimir_write", {"path": "project/a.md", "content": "x"})
@@ -163,8 +145,8 @@ async def test_the_mcp_tool_writes_inside_the_prefixes_only(tmp_path):
 # --- the flags --------------------------------------------------------------------------------
 
 
-def test_the_flags_build_the_policy_and_no_flag_leaves_the_adapter_alone(tmp_path):
-    inner = MarkdownMimirAdapter(root=tmp_path)
+def test_the_flags_build_the_policy_and_no_flag_leaves_the_adapter_alone():
+    inner = InMemoryMimirAdapter()
     assert _with_write_policy(inner, "n", False, []) is inner
 
     read_only = _with_write_policy(inner, "n", True, [])

@@ -8,10 +8,10 @@ from fastapi.testclient import TestClient
 from identity.adapters.identity import EnvoyHeaderAuthenticationAdapter
 from mimir.adapters.flux import FluxKnowledgeDeploymentAdapter
 from mimir.adapters.http import HttpMimirAdapter
-from mimir.adapters.markdown import MarkdownMimirAdapter
 from mimir.ports.deployment import DeploymentRequest, KnowledgeDeploymentPort
 from mimir.registry import MimirRegistryEntry, MimirRegistryStore
 from mimir.router import MimirRouter
+from tests.test_mimir.unit.fakes import InMemoryMimirAdapter
 
 
 def identity(tenant):
@@ -45,13 +45,13 @@ class TenantDeployments(KnowledgeDeploymentPort):
         ]
 
 
-def test_mount_discovery_reads_writes_and_credentials_are_tenant_scoped(tmp_path):
-    roots = {t: MarkdownMimirAdapter(root=tmp_path / t) for t in ("a", "b")}
+def test_mount_discovery_reads_writes_and_credentials_are_tenant_scoped():
+    roots = {t: InMemoryMimirAdapter() for t in ("a", "b")}
     deployment = TenantDeployments(roots)
     app = FastAPI()
     app.include_router(
         MimirRouter(
-            MarkdownMimirAdapter(root=tmp_path / "shared"),
+            InMemoryMimirAdapter(),
             deployment=deployment,
             public_url="https://mimir.test/api/v1",
             auth=EnvoyHeaderAuthenticationAdapter(),
@@ -107,7 +107,7 @@ def test_mount_discovery_reads_writes_and_credentials_are_tenant_scoped(tmp_path
         client.post(
             "/deployments",
             headers=identity("a"),
-            json={"name": "new", "backend": "mimir", "tenant_id": "b"},
+            json={"name": "new", "backend": "gbrain", "tenant_id": "b"},
         )
         assert deployment.deploy.call_args.args[0].tenant_id == "a"
 
@@ -118,7 +118,7 @@ def test_registry_cannot_read_edit_or_delete_another_tenant_connection(tmp_path)
     app = FastAPI()
     app.include_router(
         MimirRouter(
-            MarkdownMimirAdapter(root=tmp_path / "wiki"),
+            InMemoryMimirAdapter(),
             registry_store=store,
             auth=EnvoyHeaderAuthenticationAdapter(),
         ).router
@@ -157,7 +157,7 @@ async def test_flux_filters_ownership_before_loading_services_or_secrets():
         await a.control("foreign", "stop", tenant_id="a")
     api.get_namespaced_custom_object.assert_not_called()
     with pytest.raises(ValueError, match="authenticated tenant"):
-        await a.deploy(DeploymentRequest(name="brain", backend="mimir"))
+        await a.deploy(DeploymentRequest(name="brain", backend="gbrain"))
     assert a._release_name("brain", "a") != a._release_name("brain", "b")
 
 
@@ -298,7 +298,13 @@ def test_standalone_instance_enforces_tenant_on_rest_and_mcp(tmp_path):
     from mimir.app import create_app
     from mimir.config import MimirServiceConfig
 
-    app = create_app(MimirServiceConfig(path=str(tmp_path), tenant_id="a"))
+    app = create_app(
+        MimirServiceConfig(
+            path=str(tmp_path),
+            tenant_id="a",
+            backend={"adapter": "tests.test_mimir.unit.fakes.InMemoryMimirAdapter"},
+        )
+    )
     with TestClient(app) as client:
         assert client.get("/health").status_code == 200
         assert client.get("/mimir/pages", headers=identity("a")).status_code == 200
@@ -322,7 +328,7 @@ def test_tenant_registry_cannot_import_adapters_or_read_host_secrets(tmp_path, s
     app = FastAPI()
     app.include_router(
         MimirRouter(
-            MarkdownMimirAdapter(root=tmp_path / "wiki"),
+            InMemoryMimirAdapter(),
             registry_store=MimirRegistryStore(),
             auth=EnvoyHeaderAuthenticationAdapter(),
         ).router
@@ -337,10 +343,11 @@ def test_tenant_registry_cannot_import_adapters_or_read_host_secrets(tmp_path, s
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("backend", ["mimir", "gbrain"])
-async def test_operator_global_mounts_are_shared_but_not_tenant_managed(backend):
+async def test_operator_global_mounts_are_shared_but_not_tenant_managed():
     import base64
     from types import SimpleNamespace
+
+    backend = "gbrain"
 
     adapter = FluxKnowledgeDeploymentAdapter(
         namespace="knowledge",
@@ -385,8 +392,6 @@ async def test_operator_global_mounts_are_shared_but_not_tenant_managed(backend)
             assert (await adapter.list_deployments(tenant_id=tenant))["releases"] == []
             with pytest.raises(ValueError, match="not found"):
                 await adapter.control("global-brain", "stop", tenant_id=tenant)
-            if backend == "mimir":
-                await mounts[0]["port"].aclose()
         with pytest.raises(ValueError, match="reserved"):
             await adapter.deploy(
                 DeploymentRequest(name="global-brain", backend=backend, tenant_id="a")

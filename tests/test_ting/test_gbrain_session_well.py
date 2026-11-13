@@ -22,9 +22,9 @@ def test_disabled_registry_well_fails_before_dispatch(tmp_path):
         )
 
 
-@pytest.mark.parametrize("backend", ["mimir", "gbrain"])
+@pytest.mark.parametrize("backend", ["memory", "gbrain"])
 @respx.mock
-async def test_research_reads_the_same_gateway_mount_as_the_runtime(backend, tmp_path, monkeypatch):
+async def test_research_reads_the_same_gateway_mount_as_the_runtime(backend, monkeypatch):
     """Write through the runtime, read through research, resolve only in Mímir."""
 
     from fastapi import FastAPI
@@ -32,9 +32,9 @@ async def test_research_reads_the_same_gateway_mount_as_the_runtime(backend, tmp
     from mimir.adapters.composite import CompositeMimirAdapter
     from mimir.adapters.gbrain import GBrainMimirAdapter
     from mimir.adapters.http import HttpMimirAdapter
-    from mimir.adapters.markdown import MarkdownMimirAdapter
     from mimir.domain import MimirMount
     from mimir.router import MimirRouter
+    from tests.test_mimir.unit.fakes import InMemoryMimirAdapter
     from tests.test_ting_research_mimir_auth import _campaign, _settings
     from ting.api.research import _campaign_artifact_summaries, _load_campaign_artifacts
 
@@ -60,7 +60,7 @@ async def test_research_reads_the_same_gateway_mount_as_the_runtime(backend, tmp
     well = (
         GBrainMimirAdapter("https://brain.test/mcp", "test-token")
         if backend == "gbrain"
-        else MarkdownMimirAdapter(root=tmp_path / "well")
+        else InMemoryMimirAdapter()
     )
     gateway = FastAPI()
     gateway.include_router(
@@ -70,7 +70,7 @@ async def test_research_reads_the_same_gateway_mount_as_the_runtime(backend, tmp
                     MimirMount(
                         name="shared",
                         role="shared",
-                        port=MarkdownMimirAdapter(root=tmp_path / "empty"),
+                        port=InMemoryMimirAdapter(),
                     ),
                     MimirMount(name="research-well", role="shared", port=well),
                 ]

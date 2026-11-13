@@ -3138,6 +3138,26 @@ describe('Forge project grouping contract', () => {
     expect(client.delete).toHaveBeenLastCalledWith('/projects/lexi/integrations/routes/errors');
   });
 
+  it('reaches the memories a project reads on the host that owns it', async () => {
+    const client = makeClient();
+    const service = buildVolundrHttpAdapter(client);
+    const project = { id: 'lexi', name: 'Lexi', slug: 'lexi', status: 'active' as const };
+    await service.getProjectMemoryMounts({ ...project, instance_id: 'ymir' });
+    expect(client.get).toHaveBeenLastCalledWith('/projects/lexi/memory?instance_id=ymir');
+    await service.addProjectMemoryMount(project, {
+      name: 'notes',
+      registryEntryId: 'reg-1',
+      access: 'read',
+    });
+    expect(client.post).toHaveBeenLastCalledWith('/projects/lexi/memory', {
+      name: 'notes',
+      registry_entry_id: 'reg-1',
+      access: 'read',
+    });
+    await service.removeProjectMemoryMount(project, 'a b');
+    expect(client.delete).toHaveBeenLastCalledWith('/projects/lexi/memory/a%20b');
+  });
+
   it('sends a description, a status and a checkout folder as the project’s own fields', async () => {
     const client = makeClient();
     client.patch.mockResolvedValue({ id: 'lexi' });

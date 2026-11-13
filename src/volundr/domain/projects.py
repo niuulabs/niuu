@@ -5,9 +5,10 @@ from enum import StrEnum
 from typing import Literal
 from uuid import UUID, uuid4
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from niuu.domain.agent_directory import AgentSkill
+from volundr.domain.project_memory import validate_write_prefixes
 
 
 class SessionReference(BaseModel):
@@ -80,6 +81,14 @@ class ForgeProject(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     description: str = Field(default="", max_length=4000)
     brief: str = Field(default="", max_length=PROJECT_BRIEF_MAX_CHARS)
+    memory_write_prefixes: tuple[str, ...] = Field(
+        default=(),
+        description=(
+            "Page path prefixes under which a session of this project may write straight "
+            "into the project's own memory layer; any other write becomes a proposal. Set "
+            "by a project owner. Empty means every write to the layer is a proposal."
+        ),
+    )
     repo_url: str = Field(default="", max_length=2048)
     workspace_path: str = Field(default="", max_length=2048)
     home_instance_id: str = Field(default="", max_length=100, pattern=r"^[a-zA-Z0-9_.-]*$")
@@ -89,6 +98,11 @@ class ForgeProject(BaseModel):
     revision: int = Field(default=1, ge=1)
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+    @field_validator("memory_write_prefixes")
+    @classmethod
+    def _memory_write_prefixes(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        return validate_write_prefixes(value)
 
     @model_validator(mode="after")
     def safe_repository(self):
@@ -105,7 +119,11 @@ class ForgeProject(BaseModel):
     def document_json(self) -> str:
         """Stored form. Empty lightweight fields are omitted so a rolled-back Forge
         binary can still read every project that does not use them."""
-        empty = {key for key in ("brief", "home_instance_id") if not getattr(self, key)}
+        empty = {
+            key
+            for key in ("brief", "home_instance_id", "memory_write_prefixes")
+            if not getattr(self, key)
+        }
         return self.model_dump_json(exclude=empty)
 
     @staticmethod

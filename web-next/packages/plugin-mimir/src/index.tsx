@@ -8,6 +8,8 @@ import { RegistryWorkspace } from './ui/RegistryWorkspace';
 import { MimirSubnav } from './ui/MimirSubnav';
 import { MimirTopbar } from './ui/MimirTopbar';
 import { validateMemoryViewSearch } from './application/memoryViewSearch';
+import { SearchPage } from './ui/everyday/SearchPage';
+import { ReviewPage } from './ui/everyday/ReviewPage';
 
 /** A legacy route's `search.mount`, if any — everything else is dropped. */
 function legacySearch(search: unknown): { mount?: string } {
@@ -20,6 +22,23 @@ function redirectToMemory({ location }: { location: { search: unknown } }): neve
   throw redirect({ to: '/mimir', search: legacySearch(location.search) as never });
 }
 
+/** What the Search page reads from the address: one project to narrow to, and a query. */
+export function validateSearchPageSearch(search: Record<string, unknown>): {
+  project?: string;
+  q?: string;
+} {
+  const out: { project?: string; q?: string } = {};
+  if (search.project !== undefined && search.project !== '') out.project = String(search.project);
+  if (search.q !== undefined && search.q !== '') out.q = String(search.q);
+  return out;
+}
+
+/** Redirect the retired `/mimir/ask` to Search, keeping `project` and `q`. */
+function redirectToSearch({ location }: { location: { search: unknown } }): never {
+  const search = validateSearchPageSearch(location.search as Record<string, unknown>);
+  throw redirect({ to: '/mimir/search', search: search as never });
+}
+
 export const mimirPlugin = definePlugin({
   id: 'mimir',
   rune: 'M',
@@ -30,16 +49,16 @@ export const mimirPlugin = definePlugin({
   // (Explore/Focus/Ask/Replay) is its home.
   tabs: [
     { id: 'memory', label: 'Explore', path: '/mimir' },
+    { id: 'search', label: 'Search', path: '/mimir/search' },
+    { id: 'review', label: 'Review', path: '/mimir/review' },
     { id: 'registry', label: 'Library', path: '/mimir/registry' },
   ],
   routes: (rootRoute) => [
-    ...['health', 'analytics'].map((section) =>
-      createRoute({
-        getParentRoute: () => rootRoute,
-        path: `/mimir/registry/${section}`,
-        component: RegistryWorkspace,
-      }),
-    ),
+    createRoute({
+      getParentRoute: () => rootRoute,
+      path: '/mimir/registry/analytics',
+      component: RegistryWorkspace,
+    }),
 
     createRoute({
       getParentRoute: () => rootRoute,
@@ -62,45 +81,32 @@ export const mimirPlugin = definePlugin({
     }),
     createRoute({
       getParentRoute: () => rootRoute,
-      path: '/mimir/health',
-      component: RegistryWorkspace,
-    }),
-    createRoute({
-      getParentRoute: () => rootRoute,
-      path: '/mimir/lint',
-      component: RegistryWorkspace,
-    }),
-    createRoute({
-      getParentRoute: () => rootRoute,
-      path: '/mimir/doctor',
-      component: RegistryWorkspace,
-    }),
-    createRoute({
-      getParentRoute: () => rootRoute,
       path: '/mimir/analytics',
       component: RegistryWorkspace,
     }),
-    // Asking a question is now answered inline in the Memory scene — carry
-    // both q and mount across, everything else the flat page used stays put.
+    // Search what the team knows, and keep or discard what agents propose.
+    createRoute({
+      getParentRoute: () => rootRoute,
+      path: '/mimir/search',
+      validateSearch: validateSearchPageSearch,
+      component: SearchPage,
+    }),
+    // The page used to be called Ask; old links and bookmarks land on Search.
     createRoute({
       getParentRoute: () => rootRoute,
       path: '/mimir/ask',
-      beforeLoad: ({ location }) => {
-        const search = location.search as Record<string, unknown>;
-        throw redirect({
-          to: '/mimir',
-          search: { ...legacySearch(search), q: search.q } as never,
-        });
-      },
+      beforeLoad: redirectToSearch,
     }),
-    // Legacy tabs — Pages/Sources/Search/Graph/Ingest/Entities — are all the
-    // one Memory scene now; only the mount scope still carries over.
-    ...['pages', 'sources', 'search', 'graph', 'ingest', 'entities'].map((legacy) =>
-      createRoute({
-        getParentRoute: () => rootRoute,
-        path: `/mimir/${legacy}`,
-        beforeLoad: redirectToMemory,
-      }),
+    createRoute({ getParentRoute: () => rootRoute, path: '/mimir/review', component: ReviewPage }),
+    // Legacy tabs — Pages/Sources/Search/Graph/Ingest/Entities, and the retired
+    // Health/Lint/Doctor — are all the one Memory scene now; only the mount scope still carries over.
+    ...['pages', 'sources', 'graph', 'ingest', 'entities', 'health', 'lint', 'doctor'].map(
+      (legacy) =>
+        createRoute({
+          getParentRoute: () => rootRoute,
+          path: `/mimir/${legacy}`,
+          beforeLoad: redirectToMemory,
+        }),
     ),
   ],
   subnav: (ctx: PluginCtx) => <MimirSubnav ctx={ctx} />,
@@ -108,13 +114,30 @@ export const mimirPlugin = definePlugin({
 });
 
 export { createMimirMockAdapter } from './adapters/mock';
+export {
+  buildMemoryGatewayHttpAdapter,
+  createMemoryGatewayMockAdapter,
+} from './adapters/memoryGateway';
+export {
+  MEMORY_GATEWAY_SERVICE_KEY,
+  type IMemoryGatewayService,
+  type MemorySearchOptions,
+} from './ports/IMemoryGateway';
+export type {
+  MemoryHit,
+  MemoryProposal,
+  MemoryReview,
+  MemorySearchResult,
+  ReviewSource,
+} from './domain/memoryGateway';
+export { SearchPage } from './ui/everyday/SearchPage';
+export { ReviewPage } from './ui/everyday/ReviewPage';
 export { buildMimirHttpAdapter } from './adapters/http';
 export type {
   IMimirService,
   IMountAdapter,
   IPageStore,
   IEmbeddingStore,
-  ILintEngine,
   SearchMode,
   EmbeddingSearchResult,
   RecentWrite,
@@ -132,16 +155,11 @@ export type {
   Page,
   SearchResult,
 } from './domain/page';
-export type { LintRule, IssueSeverity, LintIssue, LintReport } from './domain/lint';
-export type { WriteRoutingRule, RouteTestResult } from './domain/routing';
-export { resolveRoute } from './domain/routing';
 export type { Source, OriginType } from './domain/source';
 export type { EntityKind, EntityMeta } from './domain/entity';
 export type { RegistryMount } from './domain/registry';
 export type { EvalMetrics, EvalReport, QueryLogEntry, QueryStats } from './domain/analytics';
 export { zeroResultQueries } from './domain/analytics';
-export type { DoctorStatus, DoctorCheck, DoctorReport } from './domain/doctor';
-export { fixableChecks } from './domain/doctor';
 export type { WikilinkTarget } from './domain';
 export { resolveWikilink, detectBrokenWikilinks } from './domain';
 
@@ -153,5 +171,3 @@ export { PageTypeGlyph } from './ui/components/PageTypeGlyph';
 export { MountChip } from './ui/components/MountChip';
 export { MemoryExploreView } from './ui/memory/MemoryExploreView';
 export { MemoryPagePage } from './ui/memory/MemoryPagePage';
-export { ProofPill } from './ui/memory/ProofPill';
-export type { FactEvidence, EvidenceTrend, RelatedPage, ReviseRequest } from './domain/evidence';

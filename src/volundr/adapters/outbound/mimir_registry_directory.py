@@ -52,7 +52,6 @@ class MimirRegistryFileDirectory(MemoryMountDirectory):
                 enabled=entry.enabled,
                 role=entry.role,
                 url=entry.url,
-                path=entry.path,
                 adapter=entry.adapter,
                 kwargs=dict(entry.kwargs),
                 secret_kwargs_env=dict(entry.secret_kwargs_env),

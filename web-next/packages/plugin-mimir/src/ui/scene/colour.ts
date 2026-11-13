@@ -41,14 +41,20 @@ export function nodeKindGroup(node: Pick<GraphNode, 'kind'>): KindGroup {
   return kindGroup(node.kind);
 }
 
-/** Resolve the hex/CSS colour a node should be drawn in. */
+/**
+ * Resolve the hex/CSS colour a node should be drawn in. `recent` only
+ * matters to the heads-up display, which marks recent change by colour.
+ */
 export function nodeColour(
   node: Pick<GraphNode, 'kind' | 'confidence' | 'updatedAt'>,
   colourBy: ColourBy,
   palette: MemoryPalette,
   now: number,
+  recent = false,
 ): string {
   switch (colourBy) {
+    case 'hud':
+      return recent ? palette.recent : palette.focus;
     case 'proof':
       return palette.proof[proofBucket(node.confidence)];
     case 'age':
@@ -57,4 +63,15 @@ export function nodeColour(
     default:
       return palette.kind[nodeKindGroup(node)];
   }
+}
+
+/** The colour of a drawn link: the signal or recent colour in the heads-up display, the topic hue otherwise. */
+export function edgeColour(
+  edge: { contradiction: boolean; recent: boolean },
+  colourBy: ColourBy,
+  palette: MemoryPalette,
+): string {
+  if (edge.contradiction) return palette.dispute;
+  if (colourBy !== 'hud') return palette.kind.topic;
+  return edge.recent ? palette.recent : palette.focus;
 }

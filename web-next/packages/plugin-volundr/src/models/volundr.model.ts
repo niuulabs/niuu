@@ -170,6 +170,8 @@ export interface ForgeProject {
   brief?: string;
   repo_url?: string;
   revision?: number;
+  /** Page prefixes under which the project's agents write its memory without asking. */
+  memory_write_prefixes?: string[];
 }
 /**
  * What `PATCH /projects/{id}` accepts besides the revision. Connecting a checkout is a
@@ -182,6 +184,17 @@ export interface ForgeProjectChanges {
   status?: 'active' | 'archived';
   repo_url?: string;
   workspace_path?: string;
+  memory_write_prefixes?: string[];
+}
+/** A memory the project also reads: a Mímir registry entry its sessions mount. */
+export interface ProjectMemoryMount {
+  name: string;
+  registry_entry_id: string;
+  access: 'read' | 'read_write';
+  write_prefixes: string[];
+  added_by: string;
+  created_at: string;
+  updated_at: string;
 }
 /** A project role. Roles are a ladder: each one can do everything the ones before it can. */
 export type ProjectRole = 'viewer' | 'contributor' | 'approver' | 'owner';

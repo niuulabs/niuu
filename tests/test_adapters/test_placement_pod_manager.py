@@ -254,6 +254,12 @@ def test_a_session_credential_is_minted_only_when_both_deliver_it():
     assert not _placement(delivers=False)[0].delivers_forge_session_token
 
 
+def test_a_credential_can_be_delivered_somewhere_when_one_child_delivers_it():
+    """Mini mode: local sessions get the credential though the pool's runtime cannot."""
+    assert _placement(delivers=False)[0].delivers_forge_session_token_somewhere
+    assert _placement()[0].delivers_forge_session_token_somewhere
+
+
 def test_a_session_credential_follows_the_manager_that_runs_the_session():
     """A pool that delivers nothing (no runtime configured) does not starve local sessions."""
     placement, _, _ = _placement(delivers=False)

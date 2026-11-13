@@ -15,6 +15,9 @@ from niuu.adapters.flux import (
     create_flux_api_client,
 )
 
+#: The only knowledge backend this target deploys.
+GBRAIN = "gbrain"
+
 
 class FluxKnowledgeDeploymentAdapter(FluxHelmReleases, KnowledgeDeploymentPort):
     _managed_by = "mimir"
@@ -29,7 +32,6 @@ class FluxKnowledgeDeploymentAdapter(FluxHelmReleases, KnowledgeDeploymentPort):
         cluster: str = "current",
         storage_class: str = "",
         secrets: dict[str, str] | None = None,
-        envoy: dict | None = None,
         global_instances: list[str] | None = None,
         source_namespace: str = "",
         in_cluster: bool = True,
@@ -51,7 +53,6 @@ class FluxKnowledgeDeploymentAdapter(FluxHelmReleases, KnowledgeDeploymentPort):
         self.cluster = cluster
         self.storage_class = storage_class
         self.secrets = secrets or {}
-        self.envoy = envoy or {}
         self.global_instances = global_instances or []
         self.in_cluster = in_cluster
         self.context = kube_context
@@ -70,6 +71,9 @@ class FluxKnowledgeDeploymentAdapter(FluxHelmReleases, KnowledgeDeploymentPort):
         self._client = None
         self._client_lock = asyncio.Lock()
         self._mount_ports = {}
+
+    def _configured(self, backend: str) -> bool:
+        return backend in self.versions and backend in self.images
 
     async def _get_api(self):
         from kubernetes_asyncio import client
@@ -128,7 +132,7 @@ class FluxKnowledgeDeploymentAdapter(FluxHelmReleases, KnowledgeDeploymentPort):
             "cluster": self.cluster,
             "namespace": self.namespace,
             "target": "cluster",
-            "backends": sorted(set(self.versions) & set(self.images)),
+            "backends": [GBRAIN] if self._configured(GBRAIN) else [],
             "releases": [
                 self._view(item) for item in result["items"] if self._owned(item, tenant_id)
             ],
@@ -162,8 +166,6 @@ class FluxKnowledgeDeploymentAdapter(FluxHelmReleases, KnowledgeDeploymentPort):
         from kubernetes_asyncio import client
 
         from mimir.adapters.gbrain import GBrainMimirAdapter
-        from mimir.adapters.http import HttpMimirAdapter
-        from mimir.domain import MimirAuth
 
         # Runs on every Mímir request, so its Kubernetes reads are issued
         # together rather than one after another (two per ready instance plus
@@ -196,12 +198,11 @@ class FluxKnowledgeDeploymentAdapter(FluxHelmReleases, KnowledgeDeploymentPort):
             services = await core.list_namespaced_service(
                 self.namespace, label_selector=f"app.kubernetes.io/instance={name}"
             )
-            backend = release["backend"]
             service = next(
                 (
                     s
                     for s in services.items
-                    if s.metadata.labels.get("app.kubernetes.io/name") == backend
+                    if s.metadata.labels.get("app.kubernetes.io/name") == GBRAIN
                 ),
                 None,
             )
@@ -209,26 +210,15 @@ class FluxKnowledgeDeploymentAdapter(FluxHelmReleases, KnowledgeDeploymentPort):
                 raise RuntimeError(f"Ready instance {release['name']} has no knowledge service")
             port_number = service.spec.ports[0].port
             url = f"http://{service.metadata.name}.{self.namespace}.svc.cluster.local:{port_number}"
-            key = (tenant_id, name, url)
-            if backend == "gbrain":
-                secret = await core.read_namespaced_secret(
-                    f"{name}-gbrain-connection", self.namespace
-                )
-                token = base64.b64decode(secret.data["token"]).decode()
-                key += (hashlib.sha256(token.encode()).hexdigest(),)
-                if key not in self._mount_ports:
-                    self._mount_ports[key] = GBrainMimirAdapter(
-                        mcp_url=url + "/mcp",
-                        api_token=token,
-                        query_expansion=False,
-                        think_model=self.think_model,
-                    )
-            else:
-                if not authorization.startswith("Bearer "):
-                    raise ValueError("A caller token is required to open the Mimir instance")
-                mimir_port = HttpMimirAdapter(
-                    base_url=url + "/api/v1",
-                    auth=MimirAuth(type="bearer", token=authorization.removeprefix("Bearer ")),
+            secret = await core.read_namespaced_secret(f"{name}-gbrain-connection", self.namespace)
+            token = base64.b64decode(secret.data["token"]).decode()
+            key = (tenant_id, name, url, hashlib.sha256(token.encode()).hexdigest())
+            if key not in self._mount_ports:
+                self._mount_ports[key] = GBrainMimirAdapter(
+                    mcp_url=url + "/mcp",
+                    api_token=token,
+                    query_expansion=False,
+                    think_model=self.think_model,
                 )
             return {
                 "name": release["name"],
@@ -238,9 +228,8 @@ class FluxKnowledgeDeploymentAdapter(FluxHelmReleases, KnowledgeDeploymentPort):
                 "role": "shared",
                 "categories": None,
                 "priority": 10,
-                "port": self._mount_ports[key] if backend == "gbrain" else mimir_port,
-                "close_after_request": backend == "mimir",
-                "desc": f"{backend} · {self.cluster} · {self.namespace}",
+                "port": self._mount_ports[key],
+                "desc": f"{GBRAIN} · {self.cluster} · {self.namespace}",
             }
 
         return list(
@@ -255,7 +244,7 @@ class FluxKnowledgeDeploymentAdapter(FluxHelmReleases, KnowledgeDeploymentPort):
         if request.name in self.global_instances:
             raise ValueError("This name is reserved for an operator-managed global instance")
         backend = request.backend
-        if backend not in self.versions or backend not in self.images:
+        if not self._configured(backend):
             raise ValueError(f"No chart and image configured for {backend}")
         secret = request.secret or self.secrets.get(backend, "").replace("{name}", request.name)
         image = self.images[backend]
@@ -269,23 +258,14 @@ class FluxKnowledgeDeploymentAdapter(FluxHelmReleases, KnowledgeDeploymentPort):
                 "tenantId": request.tenant_id,
             },
         }
-        if backend == "gbrain":
-            values.update(
-                engine="postgres",
-                existingSecret=secret,
-                postgres={"enabled": not bool(secret), "storageClass": self.storage_class},
-                connection={"enabled": True},
-            )
-            if self.gbrain_config:
-                values["config"] = copy.deepcopy(self.gbrain_config)
-        else:
-            if not self.envoy.get("enabled") or not self.envoy.get("jwt", {}).get("enabled"):
-                raise ValueError(
-                    "Configure the target Envoy JWT profile for tenant-owned Mimir instances"
-                )
-            values["envoy"] = self.envoy
-            values["image"]["registry"] = ""
-            values["config"] = {"name": request.name, "role": "shared"}
+        values.update(
+            engine="postgres",
+            existingSecret=secret,
+            postgres={"enabled": not bool(secret), "storageClass": self.storage_class},
+            connection={"enabled": True},
+        )
+        if self.gbrain_config:
+            values["config"] = copy.deepcopy(self.gbrain_config)
         body = self._build_helmrelease(
             self._release_name(request.name, request.tenant_id),
             values,
@@ -341,7 +321,7 @@ class FluxKnowledgeDeploymentAdapter(FluxHelmReleases, KnowledgeDeploymentPort):
             raise ValueError("This release is not managed by the knowledge registry")
         if action == "update":
             backend = labels["niuu.world/knowledge-backend"]
-            if backend not in self.versions or backend not in self.images:
+            if backend != GBRAIN or not self._configured(backend):
                 raise ValueError(f"No chart and image configured for {backend}")
             repository, tag = self.images[backend].rsplit(":", 1)
             updated = await self._patch_helmrelease(
@@ -350,11 +330,7 @@ class FluxKnowledgeDeploymentAdapter(FluxHelmReleases, KnowledgeDeploymentPort):
                     "spec": {
                         "chart": {"spec": {"version": self.versions[backend]}},
                         "values": {
-                            **(
-                                {"connection": {"enabled": True}}
-                                if backend == "gbrain"
-                                else {"envoy": self.envoy}
-                            ),
+                            "connection": {"enabled": True},
                             "image": {"repository": repository, "tag": tag},
                             "niuu": {
                                 "cluster": self.cluster,

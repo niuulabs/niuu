@@ -887,6 +887,120 @@ class ForgeMcpConfig(BaseModel):
         return self
 
 
+class MemoryConfig(BaseModel):
+    """The built-in ``memory`` MCP server: one server over every memory layer.
+
+    The engine spawns the same stdio process as for ``forge`` (``--server memory``);
+    it forwards each call to this broker's loopback ``/api/memory-mcp/*`` routes,
+    and the broker calls the memory gateway with the session's Forge credential
+    (``forge_mcp.token``). The credential never reaches the model, and the gateway,
+    not Skuld, enforces which layers a session may read and write.
+    """
+
+    enabled: bool = Field(
+        default=False,
+        description=(
+            "Inject the built-in memory MCP server (SKULD__MEMORY__ENABLED=true). Needs "
+            "gateway_url and the session's Forge credential (forge_mcp.token or "
+            "forge_mcp.token_file); startup fails without them."
+        ),
+    )
+    gateway_url: str = Field(
+        default="",
+        description=(
+            "The memory gateway's API base, e.g. http://127.0.0.1:8080/api/v1/mimir "
+            "(SKULD__MEMORY__GATEWAY_URL). The broker calls <gateway_url>/memory/tools. "
+            "Required when enabled; Forge delivers it to every session."
+        ),
+    )
+    server_name: str = Field(
+        default="memory",
+        min_length=1,
+        pattern=r"^[A-Za-z0-9_-]+$",
+        description="MCP server name; tools appear to Claude as mcp__<name>__<tool>.",
+    )
+    gateway_request_timeout_s: float = Field(
+        default=120.0,
+        gt=0,
+        description=(
+            "Timeout for one broker -> gateway call (a memory tool such as memory_search "
+            "or memory_read). A call that exceeds it fails the tool call naming the "
+            "gateway URL. Must be shorter than broker_request_timeout_s."
+        ),
+    )
+    broker_request_timeout_s: float = Field(
+        default=150.0,
+        gt=0,
+        description=(
+            "Timeout for one stdio-server -> broker call. Must exceed "
+            "gateway_request_timeout_s (so the gateway's own failure reaches the model "
+            "first) and be shorter than tool_timeout_s."
+        ),
+    )
+    stdio_max_concurrency: int = Field(
+        default=4, ge=1, description="Memory tool calls the stdio server runs in parallel."
+    )
+    context_pack_timeout_s: float = Field(
+        default=30.0,
+        gt=0,
+        description=(
+            "Timeout for the one broker -> gateway call that fetches the session's context "
+            "pack (GET <gateway_url>/memory/context-pack) at broker startup. The gateway "
+            "assembles the pack from entity lookups across the session's layers, not from a "
+            "model call. Exceeding it stops startup naming the gateway URL; raise it if the "
+            "gateway is slow to build packs for large projects."
+        ),
+    )
+    startup_timeout_s: float = Field(
+        default=20.0,
+        gt=0,
+        description=(
+            "Engine-side MCP server startup timeout (Codex). The handshake fetches the "
+            "gateway's instructions, so this covers one gateway listing call."
+        ),
+    )
+    tool_timeout_s: float = Field(
+        default=180.0,
+        gt=0,
+        description=(
+            "Engine-side MCP tool call timeout (Codex). Must exceed broker_request_timeout_s "
+            "or the engine ends every slow call before the broker can report its failure."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _validate(self) -> "MemoryConfig":
+        if not self.enabled:
+            return self
+        if not self.gateway_url.strip():
+            raise ValueError(
+                "memory.enabled is true but memory.gateway_url is empty: set "
+                "SKULD__MEMORY__GATEWAY_URL to the memory gateway's API base "
+                "(e.g. http://127.0.0.1:8080/api/v1/mimir), or set "
+                "SKULD__MEMORY__ENABLED=false"
+            )
+        if not self.gateway_url.startswith(("http://", "https://")):
+            raise ValueError(
+                f"memory.gateway_url {self.gateway_url!r} must be an http(s) URL "
+                "(SKULD__MEMORY__GATEWAY_URL)"
+            )
+        if not self.gateway_request_timeout_s < self.broker_request_timeout_s:
+            raise ValueError(
+                f"memory.gateway_request_timeout_s ({self.gateway_request_timeout_s}) must be "
+                f"shorter than memory.broker_request_timeout_s ({self.broker_request_timeout_s}), "
+                "or the stdio server gives up before the gateway's failure can be reported. "
+                "Lower gateway_request_timeout_s or raise broker_request_timeout_s"
+            )
+        if not self.broker_request_timeout_s < self.tool_timeout_s:
+            raise ValueError(
+                f"memory.broker_request_timeout_s ({self.broker_request_timeout_s}) must be "
+                f"shorter than memory.tool_timeout_s ({self.tool_timeout_s}), or the engine "
+                "ends every slow call first. Lower broker_request_timeout_s or raise "
+                "tool_timeout_s"
+            )
+        return self
+
+
 class SecretRequestsConfig(BaseModel):
     """How the ``request_secret`` tool waits for the user to type a secret into the chat card."""
 
@@ -1528,6 +1642,7 @@ class SkuldSettings(BaseSettings):
     acp_prompt_timeout_s: float = Field(default=300.0)  # ACP/MSP (Grok Build, Muse) turn timeout
     mcp_servers: list[dict[str, Any]] = Field(default_factory=list)
     forge_mcp: ForgeMcpConfig = Field(default_factory=ForgeMcpConfig)
+    memory: MemoryConfig = Field(default_factory=MemoryConfig)
     preview: PreviewConfig = Field(default_factory=PreviewConfig)
     secret_requests: SecretRequestsConfig = Field(default_factory=SecretRequestsConfig)
     ask: AskConfig = Field(default_factory=AskConfig)
@@ -1577,6 +1692,25 @@ class SkuldSettings(BaseSettings):
         elif self.transport == "tmux-interactive":
             self.transport_adapter = "skuld.transports.tmux_interactive.TmuxInteractiveTransport"
 
+        return self
+
+    @model_validator(mode="after")
+    def _memory_can_authenticate(self) -> "SkuldSettings":
+        """The memory server calls the gateway as the session: it needs the credential."""
+        if not self.memory.enabled:
+            return self
+        if not self.forge_mcp.token:
+            raise ValueError(
+                "memory.enabled is true but this session has no Forge credential to "
+                "authenticate to the memory gateway: set SKULD__FORGE_MCP__TOKEN (or "
+                "forge_mcp.token_file / SKULD__FORGE_MCP__TOKEN_FILE), which Forge mints "
+                "for every launch, or set SKULD__MEMORY__ENABLED=false"
+            )
+        if self.forge_mcp.enabled and self.memory.server_name == self.forge_mcp.server_name:
+            raise ValueError(
+                f"memory.server_name and forge_mcp.server_name are both "
+                f"{self.memory.server_name!r}; give them different names"
+            )
         return self
 
     @model_validator(mode="after")

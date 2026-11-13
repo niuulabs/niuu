@@ -4,9 +4,9 @@ Mountable on any FastAPI application::
 
     from identity.adapters.identity import EnvoyHeaderAuthenticationAdapter
     from mimir.router import MimirRouter
-    from mimir.adapters.markdown import MarkdownMimirAdapter
+    from mimir.adapters.gbrain import GBrainMimirAdapter
 
-    adapter = MarkdownMimirAdapter(root="~/.ravn/mimir")
+    adapter = GBrainMimirAdapter(mcp_url="http://localhost:3131/mcp")
     router = MimirRouter(adapter, auth=EnvoyHeaderAuthenticationAdapter())
 
     app.include_router(router.router, prefix="/mimir")
@@ -18,9 +18,6 @@ GET  /mimir/pages          — list all pages with metadata
 GET  /mimir/page           — read a specific page (?path=...)
 GET  /mimir/search         — full-text search (?q=...)
 GET  /mimir/log            — last N log entries (?n=50)
-GET  /mimir/lint           — current lint report (12 check types, L01–L12)
-POST /mimir/lint/fix       — run lint and apply auto-fixes (L05, L11, L12)
-GET  /mimir/doctor         — health-check report (8 checks, D01–D08)
 GET  /mimir/graph          — nodes + edges for MimirExplorer visualiser
 PUT  /mimir/page           — upsert a page (requires write auth)
 POST /mimir/ingest         — ingest URL or text (requires write auth)
@@ -49,7 +46,7 @@ from fastapi import (
     Request,
     UploadFile,
 )
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, Field
 
 from mimir.compiled_truth import CompiledTruthPage
 from mimir.compiled_truth import parse_page as parse_compiled_truth_page
@@ -61,7 +58,6 @@ from mimir.registry import MimirRegistryEntry, MimirRegistryStore
 from niuu.domain.knowledge_graph import cross_mount_source_edges
 from niuu.domain.mimir import (
     OPERATIONAL_SOURCE_TYPES,
-    MimirLintReport,
     MimirPage,
     MimirPageMeta,
     MimirSource,
@@ -99,9 +95,6 @@ class SummaryResponse(BaseModel):
     source_count: int
     categories: list[str]
     last_write: str
-    lint_issues: int
-    # Empty when lint has never run; ``lint_issues`` is then unknown, not zero.
-    lint_checked_at: str
 
 
 class PageMetaResponse(BaseModel):
@@ -197,64 +190,6 @@ class EntityResponse(BaseModel):
     path: str
 
 
-class RelatedPageResponse(BaseModel):
-    path: str
-    hop: int
-    rel: str | None = None
-    direction: str
-
-
-class FactEvidenceResponse(BaseModel):
-    fact: str
-    proof_count: int
-    trend: str
-    latest_support: str | None = None
-    supporting_dates: list[str] = []
-    source_proof_count: int = 0
-
-
-class ReviseBeliefRequest(BaseModel):
-    path: str
-    old_fact: str
-    new_fact: str
-    attribution: str
-
-
-class LintIssueResponse(BaseModel):
-    id: str
-    severity: str
-    message: str
-    page_path: str
-    auto_fixable: bool
-    rule: str
-    page: str
-    mount: str
-    auto_fix: bool
-
-
-class LintMountResponse(BaseModel):
-    """One mount's part in a lint.
-
-    ``unsupported`` is a backend with no lint (gbrain): it was not checked,
-    and ``detail`` says why, rather than the mount failing every other
-    mount's lint or quietly reading as clean.
-    """
-
-    name: str
-    status: Literal["linted", "unsupported"]
-    pages_checked: int = 0
-    issues: int = 0
-    detail: str = ""
-
-
-class LintResponse(BaseModel):
-    issues: list[LintIssueResponse]
-    pages_checked: int
-    issues_found: bool
-    summary: dict[str, int]
-    mounts: list[LintMountResponse] = Field(default_factory=list)
-
-
 class GraphNode(BaseModel):
     id: str
     title: str
@@ -301,16 +236,11 @@ class IngestRequest(BaseModel):
 class IngestResponse(BaseModel):
     source_id: str
     pages_updated: list[str]
-    consolidated: list[str] = []
 
 
 class UrlIngestRequest(BaseModel):
     url: str
     mount: str | None = None
-
-
-class LintFixRequest(BaseModel):
-    issue_ids: list[str] = []
 
 
 class MountResponse(BaseModel):
@@ -324,10 +254,6 @@ class MountResponse(BaseModel):
     status: str
     pages: int
     sources: int
-    lint_issues: int
-    # When empty, lint has never run on this mount and ``lint_issues`` is
-    # unknown rather than clean — summarising deliberately does not lint.
-    lint_checked_at: str = ""
     last_write: str
     embedding: str
     size_kb: int
@@ -340,7 +266,6 @@ class RegistryMountRequest(BaseModel):
     lifecycle: str = "registered"
     role: str = "shared"
     url: str = ""
-    path: str = ""
     categories: list[str] | None = None
     adapter: str = ""
     kwargs: dict[str, Any] = Field(default_factory=dict)
@@ -362,7 +287,6 @@ class RegistryMountResponse(BaseModel):
     lifecycle: str
     role: str
     url: str
-    path: str
     categories: list[str] | None
     adapter: str = ""
     kwargs: dict[str, Any] = Field(default_factory=dict)
@@ -374,17 +298,6 @@ class RegistryMountResponse(BaseModel):
     health_status: str
     health_message: str
     desc: str
-
-
-class RoutingRuleResponse(BaseModel):
-    model_config = ConfigDict(populate_by_name=True)
-
-    id: str
-    prefix: str
-    mount_name: str = Field(alias="mountName")
-    priority: int
-    active: bool = True
-    desc: str | None = None
 
 
 class RecentWriteResponse(BaseModel):
@@ -411,17 +324,6 @@ class EmbeddingSearchResponse(BaseModel):
     summary: str
     score: float
     mount_name: str
-
-
-class DreamCycleResponse(BaseModel):
-    id: str
-    timestamp: str
-    ravn: str
-    mounts: list[str]
-    pages_updated: int
-    entities_created: int
-    lint_fixes: int
-    duration_ms: int
 
 
 def _validated_ingest_url(raw_url: str) -> str:
@@ -484,22 +386,6 @@ class LiveActivityEventResponse(BaseModel):
     mount: str
     path: str
     actor: str | None = None
-
-
-class RavnBindingResponse(BaseModel):
-    model_config = ConfigDict(populate_by_name=True)
-
-    ravn_id: str = Field(alias="ravnId")
-    ravn_rune: str = Field(alias="ravnRune")
-    role: str
-    state: str
-    mount_names: list[str] = Field(alias="mountNames")
-    write_mount: str = Field(alias="writeMount")
-    last_dream: DreamCycleResponse | None = Field(default=None, alias="lastDream")
-    bio: str
-    pages_touched: int = Field(alias="pagesTouched")
-    expertise: list[str]
-    tools: list[str]
 
 
 class SourceMetaResponse(BaseModel):
@@ -647,41 +533,6 @@ def _resolve_mount_port(
     raise HTTPException(status_code=404, detail=f"Unknown mount: {mount_name}")
 
 
-def _get_routing_rule_store(adapter: MimirPort) -> list[dict[str, Any]]:
-    store = getattr(adapter, "_http_routing_rules", None)
-    if store is None:
-        derived: list[dict[str, Any]] = []
-        write_routing = getattr(adapter, "_write_routing", None)
-        raw_rules = list(getattr(write_routing, "rules", [])) if write_routing is not None else []
-        for index, (prefix, mounts) in enumerate(raw_rules):
-            if not mounts:
-                continue
-            derived.append(
-                {
-                    "id": f"rule-{index + 1}",
-                    "prefix": prefix,
-                    "mount_name": mounts[0],
-                    "priority": index,
-                    "active": True,
-                    "desc": None,
-                }
-            )
-        setattr(adapter, "_http_routing_rules", derived)
-        return derived
-    return store
-
-
-def _sync_routing_rules(adapter: MimirPort) -> None:
-    write_routing = getattr(adapter, "_write_routing", None)
-    if write_routing is None:
-        return
-    rules = sorted(
-        (rule for rule in _get_routing_rule_store(adapter) if rule.get("active", True)),
-        key=lambda item: item["priority"],
-    )
-    write_routing.rules = [(rule["prefix"], [rule["mount_name"]]) for rule in rules]
-
-
 def _mount_failed(operation: str, mount_name: str, exc: Exception) -> MimirUnavailableError:
     """A mount that could not do its part fails the aggregate, naming itself.
 
@@ -732,32 +583,6 @@ def _mounts_by_path(listings: list[tuple[str, list[MimirPageMeta]]]) -> dict[str
     return mount_map
 
 
-async def _lint_each_mount(
-    mounts: list[dict[str, Any]], *, fix: bool
-) -> list[tuple[str, MimirLintReport | None, str]]:
-    """Lint every mount concurrently: ``(name, report, "")`` or ``(name, None, why)``.
-
-    A backend with no lint (gbrain) answers ``NotImplementedError``. That is
-    the mount saying what it is, not failing, so it is returned as
-    unsupported for the caller to report — it used to fail the whole call
-    with 501, so one gbrain tenant stopped every Mímir mount being linted.
-    Any other failure still fails the call: a merged report without that
-    mount would read as a clean bill of health over a corpus never checked.
-    """
-
-    async def one(mount: dict[str, Any]) -> tuple[str, MimirLintReport | None, str]:
-        try:
-            return mount["name"], await mount["port"].lint(fix=fix), ""
-        except NotImplementedError as exc:
-            return mount["name"], None, str(exc) or "this backend has no lint"
-        except MimirUnavailableError:
-            raise
-        except Exception as exc:
-            raise _mount_failed("lint", mount["name"], exc) from exc
-
-    return list(await asyncio.gather(*(one(mount) for mount in _by_read_priority(mounts))))
-
-
 async def _source_page_map(
     port: MimirPort,
 ) -> dict[str, list[str]]:
@@ -766,23 +591,6 @@ async def _source_page_map(
         for source_id in page.source_ids:
             mapping.setdefault(source_id, []).append(page.path)
     return mapping
-
-
-async def _read_full_sources(port: MimirPort) -> list[MimirSource]:
-    """Load every raw source with its content.
-
-    This holds the entire corpus in memory, which is enough to OOM the service
-    on a large mount — listings and activity feeds must use ``list_sources()``
-    instead. Only evidence computation legitimately needs the bodies, because it
-    matches facts against source text, including sources a page does not yet
-    cite.
-    """
-    sources: list[MimirSource] = []
-    for source_meta in await port.list_sources():
-        source = await port.read_source(source_meta.source_id)
-        if source is not None:
-            sources.append(source)
-    return sources
 
 
 async def _parse_log_entries(port: MimirPort) -> list[dict[str, Any]]:
@@ -827,13 +635,6 @@ def _extract_key_values(detail_lines: list[str]) -> dict[str, str]:
     return values
 
 
-def _parse_count(detail: str, label: str) -> int:
-    match = re.search(rf"{label}[=_ ](?P<count>\d+)", detail)
-    if match:
-        return int(match.group("count"))
-    return 0
-
-
 async def _summarize_mount(
     mount: dict[str, Any],
 ) -> MountResponse:
@@ -857,10 +658,6 @@ async def _summarize_mount(
         status="healthy",
         pages=summary.page_count,
         sources=summary.source_count,
-        lint_issues=summary.lint_issues,
-        lint_checked_at=(
-            summary.lint_checked_at.isoformat() if summary.lint_checked_at is not None else ""
-        ),
         last_write=summary.last_write.isoformat() if summary.last_write is not None else "",
         embedding="fts",
         size_kb=0,
@@ -880,9 +677,6 @@ def _registry_mount_host(entry: MimirRegistryEntry) -> str:
         parsed = urlparse(entry.url)
         return parsed.netloc or parsed.path or "remote"
 
-    if entry.path:
-        return entry.path
-
     return "registered"
 
 
@@ -898,7 +692,6 @@ def _mount_from_registry(entry: MimirRegistryEntry) -> MountResponse:
         status="down" if entry.enabled else "down",
         pages=0,
         sources=0,
-        lint_issues=0,
         last_write="",
         embedding="fts",
         size_kb=0,
@@ -1125,13 +918,7 @@ def _decorate_source(
 
 #: Routes that read this host directly rather than through the caller's mounts.
 _HOST_ONLY_ROUTES = (
-    "/doctor",
-    "/routing/rules",
-    "/ravns/bindings",
     "/entities/index",
-    "/related",
-    "/evidence",
-    "/page/revise",
     "/eval/",
     "/activity/live",
 )
@@ -1354,9 +1141,6 @@ class MimirRouter:
                 )
             yield
         finally:
-            for mount in self._deployed_mounts.get():
-                if mount.get("close_after_request"):
-                    await mount["port"].aclose()
             self._deployed_mounts.reset(mounts_token)
             self._other_org.reset(other_org_token)
             self._tenant.reset(tenant_token)
@@ -1364,7 +1148,7 @@ class MimirRouter:
     def _validate_registry_write(self, request: RegistryMountRequest) -> None:
         if not self._tenant.get():
             return
-        if request.kind != "remote" or request.path or request.secret_kwargs_env:
+        if request.kind != "remote" or request.secret_kwargs_env:
             raise HTTPException(
                 422, "Tenant connections cannot access host files or environment secrets"
             )
@@ -1385,8 +1169,7 @@ class MimirRouter:
         entry = self._registry_entry_by_name(mount_name)
         if entry is None or not entry.enabled:
             return None
-        endpoint = entry.path if entry.kind == "local" else entry.url
-        if not endpoint and not entry.adapter:
+        if not entry.url and not entry.adapter:
             return None
         if entry.auth_ref and not entry.adapter:
             raise ValueError(
@@ -1404,8 +1187,7 @@ class MimirRouter:
             adapter=entry.adapter,
             kwargs=entry.kwargs,
             secret_kwargs_env=entry.secret_kwargs_env,
-            url=entry.url if entry.kind == "remote" else "",
-            path=entry.path if entry.kind == "local" else "",
+            url=entry.url,
         )
         self._registry_local_ports[mount_name] = (cache_key, port)
         return port
@@ -1498,23 +1280,6 @@ class MimirRouter:
             return await reader.search_attributed(query)
         return [(self._name, page) for page in await reader.search(query)]
 
-    async def _lint_response(self, mount: str | None, *, fix: bool) -> LintResponse:
-        """Lint one mount, or every mount, attributing each issue to its mount.
-
-        Across mounts, a mount whose backend has no lint is listed as
-        unsupported while the others are still linted. Asked for by name,
-        the same mount answers 501: the one thing requested cannot be done.
-        """
-        if mount is None:
-            targets = self._mount_definitions()
-        else:
-            port, resolved = self._resolve_port(mount)
-            targets = [{"name": resolved, "port": port}]
-        results = await _lint_each_mount(targets, fix=fix)
-        if mount is not None and results[0][1] is None:
-            raise HTTPException(501, results[0][2])
-        return _lint_to_response(results)
-
     def _register_routes(self) -> None:
         router = self.router
         adapter = self._adapter
@@ -1543,10 +1308,6 @@ class MimirRouter:
                 source_count=result.source_count,
                 categories=result.categories,
                 last_write=(result.last_write.isoformat() if result.last_write is not None else ""),
-                lint_issues=result.lint_issues,
-                lint_checked_at=(
-                    result.lint_checked_at.isoformat() if result.lint_checked_at is not None else ""
-                ),
             )
 
         @router.get("/mounts", response_model=list[MountResponse])
@@ -1691,40 +1452,6 @@ class MimirRouter:
             self._registry_store.delete_entry(entry_id, tenant_id=self._tenant.get())
             self._registry_local_ports.clear()
 
-        @router.get("/routing/rules", response_model=list[RoutingRuleResponse])
-        async def list_routing_rules() -> list[RoutingRuleResponse]:
-            return [RoutingRuleResponse(**rule) for rule in _get_routing_rule_store(adapter)]
-
-        @router.put("/routing/rules/{rule_id}", response_model=RoutingRuleResponse)
-        async def upsert_routing_rule(
-            rule_id: str,
-            rule: RoutingRuleResponse,
-        ) -> RoutingRuleResponse:
-            rules = _get_routing_rule_store(adapter)
-            payload = rule.model_dump()
-            payload["id"] = rule_id
-            for index, existing in enumerate(rules):
-                if existing["id"] == rule_id:
-                    rules[index] = payload
-                    break
-            else:
-                rules.append(payload)
-            _sync_routing_rules(adapter)
-            return RoutingRuleResponse(**payload)
-
-        @router.delete("/routing/rules/{rule_id}", status_code=204)
-        async def delete_routing_rule(rule_id: str) -> None:
-            rules = _get_routing_rule_store(adapter)
-            rules[:] = [rule for rule in rules if rule["id"] != rule_id]
-            _sync_routing_rules(adapter)
-
-        @router.get("/ravns/bindings", response_model=list[RavnBindingResponse])
-        async def list_ravn_bindings() -> list[RavnBindingResponse]:
-            bindings = getattr(adapter, "_http_ravn_bindings", None)
-            if isinstance(bindings, list):
-                return [RavnBindingResponse(**binding) for binding in bindings]
-            return []
-
         @router.get("/mounts/recent-writes", response_model=list[RecentWriteResponse])
         async def recent_writes(
             limit: int = Query(default=20, ge=1, le=200),
@@ -1761,22 +1488,6 @@ class MimirRouter:
                             ravn="mimir",
                             kind="compile",
                             message=source.title,
-                        )
-                    )
-                for entry in await _parse_log_entries(port):
-                    detail_text = " ".join(entry["detail"])
-                    lower_text = f"{entry['prefix']} {entry['subject']} {detail_text}".lower()
-                    if "dream cycle" not in lower_text:
-                        continue
-                    events.append(
-                        RecentWriteResponse(
-                            id=_stable_id(mount["name"], entry["subject"], entry["date"]),
-                            timestamp=_parse_log_timestamp(entry["date"]),
-                            mount=mount["name"],
-                            page="",
-                            ravn=_extract_key_values(entry["detail"]).get("ravn", "mimir"),
-                            kind="dream",
-                            message=entry["subject"],
                         )
                     )
 
@@ -1885,65 +1596,6 @@ class MimirRouter:
                 for meta in index()
             ]
 
-        @router.get("/related", response_model=list[RelatedPageResponse])
-        async def related(
-            path: str = Query(),
-            depth: int = Query(default=1, ge=1, le=3),
-            rel: str | None = Query(default=None),
-        ) -> list[RelatedPageResponse]:
-            """Link-graph traversal from a page (NIU-1058)."""
-            related_fn = getattr(adapter, "related_pages", None)
-            if related_fn is None:
-                raise HTTPException(status_code=501, detail="Adapter has no link graph")
-            return [RelatedPageResponse(**item) for item in related_fn(path, depth=depth, rel=rel)]
-
-        @router.get("/evidence", response_model=list[FactEvidenceResponse])
-        async def evidence(path: str = Query()) -> list[FactEvidenceResponse]:
-            """Evidence-counted beliefs for a page (NIU-1062).
-
-            Proofs come from the page's timeline entries AND from ingested raw
-            sources that bear on a fact (write-time scoped consolidation)."""
-            from mimir.learning import compute_page_evidence
-
-            try:
-                content = await adapter.read_page(path)
-            except FileNotFoundError:
-                raise HTTPException(status_code=404, detail=f"Page not found: {path}")
-            sources = [
-                (source.source_id, source.content) for source in await _read_full_sources(adapter)
-            ]
-            return [
-                FactEvidenceResponse(**item.to_dict())
-                for item in compute_page_evidence(content, sources=sources)
-            ]
-
-        @router.post(
-            "/page/revise",
-            response_model=PageResponse,
-            dependencies=[Depends(self._require_write_auth)],
-        )
-        async def revise_belief_endpoint(
-            http_request: Request, request: ReviseBeliefRequest
-        ) -> PageResponse:
-            """Belief revision with journey (NIU-1062): rewrite a compiled-truth
-            fact while appending the old → new transition to the Timeline."""
-            from mimir.learning import revise_belief
-
-            try:
-                content = await adapter.read_page(request.path)
-            except FileNotFoundError:
-                raise HTTPException(status_code=404, detail=f"Page not found: {request.path}")
-            try:
-                revised = revise_belief(
-                    content, request.old_fact, request.new_fact, request.attribution
-                )
-            except ValueError as exc:
-                raise HTTPException(status_code=422, detail=str(exc))
-            await adapter.upsert_page(request.path, revised)
-            await self._record_activity(http_request, "write", self._name, request.path)
-            page = await adapter.get_page(request.path)
-            return _decorate_page(page, mounts=[self._name])
-
         @router.get("/log")
         async def log_entries(
             n: int = Query(default=50),
@@ -1960,52 +1612,13 @@ class MimirRouter:
             entries = [ln for ln in lines if ln.startswith("## ")]
             return {"entries": entries[-n:], "raw": content}
 
-        @router.get("/lint", response_model=LintResponse)
-        async def lint(mount: str | None = Query(default=None)) -> LintResponse:
-            try:
-                return await self._lint_response(mount, fix=False)
-            except MimirUnavailableError as exc:
-                raise HTTPException(503, str(exc)) from exc
-
-        @router.post("/lint/fix", response_model=LintResponse)
-        async def lint_fix(
-            request: LintFixRequest | None = None,
-            mount: str | None = Query(default=None),
-        ) -> LintResponse:
-            del request
-            try:
-                return await self._lint_response(mount, fix=True)
-            except MimirUnavailableError as exc:
-                raise HTTPException(503, str(exc)) from exc
-
-        @router.get("/doctor")
-        async def doctor_report(mount: str | None = Query(default=None)) -> dict[str, Any]:
-            from mimir.doctor import run_doctor
-
-            port, _ = self._resolve_port(mount)
-            root = port.filesystem_root()
-            if root is None:
-                raise HTTPException(
-                    status_code=501,
-                    detail="doctor requires a filesystem-backed Mimir adapter",
-                )
-            report = await run_doctor(
-                port,
-                Path(root),
-                registry_store=self._registry_store,
-                tenant_id=self._tenant.get(),
-            )
-            return report.to_dict()
-
         @router.get("/eval/latest")
         async def eval_latest() -> dict[str, Any]:
             """Latest retrieval eval report (written by `mimir eval --out
-            <root>/evals/eval-latest.json`). 404 when none has been recorded."""
-            root = adapter.filesystem_root()
-            if self._eval_capture_dir is None and root is None:
+            <path>/evals/eval-latest.json`). 404 when none has been recorded."""
+            if self._eval_capture_dir is None:
                 raise HTTPException(status_code=501, detail="No evaluation storage configured")
-            evals_dir = self._eval_capture_dir or Path(root) / "evals"
-            report_path = evals_dir / "eval-latest.json"
+            report_path = self._eval_capture_dir / "eval-latest.json"
             if not report_path.exists():
                 raise HTTPException(status_code=404, detail="No eval report recorded")
             import json as _json
@@ -2017,12 +1630,10 @@ class MimirRouter:
             """Aggregated live query stats from the eval-capture JSONL files."""
             from mimir.eval import load_capture
 
-            root = adapter.filesystem_root()
-            if self._eval_capture_dir is None and root is None:
+            if self._eval_capture_dir is None:
                 raise HTTPException(status_code=501, detail="No query capture storage configured")
-            evals_dir = self._eval_capture_dir or Path(root) / "evals"
             captures = []
-            for capture_file in sorted(evals_dir.glob("queries-*.jsonl")):
+            for capture_file in sorted(self._eval_capture_dir.glob("queries-*.jsonl")):
                 captures.extend(load_capture(capture_file))
             if not captures:
                 raise HTTPException(status_code=404, detail="No captured queries")
@@ -2039,69 +1650,6 @@ class MimirRouter:
                 "zero_result_count": sum(1 for c in captures if not c.result_paths),
                 "recent": recent,
             }
-
-        @router.post("/doctor/fix", dependencies=[Depends(self._require_write_auth)])
-        async def doctor_fix(mount: str | None = Query(default=None)) -> dict[str, Any]:
-            """Run the safe auto-remediations, then return a fresh report."""
-            from mimir.doctor import run_doctor, run_fixes
-
-            port, _ = self._resolve_port(mount)
-            root = port.filesystem_root()
-            if root is None:
-                raise HTTPException(
-                    status_code=501,
-                    detail="doctor requires a filesystem-backed Mimir adapter",
-                )
-            await run_fixes(port)
-            report = await run_doctor(
-                port,
-                Path(root),
-                registry_store=self._registry_store,
-                tenant_id=self._tenant.get(),
-            )
-            return report.to_dict()
-
-        @router.get("/dreams", response_model=list[DreamCycleResponse])
-        async def list_dream_cycles(
-            limit: int = Query(default=20, ge=1, le=200),
-        ) -> list[DreamCycleResponse]:
-            cycles: list[DreamCycleResponse] = []
-            for mount in self._mount_definitions():
-                for entry in await _parse_log_entries(mount["port"]):
-                    detail_text = " ".join(entry["detail"])
-                    lower_text = f"{entry['prefix']} {entry['subject']} {detail_text}".lower()
-                    if "dream cycle" not in lower_text:
-                        continue
-                    values = _extract_key_values(entry["detail"])
-                    cycles.append(
-                        DreamCycleResponse(
-                            id=_stable_id(mount["name"], entry["subject"], entry["date"]),
-                            timestamp=_parse_log_timestamp(entry["date"]),
-                            ravn=values.get("ravn", "mimir"),
-                            mounts=[mount["name"]],
-                            pages_updated=int(
-                                values.get(
-                                    "pages_updated",
-                                    _parse_count(detail_text, "pages_updated"),
-                                )
-                            ),
-                            entities_created=int(
-                                values.get(
-                                    "entities_created",
-                                    _parse_count(detail_text, "entities_created"),
-                                )
-                            ),
-                            lint_fixes=int(
-                                values.get(
-                                    "lint_fixes",
-                                    _parse_count(detail_text, "lint_fixes"),
-                                )
-                            ),
-                            duration_ms=int(values.get("duration_ms", 0)),
-                        )
-                    )
-            cycles.sort(key=lambda cycle: cycle.timestamp, reverse=True)
-            return cycles[:limit]
 
         @router.get("/activity", response_model=list[ActivityEventResponse])
         async def activity_log(
@@ -2130,9 +1678,7 @@ class MimirRouter:
                 for entry in await _parse_log_entries(port):
                     detail_values = _extract_key_values(entry["detail"])
                     kind = entry["prefix"]
-                    if "dream cycle" in f"{entry['subject']} {' '.join(entry['detail'])}".lower():
-                        kind = "dream"
-                    if kind not in {"ingest", "query", "lint", "dream"}:
+                    if kind not in {"ingest", "query"}:
                         continue
                     events.append(
                         ActivityEventResponse(
@@ -2456,7 +2002,7 @@ class MimirRouter:
                         f"Refusing to ingest source_type {request.source_type!r}: it records "
                         "system activity, not knowledge, so nothing will ever synthesise it "
                         "into a page and it would sit unprocessed forever. Write run output "
-                        "to logs or a thread instead."
+                        "to logs instead."
                     ),
                 )
             content_hash = compute_content_hash(request.content)
@@ -2471,12 +2017,7 @@ class MimirRouter:
                 ingested_at=datetime.now(UTC),
             )
             page_paths = await port.ingest(source)
-            consolidated = list(getattr(port, "_last_consolidated", []))
-            return IngestResponse(
-                source_id=source_id,
-                pages_updated=page_paths,
-                consolidated=consolidated,
-            )
+            return IngestResponse(source_id=source_id, pages_updated=page_paths)
 
         @router.post("/sources/ingest/url", response_model=SourceResponse)
         async def ingest_url(
@@ -2550,43 +2091,3 @@ class MimirRouter:
 
 def _meta_to_response(meta: MimirPageMeta) -> PageMetaResponse:
     return _decorate_page_meta(meta)
-
-
-def _lint_to_response(
-    results: list[tuple[str, MimirLintReport | None, str]],
-) -> LintResponse:
-    reports = [(name, report) for name, report, _ in results if report is not None]
-    merged = MimirLintReport(
-        issues=[issue for _, report in reports for issue in report.issues],
-        pages_checked=sum(report.pages_checked for _, report in reports),
-    )
-    return LintResponse(
-        issues=[
-            LintIssueResponse(
-                id=issue.id,
-                severity=issue.severity,
-                message=issue.message,
-                page_path=issue.page_path,
-                auto_fixable=issue.auto_fixable,
-                rule=issue.id,
-                page=issue.page_path,
-                mount=name,
-                auto_fix=issue.auto_fixable,
-            )
-            for name, report in reports
-            for issue in report.issues
-        ],
-        pages_checked=merged.pages_checked,
-        issues_found=merged.issues_found,
-        summary=merged.summary,
-        mounts=[
-            LintMountResponse(
-                name=name,
-                status="linted" if report is not None else "unsupported",
-                pages_checked=report.pages_checked if report is not None else 0,
-                issues=len(report.issues) if report is not None else 0,
-                detail=detail,
-            )
-            for name, report, detail in results
-        ],
-    )

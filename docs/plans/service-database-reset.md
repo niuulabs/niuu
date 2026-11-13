@@ -22,7 +22,7 @@ database to service-owned databases and service-owned migrations.
 - `observatory`: observatory registry and stream state.
 - `bifrost`: accounting and audit state.
 - `ravn`: checkpoints, personas, long-lived memory state.
-- `mimir`: search and indexing state, if persisted in PostgreSQL.
+- `mimir`: none. Its knowledge lives in the configured backend (gbrain), which owns its own database.
 
 ## Execution order
 

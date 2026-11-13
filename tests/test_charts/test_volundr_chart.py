@@ -2604,3 +2604,73 @@ class TestProjectMemoryDirectory:
         result = subprocess.run(command, capture_output=True, text=True)
         assert result.returncode != 0
         assert "projectMemory.mimirUrl asks the hosted Mimir with a workload token" in result.stderr
+
+
+@pytest.mark.skipif(shutil.which("helm") is None, reason="Helm is required")
+class TestMemoryGateway:
+    """memory.gatewayUrl: the gateway every session's memory server calls."""
+
+    def test_without_a_gateway_no_memory_section_is_rendered(self):
+        assert "memory" not in _rendered_configmap()
+
+    def test_a_gateway_is_rendered_for_forge_to_hand_to_every_session(self):
+        from volundr.config import MemoryConfig
+
+        config = _rendered_configmap(
+            "--set",
+            "memory.gatewayUrl=http://mimir.volundr.svc/api/v1/mimir",
+            *WORKLOAD_SIGNING_KEY,
+        )
+        memory = MemoryConfig.model_validate(config["memory"])
+        assert memory.gateway_url == "http://mimir.volundr.svc/api/v1/mimir"
+
+    def test_the_gateways_service_subject_is_rendered_for_forge(self):
+        from volundr.config import MemoryConfig
+
+        config = _rendered_configmap(
+            "--set",
+            "memory.gatewayUrl=http://mimir.volundr.svc/api/v1/mimir",
+            "--set",
+            "memory.gatewayServiceSubject=system:serviceaccount:niuu:mimir",
+            *WORKLOAD_SIGNING_KEY,
+        )
+        memory = MemoryConfig.model_validate(config["memory"])
+        assert memory.gateway_service_subject == "system:serviceaccount:niuu:mimir"
+
+    def test_a_verifying_identity_needs_the_gateways_service_subject(self):
+        command = [
+            "helm",
+            "template",
+            "test",
+            str(CHART_DIR),
+            *BIFROST_URL,
+            *WORKLOAD_SIGNING_KEY,
+            "--set",
+            "memory.gatewayUrl=http://mimir.volundr.svc/api/v1/mimir",
+            "--set",
+            "identity.adapter=volundr.adapters.outbound.identity.EnvoyHeaderIdentityAdapter",
+        ]
+        result = subprocess.run(command, capture_output=True, text=True)
+        assert result.returncode != 0
+        assert "memory.gatewayServiceSubject" in result.stderr
+
+        with_subject = [
+            *command,
+            "--set",
+            "memory.gatewayServiceSubject=system:serviceaccount:niuu:mimir",
+        ]
+        assert subprocess.run(with_subject, capture_output=True, text=True).returncode == 0
+
+    def test_a_gateway_without_session_credentials_refuses_to_render(self):
+        command = [
+            "helm",
+            "template",
+            "test",
+            str(CHART_DIR),
+            *BIFROST_URL,
+            "--set",
+            "memory.gatewayUrl=http://mimir.volundr.svc/api/v1/mimir",
+        ]
+        result = subprocess.run(command, capture_output=True, text=True)
+        assert result.returncode != 0
+        assert "memory.gatewayUrl needs Forge session credentials" in result.stderr

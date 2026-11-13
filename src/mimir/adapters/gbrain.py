@@ -20,13 +20,10 @@ an SSE ``data:`` frame, so responses are parsed for both. Markdown ingest goes
 to ``/ingest`` when configured, which is the path gbrain documents for bulk
 content.
 
-What this adapter deliberately does not do
-------------------------------------------
+Raw sources
+-----------
 Raw sources are stored as source pages with a lossless JSON payload so
-GBrain markdown normalization cannot alter the evidence. The lint method raises: an operator
-who points a workflow at a brain that cannot lint should be told so, not
-handed a clean report over an unlinted corpus. See
-``.claude/rules/no-fallbacks.md``.
+GBrain markdown normalization cannot alter the evidence.
 """
 
 from __future__ import annotations
@@ -40,9 +37,13 @@ from typing import Any
 import httpx
 import yaml
 
+from mimir.adapters.gbrain_mcp import GBrainMcpClient, read_secret
+from mimir.adapters.gbrain_mcp import (
+    parse_mcp_response as _parse_mcp_response,  # noqa: F401 — kept importable from here
+)
+from mimir.adapters.gbrain_mcp import text_result as _text_result
 from niuu.domain.mimir import (
     EntityType,
-    MimirLintReport,
     MimirMountSummary,
     MimirPage,
     MimirPageMeta,
@@ -57,10 +58,6 @@ from niuu.ports.mimir import MimirPort
 
 _DEFAULT_TIMEOUT = 30.0
 _DEFAULT_SEARCH_LIMIT = 10
-_UNSUPPORTED = (
-    "gbrain has no equivalent for {op}. Mímir-specific operations are not "
-    "emulated — point this workflow at a Mímir mount, or drop the call."
-)
 
 
 class GBrainMimirAdapter(MimirPort):
@@ -99,62 +96,33 @@ class GBrainMimirAdapter(MimirPort):
     ) -> None:
         if not mcp_url:
             raise ValueError("GBrainMimirAdapter requires an MCP URL")
-        if api_token_file:
-            from pathlib import Path
-
-            api_token = Path(api_token_file).expanduser().read_text().strip()
+        api_token = read_secret(api_token, api_token_file, what="gbrain API token")
         if not api_token:
             raise ValueError(
                 "GBrainMimirAdapter requires an API token; create one with "
                 "`gbrain auth create <name>`"
             )
-        self._mcp_url = mcp_url.rstrip("/")
+        self._mcp = GBrainMcpClient(mcp_url, api_token, timeout_seconds=timeout_seconds)
+        self._mcp_url = self._mcp.url
         self._ingest_url = ingest_url.rstrip("/") if ingest_url else None
         self._api_token = api_token
-        self._timeout_seconds = float(timeout_seconds)
         self._search_limit = search_limit
         self._think_model = think_model
         self._query_expansion = query_expansion
-        self._client: httpx.AsyncClient | None = None
 
     # ------------------------------------------------------------------
     # Transport
     # ------------------------------------------------------------------
 
     def _get_client(self) -> httpx.AsyncClient:
-        if self._client is None:
-            self._client = httpx.AsyncClient(timeout=self._timeout_seconds)
-        return self._client
+        return self._mcp.http()
 
     async def close(self) -> None:
-        if self._client is not None and not self._client.is_closed:
-            await self._client.aclose()
-        self._client = None
+        await self._mcp.close()
 
     async def _call_tool(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         """Invoke one gbrain MCP tool, raising on any error it reports."""
-        payload = {
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "tools/call",
-            "params": {"name": name, "arguments": arguments},
-        }
-        response = await self._get_client().post(
-            self._mcp_url,
-            headers={
-                "Authorization": f"Bearer {self._api_token}",
-                "Accept": "application/json, text/event-stream",
-                "Content-Type": "application/json",
-            },
-            json=payload,
-        )
-        response.raise_for_status()
-        message = _parse_mcp_response(response.text)
-        if "error" in message:
-            raise RuntimeError(f"gbrain MCP error from {name}: {message['error']}")
-        result = message.get("result")
-        if not isinstance(result, dict):
-            raise RuntimeError(f"gbrain MCP returned no result object from {name}: {message}")
+        result = await self._mcp.call(name, arguments)
         if result.get("isError"):
             detail = _text_result(result)
             if name == "get_page":
@@ -324,11 +292,8 @@ class GBrainMimirAdapter(MimirPort):
         return [slug]
 
     # ------------------------------------------------------------------
-    # Mímir-specific surface gbrain does not have
+    # Sources
     # ------------------------------------------------------------------
-
-    async def lint(self, fix: bool = False) -> MimirLintReport:
-        raise NotImplementedError(_UNSUPPORTED.format(op="lint"))
 
     async def read_source(self, source_id: str) -> MimirSource | None:
         try:
@@ -448,32 +413,6 @@ def _source_from_record(source_id: str, record: dict[str, Any]) -> MimirSource:
 # ---------------------------------------------------------------------------
 # Response parsing
 # ---------------------------------------------------------------------------
-
-
-def _parse_mcp_response(raw: str) -> dict[str, Any]:
-    """Parse a gbrain MCP reply, which may be JSON or an SSE ``data:`` frame."""
-    text = raw.strip()
-    if not text:
-        raise RuntimeError("gbrain MCP returned an empty response")
-    if text.startswith("{"):
-        return json.loads(text)
-    for line in text.split("\n"):
-        line = line.strip()
-        if line.startswith("data:"):
-            body = line[len("data:") :].strip()
-            if body:
-                return json.loads(body)
-    raise RuntimeError(f"gbrain MCP returned an unparseable response: {text[:200]}")
-
-
-def _text_result(result: dict[str, Any]) -> str:
-    """Join the text blocks of an MCP tool result."""
-    blocks = result.get("content")
-    if not isinstance(blocks, list):
-        return ""
-    return "\n".join(
-        str(b.get("text", "")) for b in blocks if isinstance(b, dict) and b.get("type") == "text"
-    ).strip()
 
 
 def _records(result: dict[str, Any]) -> list[dict[str, Any]]:

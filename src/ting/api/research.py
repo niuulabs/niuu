@@ -1179,9 +1179,7 @@ def _same_mimir_mount(left: MimirPort, right: MimirPort) -> bool:
         return left_url == right_url and getattr(left, "_mount", None) == getattr(
             right, "_mount", None
         )
-    left_root = left.filesystem_root()
-    right_root = right.filesystem_root()
-    return left_root is not None and left_root == right_root
+    return left is right
 
 
 def _summarize_campaign_pages(

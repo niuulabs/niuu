@@ -2019,6 +2019,311 @@ def test_mesh_identity_refusals_pass_through_with_their_status() -> None:
 
 
 @respx.mock
+def test_memory_context_reaches_the_session_owner_and_is_never_cached() -> None:
+    """The memory gateway asks the root about a session; the Forge that owns it answers."""
+    client = _client([_instance("alpha", base_url="http://alpha")])
+    respx.get("http://alpha/api/v1/forge/sessions/s1").mock(
+        return_value=Response(200, json={"id": "s1"})
+    )
+    path = "/api/v1/forge/sessions/s1/memory-context"
+    respx.get(f"http://alpha{path}").mock(
+        return_value=Response(200, json={"session_id": "s1"}, headers={"cache-control": "no-store"})
+    )
+    response = client.get(path, headers=_headers())
+    assert response.status_code == 200
+    assert response.json() == {"session_id": "s1"}
+    assert response.headers["cache-control"] == "no-store"
+
+
+@respx.mock
+def test_memory_context_refusals_pass_through_with_their_status() -> None:
+    client = _client([_instance("alpha", base_url="http://alpha")])
+    respx.get("http://alpha/api/v1/forge/sessions/s1").mock(
+        return_value=Response(200, json={"id": "s1"})
+    )
+    respx.get("http://alpha/api/v1/forge/sessions/s1/memory-context").mock(
+        return_value=Response(403, json={"detail": "not the session's own credential"})
+    )
+    response = client.get("/api/v1/forge/sessions/s1/memory-context", headers=_headers())
+    assert response.status_code == 403
+    assert response.json() == {"detail": "not the session's own credential"}
+
+
+PROJECT_ID = "6f1d2c1e-5a3b-4c7d-9e8f-0a1b2c3d4e5f"
+T1 = "2026-11-01T10:00:00Z"
+T2 = "2026-11-02T10:00:00Z"
+
+
+@respx.mock
+def test_project_role_reaches_the_nodes_forge() -> None:
+    """The memory gateway asks the root for a person's role; the project's Forge answers."""
+    client = _client([_instance("alpha", base_url="http://alpha", is_default=True)])
+    route = respx.get(f"http://alpha/api/v1/forge/projects/{PROJECT_ID}/role").mock(
+        return_value=Response(200, json={"project_id": PROJECT_ID, "role": "approver"})
+    )
+
+    response = client.get(f"/api/v1/forge/projects/{PROJECT_ID}/role", headers=_headers())
+
+    assert response.status_code == 200
+    assert response.json() == {"project_id": PROJECT_ID, "role": "approver"}
+    assert route.calls.last.request.headers["authorization"] == "Bearer test-token"
+
+
+@respx.mock
+def test_a_memory_proposal_notice_reaches_the_sessions_forge() -> None:
+    client = _client([_instance("alpha", base_url="http://alpha")])
+    respx.get("http://alpha/api/v1/forge/sessions/s1").mock(
+        return_value=Response(200, json={"id": "s1"})
+    )
+    route = respx.post("http://alpha/api/v1/forge/sessions/s1/memory/proposals").mock(
+        return_value=Response(200, json={"told": ["marc"], "reason": None})
+    )
+    body = {"proposal_id": "p-1", "project_id": PROJECT_ID, "title": "t"}
+    response = client.post(
+        "/api/v1/forge/sessions/s1/memory/proposals", json=body, headers=_headers()
+    )
+    assert response.status_code == 200
+    assert response.json() == {"told": ["marc"], "reason": None}
+    assert json.loads(route.calls.last.request.content) == body
+    assert route.calls.last.request.headers["content-type"] == "application/json"
+
+
+@pytest.mark.parametrize(
+    ("method", "tail"),
+    [
+        ("GET", "memory"),
+        ("POST", "memory"),
+        ("PATCH", "memory/notes"),
+        ("DELETE", "memory/notes"),
+        ("POST", "memory/proposals/p-1/decided"),
+    ],
+)
+@respx.mock
+def test_project_memory_routes_reach_the_projects_forge(method, tail) -> None:
+    client = _client([_instance("alpha", base_url="http://alpha", is_default=True)])
+    route = respx.route(
+        method=method, url=f"http://alpha/api/v1/forge/projects/{PROJECT_ID}/{tail}"
+    ).mock(return_value=Response(200, json={}))
+    response = client.request(
+        method,
+        f"/api/v1/forge/projects/{PROJECT_ID}/{tail}",
+        headers=_headers(),
+        json={} if method in ("POST", "PATCH") else None,
+    )
+    assert response.status_code == 200, response.text
+    assert route.called
+
+
+@respx.mock
+def test_other_project_memory_operations_stay_unknown() -> None:
+    client = _client([_instance("alpha", base_url="http://alpha", is_default=True)])
+    for method, tail in (("PUT", "memory"), ("GET", "memory/proposals/p-1/decided")):
+        response = client.request(
+            method, f"/api/v1/forge/projects/{PROJECT_ID}/{tail}", headers=_headers()
+        )
+        assert response.status_code in (404, 405), (method, tail, response.status_code)
+
+
+@respx.mock
+def test_project_role_refusals_pass_through_with_their_status() -> None:
+    client = _client([_instance("alpha", base_url="http://alpha", is_default=True)])
+    respx.get(f"http://alpha/api/v1/forge/projects/{PROJECT_ID}/role").mock(
+        return_value=Response(404, json={"detail": "Project not found"})
+    )
+
+    response = client.get(f"/api/v1/forge/projects/{PROJECT_ID}/role", headers=_headers())
+
+    assert response.status_code == 404
+    assert response.json() == {"detail": "Project not found"}
+
+
+@respx.mock
+def test_project_role_is_read_only() -> None:
+    client = _client([_instance("alpha", base_url="http://alpha", is_default=True)])
+
+    response = client.post(f"/api/v1/forge/projects/{PROJECT_ID}/role", headers=_headers())
+
+    assert response.status_code == 404
+
+
+@respx.mock
+def test_memory_run_owner_is_answered_by_the_node_that_has_the_run() -> None:
+    client = _client(
+        [_instance("alpha", base_url="http://alpha"), _instance("beta", base_url="http://beta")]
+    )
+    owner = {"run_id": "run-1", "owner_id": "u", "tenant_id": "t", "session_ids": ["s1"]}
+    respx.get("http://alpha/api/v1/forge/memory/runs/run-1").mock(
+        return_value=Response(404, json={"detail": "Run not found: run-1"})
+    )
+    respx.get("http://beta/api/v1/forge/memory/runs/run-1").mock(
+        return_value=Response(200, json=owner)
+    )
+
+    response = client.get("/api/v1/forge/memory/runs/run-1", headers=_headers())
+
+    assert response.status_code == 200
+    assert response.json() == owner
+    assert response.headers["cache-control"] == "no-store"
+
+
+@respx.mock
+def test_memory_run_owner_joins_the_sessions_of_a_run_spread_over_nodes() -> None:
+    client = _client(
+        [_instance("alpha", base_url="http://alpha"), _instance("beta", base_url="http://beta")]
+    )
+    for node, sessions in (("alpha", ["s2", "s1"]), ("beta", ["s3"])):
+        respx.get(f"http://{node}/api/v1/forge/memory/runs/run-1").mock(
+            return_value=Response(
+                200,
+                json={
+                    "run_id": "run-1",
+                    "owner_id": "u",
+                    "tenant_id": "t",
+                    "session_ids": sessions,
+                },
+            )
+        )
+
+    response = client.get("/api/v1/forge/memory/runs/run-1", headers=_headers())
+
+    assert response.json()["session_ids"] == ["s1", "s2", "s3"]
+
+
+@respx.mock
+def test_memory_run_owner_is_not_found_when_no_node_has_it() -> None:
+    client = _client([_instance("alpha", base_url="http://alpha")])
+    respx.get("http://alpha/api/v1/forge/memory/runs/run-1").mock(
+        return_value=Response(404, json={"detail": "Run not found: run-1"})
+    )
+
+    response = client.get("/api/v1/forge/memory/runs/run-1", headers=_headers())
+
+    assert response.status_code == 404
+
+
+@respx.mock
+def test_memory_run_owner_refusal_from_a_node_is_not_read_as_not_there() -> None:
+    client = _client(
+        [_instance("alpha", base_url="http://alpha"), _instance("beta", base_url="http://beta")]
+    )
+    respx.get("http://alpha/api/v1/forge/memory/runs/run-1").mock(
+        return_value=Response(404, json={"detail": "Run not found: run-1"})
+    )
+    respx.get("http://beta/api/v1/forge/memory/runs/run-1").mock(
+        return_value=Response(403, json={"detail": "a session credential"})
+    )
+
+    response = client.get("/api/v1/forge/memory/runs/run-1", headers=_headers())
+
+    assert response.status_code == 403
+    assert response.json() == {"detail": "a session credential"}
+
+
+def _ended(sessions: dict, runs: dict) -> Response:
+    def state(entry):
+        return {"state": entry[0], "ended_at": entry[1]}
+
+    return Response(
+        200,
+        json={
+            "sessions": {key: state(value) for key, value in sessions.items()},
+            "runs": {key: state(value) for key, value in runs.items()},
+        },
+    )
+
+
+@respx.mock
+def test_memory_ended_gives_one_answer_from_what_every_node_says() -> None:
+    """A node that does not know a session says gone; it never outvotes the one that does."""
+    client = _client(
+        [_instance("alpha", base_url="http://alpha"), _instance("beta", base_url="http://beta")]
+    )
+    body = {"sessions": ["s1", "s2", "s3"], "runs": ["r1", "r2", "r3"]}
+    alpha = respx.post("http://alpha/api/v1/forge/memory/ended").mock(
+        return_value=_ended(
+            {"s1": ("ended", T1), "s2": ("gone", None), "s3": ("gone", None)},
+            {"r1": ("ended", T1), "r2": ("gone", None), "r3": ("ended", T1)},
+        )
+    )
+    beta = respx.post("http://beta/api/v1/forge/memory/ended").mock(
+        return_value=_ended(
+            {"s1": ("gone", None), "s2": ("active", None), "s3": ("gone", None)},
+            {"r1": ("ended", T2), "r2": ("gone", None), "r3": ("active", None)},
+        )
+    )
+
+    response = client.post("/api/v1/forge/memory/ended", headers=_headers(), json=body)
+
+    assert response.status_code == 200
+    assert response.headers["cache-control"] == "no-store"
+    assert response.json() == {
+        "sessions": {
+            "s1": {"state": "ended", "ended_at": T1},
+            "s2": {"state": "active", "ended_at": None},
+            "s3": {"state": "gone", "ended_at": None},
+        },
+        "runs": {
+            "r1": {"state": "ended", "ended_at": T2},
+            "r2": {"state": "gone", "ended_at": None},
+            "r3": {"state": "active", "ended_at": None},
+        },
+    }
+    assert json.loads(alpha.calls.last.request.content) == body
+    assert json.loads(beta.calls.last.request.content) == body
+
+
+@respx.mock
+def test_memory_ended_fails_when_a_node_cannot_answer() -> None:
+    """Without that node's answer its sessions would read as gone, and their layers be deleted."""
+    client = _client(
+        [_instance("alpha", base_url="http://alpha"), _instance("beta", base_url="http://beta")]
+    )
+    respx.post("http://alpha/api/v1/forge/memory/ended").mock(
+        return_value=_ended({"s1": ("gone", None)}, {})
+    )
+    respx.post("http://beta/api/v1/forge/memory/ended").mock(
+        return_value=Response(503, json={"detail": "starting"})
+    )
+
+    response = client.post(
+        "/api/v1/forge/memory/ended", headers=_headers(), json={"sessions": ["s1"]}
+    )
+
+    assert response.status_code == 503
+    assert response.json() == {"detail": "starting"}
+
+
+@respx.mock
+def test_memory_ended_refusal_passes_through_with_its_status() -> None:
+    client = _client([_instance("alpha", base_url="http://alpha")])
+    respx.post("http://alpha/api/v1/forge/memory/ended").mock(
+        return_value=Response(403, json={"detail": "not the memory gateway"})
+    )
+
+    response = client.post("/api/v1/forge/memory/ended", headers=_headers(), json={})
+
+    assert response.status_code == 403
+    assert response.json() == {"detail": "not the memory gateway"}
+
+
+def test_memory_ended_without_a_visible_node_is_a_503() -> None:
+    client = _client([])
+
+    response = client.post("/api/v1/forge/memory/ended", headers=_headers(), json={})
+
+    assert response.status_code == 503
+
+
+@pytest.mark.parametrize("content", [b"{", b"[]"])
+def test_memory_ended_wants_a_json_object(content: bytes) -> None:
+    client = _client([_instance("alpha", base_url="http://alpha")])
+
+    response = client.post("/api/v1/forge/memory/ended", headers=_headers(), content=content)
+
+    assert response.status_code == 422
+
+
+@respx.mock
 def test_playability_is_answered_by_the_forge_a_session_create_would_use() -> None:
     """A mini-mode launch asks the root whether each member can play; the target Forge answers."""
     client = _client([_instance("alpha", base_url="http://alpha")])

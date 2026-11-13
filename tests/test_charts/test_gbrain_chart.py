@@ -124,6 +124,17 @@ def test_managed_postgres_uses_operator_credentials_and_configured_storage():
         assert env["valueFrom"]["secretKeyRef"] == {"name": "brain-gbrain-db-app", "key": "uri"}
 
 
+# Mímir has no default store, so its chart refuses to render without one.
+_BACKEND_REQUIRED = {
+    "mimir": (
+        "--set",
+        "config.backend.mcpUrl=http://gbrain:3131/mcp",
+        "--set",
+        "config.backend.apiTokenSecret.name=gbrain-token",
+    )
+}
+
+
 @pytest.mark.parametrize("backend", ["mimir", "gbrain"])
 def test_discovery_identity_keeps_instances_distinct_and_selectors_stable(backend):
     def workload(instance):
@@ -139,6 +150,7 @@ def test_discovery_identity_keeps_instances_distinct_and_selectors_stable(backen
                 "niuu.cluster=ymir",
                 "--set",
                 f"niuu.instanceId={instance}",
+                *_BACKEND_REQUIRED.get(backend, ()),
             ],
             capture_output=True,
             text=True,

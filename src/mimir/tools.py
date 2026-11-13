@@ -3,13 +3,11 @@
 Tools:
   mimir_ingest  — ingest a URL or raw text into the wiki
   mimir_read_source — read a specific raw source by source_id
-  mimir_query   — search the wiki and synthesise an answer
   mimir_read    — read a specific wiki page
   mimir_write   — create or update a wiki page
   mimir_publish_artifact — publish a JSON capability artifact
   mimir_publish_files — publish workspace markdown files into the wiki
   mimir_search  — full-text search, returns list of matching pages
-  mimir_lint    — health-check: orphans, contradictions, staleness, gaps
 
 Typed facts (``build_mimir_fact_tools``, see ``mimir.fact_tools``):
   mimir_fact_remember / _recall / _forget / _entity / _context_pack / _share / _receive
@@ -29,7 +27,6 @@ from mimir.exceptions import MimirUnavailableError
 from mimir.fact_tools import FACT_TOOLS, FactToolSpec, run_fact_tool
 from mimir.facts import FactService
 from mimir.file_security import PathSecurityError, resolve_safe
-from mimir.ports.entity_extractor import EntityExtractorPort
 from niuu.domain.mimir import MimirSource, compute_content_hash, compute_source_id
 from niuu.domain.mimir_facts import FactCaller, FactError
 from niuu.domain.tool import ToolResult
@@ -63,10 +60,7 @@ def _string_list(value: Any) -> list[str]:
 def _resolve_ingest_mount_names(adapter: MimirPort, explicit: str | None = None) -> list[str]:
     resolver = getattr(type(adapter), "ingest_targets", None)
     if resolver is not None:
-        try:
-            return _string_list(resolver(adapter, explicit))
-        except Exception:
-            logger.debug("mimir_ingest: failed to resolve ingest targets", exc_info=True)
+        return _string_list(resolver(adapter, explicit))
     if explicit:
         return [explicit]
     return []
@@ -144,11 +138,9 @@ class MimirIngestTool(ToolPort):
     def __init__(
         self,
         adapter: MimirPort,
-        entity_extractor: EntityExtractorPort | None = None,
         event_emitter: Callable[[str, dict[str, Any]], Awaitable[None]] | None = None,
     ) -> None:
         self._adapter = adapter
-        self._entity_extractor = entity_extractor
         self._event_emitter = event_emitter
 
     @property
@@ -232,10 +224,6 @@ class MimirIngestTool(ToolPort):
         else:
             page_paths = await self._adapter.ingest(source)
 
-        if self._entity_extractor is not None:
-            entity_paths = await self._entity_extractor.run(source)
-            page_paths = page_paths + entity_paths
-
         mount_names = _resolve_ingest_mount_names(self._adapter, target_mimir)
         if self._event_emitter is not None:
             event_fields: dict[str, Any] = {
@@ -280,68 +268,6 @@ class MimirIngestTool(ToolPort):
         if page_paths:
             result += f"\nPages updated: {', '.join(page_paths)}"
         return ToolResult(tool_call_id="", content=result)
-
-
-# ---------------------------------------------------------------------------
-# mimir_query
-# ---------------------------------------------------------------------------
-
-
-class MimirQueryTool(ToolPort):
-    """Search the Mímir wiki and return relevant pages for synthesis."""
-
-    def __init__(self, adapter: MimirPort) -> None:
-        self._adapter = adapter
-
-    @property
-    def name(self) -> str:
-        return "mimir_query"
-
-    @property
-    def description(self) -> str:
-        return (
-            "Query the Mímir knowledge base. "
-            "Reads the wiki index to find relevant pages, then returns their content. "
-            "Call this before going to the web — check what you already know."
-        )
-
-    @property
-    def input_schema(self) -> dict:
-        return {
-            "type": "object",
-            "properties": {
-                "question": {
-                    "type": "string",
-                    "description": "The question or topic to search the wiki for.",
-                },
-            },
-            "required": ["question"],
-        }
-
-    @property
-    def required_permission(self) -> str:
-        return _PERMISSION_READ
-
-    async def execute(self, input: dict) -> ToolResult:
-        question = input.get("question", "").strip()
-        if not question:
-            return ToolResult(tool_call_id="", content="question is required", is_error=True)
-
-        result = await self._adapter.query(question)
-
-        if not result.sources:
-            return ToolResult(
-                tool_call_id="",
-                content=f"No wiki pages found for: {question}\n\nGo to the web to research.",
-            )
-
-        lines = [f"## Mímir: results for '{question}'\n"]
-        for page in result.sources:
-            lines.append(f"### {page.meta.title} ({page.meta.path})")
-            lines.append(page.content[:2000])
-            lines.append("")
-
-        return ToolResult(tool_call_id="", content="\n".join(lines))
 
 
 # ---------------------------------------------------------------------------
@@ -874,113 +800,6 @@ class MimirSearchTool(ToolPort):
                 lines.append(f"  {page.meta.summary}")
 
         return ToolResult(tool_call_id="", content="\n".join(lines))
-
-
-# ---------------------------------------------------------------------------
-# mimir_lint
-# ---------------------------------------------------------------------------
-
-
-class MimirLintTool(ToolPort):
-    """Run a Mímir wiki health-check: orphans, contradictions, staleness, gaps."""
-
-    def __init__(self, adapter: MimirPort) -> None:
-        self._adapter = adapter
-
-    @property
-    def name(self) -> str:
-        return "mimir_lint"
-
-    @property
-    def description(self) -> str:
-        return (
-            "Health-check the Mímir wiki. "
-            "Finds orphan pages, flagged contradictions, stale sources, and concept gaps. "
-            "Run during idle time to keep the wiki healthy."
-        )
-
-    @property
-    def input_schema(self) -> dict:
-        return {
-            "type": "object",
-            "properties": {},
-        }
-
-    @property
-    def required_permission(self) -> str:
-        return _PERMISSION_READ
-
-    async def execute(self, input: dict) -> ToolResult:
-        report = await self._adapter.lint()
-
-        lines = [
-            f"## Mímir lint — {report.pages_checked} pages checked\n",
-            f"Issues found: {len(report.issues)}",
-            "",
-        ]
-
-        check_labels: dict[str, str] = {
-            "L01": "Orphans",
-            "L02": "Contradictions",
-            "L04": "Concept Gaps",
-            "L05": "Broken Wikilinks",
-            "L06": "Missing Source Attribution",
-            "L07": "Thin Pages",
-            "L08": "Stale Content",
-            "L09": "Timeline Edits",
-            "L10": "Empty Compiled Truth",
-            "L11": "Stale Index",
-            "L12": "Invalid Frontmatter",
-        }
-
-        by_check: dict[str, list] = {}
-        for issue in report.issues:
-            by_check.setdefault(issue.id, []).append(issue)
-
-        for check_id in sorted(by_check):
-            group = by_check[check_id]
-            label = check_labels.get(check_id, check_id)
-            lines.append(f"### {label} ({len(group)})")
-            for issue in group:
-                fix_tag = " [auto-fixable]" if issue.auto_fixable else ""
-                lines.append(f"  - [{issue.severity}] {issue.page_path}: {issue.message}{fix_tag}")
-            lines.append("")
-
-        if not report.issues_found:
-            lines.append("All clear — no issues found.")
-
-        return ToolResult(tool_call_id="", content="\n".join(lines))
-
-
-# ---------------------------------------------------------------------------
-# Factory
-# ---------------------------------------------------------------------------
-
-
-def build_mimir_tools(
-    adapter: MimirPort,
-    workspace: Path | None = None,
-    entity_extractor: EntityExtractorPort | None = None,
-    event_emitter: Callable[[str, dict[str, Any]], Awaitable[None]] | None = None,
-) -> list[ToolPort]:
-    """Return all Mímir tools wired to *adapter*.
-
-    When *entity_extractor* is provided it is wired into :class:`MimirIngestTool`
-    so that LLM-based entity detection runs automatically on every ingest.
-    """
-    tools: list[ToolPort] = [
-        MimirIngestTool(adapter, entity_extractor=entity_extractor, event_emitter=event_emitter),
-        MimirQueryTool(adapter),
-        MimirReadTool(adapter),
-        MimirReadSourceTool(adapter),
-        MimirWriteTool(adapter),
-        MimirPublishArtifactTool(adapter),
-        MimirSearchTool(adapter),
-        MimirLintTool(adapter),
-    ]
-    if workspace is not None:
-        tools.append(MimirPublishFilesTool(adapter, workspace))
-    return tools
 
 
 # ---------------------------------------------------------------------------

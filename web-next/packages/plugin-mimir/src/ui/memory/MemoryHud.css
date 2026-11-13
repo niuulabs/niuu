@@ -1,0 +1,215 @@
+/*
+ * MemoryHud.css — the heads-up display around the memory scene: glass
+ * panels, mono captions, thin signal-colour rules and pill filters. Every
+ * colour is a token; the signal colour is the brand, change is the amber accent.
+ */
+
+.niuu-hud-glass {
+  background: color-mix(in srgb, var(--color-bg-secondary) 72%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-brand) 35%, transparent);
+  border-radius: var(--radius-lg);
+  backdrop-filter: blur(8px);
+  box-shadow: 0 0 24px color-mix(in srgb, var(--color-brand) 8%, transparent);
+}
+
+.niuu-hud-caption {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: calc(var(--text-xs) * 11 / 12);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--color-brand);
+}
+
+.niuu-hud-caption--muted {
+  color: var(--color-text-muted);
+}
+
+.niuu-hud-mono {
+  font-family: var(--font-mono);
+  font-size: calc(var(--text-xs) * 11 / 12);
+  letter-spacing: 0.04em;
+  color: var(--color-text-muted);
+}
+
+.niuu-hud-rule {
+  height: 1px;
+  border: 0;
+  margin: 0;
+  background: linear-gradient(
+    90deg,
+    color-mix(in srgb, var(--color-brand) 55%, transparent),
+    transparent
+  );
+}
+
+.niuu-hud-recent {
+  color: var(--color-accent-amber);
+}
+
+/* ── Search ─────────────────────────────────────────── */
+
+.niuu-hud-search-input {
+  width: 100%;
+  box-sizing: border-box;
+  height: 48px;
+  padding: 0 var(--space-4);
+  font: inherit;
+  font-size: var(--text-base);
+  color: var(--color-text-primary);
+  background: color-mix(in srgb, var(--color-bg-secondary) 70%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-brand) 45%, transparent);
+  border-radius: var(--radius-lg);
+  backdrop-filter: blur(6px);
+  outline: none;
+}
+
+.niuu-hud-search-input:focus-visible {
+  border-color: var(--color-brand);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--color-brand) 40%, transparent);
+}
+
+.niuu-hud-search-input::placeholder {
+  color: var(--color-text-muted);
+}
+
+.niuu-hud-listbox {
+  max-height: 280px;
+  overflow-y: auto;
+  margin: 0;
+  padding: var(--space-1);
+  list-style: none;
+}
+
+.niuu-hud-option {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-md);
+  color: var(--color-text-secondary);
+  cursor: pointer;
+}
+
+.niuu-hud-option[aria-selected='true'] {
+  color: var(--color-text-primary);
+  background: color-mix(in srgb, var(--color-brand) 14%, transparent);
+}
+
+/* ── Filters ────────────────────────────────────────── */
+
+.niuu-hud-chip {
+  min-height: 30px;
+  padding: 0 var(--space-3);
+  font: inherit;
+  font-size: var(--text-xs);
+  color: var(--color-text-secondary);
+  background: color-mix(in srgb, var(--color-bg-secondary) 60%, transparent);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-full);
+  cursor: pointer;
+}
+
+.niuu-hud-chip:hover {
+  color: var(--color-text-primary);
+}
+
+.niuu-hud-chip[aria-pressed='true'] {
+  color: var(--brand-300);
+  background: color-mix(in srgb, var(--color-brand) 14%, transparent);
+  border-color: color-mix(in srgb, var(--color-brand) 50%, transparent);
+}
+
+/* ── Focused card ───────────────────────────────────── */
+
+.niuu-hud-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 40px;
+  font: inherit;
+  font-size: var(--text-sm);
+  font-weight: 500;
+  border-radius: var(--radius-md);
+  cursor: pointer;
+}
+
+.niuu-hud-action--primary {
+  color: var(--color-bg-primary);
+  background: var(--color-brand);
+  border: 0;
+}
+
+.niuu-hud-action--secondary {
+  color: var(--color-text-primary);
+  background: transparent;
+  border: 1px solid color-mix(in srgb, var(--color-brand) 40%, transparent);
+}
+
+.niuu-hud-action--secondary[aria-pressed='true'] {
+  background: color-mix(in srgb, var(--color-brand) 14%, transparent);
+}
+
+/* ── Replay scrubber ────────────────────────────────── */
+
+.niuu-hud-scrubber-range {
+  width: 100%;
+  margin: 0;
+  accent-color: var(--color-brand);
+}
+
+.niuu-hud-scrubber-bars {
+  display: flex;
+  align-items: flex-end;
+  gap: 1px;
+  height: 18px;
+}
+
+.niuu-hud-scrubber-bar {
+  flex: 1;
+  min-height: 1px;
+  background: color-mix(in srgb, var(--color-brand) 22%, transparent);
+}
+
+.niuu-hud-scrubber-bar--current {
+  background: var(--color-brand);
+}
+
+.niuu-hud-marks {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-3);
+  overflow-x: auto;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.niuu-hud-mark {
+  padding: 0;
+  font: inherit;
+  font-size: var(--text-xs);
+  white-space: nowrap;
+  color: var(--color-text-muted);
+  background: none;
+  border: 0;
+  cursor: pointer;
+}
+
+.niuu-hud-mark:hover {
+  color: var(--color-text-primary);
+}
+
+.niuu-hud-mark--recent {
+  color: var(--color-accent-amber);
+}
+
+.niuu-hud-link {
+  padding: 0;
+  font: inherit;
+  color: var(--brand-300);
+  background: none;
+  border: 0;
+  cursor: pointer;
+}

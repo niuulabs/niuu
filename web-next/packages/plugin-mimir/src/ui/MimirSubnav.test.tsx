@@ -38,8 +38,14 @@ describe('MimirSubnav', () => {
     expect(container).toBeEmptyDOMElement();
   });
 
+  it.each(['/mimir/search', '/mimir/review'])('renders nothing on %s, one calm job', (path) => {
+    currentPathname = path;
+    const { container } = wrap();
+    expect(container).toBeEmptyDOMElement();
+  });
+
   it('still renders the full subnav on a registry route', () => {
-    currentPathname = '/mimir/registry/health';
+    currentPathname = '/mimir/registry/analytics';
     wrap();
     expect(screen.getByText('Mount focus')).toBeInTheDocument();
   });
@@ -62,7 +68,6 @@ describe('MimirSubnav', () => {
   it('renders quick filters section', () => {
     wrap();
     expect(screen.getByText('Quick filters')).toBeInTheDocument();
-    expect(screen.getByText('Errors')).toBeInTheDocument();
     expect(screen.getByText('Low confidence')).toBeInTheDocument();
   });
 
@@ -100,11 +105,6 @@ describe('MimirSubnav', () => {
     const localBtn = screen.getAllByText('local')[0]!.closest('button')!;
     fireEvent.click(localBtn);
     expect(setTweak).toHaveBeenCalledWith('activeMount', 'local');
-  });
-
-  it('clicking Errors navigates', async () => {
-    wrap();
-    fireEvent.click(screen.getByText('Errors'));
   });
 
   it('clicking Flagged navigates', async () => {
@@ -165,7 +165,6 @@ describe('MimirSubnav', () => {
               status: 'down',
               pages: 1,
               sources: 1,
-              lintIssues: 0,
               lastWrite: '2026-04-19T00:00:00Z',
               embedding: 'minilm',
               sizeKb: 10,

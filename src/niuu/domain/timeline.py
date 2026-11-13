@@ -67,8 +67,7 @@ def extract_entry_dates(content: str) -> list[datetime]:
     frontmatter YAML never contains a literal ``## Timeline`` line, so the
     zone regex is safe to run against it directly). Entries without a
     ``YYYY-MM-DD:`` prefix carry no date and are skipped; a date-only entry
-    is treated as midnight UTC on that day, matching
-    ``mimir.learning._parse_date``.
+    is treated as midnight UTC on that day.
     """
     zone = extract_zone(content, TIMELINE_HEADING)
     dates: list[datetime] = []

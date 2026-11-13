@@ -45,6 +45,9 @@ const tingMocks = vi.hoisted(() => ({
   buildDispatchBusHttpAdapter: vi.fn((client) => ({ kind: 'dispatch', client })),
   buildTingSettingsHttpAdapter: vi.fn((client) => ({ kind: 'settings', client })),
   buildTingAuditLogHttpAdapter: vi.fn((client) => ({ kind: 'audit', client })),
+  buildMemoryImportsHttpAdapter: vi.fn((client) => ({ kind: 'memory-imports', client })),
+  createMockMemoryImportsService: vi.fn(() => ({ kind: 'mock-memory-imports' })),
+  MEMORY_IMPORTS_SERVICE_KEY: 'ting.memoryImports',
 }));
 
 const ravnMocks = vi.hoisted(() => ({
@@ -122,6 +125,9 @@ vi.mock('@niuulabs/plugin-ravn', () => ravnMocks);
 vi.mock('@niuulabs/plugin-mimir', () => ({
   createMimirMockAdapter: vi.fn(() => ({})),
   buildMimirHttpAdapter: vi.fn(() => ({})),
+  buildMemoryGatewayHttpAdapter: vi.fn((client) => ({ kind: 'memory-gateway', client })),
+  createMemoryGatewayMockAdapter: vi.fn(() => ({ kind: 'mock-memory-gateway' })),
+  MEMORY_GATEWAY_SERVICE_KEY: 'mimir.memory',
 }));
 vi.mock('@niuulabs/plugin-setup', () => ({
   createMockSetupService: vi.fn(() => ({})),
@@ -568,6 +574,24 @@ describe('buildServices live base selection', () => {
     const live = buildServices({ demoMode: false, services: {} } as any);
     expect(tingMocks.createMockWorkService).not.toHaveBeenCalled();
     expect(isUnavailableService(live['ting.work'])).toBe(true);
+  });
+
+  it('wires the memory gateway and memory imports to Mímir and Ting, mocks only in demo', () => {
+    const live = buildServices({
+      demoMode: false,
+      services: {
+        mimir: { mode: 'http', baseUrl: '/api/v1/mimir' },
+        ting: { mode: 'http', baseUrl: '/api/v1/ting' },
+      },
+    } as any);
+    expect(live['mimir.memory']).toMatchObject({ kind: 'memory-gateway' });
+    expect(live['ting.memoryImports']).toMatchObject({ kind: 'memory-imports' });
+    const demo = buildServices({ demoMode: true, services: {} } as any);
+    expect(demo['mimir.memory']).toEqual({ kind: 'mock-memory-gateway' });
+    expect(demo['ting.memoryImports']).toEqual({ kind: 'mock-memory-imports' });
+    const off = buildServices({ demoMode: false, services: {} } as any);
+    expect(isUnavailableService(off['mimir.memory'])).toBe(true);
+    expect(isUnavailableService(off['ting.memoryImports'])).toBe(true);
   });
 
   it("wires Ting's run workflow view into Forge only where Ting can read the run", () => {

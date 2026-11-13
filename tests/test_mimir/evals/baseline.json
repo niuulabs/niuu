@@ -1,7 +1,6 @@
 {
   "generated_at": "2026-06-12T20:57:51.367678+00:00",
   "corpus": "tests/test_mimir/evals/corpus",
-  "embedding_model": null,
   "query_count": 62,
   "overall": {
     "precision_at_5": 0.4596774193548387,

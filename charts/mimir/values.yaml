@@ -220,10 +220,11 @@ extraVolumes: []
 deploymentAnnotations: {}
 
 # ---------------------------------------------------------------------------
-# Persistent storage for the Mímir wiki
+# Persistent storage for the service's own state (mount registry, eval captures).
+# Knowledge lives in the gbrain backend, not here.
 # ---------------------------------------------------------------------------
 persistence:
-  # -- Enable a PersistentVolumeClaim for the wiki data.
+  # -- Enable a PersistentVolumeClaim for the service state directory.
   enabled: true
   # -- Use an existing PVC instead of creating one.
   existingClaim: ""
@@ -265,8 +266,30 @@ config:
   announceUrl: ""
   # -- Category filter for domain-scoped Mímirs. Empty = all categories.
   categories: []
-  # -- Path inside the container where the wiki is stored.
+  # -- Path inside the container for the service's own state: the mount registry and
+  # eval captures. It holds no knowledge.
   dataPath: "/data/mimir"
+  # -- The store this Mímir serves. Required: there is no default store, and the chart
+  # refuses to render without mcpUrl and apiTokenSecret.name.
+  backend:
+    # -- MCP endpoint of the gbrain instance, such as http://gbrain:3131/mcp.
+    mcpUrl: ""
+    # -- Secret holding the gbrain bearer token (`gbrain auth create <name>`). It is
+    # mounted read-only and the service reads the token from the file.
+    apiTokenSecret:
+      name: ""
+      key: token
+    # -- gbrain /ingest endpoint for bulk markdown writes. Empty = not used.
+    ingestUrl: ""
+    # -- Seconds before a call to gbrain times out. Null = the adapter's own default.
+    timeoutSeconds: null
+    # -- Results requested per search. Null = the adapter's own default.
+    searchLimit: null
+    # -- Model gbrain synthesises answers with, as <provider>:<model>. Empty = unset.
+    thinkModel: ""
+    # -- Whether gbrain may rewrite each query into variants before retrieving.
+    # Null = the adapter's own default.
+    queryExpansion: null
   # Record real search traffic for service diagnostics.
   evalCapture: true
   # -- HTTP port the service listens on.
@@ -282,6 +305,55 @@ config:
   # (buffer_size: 2000, window_seconds: 900). Fields match
   # mimir.config.LiveActivityConfig.
   liveActivity: {}
+  # The memory gateway (docs/design/memory): the `memory` tools Forge sessions call
+  # (GET/POST /memory/tools), over the org, project and session layers held in one
+  # gbrain per org. Off by default. The service checks every part at startup.
+  memory:
+    # -- Serve the memory tools.
+    enabled: false
+    # -- Forge's base URL, e.g. http://volundr:8080. The gateway asks Forge who each
+    # session is on every call. Required when enabled.
+    forgeBaseUrl: ""
+    # -- Seconds before a call to Forge times out. Null = the service default (10).
+    forgeTimeoutSeconds: null
+    # -- Changes the change feed is asked for per call (a page size, not a cap: the feed is
+    # read until it has no more). Null = the service default (10).
+    defaultResultCount: null
+    # -- One gbrain per org. Each entry:
+    #   name: acme-brain                 # referenced by `tenants`
+    #   mcpUrl: http://acme-brain:3131/mcp
+    #   adminTokenSecret: {name: acme-brain-admin, key: token}      # gbrain's GBRAIN_ADMIN_BOOTSTRAP_TOKEN:
+    #                                       # creates each layer's gbrain source and client
+    #   signingKeySecret: {name: acme-memory-seal, key: key}        # seals trust and layer
+    #   timeoutSeconds / pageSize / recallLimit / timelineLimit: optional, null = default
+    systems: []
+    # -- Tenant id -> the `name` of the system holding that org's layers.
+    tenants: {}
+    # -- How the gateway authenticates as a service (Forge's memory/ended for retention):
+    # a niuu.ports.http_auth.HttpAuthPort dynamic adapter,
+    # rendered as given. Required when enabled. Examples:
+    #   {adapter: niuu.adapters.outbound.http_auth.FileBearerTokenAuthAdapter,
+    #    token_file: /var/run/secrets/memory/token}
+    #   {adapter: niuu.adapters.outbound.http_auth.NoAuthHeaderAdapter}   # no auth at all
+    serviceAuth: {}
+    # -- Days a run or session layer outlives its run or session. Null = default (14).
+    retentionDays: null
+    # -- Seconds between retention sweeps. Null = the service default (3600).
+    retentionSweepSeconds: null
+    # -- How stale the knowledge graph (GET /memory/graph) may be, in seconds: a graph is
+    # served again for this long before it is rebuilt. 0 rebuilds on every request.
+    # Null = the service default (30).
+    graphCacheSeconds: null
+    # -- Memory-system reads in flight at once while one knowledge graph is built.
+    # Null = the service default (8).
+    graphConcurrency: null
+    # -- Roles that make a person an org admin (decides org proposals).
+    # Empty = the service default ([volundr:admin]).
+    orgAdminRoles: []
+    # -- Workload subjects (the `act.sub` of a verified workload-identity token) that may
+    # write connector sources through POST /memory/sources, e.g. [ting]. Empty = no caller
+    # is a connector, and the route answers 403 naming this setting.
+    connectorServiceSubjects: []
 
 # Optional dynamic Flux deployment adapter configuration. Disabled by default.
 # Supply namespace, source_name, chart_versions, images and cluster in this map.

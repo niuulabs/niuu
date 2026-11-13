@@ -1,0 +1,63 @@
+schema_version: 1
+id: 7b46fab6-5793-4033-a9bf-5129d630b5ce
+name: Memory compile
+description: Reads the new sources of a project's memory and brings the pages they concern up to date,
+  citing each source on the page's timeline. It only adds, so nothing is retired or removed, and a write
+  the project's rules turn into a proposal is reported as one. Ting starts it after an import brought
+  new sources, with their ids in the launch context.
+version: 1.0.0
+persona_dependencies:
+  memory-compiler:
+    id: memory-compiler
+    revision: content-d730269acab7c68d
+    digest: sha256:d730269acab7c68d1dac04697f4b9239960ff169ae5e20568ca53cf09d0c6dd6
+    path: personas/memory-compiler.yaml
+graph:
+  tags:
+  - memory
+  - compile
+  nodes:
+  - id: compile-request
+    kind: trigger
+    label: Sources to compile
+    source: memory import
+    dispatchEvent: memory.compile.requested
+    position:
+      x: 96
+      y: 200
+  - id: compile-sources
+    kind: stage
+    label: Compile the sources
+    description: Read each source named in the launch context, add what is new to the compiled truth of
+      the pages it concerns, and append a timeline row that cites the source and its URL. Only add, and
+      never retire or remove anything. End by listing, per source, the pages and rows changed or
+      proposed.
+    executionMode: sequential
+    joinMode: any
+    stageMembers:
+    - personaId: memory-compiler
+      model: claude-opus-5-5
+      consumesEventTypes:
+      - memory.compile.requested
+    position:
+      x: 400
+      y: 200
+  - id: compile-done
+    kind: end
+    label: Sources compiled
+    joinMode: all
+    completionEvent: memory.compile.done
+    passingVerdicts:
+    - pass
+    position:
+      x: 720
+      y: 200
+  edges:
+  - id: edge-request-to-compile
+    source: compile-request
+    target: compile-sources
+    label: memory.compile.requested -> memory.compile.requested
+  - id: edge-compile-to-done
+    source: compile-sources
+    target: compile-done
+    label: memory.compiled -> memory.compile.done

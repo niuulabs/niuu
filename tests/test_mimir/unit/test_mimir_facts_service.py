@@ -15,7 +15,6 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from mimir.adapters.gbrain_facts import GBrainFactAdapter
-from mimir.adapters.markdown import MarkdownMimirAdapter
 from mimir.config import MimirFactsConfig, MimirServiceConfig
 from mimir.fact_tools import FACT_TOOLS
 from mimir.facts import FactCallerResolver, FactService
@@ -44,7 +43,10 @@ from niuu.domain.mimir_facts import (
 from niuu.domain.models import Principal
 from niuu.ports.identity import HeaderAuthenticationPort, InvalidTokenError
 from niuu.ports.mimir_facts import MimirFactPort
+from tests.test_mimir.unit.fakes import InMemoryMimirAdapter
 from tests.test_mimir.unit.test_gbrain_facts_adapter import MCP, FakeGBrain
+
+_BACKEND = {"adapter": "tests.test_mimir.unit.fakes.InMemoryMimirAdapter"}
 
 NOW = datetime.now(UTC)
 PERSON = FactCaller(FactAuthor(AuthorKind.PERSON, "jozef"))
@@ -378,7 +380,7 @@ def _mcp(tmp_path, port: MimirFactPort | None = None, *, configured: bool = True
             ),
         }
     server = MimirMcpServer(
-        adapter=MarkdownMimirAdapter(root=tmp_path / "mimir"),
+        adapter=InMemoryMimirAdapter(),
         name="test",
         auth=_Auth(PRINCIPALS),
         auth_mode="none",
@@ -430,7 +432,7 @@ class TestMcpSurface:
     def test_facts_and_callers_must_come_together(self, tmp_path) -> None:
         service = FactService(MemoryFacts(), source="x", chars_per_token=4)
         with pytest.raises(ValueError, match="together"):
-            MimirMcpServer(adapter=MarkdownMimirAdapter(root=tmp_path), facts=service)
+            MimirMcpServer(adapter=InMemoryMimirAdapter(), facts=service)
 
     def test_a_person_writes_at_the_person_level(self, tmp_path) -> None:
         result = _text(_call(_mcp(tmp_path), "jozef", "mimir_fact_remember", REMEMBER))
@@ -632,7 +634,8 @@ class TestConfig:
 
         config = MimirServiceConfig(
             path=str(tmp_path / "m"),
-            facts=MimirFactsConfig(adapter="mimir.adapters.markdown.MarkdownMimirAdapter"),
+            backend=_BACKEND,
+            facts=MimirFactsConfig(adapter="tests.test_mimir.unit.fakes.InMemoryMimirAdapter"),
         )
         with pytest.raises(ValueError, match="not a MimirFactPort"):
             create_app(config)
@@ -644,6 +647,7 @@ class TestConfig:
         key.write_text("k")
         config = MimirServiceConfig(
             path=str(tmp_path / "m"),
+            backend=_BACKEND,
             facts=MimirFactsConfig(
                 kwargs={"mcp_url": MCP, "api_token": "tok", "signing_key_file": str(key)}
             ),
@@ -659,7 +663,9 @@ class TestConfig:
         from mimir.app import create_app
 
         config = MimirServiceConfig(
-            path=str(tmp_path / "m"), facts=MimirFactsConfig(kwargs={"mcp_url": MCP})
+            path=str(tmp_path / "m"),
+            backend=_BACKEND,
+            facts=MimirFactsConfig(kwargs={"mcp_url": MCP}),
         )
         with pytest.raises(ValueError, match="API token"):
             create_app(config)

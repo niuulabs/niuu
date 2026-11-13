@@ -63,8 +63,6 @@ export const mountSchema = z.object({
   pages: z.number().int().min(0),
   /** Total raw source records stored on this mount. */
   sources: z.number().int().min(0),
-  /** Open lint issues on this mount. */
-  lintIssues: z.number().int().min(0),
   /** ISO-8601 timestamp of the most recent write to this mount. */
   lastWrite: z.string().min(1),
   /** Embedding model id used by this mount's vector index. */

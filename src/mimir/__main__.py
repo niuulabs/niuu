@@ -2,12 +2,12 @@
 
 Usage::
 
-    python -m mimir serve --path ~/.ravn/mimir --port 7477
+    python -m mimir serve --backend '{"adapter": "mimir.adapters.gbrain.GBrainMimirAdapter", ...}'
     python -m mimir serve --name shared --role shared --announce-url https://mimir.odin.niuu.world
-    python -m mimir mcp --path ~/.ravn/mimir
-    python -m mimir doctor --path ~/.ravn/mimir [--fix] [--json]
-    python -m mimir eval --json
-    python -m mimir eval replay --capture ~/.ravn/mimir/evals/queries-2026-W24.jsonl
+    python -m mimir mcp --adapter-config ./instance.yaml
+    python -m mimir eval --backend '{"adapter": "...", ...}' --json
+    python -m mimir eval replay --backend '{"adapter": "...", ...}' \\
+        --capture ~/.ravn/mimir/evals/queries-2026-W24.jsonl
     python -m mimir ingest ./architecture.md --title "Architecture" --mimir local
 """
 
@@ -30,7 +30,6 @@ from mimir.config import MimirServiceConfig
 
 app = typer.Typer(name="mimir", help="Standalone Mímir knowledge service.")
 
-_DEFAULT_EVAL_CORPUS = "tests/test_mimir/evals/corpus"
 _DEFAULT_EVAL_GOLDEN = "tests/test_mimir/evals/golden.yaml"
 
 
@@ -43,32 +42,41 @@ def _configured_mimir_adapter():
     return build_mimir(MimirClientSettings())
 
 
-def _mcp_adapter(path: str):
-    configured = _configured_mimir_adapter()
-    if configured is not None:
-        return configured
-    from mimir.adapters.markdown import MarkdownMimirAdapter
-
-    return MarkdownMimirAdapter(root=path)
+def _backend_option(raw: str) -> dict[str, Any]:
+    """Parse a ``--backend`` dynamic-adapter spec: a JSON object naming a MimirPort class."""
+    try:
+        spec = json.loads(raw)
+    except ValueError as exc:
+        raise typer.BadParameter(f"--backend must be a JSON object: {exc}") from exc
+    if not isinstance(spec, dict):
+        raise typer.BadParameter(
+            '--backend must be a JSON object such as {"adapter": "<MimirPort class>", ...}'
+        )
+    return spec
 
 
 @app.command()
 def serve(
-    path: str | None = typer.Option(None, help="Root directory for the Mímir store."),
+    backend: str | None = typer.Option(
+        None,
+        help=(
+            "JSON dynamic-adapter spec of the store to serve: "
+            '{"adapter": "<MimirPort class>", ...constructor kwargs}. Required, here or as '
+            "`backend:` in the config / MIMIR__BACKEND."
+        ),
+    ),
+    path: str | None = typer.Option(
+        None, help="Directory for the service's registry and eval captures."
+    ),
     host: str | None = typer.Option(None, help="Host address to bind to."),
     port: int | None = typer.Option(None, help="Port to bind to."),
     name: str | None = typer.Option(None, help="Instance name in the mount registry."),
     role: str | None = typer.Option(None, help="Instance role: shared, local, or domain."),
     announce_url: str | None = typer.Option(None, help="Public URL this instance is reachable at."),
-    embedding_model: str | None = typer.Option(
-        None,
-        help="sentence-transformers model for hybrid search (e.g. all-MiniLM-L6-v2).",
-    ),
     categories: str | None = typer.Option(
         None,
         help="Comma-separated category filter for domain-scoped instances.",
     ),
-    search_db: str | None = typer.Option(None, help="Path for the SQLite search index."),
     eval_capture: bool | None = typer.Option(
         None,
         "--eval-capture/--no-eval-capture",
@@ -90,12 +98,12 @@ def serve(
             "name": name,
             "role": role,
             "announce_url": announce_url,
-            "embedding_model": embedding_model,
-            "search_db": search_db,
             "eval_capture": eval_capture,
         }.items()
         if value is not None
     }
+    if backend is not None:
+        overrides["backend"] = _backend_option(backend)
     if categories is not None:
         overrides["categories"] = [c.strip() for c in categories.split(",") if c.strip()]
     config = MimirServiceConfig(**overrides)
@@ -133,9 +141,14 @@ def _with_write_policy(adapter, name: str, read_only: bool, write_prefix: list[s
 
 @app.command()
 def mcp(
-    path: str = typer.Option("~/.ravn/mimir", help="Root directory for the Mímir store."),
     name: str = typer.Option("local", help="Instance name reported in the MCP handshake."),
-    adapter_config: str | None = typer.Option(None, help="Backend instance YAML configuration."),
+    adapter_config: str | None = typer.Option(
+        None,
+        help=(
+            "Backend instance YAML (a MimirInstanceConfig: adapter + kwargs, or url). "
+            "Without it, the Mímir configured by RAVN_CONFIG is served."
+        ),
+    ),
     read_only: bool = typer.Option(
         False, "--read-only", help="Refuse every write to this mount (the tool returns an error)."
     ),
@@ -154,7 +167,7 @@ def mcp(
             "mimir": {
               "type": "stdio",
               "command": "python3",
-              "args": ["-m", "mimir", "mcp", "--path", "~/.ravn/mimir"]
+              "args": ["-m", "mimir", "mcp", "--adapter-config", "./instance.yaml"]
             }
           }
         }
@@ -178,53 +191,15 @@ def mcp(
         if adapter is None:
             raise ValueError("No knowledge adapter configured")
     else:
-        adapter = _mcp_adapter(path)
+        adapter = _configured_mimir_adapter()
+        if adapter is None:
+            raise typer.BadParameter(
+                "no Mímir to serve: pass --adapter-config <instance.yaml>, or set RAVN_CONFIG to "
+                "a config whose mimir.instances names the store (and mimir.enabled is true)"
+            )
     adapter = _with_write_policy(adapter, name, read_only, write_prefix)
     server = MimirMcpServer(adapter=adapter, name=name)
     asyncio.run(server.run_stdio())
-
-
-@app.command()
-def doctor(
-    path: str = typer.Option("~/.ravn/mimir", help="Root directory for the Mímir store."),
-    fix: bool = typer.Option(False, "--fix", help="Apply safe auto-fixes before reporting."),
-    json_output: bool = typer.Option(False, "--json", help="Emit the report as JSON."),
-) -> None:
-    """Run health checks (D01–D08) against a Mímir root; exit 0/1/2 on pass/warn/fail."""
-    from mimir.adapters.markdown import MarkdownMimirAdapter
-    from mimir.doctor import DoctorReport, run_doctor, run_fixes
-    from mimir.registry import MimirRegistryStore
-    from niuu.adapters.search.sqlite import SqliteSearchAdapter
-
-    root = Path(path).expanduser()
-    search_db = root / "search.db"
-    adapter = MarkdownMimirAdapter(root=root, search_port=SqliteSearchAdapter(path=str(search_db)))
-    registry_store = MimirRegistryStore(root / ".mimir-registry.json")
-
-    async def _run() -> tuple[list[str], DoctorReport]:
-        fixes = await run_fixes(adapter) if fix else []
-        report = await run_doctor(
-            adapter,
-            root,
-            registry_store=registry_store,
-            search_db=search_db,
-        )
-        return fixes, report
-
-    fixes, report = asyncio.run(_run())
-
-    if json_output:
-        payload = report.to_dict()
-        payload["fixes_applied"] = fixes
-        typer.echo(json.dumps(payload, indent=2))
-        raise typer.Exit(code=report.exit_code)
-
-    for applied in fixes:
-        typer.echo(f"fixed: {applied}")
-    if fixes:
-        typer.echo("")
-    typer.echo(report.format_text())
-    raise typer.Exit(code=report.exit_code)
 
 
 eval_app = typer.Typer(
@@ -238,24 +213,18 @@ app.add_typer(eval_app)
 @eval_app.callback()
 def eval_run(
     ctx: typer.Context,
-    corpus: str = typer.Option(
-        _DEFAULT_EVAL_CORPUS,
-        help="Directory of fixture wiki pages (relative to the repo root).",
+    backend: str | None = typer.Option(
+        None,
+        help=(
+            "JSON dynamic-adapter spec of the already-populated store to score (required "
+            "unless a subcommand is given): "
+            '{"adapter": "<MimirPort class>", ...constructor kwargs}.'
+        ),
     ),
     golden: str = typer.Option(
         _DEFAULT_EVAL_GOLDEN,
         help="Golden-set YAML mapping queries to expected page paths.",
     ),
-    embedding_model: str | None = typer.Option(
-        None,
-        help="Embedding model for hybrid search. None = FTS-only.",
-    ),
-    embedding_base_url: str = typer.Option(
-        "",
-        help="OpenAI-compatible embedding endpoint (e.g. a vLLM /v1). "
-        "Empty = load the model locally via sentence-transformers.",
-    ),
-    embedding_api_key: str = typer.Option("", help="Bearer token for --embedding-base-url."),
     json_output: bool = typer.Option(False, "--json", help="Emit the report as JSON."),
     out: str | None = typer.Option(None, help="Also write the JSON report to this file."),
     against: str | None = typer.Option(
@@ -267,21 +236,15 @@ def eval_run(
         help="Exit non-zero when overall P@5 regresses vs --against baseline.",
     ),
 ) -> None:
-    """Run the golden-set retrieval eval (default when no subcommand given)."""
+    """Score a populated store against the golden set (default when no subcommand given)."""
     if ctx.invoked_subcommand is not None:
         return
 
     from mimir.eval import EvalReport, compare_reports, run_eval
 
-    report = asyncio.run(
-        run_eval(
-            Path(corpus),
-            Path(golden),
-            embedding_model=embedding_model,
-            embedding_base_url=embedding_base_url,
-            embedding_api_key=embedding_api_key,
-        )
-    )
+    if backend is None:
+        raise typer.BadParameter("--backend is required to score a store", param_hint="--backend")
+    report = asyncio.run(run_eval(_backend_option(backend), Path(golden)))
 
     if out is not None:
         Path(out).write_text(json.dumps(report.to_dict(), indent=2), encoding="utf-8")
@@ -305,28 +268,33 @@ def eval_run(
 @eval_app.command()
 def replay(
     capture: str = typer.Option(..., help="Capture JSONL file written by eval_capture."),
-    path: str = typer.Option("~/.ravn/mimir", help="Mímir root whose wiki to replay against."),
-    embedding_model: str | None = typer.Option(
-        None,
-        help="sentence-transformers model for hybrid search. None = FTS-only.",
+    backend: str = typer.Option(
+        ...,
+        help=(
+            "JSON dynamic-adapter spec of the store to replay against: "
+            '{"adapter": "<MimirPort class>", ...constructor kwargs}.'
+        ),
     ),
     json_output: bool = typer.Option(False, "--json", help="Emit the report as JSON."),
 ) -> None:
     """Re-run captured production queries and report ranking drift."""
-    from mimir.eval import load_capture, replay_capture
+    from mimir.backend import build_backend
+    from mimir.eval import load_capture, release_adapter, replay_capture
 
+    spec = _backend_option(backend)
     captures = load_capture(Path(capture).expanduser())
     if not captures:
         typer.echo(f"No valid captures found in {capture}")
         raise typer.Exit(code=1)
 
-    report = asyncio.run(
-        replay_capture(
-            Path(path).expanduser(),
-            captures,
-            embedding_model=embedding_model,
-        )
-    )
+    async def _replay():
+        adapter = build_backend(spec, setting="--backend")
+        try:
+            return await replay_capture(adapter, captures, backend=str(spec["adapter"]))
+        finally:
+            await release_adapter(adapter)
+
+    report = asyncio.run(_replay())
     if json_output:
         typer.echo(json.dumps(report.to_dict(), indent=2))
     else:
@@ -368,7 +336,7 @@ def ingest(
         "-m",
         help=(
             "Named Mímir instance to ingest into (e.g. 'local', 'shared'). "
-            "Defaults to all configured instances."
+            "Defaults to the one instance write routing selects."
         ),
     ),
     config: str = typer.Option(
@@ -408,9 +376,8 @@ def ingest(
 def _build_single_mimir(settings, name: str) -> Any:
     """Build a single named Mímir adapter by instance name.
 
-    Searches ``settings.mimir.instances`` for *name*.  Falls back to the
-    single-path local adapter when instances are not configured and *name*
-    is ``'local'``.
+    Searches ``settings.mimir.instances`` for *name*; an unknown name exits
+    listing the configured ones.
     """
     from mimir.builders import build_mimir_auth
 
@@ -423,19 +390,12 @@ def _build_single_mimir(settings, name: str) -> Any:
             adapter=inst.adapter,
             kwargs=inst.kwargs,
             secret_kwargs_env=inst.secret_kwargs_env,
-            path=inst.path,
             url=inst.url,
             environment_id=settings.environment.id,
             auth=build_mimir_auth(settings, inst.auth) if inst.auth is not None else None,
         )
 
-    # No instances configured — accept "local" as alias for the single path adapter
-    if not settings.mimir.instances and name == "local":
-        from mimir.adapters.markdown import MarkdownMimirAdapter
-
-        return MarkdownMimirAdapter(root=settings.mimir.path)
-
-    available = [inst.name for inst in settings.mimir.instances] or ["local"]
+    available = [inst.name for inst in settings.mimir.instances] or ["(none configured)"]
     typer.echo(f"Unknown Mímir instance {name!r}. Available: {', '.join(available)}", err=True)
     raise typer.Exit(1)
 
@@ -492,6 +452,105 @@ async def _run_mimir_ingest(
     typer.echo(f"file:      {resolved_path}")
     typer.echo(f"target:    {target or 'all'}")
     typer.echo("The source is stored; write its wiki pages with mimir_write.")
+
+
+def _memory_system(tenant: str):
+    """The configured memory systems and the one holding *tenant*'s layers."""
+    from mimir.memory.systems import MemorySystems, TenantNotConfiguredError
+
+    config = MimirServiceConfig()
+    systems = MemorySystems.from_config(config.memory.systems, config.memory.tenants)
+    try:
+        _, backend = systems.for_tenant(tenant)
+    except TenantNotConfiguredError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from exc
+    return systems, backend
+
+
+def _target_layer(layer: str):
+    from mimir.memory.models import Layer, LayerKind, MemoryValidationError
+
+    try:
+        target = Layer.parse(layer)
+    except MemoryValidationError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    if target.kind not in (LayerKind.ORG, LayerKind.PROJECT):
+        raise typer.BadParameter("name the org layer (org) or a project layer (project:<id>)")
+    return target
+
+
+@app.command("import-wiki")
+def import_wiki_command(
+    root: Path = typer.Option(..., "--root", help="The old wiki root, holding wiki/ and raw/."),
+    tenant: str = typer.Option(..., "--tenant", help="The org whose memory system receives it."),
+    layer: str = typer.Option(..., "--layer", help="org, or project:<project id>."),
+    operator: str = typer.Option(
+        "wiki-import",
+        "--operator",
+        help="Who runs the import; its records are attributed to operator:<this>.",
+    ),
+) -> None:
+    """Import a retired Markdown wiki into a memory layer at operator trust.
+
+    Uses the `memory:` section of the service configuration. A page that cannot be
+    imported stops the import, naming the file.
+    """
+    from mimir.memory.importer import WikiImportError, import_wiki
+    from niuu.domain.mimir_facts import AuthorKind, FactAuthor, FactCaller
+
+    target = _target_layer(layer)
+    systems, backend = _memory_system(tenant)
+    caller = FactCaller(FactAuthor(AuthorKind.OPERATOR, operator))
+
+    async def _run():
+        try:
+            return await import_wiki(backend, root.expanduser(), target, caller)
+        finally:
+            await systems.close()
+
+    try:
+        report = asyncio.run(_run())
+    except WikiImportError as exc:
+        typer.echo(f"import failed: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    typer.echo(f"Imported into {target.id} of tenant {tenant}: {report.summary()}")
+    for path, reason in report.not_imported:
+        typer.echo(f"  not imported: {path} ({reason})")
+
+
+@app.command("list-proposals")
+def list_proposals_command(
+    tenant: str = typer.Option(..., "--tenant", help="The org whose memory system holds them."),
+    layer: str = typer.Option(..., "--layer", help="org, or project:<project id>."),
+    limit: int | None = typer.Option(
+        None, "--limit", min=1, help="List at most this many; every pending proposal by default."
+    ),
+) -> None:
+    """List the pending proposals for a layer, for its owner (decide them over the API)."""
+    from mimir.memory.gateway import list_proposals
+
+    target = _target_layer(layer)
+    systems, backend = _memory_system(tenant)
+
+    async def _run():
+        try:
+            return await list_proposals(backend, target, limit=limit)
+        finally:
+            await systems.close()
+
+    proposals = asyncio.run(_run())
+    if not proposals:
+        typer.echo(f"No pending proposals for {target.id}.")
+    for proposal in proposals:
+        flag = "" if proposal.attested else " [UNATTESTED: not written by the gateway]"
+        typer.echo(
+            f"{proposal.id}  {proposal.action.value}  from session {proposal.proposer_session} "
+            f"(owner {proposal.session_owner}) at {proposal.created_at.isoformat()}{flag}\n"
+            f"    why: {proposal.reason}\n"
+            f"    change: {json.dumps(proposal.change, ensure_ascii=False)}\n"
+            f"    evidence: {', '.join(e.ref for e in proposal.evidence)}"
+        )
 
 
 def main() -> None:

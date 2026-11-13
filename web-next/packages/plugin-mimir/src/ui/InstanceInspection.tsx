@@ -32,7 +32,10 @@ export function InstanceInspection() {
     categories.set(node.category, (categories.get(node.category) ?? 0) + 1),
   );
   graph.data?.edges.forEach((edge) =>
-    relationships.set(edge.type ?? 'related', (relationships.get(edge.type ?? 'related') ?? 0) + 1),
+    relationships.set(
+      edge.relation ?? 'related',
+      (relationships.get(edge.relation ?? 'related') ?? 0) + 1,
+    ),
   );
   const connected = new Set(graph.data?.edges.flatMap((edge) => [edge.source, edge.target]));
   const total = graph.data?.nodes.length ?? 0;

@@ -17,6 +17,12 @@ export const CAMERA3D = {
   ORBIT_PER_PX: 0.005,
   /** Extra headroom beyond the exact fit distance. */
   FIT_PADDING: 1.15,
+  /**
+   * Share of the view's width a focused node's neighbourhood is framed inside: the
+   * heads-up card covers the right of the view, so neighbours framed across the full
+   * width would sit behind it.
+   */
+  FOCUS_WIDTH_SHARE: 0.45,
   FOCUS_DISTANCE: 32,
   /** Per-frame interpolation factor for eased camera travel (0-1). */
   FOCUS_EASING: 0.12,
@@ -60,7 +66,6 @@ export const NODE3D = {
   MAX_RADIUS: 2.4,
   /** Degree at/above which a node reaches MAX_RADIUS. */
   DEGREE_FOR_MAX_RADIUS: 24,
-  DISPUTE_RING_SCALE: 1.6,
   BORN_RING_SCALE: 2.2,
 } as const;
 
@@ -81,3 +86,23 @@ export const LABEL_BOX = { width: 96, height: 18 } as const;
 
 /** Depth-fog range, in world units, applied in the 3D view. */
 export const FOG = { NEAR: 40, FAR: 220 } as const;
+
+/** The focused node's orbital rings: radius per ring (world units per unit of node size), tilt, spin. */
+export const FOCUS_RIG = {
+  /** Ring radii as multiples of the focused node's sprite size. */
+  RING_SCALES: [0.7, 1.05],
+  /** Tilt of each ring off the horizontal, in radians. */
+  RING_TILTS: [0.35, -0.9],
+  /** Radians of spin per millisecond, per ring (opposite directions read as a gyroscope). */
+  SPIN_PER_MS: [0.00035, -0.00022],
+  /** Segments per ring circle. */
+  SEGMENTS: 96,
+  /** Ring opacity. */
+  OPACITY: 0.55,
+} as const;
+
+/** Label overlay tiers: higher tiers are placed first and never displaced by lower ones. */
+export const LABEL_TIER = { FOCUS: 2, NODE: 1, RELATION: 0 } as const;
+
+/** Collision box for a relation label on a link, in CSS pixels (width, height). */
+export const RELATION_LABEL_BOX = { width: 84, height: 14 } as const;

@@ -10,7 +10,11 @@ Usage (standalone)::
     from mimir.config import MimirServiceConfig
     import uvicorn
 
-    config = MimirServiceConfig(path="~/.ravn/mimir", name="shared", role="shared")
+    config = MimirServiceConfig(
+        backend={"adapter": "mimir.adapters.gbrain.GBrainMimirAdapter", "mcp_url": "..."},
+        name="shared",
+        role="shared",
+    )
     app = create_app(config)
     uvicorn.run(app, host=config.host, port=config.port)
 """
@@ -26,7 +30,9 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from identity.adapters.jwks import JwksBearerAuthenticationAdapter
-from mimir.adapters.markdown import MarkdownMimirAdapter
+from mimir.adapters.memory_graph_rest import MemoryGraphRouter
+from mimir.adapters.memory_rest import MemoryRouter, is_session_route
+from mimir.backend import build_backend
 from mimir.config import MimirServiceConfig
 from mimir.facts import FactCallerResolver, FactService
 from mimir.live_activity import LiveActivityRecorder
@@ -34,7 +40,7 @@ from mimir.mcp import MimirMcpServer
 from mimir.registry import MimirRegistryStore
 from mimir.router import MimirRouter
 from niuu.domain.services.token_scope import credential_allows_route
-from niuu.ports.identity import InvalidTokenError
+from niuu.ports.identity import HeaderAuthenticationPort, InvalidTokenError
 from niuu.ports.mimir_facts import MimirFactPort
 from niuu.settings_schema import (
     SettingsFieldSchema,
@@ -45,65 +51,20 @@ from niuu.settings_schema import (
 logger = logging.getLogger(__name__)
 
 
-def _build_embed_fn(model_name: str, *, base_url: str = "", api_key: str = ""):  # type: ignore[return]
-    """Return an async embed function, or raise if the request cannot be met.
-
-    Two backends. With *base_url* the vectors come from an OpenAI-compatible
-    endpoint over httpx — no heavy dependency, and it works against the same
-    model production uses. Without one, sentence-transformers is loaded
-    in-process.
-
-    Asking for embeddings and quietly getting keyword-only search is the
-    failure this must not have: it is invisible, and it drops semantic recall
-    to zero while every other signal looks healthy. Pass embedding_model=None
-    to choose FTS-only deliberately. See .claude/rules/no-fallbacks.md.
-    """
-    if base_url:
-        from niuu.adapters.embedding.openai import OpenAIEmbeddingAdapter
-
-        adapter = OpenAIEmbeddingAdapter(api_key, model=model_name, base_url=base_url)
-
-        async def _embed_remote(text: str) -> list[float]:
-            return await adapter.embed(text)
-
-        return _embed_remote
-
-    try:
-        from sentence_transformers import SentenceTransformer  # type: ignore[import]
-    except ImportError as exc:
-        raise RuntimeError(
-            f"embedding_model={model_name!r} is configured but sentence-transformers "
-            f"is not installed. Set embedding_base_url to use an OpenAI-compatible "
-            f"endpoint instead, install the dependency, or set embedding_model=null "
-            f"to run FTS-only on purpose — search will not silently drop to "
-            f"keyword-only."
-        ) from exc
-
-    _model: SentenceTransformer | None = None
-
-    async def _embed(text: str) -> list[float]:
-        nonlocal _model
-        import asyncio
-
-        if _model is None:
-            _model = await asyncio.to_thread(SentenceTransformer, model_name)
-        vector = await asyncio.to_thread(_model.encode, text, normalize_embeddings=True)
-        return vector.tolist()
-
-    return _embed
-
-
 def create_app(config: MimirServiceConfig) -> FastAPI:
     """Create the standalone Mímir FastAPI application.
 
     Args:
-        config: Service configuration (path, host, port, name, role).
+        config: Service configuration (backend, host, port, name, role).
 
     Returns:
         A configured FastAPI application with the Mímir router mounted at
         ``/mimir``.
+
+    Raises:
+        MimirConfigurationError: ``config.backend`` is missing or does not name a
+            ``MimirPort``. There is no default store.
     """
-    from niuu.adapters.search.sqlite import SqliteSearchAdapter
     from niuu.service_runtime import _get_auth_mode, _validate_identity_adapter_class
     from niuu.utils import import_class
 
@@ -128,30 +89,12 @@ def create_app(config: MimirServiceConfig) -> FastAPI:
     _validate_identity_adapter_class(identity_cls, auth_mode)
     identity_adapter = identity_cls(**config.identity_kwargs)
 
-    search_db = config.search_db or str(Path(config.path).expanduser() / "search.db")
-    embed_fn = (
-        _build_embed_fn(
-            config.embedding_model,
-            base_url=config.embedding_base_url,
-            api_key=config.embedding_api_key,
-        )
-        if config.embedding_model
-        else None
-    )
-    search_port = SqliteSearchAdapter(path=search_db, embed_fn=embed_fn)
-
-    adapter = MarkdownMimirAdapter(
-        root=config.path,
-        search_port=search_port,
-        ranking_config=config.ranking,
-        evidence_config=config.evidence,
-    )
+    adapter = build_backend(config.backend, setting="MIMIR__BACKEND (backend:)")
     registry_store = MimirRegistryStore(Path(config.path).expanduser() / ".mimir-registry.json")
     registry_store.ensure_entry(
         name=config.name,
         role=config.role,
         kind="local" if not config.announce_url else "remote",
-        path=str(Path(config.path).expanduser()),
         url=config.announce_url or "",
         categories=config.categories,
         default_read_priority=0,
@@ -204,6 +147,10 @@ def create_app(config: MimirServiceConfig) -> FastAPI:
         fact_callers = FactCallerResolver(
             config.facts.trust.role_levels, config.facts.trust.scope_levels
         )
+    memory_parts = _build_memory_router(
+        config, registry_store=registry_store, identity=identity_adapter, auth_mode=auth_mode
+    )
+    memory_router, memory_graph = memory_parts if memory_parts is not None else (None, None)
     mcp_server = MimirMcpServer(
         adapter=adapter,
         name=config.name,
@@ -217,15 +164,8 @@ def create_app(config: MimirServiceConfig) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-        try:
-            if await search_port.has_documents():
-                logger.info("mimir[%s]: using persisted search index", config.name)
-            else:
-                n = await adapter.rebuild_search_index()
-                logger.info("mimir[%s]: search index ready (%d pages)", config.name, n)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("mimir[%s]: search index rebuild failed: %s", config.name, exc)
-
+        if memory_router is not None:
+            memory_router.start()
         try:
             yield
         finally:
@@ -234,6 +174,13 @@ def create_app(config: MimirServiceConfig) -> FastAPI:
             close_facts = getattr(fact_port, "close", None)
             if close_facts is not None:
                 await close_facts()
+            close_backend = getattr(adapter, "close", None)
+            if close_backend is not None:
+                await close_backend()
+            if memory_router is not None:
+                await memory_router.close()
+            if memory_graph is not None:
+                await memory_graph.close()
 
     app = FastAPI(
         title=f"Mímir — {config.name}",
@@ -299,6 +246,11 @@ def create_app(config: MimirServiceConfig) -> FastAPI:
         """
         if request.url.path in health_paths:
             return await call_next(request)
+        if memory_router is not None and is_session_route(request.method, request.url.path):
+            # The memory session routes authenticate every call through Forge with the
+            # session's own credential (mimir.adapters.memory_rest), never anonymously; the
+            # OIDC and credential_allows_route checks below are for Mímir's own callers.
+            return await call_next(request)
         if auth_mode != "oidc" and not config.tenant_id:
             return await call_next(request)
 
@@ -335,6 +287,14 @@ def create_app(config: MimirServiceConfig) -> FastAPI:
             )
         return await call_next(request)
 
+    if memory_router is not None:
+        memory_routes = memory_router.router()
+        app.include_router(memory_routes, prefix="/mimir")
+        app.include_router(memory_routes, prefix="/api/v1/mimir", include_in_schema=False)
+    if memory_graph is not None:
+        graph_routes = memory_graph.router()
+        app.include_router(graph_routes, prefix="/mimir")
+        app.include_router(graph_routes, prefix="/api/v1/mimir", include_in_schema=False)
     app.include_router(mimir_router.router, prefix="/mimir")
     app.include_router(mimir_router.router, prefix="/api/v1/mimir", include_in_schema=False)
     app.include_router(mcp_server.router(), prefix="/mcp")
@@ -388,10 +348,10 @@ def create_app(config: MimirServiceConfig) -> FastAPI:
                             read_only=True,
                         ),
                         SettingsFieldSchema(
-                            key="knowledge_path",
-                            label="Knowledge Path",
+                            key="backend",
+                            label="Backend",
                             type="text",
-                            value=config.path,
+                            value=str(config.backend["adapter"]),
                             read_only=True,
                         ),
                         SettingsFieldSchema(
@@ -399,13 +359,6 @@ def create_app(config: MimirServiceConfig) -> FastAPI:
                             label="Category Scope",
                             type="text",
                             value=categories,
-                            read_only=True,
-                        ),
-                        SettingsFieldSchema(
-                            key="embedding_model",
-                            label="Embedding Model",
-                            type="text",
-                            value=config.embedding_model or "fts-only",
                             read_only=True,
                         ),
                         SettingsFieldSchema(
@@ -429,3 +382,115 @@ def create_app(config: MimirServiceConfig) -> FastAPI:
     app.add_middleware(SSESafeGZipMiddleware, minimum_size=4096)
 
     return app
+
+
+def _service_auth(spec: dict | None):
+    """The gateway's service credential (``memory.service_auth``), a dynamic HttpAuthPort."""
+    from niuu.utils import import_class
+
+    if not spec or not str(spec.get("adapter") or "").strip():
+        raise ValueError(
+            "memory.service_auth is not set: the gateway authenticates as a service to Forge "
+            "(retention) and to the Bifröst catalog. Set {adapter: "
+            "niuu.adapters.outbound.http_auth.WorkloadIdentityBearerTokenAuthAdapter, ...} on "
+            "a cluster, or {adapter: niuu.adapters.outbound.http_auth.NoAuthHeaderAdapter} in "
+            "mini mode without auth"
+        )
+    adapter = import_class(str(spec["adapter"]))
+    auth = adapter(**{k: v for k, v in spec.items() if k != "adapter"})
+    if not (
+        callable(getattr(auth, "headers", None)) and callable(getattr(auth, "invalidate", None))
+    ):
+        raise ValueError(f"memory.service_auth adapter {spec['adapter']!r} is not an HttpAuthPort")
+    return auth
+
+
+def _build_memory_router(
+    config: MimirServiceConfig,
+    *,
+    registry_store: MimirRegistryStore,
+    identity: HeaderAuthenticationPort,
+    auth_mode: str,
+) -> tuple[MemoryRouter, MemoryGraphRouter] | None:
+    """The memory gateway's routes and its knowledge-graph route, or None when
+    ``memory.enabled`` is off.
+
+    Enabled means every part must be buildable now: Forge's URL, each memory
+    system, every tenant's system and the capabilities its layers need, and the
+    service credential.
+    """
+    memory = config.memory
+    if not memory.enabled:
+        return None
+    from mimir.adapters.attached_registry import RegistryAttachedMemories
+    from mimir.adapters.forge_directory import ForgeSessionDirectory
+    from mimir.adapters.forge_lifetimes import ForgeLayerLifetimes
+    from mimir.adapters.forge_people import ForgePeopleDirectory
+    from mimir.adapters.forge_proposals import ForgeProposalNotifier
+    from mimir.memory.context_pack import ContextPackBuilder
+    from mimir.memory.curation import Curation
+    from mimir.memory.gateway import MemoryGateway
+    from mimir.memory.graph import KnowledgeGraph
+    from mimir.memory.readers import PersonReader
+    from mimir.memory.retention import RetentionSweeper
+    from mimir.memory.systems import MemorySystems
+
+    service_auth = _service_auth(memory.service_auth)
+    directory = ForgeSessionDirectory(
+        memory.forge_base_url, timeout_seconds=memory.forge_timeout_seconds
+    )
+    systems = MemorySystems.from_config(memory.systems, memory.tenants)
+    attached = RegistryAttachedMemories(
+        registry_store, platform_tenant_id=config.platform_tenant_id
+    )
+    gateway = MemoryGateway(
+        systems,
+        default_result_count=memory.default_result_count,
+        attached=attached,
+    )
+    packs = ContextPackBuilder(gateway)
+    people = ForgePeopleDirectory(
+        memory.forge_base_url, timeout_seconds=memory.forge_timeout_seconds
+    )
+    curation = Curation(gateway, people, org_admin_roles=memory.org_admin_roles)
+    sweeper = RetentionSweeper(
+        systems,
+        ForgeLayerLifetimes(
+            memory.forge_base_url,
+            timeout_seconds=memory.forge_timeout_seconds,
+            service_auth=service_auth,
+        ),
+        retention_days=memory.retention_days,
+        interval_seconds=memory.retention_sweep_seconds,
+        forget=gateway.forget,
+    )
+    graph = MemoryGraphRouter(
+        KnowledgeGraph(
+            systems,
+            concurrency=memory.graph_concurrency,
+            cache_seconds=memory.graph_cache_seconds,
+        ),
+        identity=identity,
+        forge_base_url=memory.forge_base_url,
+        forge_timeout_seconds=memory.forge_timeout_seconds,
+        tenant_id=config.tenant_id,
+        connector_subjects=memory.connector_service_subjects,
+    )
+    router = MemoryRouter(
+        gateway,
+        directory,
+        tenant_id=config.tenant_id,
+        systems=systems,
+        packs=packs,
+        curation=curation,
+        identity=identity,
+        sweeper=sweeper,
+        attached=attached,
+        connector_subjects=memory.connector_service_subjects,
+        allow_all_identity=auth_mode == "none",
+        reader=PersonReader(gateway, people),
+        notifier=ForgeProposalNotifier(
+            memory.forge_base_url, timeout_seconds=memory.forge_timeout_seconds
+        ),
+    )
+    return router, graph

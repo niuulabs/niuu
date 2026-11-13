@@ -143,6 +143,11 @@ class PlacementPodManager(PodManager):
     def delivers_forge_session_token(self) -> bool:
         return all(child.delivers_forge_session_token for child in self._children())
 
+    @property
+    def delivers_forge_session_token_somewhere(self) -> bool:
+        """Whether at least one placement hands its broker the credential."""
+        return any(child.delivers_forge_session_token for child in self._children())
+
     def delivers_forge_session_token_for(self, session: Session) -> bool:
         """Whether the manager that runs *session* delivers its credential.
 

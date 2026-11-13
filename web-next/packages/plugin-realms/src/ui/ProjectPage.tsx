@@ -130,9 +130,18 @@ export function ProjectPage() {
             <p className="niuu:m-0 niuu:text-[15px] niuu:text-text-secondary">{project.brief}</p>
           ) : null}
         </div>
-        <Link to="/realms/new" search={{ project: projectId } as never} className={PRIMARY}>
-          New workspace
-        </Link>
+        <div className="niuu:flex niuu:items-center niuu:gap-3">
+          <Link
+            to="/realms/projects/$projectId/memory"
+            params={{ projectId } as never}
+            className="niuu:text-xs niuu:text-brand-300"
+          >
+            Memory settings
+          </Link>
+          <Link to="/realms/new" search={{ project: projectId } as never} className={PRIMARY}>
+            New workspace
+          </Link>
+        </div>
       </header>
 
       {cards.length === 0 ? (
