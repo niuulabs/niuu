@@ -7,14 +7,16 @@ run's owner, and a person reads them from that session.
 
 - **One project** (``project_id`` given): that project, the memories it attaches, and
   the org. This is what a session of the project reads, less its own session and run.
-- **No project**: the org and every active project the person is on. Attached memories
-  belong to one project's view (their names are only unique within a project), so they
-  are read only when a project is named.
+- **No project**: the org and every project the person is on, as
+  :func:`mimir.memory.person_layers.readable_layers` resolves them for every people
+  route. Attached memories belong to one project's view (their names are only unique
+  within a project), so they are read only when a project is named.
 """
 
 from __future__ import annotations
 
 from mimir.memory.gateway import MemoryGateway, Session
+from mimir.memory.models import LayerKind
 from mimir.ports.people_directory import PeopleDirectory, Person
 
 
@@ -38,7 +40,8 @@ class PersonReader:
             return await self._gateway.open_reader(
                 person.tenant_id, project_ids=[project], attachments=attachments
             )
-        projects = await self._people.projects(person)
+        readable = await self._people.readable_layers(person)
         return await self._gateway.open_reader(
-            person.tenant_id, project_ids=[p.project_id for p in projects]
+            person.tenant_id,
+            project_ids=[r.layer.key for r in readable if r.layer.kind is LayerKind.PROJECT],
         )

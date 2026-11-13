@@ -4,7 +4,8 @@
 - ``GET /api/v1/forge/sessions/{id}`` → the session, with ``owner_id`` and ``tenant_id``
 - ``GET /api/v1/forge/memory/runs/{id}`` → ``{"run_id", "owner_id", "tenant_id",
   "session_ids"}`` (C6)
-- ``GET /api/v1/forge/projects`` → the projects the person created or was added to
+- ``GET /api/v1/forge/projects`` → the projects the person is on, through
+  :func:`mimir.memory.person_layers.readable_layers` (one implementation for every caller)
 - ``GET /api/v1/forge/projects/{id}/memory`` → the project's memory mounts (its attached
   memories), which every member may list
 
@@ -21,6 +22,7 @@ from typing import Any
 import httpx
 
 from mimir.memory.models import Attachment, AttachmentAccess
+from mimir.memory.person_layers import ReadableLayer, readable_layers
 from mimir.ports.people_directory import (
     ForgeUnavailableError,
     NotVisibleError,
@@ -28,7 +30,6 @@ from mimir.ports.people_directory import (
     PeopleDirectory,
     Person,
     PersonRefusedError,
-    ProjectSummary,
 )
 
 _ROLES = frozenset({"viewer", "contributor", "approver", "owner"})
@@ -120,18 +121,8 @@ class ForgePeopleDirectory(PeopleDirectory):
             raise ForgeUnavailableError(f"Forge answered an unknown role {role!r} for {what}")
         return str(role)
 
-    async def projects(self, person: Person) -> list[ProjectSummary]:
-        found = []
-        for body in await self._get_list("/api/v1/forge/projects", "your projects", person):
-            if body.get("status", "active") != "active":
-                continue
-            found.append(
-                ProjectSummary(
-                    project_id=self._text(body, "id", "your projects").lower(),
-                    name=self._text(body, "name", "your projects"),
-                )
-            )
-        return found
+    async def readable_layers(self, person: Person) -> list[ReadableLayer]:
+        return await readable_layers(person, forge_base_url=self._base, client=self._http())
 
     async def project_attachments(self, project_id: str, person: Person) -> tuple[Attachment, ...]:
         what = f"the memories project {project_id} attaches"

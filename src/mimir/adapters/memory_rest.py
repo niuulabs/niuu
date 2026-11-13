@@ -420,7 +420,11 @@ class MemoryRouter:
         """A person-facing name for each layer of a reading view."""
         if self._curation is None:
             raise HTTPException(status_code=503, detail="this gateway serves no people routes")
-        projects = {p.project_id: p.name for p in await self._curation.people.projects(person)}
+        projects = {
+            r.layer.key: r.name
+            for r in await self._curation.people.readable_layers(person)
+            if r.layer.kind is LayerKind.PROJECT
+        }
         names: dict[str, str] = {}
         for layer in session.layers:
             if layer.kind is LayerKind.ORG:

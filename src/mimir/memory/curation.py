@@ -186,16 +186,18 @@ class Curation:
     async def deciding_layers(self, person: Person) -> list[tuple[Layer, str]]:
         """The layers whose proposals this person decides, with a name for each.
 
-        The org when they are an org admin, and every active project they are on with
+        The org when they are an org admin, and every project they are on with
         role ``approver`` or ``owner``.
         """
         layers: list[tuple[Layer, str]] = []
         if self._admin_roles & set(person.roles):
             layers.append((Layer(LayerKind.ORG), "the org"))
-        for project in await self._people.projects(person):
-            role = await self._people.project_role(project.project_id, person)
+        for readable in await self._people.readable_layers(person):
+            if readable.layer.kind is not LayerKind.PROJECT:
+                continue
+            role = await self._people.project_role(readable.layer.key, person)
             if role in DECIDING_ROLES:
-                layers.append((Layer(LayerKind.PROJECT, project.project_id), project.name))
+                layers.append((readable.layer, readable.name))
         return layers
 
     async def review(self, person: Person, layer_id: str | None, *, limit: int) -> Review:
@@ -241,9 +243,9 @@ class Curation:
         )
 
     async def _project_name(self, person: Person, project_id: str) -> str:
-        for project in await self._people.projects(person):
-            if project.project_id == project_id:
-                return project.name
+        for readable in await self._people.readable_layers(person):
+            if readable.layer.kind is LayerKind.PROJECT and readable.layer.key == project_id:
+                return readable.name
         raise NotVisibleError(f"project {project_id} was not found")
 
     # -- deciding --------------------------------------------------------

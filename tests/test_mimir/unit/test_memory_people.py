@@ -488,7 +488,6 @@ def _projects(router, *, mounts: list[dict] | None = None) -> None:
             200,
             json=[
                 {"id": PROJECT_ID, "name": "Booking platform", "status": "active"},
-                {"id": "0d0e0000-0000-4000-8000-0000000000bb", "name": "Old", "status": "archived"},
             ],
         )
     )
@@ -559,8 +558,6 @@ class TestPersonAsk:
         sent = call.calls.last.request
         assert sent.headers["authorization"] == "Bearer person-login"
         assert sent.headers["x-agent-id"] == "ines" and sent.headers["x-tenant-id"] == "acme"
-        # Only the active project is read; the archived one is not a layer.
-        assert "0d0e0000" not in json.loads(sent.content)["messages"][0]["content"]
 
     def test_a_project_ask_reads_that_project_and_its_attached_memories(
         self, tmp_path, forge

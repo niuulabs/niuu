@@ -9,14 +9,14 @@ import respx
 
 from mimir.memory.curation import Curation, CurationRefusedError, DecisionError
 from mimir.memory.gateway import MemoryGateway
-from mimir.memory.models import RecordNotFoundError
+from mimir.memory.models import Layer, LayerKind, RecordNotFoundError
+from mimir.memory.person_layers import ReadableLayer
 from mimir.memory.systems import MemorySystems
 from mimir.ports.people_directory import (
     NotVisibleError,
     Owned,
     PeopleDirectory,
     Person,
-    ProjectSummary,
 )
 from niuu.cap_telemetry import reset_cap_hits
 from niuu.domain.mimir_facts import (
@@ -55,8 +55,11 @@ class FakePeople(PeopleDirectory):
             raise NotVisibleError(f"project {project_id} was not found")
         return self.role
 
-    async def projects(self, person: Person) -> list[ProjectSummary]:
-        return [ProjectSummary(PROJECT_ID, "Booking platform")] if self.role else []
+    async def readable_layers(self, person: Person) -> list[ReadableLayer]:
+        org = ReadableLayer(Layer(LayerKind.ORG), "Org")
+        if self.role is None:
+            return [org]
+        return [org, ReadableLayer(Layer(LayerKind.PROJECT, PROJECT_ID), "Booking platform")]
 
     async def project_attachments(self, project_id: str, person: Person) -> tuple:
         return ()

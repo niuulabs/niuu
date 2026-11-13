@@ -11,8 +11,12 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from mimir.memory.models import Attachment
+
+if TYPE_CHECKING:
+    from mimir.memory.person_layers import ReadableLayer
 
 
 @dataclass(frozen=True)
@@ -42,14 +46,6 @@ class Owned:
     session_ids: tuple[str, ...] = ()
 
 
-@dataclass(frozen=True)
-class ProjectSummary:
-    """A project the person is on, as Forge lists it for them."""
-
-    project_id: str
-    name: str
-
-
 class NotVisibleError(Exception):
     """Forge answered 404: the thing does not exist, or this person may not know it does."""
 
@@ -72,8 +68,9 @@ class PeopleDirectory(ABC):
         """``viewer``, ``contributor``, ``approver`` or ``owner`` (a tenant admin is owner)."""
 
     @abstractmethod
-    async def projects(self, person: Person) -> list[ProjectSummary]:
-        """The active projects the person is on (created or was added to)."""
+    async def readable_layers(self, person: Person) -> list[ReadableLayer]:
+        """The org layer and the layer of every project the person is on, each named
+        (:func:`mimir.memory.person_layers.readable_layers`)."""
 
     @abstractmethod
     async def project_attachments(self, project_id: str, person: Person) -> tuple[Attachment, ...]:

@@ -40,18 +40,15 @@ async def notifier():
 
 class TestProjects:
     @respx.mock
-    async def test_only_active_projects_are_listed(self, people) -> None:
+    async def test_readable_layers_are_the_shared_resolution(self, people) -> None:
         route = respx.get(f"{FORGE}/api/v1/forge/projects").mock(
-            return_value=httpx.Response(
-                200,
-                json=[
-                    {"id": PROJECT_ID.upper(), "name": "Booking", "status": "active"},
-                    {"id": "x", "name": "Old", "status": "archived"},
-                ],
-            )
+            return_value=httpx.Response(200, json=[{"id": PROJECT_ID.upper(), "name": "Booking"}])
         )
-        found = await people.projects(PERSON)
-        assert [(p.project_id, p.name) for p in found] == [(PROJECT_ID, "Booking")]
+        found = await people.readable_layers(PERSON)
+        assert [(r.layer.id, r.name) for r in found] == [
+            ("org", "Org"),
+            (f"project:{PROJECT_ID}", "Booking"),
+        ]
         assert route.calls.last.request.headers["authorization"] == "Bearer login"
 
     @respx.mock
@@ -60,7 +57,7 @@ class TestProjects:
             return_value=httpx.Response(200, json={"projects": []})
         )
         with pytest.raises(ForgeUnavailableError, match="not a list"):
-            await people.projects(PERSON)
+            await people.readable_layers(PERSON)
 
     @respx.mock
     async def test_a_projects_mounts_are_its_attachments(self, people) -> None:
