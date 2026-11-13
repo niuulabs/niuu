@@ -590,11 +590,13 @@ describe('buildMimirHttpAdapter', () => {
       });
     });
 
-    it('a page with no dated timeline row was first seen at its last write; with neither, unknown', async () => {
+    it('a page with no dated timeline row has no known first-seen date, not its last write', async () => {
+      // An import writes every page on one day; that must not read as "new this week".
       const client = makeClient({ get: vi.fn().mockResolvedValue(rawKnowledgeGraph) });
       const graph = await buildMimirHttpAdapter(client).pages.getKnowledgeGraph();
       expect(graph.nodes[1]).toMatchObject({
-        firstSeen: '2026-11-12T08:00:00Z',
+        updatedAt: '2026-11-12T08:00:00Z',
+        firstSeen: '',
         changedAt: null,
       });
       expect(graph.nodes[2]).toMatchObject({ updatedAt: '', firstSeen: '', changedAt: null });

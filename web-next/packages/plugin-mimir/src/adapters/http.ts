@@ -520,9 +520,10 @@ export function toGraphEdge(raw: RawGraphEdge): GraphEdge {
 /**
  * A G1 node in the scene's terms. The layer is what the scene clusters by,
  * so it fills `mount`; the path's top folder is its `category`. G1 carries
- * no confidence. A page with no dated timeline row was first seen at its
- * last write (the definition of `firstSeen`); one with neither is known
- * from no date, the same empty "unknown" the engine already reads.
+ * no confidence. A page with no dated timeline row has no known first-seen
+ * date: its last write is when it was stored (an import writes every page on
+ * one day), not when it became known, so it stays the empty "unknown" the
+ * engine already reads and never reads as new this week.
  */
 export function toKnowledgeNode(raw: RawKnowledgeNode): GraphNode {
   return {
@@ -535,7 +536,7 @@ export function toKnowledgeNode(raw: RawKnowledgeNode): GraphNode {
     mount: raw.layer,
     layer: raw.layer,
     updatedAt: raw.updated_at ?? '',
-    firstSeen: raw.first_seen ?? raw.updated_at ?? '',
+    firstSeen: raw.first_seen ?? '',
     changedAt: raw.changed_at,
     confidence: null,
   };

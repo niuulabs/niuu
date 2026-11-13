@@ -23,6 +23,7 @@ fails it too, counted on the cap counter.
 from __future__ import annotations
 
 import asyncio
+import posixpath
 import re
 import time
 from collections.abc import Awaitable, Callable, Sequence
@@ -58,6 +59,8 @@ _TYPED = re.compile(
     re.MULTILINE,
 )
 _WIKILINK = re.compile(r"\[\[([^\[\]|#]+)(?:[|#][^\[\]]*)?\]\]")
+#: A Markdown link to another page of the same memory: ``[text](../technical/x.md#part)``.
+_MD_LINK = re.compile(r"\[[^\]]*\]\((?!\w+://)([^)\s#]+?\.md)(?:#[^)]*)?\)")
 _SENTENCE_END = re.compile(r"(?<=[.!?])\s")
 _BULLET = re.compile(r"^(?:[-*+>]\s+)+")
 _MARKUP = re.compile(r"(\*\*|__|`)")
@@ -377,7 +380,9 @@ def _assemble(
         typed = {
             normalize_slug(s): rel.lower() for s, rel in _TYPED.findall(page.record.compiled_truth)
         }
-        mentioned = [normalize_slug(s) for s in extract_wikilinks(page.record.compiled_truth)]
+        mentioned = [
+            normalize_slug(s) for s in extract_wikilinks(page.record.compiled_truth)
+        ] + _markdown_links(page.record.slug, page.record.compiled_truth)
         introduced = _introduced(page.record)
         for slug in dict.fromkeys([*typed, *mentioned]):
             if not slug:
@@ -413,14 +418,38 @@ def _assemble(
     }
 
 
+def _markdown_links(slug: str, text: str) -> list[str]:
+    """The pages a page's relative Markdown links name, as slugs from the layer's root."""
+    folder = posixpath.dirname(slug)
+    found = []
+    for target in _MD_LINK.findall(text):
+        # A link above the layer's root names no page here; it is then listed as unresolved.
+        joined = posixpath.normpath(posixpath.join(folder, target))
+        found.append(normalize_slug(joined.removesuffix(".md")))
+    return found
+
+
 def _resolve(
     own: Layer, nearest: Sequence[ReadableLayer], slugs: dict[str, set[str]], slug: str
 ) -> str | None:
-    if slug in slugs[own.id]:
-        return node_id(own, slug)
-    for item in nearest:
-        if slug in slugs[item.layer.id]:
-            return node_id(item.layer, slug)
+    """The page a link names: by its path, else by its name, nearest layer first.
+
+    The wiki format links pages by name (`[[ines-moreau]]` for `people/ines-moreau`), so
+    a link with no path matches the one page of that name in a layer. Two pages of the
+    same name in one layer leave the link unresolved rather than guessing between them.
+    """
+    order = [own, *(item.layer for item in nearest if item.layer != own)]
+    for layer in order:
+        if slug in slugs[layer.id]:
+            return node_id(layer, slug)
+    if "/" in slug:
+        return None
+    for layer in order:
+        named = [path for path in slugs[layer.id] if path.rsplit("/", 1)[-1] == slug]
+        if len(named) == 1:
+            return node_id(layer, named[0])
+        if len(named) > 1:
+            return None
     return None
 
 

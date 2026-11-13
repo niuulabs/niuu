@@ -430,7 +430,9 @@ describe('MemoryScene — spotlight camera', () => {
       title: `Node ${i}`,
       category: 'topic',
       path: `/n${i}`,
-      mount: mounts[i % mounts.length]!,
+      // Blocks of 20 per layer, so a page's neighbours in the chain share its cluster:
+      // framing neighbours spread over far-apart layers backs the camera off instead.
+      mount: mounts[Math.floor(i / 20)]!,
       kind: 'topic',
       updatedAt: '2026-04-19T00:00:00Z',
       firstSeen: '2026-04-18T00:00:00Z',

@@ -17,6 +17,12 @@ export const CAMERA3D = {
   ORBIT_PER_PX: 0.005,
   /** Extra headroom beyond the exact fit distance. */
   FIT_PADDING: 1.15,
+  /**
+   * Share of the view's width a focused node's neighbourhood is framed inside: the
+   * heads-up card covers the right of the view, so neighbours framed across the full
+   * width would sit behind it.
+   */
+  FOCUS_WIDTH_SHARE: 0.45,
   FOCUS_DISTANCE: 32,
   /** Per-frame interpolation factor for eased camera travel (0-1). */
   FOCUS_EASING: 0.12,

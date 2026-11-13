@@ -37,7 +37,6 @@ import {
   dollyBy,
   fitOrbitCamera,
   easeOrbitCamera,
-  centreOrbitCamera,
 } from './orbitCamera';
 import type { OrbitCamera } from './orbitCamera';
 import {
@@ -992,8 +991,12 @@ export function MemoryScene(props: MemorySceneProps): React.JSX.Element {
         : layoutPoints(layout);
     const centre =
       camera.kind === 'fly-to' && camera.centre ? layout.nodes.get(camera.centre) : null;
-    let destination = fitOrbitCamera(points, bag.camera.aspect || 1, cameraStateRef.current);
-    if (centre) destination = centreOrbitCamera(destination, centre.position);
+    let destination = fitOrbitCamera(
+      points,
+      bag.camera.aspect || 1,
+      cameraStateRef.current,
+      centre ? { centre: centre.position, widthShare: CAMERA3D.FOCUS_WIDTH_SHARE } : {},
+    );
     if (view === '2d') destination = lockTo2D(destination);
     destinationRef.current = destination;
   }, [camera, layout, view]);
@@ -1014,11 +1017,14 @@ export function MemoryScene(props: MemorySceneProps): React.JSX.Element {
             .split('\n')
             .map((id) => layout.nodes.get(id)?.position)
             .filter((p): p is Vec3 => Boolean(p));
-    let destination = fitOrbitCamera(points, bag.camera.aspect || 1, cameraStateRef.current);
     // A focused node sits at the centre of the view, its neighbourhood framed around it.
-    if (spotlightKey !== '' && focusPosition) {
-      destination = centreOrbitCamera(destination, focusPosition);
-    }
+    const centred = spotlightKey !== '' && focusPosition;
+    let destination = fitOrbitCamera(
+      points,
+      bag.camera.aspect || 1,
+      cameraStateRef.current,
+      centred ? { centre: focusPosition, widthShare: CAMERA3D.FOCUS_WIDTH_SHARE } : {},
+    );
     if (view === '2d') destination = lockTo2D(destination);
     destinationRef.current = destination;
   }, [spotlightKey, layout, view, focusPosition]);

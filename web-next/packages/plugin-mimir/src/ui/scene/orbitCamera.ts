@@ -128,18 +128,19 @@ export function fitOrbitCamera(
   points: readonly Vec3[],
   aspect: number,
   from: OrbitCamera = defaultOrbitCamera(),
+  options: FitOptions = {},
 ): OrbitCamera {
   if (points.length === 0) {
     return { ...from, target: { x: 0, y: 0, z: 0 }, distance: CAMERA3D.INITIAL_DISTANCE };
   }
 
-  const centre = centroidOfExtremes(points);
+  const centre = options.centre ?? centroidOfExtremes(points);
   const framing: OrbitCamera = { ...from, target: centre };
   const forward = viewDirection(framing);
   const { right, up } = screenBasis(framing);
 
   const tanVertical = Math.tan((CAMERA3D.FOV * Math.PI) / 360);
-  const tanHorizontal = tanVertical * Math.max(aspect, 0.01);
+  const tanHorizontal = tanVertical * Math.max(aspect * (options.widthShare ?? 1), 0.01);
 
   let required: number = CAMERA3D.MIN_DISTANCE;
   for (const point of points) {
@@ -158,8 +159,14 @@ export function fitOrbitCamera(
  * the focused node sits at the middle of the view, its neighbourhood framed
  * around it at the distance that fits them.
  */
-export function centreOrbitCamera(camera: OrbitCamera, centre: Vec3): OrbitCamera {
-  return { ...camera, target: centre };
+/**
+ * How `fitOrbitCamera` frames: around a given `centre` (a focused node sits in the middle
+ * and the distance is what keeps every point in view around it), and inside a share of
+ * the view's width (the rest is covered by overlays such as the heads-up card).
+ */
+export interface FitOptions {
+  centre?: Vec3;
+  widthShare?: number;
 }
 
 function centroidOfExtremes(points: readonly Vec3[]): Vec3 {

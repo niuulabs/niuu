@@ -325,6 +325,29 @@ class TestBuilding:
             (f"{A.id}/decisions/d", f"{B.id}/people/ines", "mentions", None),
         }
 
+    def test_a_link_by_name_finds_the_one_page_of_that_name(self) -> None:
+        """The wiki links `[[ines-moreau]]` to `people/ines-moreau`; seen live on import."""
+        backend = FakeBackend().add(
+            page(A, "projects/cutover", "[[ines-moreau]] — rel: leads — owns it."),
+            page(A, "people/ines-moreau", "Ines."),
+        )
+        result = build(backend, A)
+        assert edges(result) == {
+            (f"{A.id}/projects/cutover", f"{A.id}/people/ines-moreau", "leads", None),
+        }
+
+    def test_a_name_two_pages_share_is_not_guessed(self) -> None:
+        backend = FakeBackend().add(
+            page(A, "projects/cutover", "Ask [[ines]]."),
+            page(A, "people/ines", "Ines M."),
+            page(A, "customers/ines", "Ines Ltd."),
+        )
+        result = build(backend, A)
+        assert result["edges"] == []
+        assert result["unresolved"] == [
+            {"source": f"{A.id}/projects/cutover", "target_slug": "ines"}
+        ]
+
     def test_a_link_to_no_readable_page_is_listed_not_drawn(self) -> None:
         backend = FakeBackend().add(
             page(A, "decisions/d", "Needs [[standards/security]] and [[people/ines]]."),
@@ -661,3 +684,27 @@ class TestLayers:
             router.get(PROJECTS).mock(side_effect=httpx.ConnectError("refused"))
             with pytest.raises(ForgeUnavailableError, match="refused"):
                 readable()
+
+
+class TestMarkdownLinks:
+    def test_a_relative_markdown_link_is_a_mention(self) -> None:
+        """The old wiki linked pages as `[text](../technical/x.md)`; seen live on import."""
+        backend = FakeBackend().add(
+            page(A, "learnings/retrieval", "See [the architecture](../technical/arch.md#top)."),
+            page(A, "technical/arch", "Arch."),
+        )
+        result = build(backend, A)
+        assert edges(result) == {
+            (f"{A.id}/learnings/retrieval", f"{A.id}/technical/arch", "mentions", None),
+        }
+
+    def test_a_web_link_is_not_a_page_link(self) -> None:
+        backend = FakeBackend().add(page(A, "p", "See [docs](https://example.com/x.md)."))
+        result = build(backend, A)
+        assert result["edges"] == [] and result["unresolved"] == []
+
+    def test_a_link_above_the_layer_root_is_listed_unresolved(self) -> None:
+        backend = FakeBackend().add(page(A, "p", "See [x](../../outside.md)."))
+        result = build(backend, A)
+        assert result["edges"] == []
+        assert len(result["unresolved"]) == 1
