@@ -202,8 +202,14 @@ up is governed by rules the agent cannot change:
 
 A **proposal** is a pending change that lands in the target layer only when
 its owner approves it, at `operator` level with the original evidence kept.
-**Promotion** is a person proposing records from a session or run layer up the
-tree. Nothing moves up the hierarchy on its own.
+**Keeping what a session learned is the agent's job** (decided 2026-11-13). Before
+a session ends, its agent proposes what is worth keeping to the project, in plain
+words with its evidence, and it records what changed as it works (timeline rows,
+new sources). A person never has to sort a session's notes; they only see the
+proposals that need an owner, one at a time. **Promotion** by a person (the session
+or run owner moving a record up by hand) stays possible, but is not the usual path.
+Nothing lands above the session's own layer without an owner's approval, except
+what the write prefixes allow.
 
 ### Ephemeral layers
 
