@@ -70,7 +70,8 @@ class TestBuildPreflightConfig:
         settings = CLISettings()
         config = _build_preflight_config(settings)
         assert config.claude_binary == "claude"
-        assert config.ports == [8080]
+        # The server, and the gbrain mini mode runs for memory.
+        assert config.ports == [8080, 3141]
         assert config.workspaces_dir == "~/.niuu/workspaces"
         assert config.database_mode == "embedded"
 
@@ -97,6 +98,7 @@ class TestBuildPreflightConfig:
                     {"adapter": "some.Plugin", "port": 8080},
                 ],
             },
+            local_memory={"enabled": False},
         )
         config = _build_preflight_config(settings)
         assert config.ports == [8080]
@@ -110,6 +112,7 @@ class TestBuildPreflightConfig:
                     {"adapter": "other.Plugin"},
                 ],
             },
+            local_memory={"enabled": False},
         )
         config = _build_preflight_config(settings)
         assert config.ports == [8080]
@@ -325,5 +328,6 @@ class TestShutdown:
         manager = MagicMock()
         manager.stop_all = AsyncMock()
         manager._root_server = None  # No root server in test
+        manager._memory_brain = None  # nor a memory brain
         await _shutdown(manager)
         manager.stop_all.assert_awaited_once()
