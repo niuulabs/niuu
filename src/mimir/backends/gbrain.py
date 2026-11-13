@@ -65,6 +65,7 @@ from mimir.adapters.gbrain_layers import (
     parse_namespace,
 )
 from mimir.adapters.gbrain_mcp import GBrainMcpClient, Sealer, read_secret
+from mimir.backends.gbrain_snippets import readable
 from mimir.memory.models import (
     Attribution,
     ChangeSet,
@@ -1036,7 +1037,7 @@ class GBrainBackend(MemoryBackend):
             ref=relative,
             namespace=address.layer,
             title=str(row.get("title") or relative),
-            snippet=str(snippet),
+            snippet=readable(str(snippet), source=kind is HitKind.SOURCE),
         )
 
     # ------------------------------------------------------------------
