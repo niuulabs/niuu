@@ -22,7 +22,9 @@ from datetime import UTC, datetime
 #: The heading Mímir pages use for their append-only evidence trail.
 TIMELINE_HEADING = "## Timeline"
 
-_DATED_ENTRY_RE = re.compile(r"^(\d{4}-\d{2}-\d{2}): (.+)")
+# A date, optionally followed by a time of day (automated entries write ISO timestamps,
+# some ending in ", " rather than ": "). Only the date is kept.
+_DATED_ENTRY_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})(?:T[0-9:.+Z-]*)?[:,] (.+)")
 _ZONE_RE_CACHE: dict[str, re.Pattern[str]] = {}
 
 

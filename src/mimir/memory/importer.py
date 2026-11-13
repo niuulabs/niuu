@@ -61,6 +61,9 @@ LEGACY_SOURCE_TYPES: dict[str, SourceKind] = {
     "csv": SourceKind.DOCUMENT,
     "code": SourceKind.DOCUMENT,
     "workflow-context": SourceKind.DOCUMENT,
+    "source": SourceKind.DOCUMENT,
+    "documentation": SourceKind.DOCUMENT,
+    "note": SourceKind.DOCUMENT,
 }
 _ZONE = re.compile(r"^## (Compiled Truth|Timeline)\s*$", re.MULTILINE)
 
@@ -83,6 +86,9 @@ class ImportReport:
     rekeyed: dict[str, str] = field(default_factory=dict)
     #: Old free-form source types kept as a current kind: type -> how many.
     legacy_types: dict[str, int] = field(default_factory=dict)
+    #: Timeline rows repeated word for word on the same day, kept once (gbrain stores
+    #: one row per page, date, summary and source): page -> rows collapsed.
+    repeated_rows: dict[str, int] = field(default_factory=dict)
 
     def summary(self) -> str:
         return (
@@ -99,6 +105,12 @@ class ImportReport:
                 ", older source types kept as documents: "
                 + ", ".join(f"{t} ({n})" for t, n in sorted(self.legacy_types.items()))
                 if self.legacy_types
+                else ""
+            )
+            + (
+                f", {sum(self.repeated_rows.values())} repeated timeline row(s) kept once "
+                f"({', '.join(f'{p}: {n}' for p, n in sorted(self.repeated_rows.items()))})"
+                if self.repeated_rows
                 else ""
             )
         )
@@ -290,6 +302,10 @@ async def _import_page(
                 detail=f"Source: {entry.source}" if entry.source else "",
             )
         )
+    unique = list(dict.fromkeys(rows))
+    if len(unique) != len(rows):
+        report.repeated_rows[name] = len(rows) - len(unique)
+        rows = unique
     now = datetime.now(UTC)
     page = PageWrite(
         compiled_truth=truth,
@@ -308,9 +324,12 @@ async def _import_page(
                 f"{name}: page {slug} already exists in {layer.id} with different content; "
                 "remove it there or import into another layer"
             ) from None
-        if len(existing.timeline) != len(rows):
+        # Rows gbrain derived from dated lines in the page text carry no seal; only the
+        # rows this import wrote count.
+        written = [r for r in existing.timeline if r.attribution.attested]
+        if len(written) != len(rows):
             raise WikiImportError(
-                f"{name}: page {slug} was imported with {len(existing.timeline)} of "
+                f"{name}: page {slug} was imported with {len(written)} of "
                 f"{len(rows)} timeline rows; remove the page from {layer.id} and import again"
             ) from None
         report.pages_already_imported += 1

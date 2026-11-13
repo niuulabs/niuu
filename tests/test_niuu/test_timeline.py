@@ -63,3 +63,16 @@ def test_extract_entry_dates_ignores_frontmatter():
 def test_extract_entry_dates_skips_impossible_calendar_dates():
     content = "## Timeline\n\n- 2026-02-30: Typo. [Source: x]\n- 2026-01-02: Real. [Source: y]\n"
     assert [d.date().isoformat() for d in extract_entry_dates(content)] == ["2026-01-02"]
+
+
+def test_an_entry_dated_with_a_time_of_day_keeps_its_date() -> None:
+    line = "- 2026-09-08T13:30:46.089064+00:00: Dream cycle ran. [Source: daemon]"
+    assert parse_dated_entry(line) == ("2026-09-08", "Dream cycle ran. [Source: daemon]")
+    assert parse_dated_entry("- 2026-09-08T13:30Z: Short time.") == ("2026-09-08", "Short time.")
+
+
+def test_an_automated_entry_ending_its_timestamp_with_a_comma_keeps_its_date() -> None:
+    line = "- 2026-09-08T11:45:45.653327+00:00, ravn=daemon, pages_updated=0"
+    assert parse_dated_entry(line) == ("2026-09-08", "ravn=daemon, pages_updated=0")
+    odd = "- 2026-10-31T02-30:00.0+00:00, odd time"
+    assert parse_dated_entry(odd) == ("2026-10-31", "odd time")

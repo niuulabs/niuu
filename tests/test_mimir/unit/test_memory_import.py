@@ -266,3 +266,18 @@ async def test_a_source_type_nobody_knows_names_where_to_add_it(backend, wiki) -
     (wiki / "raw" / f"{odd['source_id']}.json").write_text(json.dumps(odd))
     with pytest.raises(WikiImportError, match="LEGACY_SOURCE_TYPES"):
         await import_wiki(backend, wiki, ORG, OPERATOR)
+
+
+async def test_a_row_repeated_word_for_word_on_one_day_is_kept_once(backend, wiki) -> None:
+    """gbrain keeps one row per page, date, summary and source; a dream log repeats rows."""
+    row = "- 2026-09-08T11:45:45+00:00, ravn=daemon, pages_updated=0 [Source: daemon, 2026-09-08]"
+    (wiki / "wiki" / "log-of-dreams.md").write_text(
+        f"# Dream log\n\n## Compiled Truth\n\nRuns.\n\n## Timeline\n\n{row}\n{row}\n{row}\n"
+    )
+    report = await import_wiki(backend, wiki, ORG, OPERATOR)
+    assert report.repeated_rows == {"wiki/log-of-dreams.md": 2}
+    assert "2 repeated timeline row(s) kept once" in report.summary()
+    page = await backend.get_page("org", "log-of-dreams")
+    assert [r.on.isoformat() for r in page.timeline] == ["2026-09-08"]
+    again = await import_wiki(backend, wiki, ORG, OPERATOR)
+    assert again.pages_already_imported == 3
