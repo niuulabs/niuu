@@ -14,6 +14,7 @@ from mimir.app import create_app
 from mimir.config import MimirServiceConfig
 from niuu.cap_telemetry import cap_hit_counts, reset_cap_hits
 from tests.test_mimir.unit.memory_fakes import (
+    ADMIN_TOKEN,
     MCP,
     PROJECT_ID,
     SESSION_ID,
@@ -24,7 +25,6 @@ from tests.test_mimir.unit.memory_fakes import (
 from tests.test_mimir.unit.test_auth_mode import _OIDC_ISSUER_KWARGS, JWKS_URI, PUBLIC_JWK
 
 FORGE = "http://forge.test"
-BIFROST = "http://bifrost.test"
 CONTEXT_URL = f"{FORGE}/api/v1/forge/sessions/{SESSION_ID}/memory-context"
 _BACKEND = {"adapter": "tests.test_mimir.unit.fakes.InMemoryMimirAdapter"}
 TOOLS = [
@@ -38,7 +38,6 @@ TOOLS = [
     "memory_remember",
     "memory_retire",
     "memory_propose",
-    "memory_ask",
 ]
 
 
@@ -51,14 +50,12 @@ def _memory(**overrides) -> dict:
                 "name": "acme-brain",
                 "adapter": "mimir.backends.gbrain.GBrainBackend",
                 "mcp_url": MCP,
-                "api_token": "tok",
+                "admin_token": ADMIN_TOKEN,
                 "signing_key": SIGNING_KEY,
             }
         ],
         "tenants": {"acme": "acme-brain"},
         "service_auth": {"adapter": "niuu.adapters.outbound.http_auth.NoAuthHeaderAdapter"},
-        "bifrost_url": BIFROST,
-        "answer_model": "claude-fable-5-1",
         **overrides,
     }
 
@@ -88,7 +85,7 @@ def _reset_caps():
 def services():
     brain = FakeGBrain()
     with respx.mock(assert_all_called=False) as router:
-        router.post(MCP).mock(side_effect=brain.handle)
+        brain.mount(router)
         forge = router.get(CONTEXT_URL).mock(return_value=httpx.Response(200, json=_forge_answer()))
         router.get(JWKS_URI).mock(return_value=httpx.Response(200, json={"keys": [PUBLIC_JWK]}))
         router.post(f"{FORGE}/api/v1/forge/sessions/{SESSION_ID}/memory/proposals").mock(

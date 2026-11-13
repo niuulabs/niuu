@@ -923,10 +923,9 @@ class MemoryConfig(BaseModel):
         default=120.0,
         gt=0,
         description=(
-            "Timeout for one broker -> gateway call. memory_ask makes model calls inside "
-            "the gateway, so this bounds the slowest honest answer. A call that exceeds "
-            "it fails the tool call naming the gateway URL. Must be shorter than "
-            "broker_request_timeout_s."
+            "Timeout for one broker -> gateway call (a memory tool such as memory_search "
+            "or memory_read). A call that exceeds it fails the tool call naming the "
+            "gateway URL. Must be shorter than broker_request_timeout_s."
         ),
     )
     broker_request_timeout_s: float = Field(

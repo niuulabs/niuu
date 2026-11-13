@@ -10,7 +10,6 @@ from mimir.memory.systems import MemorySystems
 from mimir.memory.tools import MemoryTools, UnknownToolError, instructions
 from niuu.cap_telemetry import reset_cap_hits
 from tests.test_mimir.unit.memory_fakes import (
-    MCP,
     PROJECT_ID,
     SESSION_ID,
     FakeGBrain,
@@ -30,7 +29,7 @@ def _reset_caps():
 def brain():
     fake = FakeGBrain()
     with respx.mock(assert_all_called=False) as router:
-        router.post(MCP).mock(side_effect=fake.handle)
+        fake.mount(router)
         yield fake
 
 
@@ -63,7 +62,7 @@ class TestInstructions:
             f"{PROJECT_ID} (project:{PROJECT_ID}), and the org (org)."
         )
         assert "memory_search reads all of them" in text
-        assert "memory_ask" not in text
+        assert "memory_search" in text and "memory_a" not in text
         assert "write prefixes (decisions/, runbooks/)" in text
         assert "without evidence" in text
 
@@ -76,9 +75,13 @@ class TestInstructions:
         text = instructions(await gateway.open(context(prefixes=())))
         assert "none are set, so propose every change" in text
 
-    def test_memory_ask_is_not_offered_without_an_answer_model(self, tools) -> None:
+    def test_no_tool_answers_with_a_model(self, tools) -> None:
         names = [tool["name"] for tool in tools.definitions()]
-        assert "memory_ask" not in names and len(names) == 10
+        assert len(names) == 10 and all(
+            name in {"memory_search", "memory_read", "memory_entity", "memory_recall"}
+            or name.startswith(("memory_add", "memory_write", "memory_re", "memory_propose"))
+            for name in names
+        )
         for tool in tools.definitions():
             assert tool["inputSchema"]["type"] == "object"
 
@@ -86,7 +89,7 @@ class TestInstructions:
 class TestArguments:
     async def test_an_unknown_tool_raises(self, tools, session) -> None:
         with pytest.raises(UnknownToolError):
-            await tools.call(session, "memory_ask", {})
+            await tools.call(session, "memory_nope", {})
 
     @pytest.mark.parametrize(
         ("name", "arguments", "match"),

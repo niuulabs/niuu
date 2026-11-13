@@ -1,29 +1,28 @@
 /**
  * HTTP and mock adapters for the memory gateway's people routes
- * (`{mimir}/memory/ask`, `/memory/review`, `/memory/proposals/{id}/approve|reject`).
+ * (`{mimir}/memory/search`, `/memory/review`, `/memory/proposals/{id}/approve|reject`).
  */
 import type { ApiClient } from '@niuulabs/query';
 import type {
-  MemoryAnswer,
+  MemoryHit,
   MemoryProposal,
-  MemorySource,
+  MemorySearchResult,
   ReviewSource,
 } from '../domain/memoryGateway';
 import type { IMemoryGatewayService } from '../ports/IMemoryGateway';
 
-interface RawSource {
+interface RawHit {
   layer: string;
   layer_name: string;
+  kind: MemoryHit['kind'];
   ref: string;
-  kind: MemorySource['kind'];
   title: string;
-  url: string | null;
+  snippet: string;
 }
 
-interface RawAnswer {
-  answer: string;
-  gaps: string[];
-  sources: RawSource[];
+interface RawSearch {
+  query: string;
+  hits: RawHit[];
 }
 
 interface RawProposal {
@@ -44,17 +43,16 @@ interface RawReview {
   more: string[];
 }
 
-function toAnswer(raw: RawAnswer): MemoryAnswer {
+function toSearchResult(raw: RawSearch): MemorySearchResult {
   return {
-    answer: raw.answer,
-    gaps: raw.gaps,
-    sources: raw.sources.map((source) => ({
-      layer: source.layer,
-      layerName: source.layer_name,
-      ref: source.ref,
-      kind: source.kind,
-      title: source.title,
-      url: source.url,
+    query: raw.query,
+    hits: raw.hits.map((hit) => ({
+      layer: hit.layer,
+      layerName: hit.layer_name,
+      kind: hit.kind,
+      ref: hit.ref,
+      title: hit.title,
+      snippet: hit.snippet,
     })),
   };
 }
@@ -76,12 +74,11 @@ function toProposal(raw: RawProposal): MemoryProposal {
 
 export function buildMemoryGatewayHttpAdapter(client: ApiClient): IMemoryGatewayService {
   return {
-    async ask(question, projectId) {
-      const raw = await client.post<RawAnswer>('/memory/ask', {
-        question,
-        ...(projectId ? { project_id: projectId } : {}),
-      });
-      return toAnswer(raw);
+    async search(query, options = {}) {
+      const params = new URLSearchParams({ q: query });
+      if (options.projectId) params.set('project_id', options.projectId);
+      const raw = await client.get<RawSearch>(`/memory/search?${params}`);
+      return toSearchResult(raw);
     },
     async review(layer) {
       const query = layer ? `?${new URLSearchParams({ layer })}` : '';
@@ -141,29 +138,38 @@ function mockProposals(): MemoryProposal[] {
   ];
 }
 
+const MOCK_HITS: MemoryHit[] = [
+  {
+    layer: MOCK_PROJECT,
+    layerName: 'Booking platform',
+    kind: 'page',
+    ref: 'projects/booking-cutover',
+    title: 'Booking cut-over',
+    snippet: 'The cut-over is planned for the weekend of 12 December.',
+  },
+  {
+    layer: 'org',
+    layerName: 'the org',
+    kind: 'source',
+    ref: 'source:src_cutover_thread',
+    title: 'Cut-over planning thread',
+    snippet: 'Ines Moreau owns the cut-over and makes the go/no-go call.',
+  },
+];
+
 /** A gateway that answers from fixed records, for demos and tests. */
 export function createMemoryGatewayMockAdapter(): IMemoryGatewayService {
   let waiting = mockProposals();
   return {
-    async ask(question) {
-      if (!question.trim()) throw new Error('question is required');
-      return {
-        answer:
-          'The cut-over is planned for the weekend of 12 December. Ines Moreau owns it and makes the go/no-go call.',
-        gaps: [
-          'Not settled: the date moved from 5 December last week and nobody has confirmed it.',
-        ],
-        sources: [
-          {
-            layer: MOCK_PROJECT,
-            layerName: 'Booking platform',
-            ref: 'decisions/booking-cutover',
-            kind: 'page',
-            title: 'Booking cut-over',
-            url: null,
-          },
-        ],
-      };
+    async search(query, options = {}) {
+      const needle = query.trim().toLowerCase();
+      if (!needle) throw new Error('query is required');
+      const hits = MOCK_HITS.filter(
+        (hit) =>
+          (!options.projectId || hit.layer === `project:${options.projectId}`) &&
+          `${hit.title} ${hit.snippet}`.toLowerCase().includes(needle),
+      );
+      return { query, hits };
     },
     async review(layer) {
       return {

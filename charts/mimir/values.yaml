@@ -316,13 +316,14 @@ config:
     forgeBaseUrl: ""
     # -- Seconds before a call to Forge times out. Null = the service default (10).
     forgeTimeoutSeconds: null
-    # -- Results a list read returns when the caller names no limit (a default, not a
-    # cap). Null = the service default (10).
+    # -- Changes the change feed is asked for per call (a page size, not a cap: the feed is
+    # read until it has no more). Null = the service default (10).
     defaultResultCount: null
     # -- One gbrain per org. Each entry:
     #   name: acme-brain                 # referenced by `tenants`
     #   mcpUrl: http://acme-brain:3131/mcp
-    #   apiTokenSecret: {name: acme-brain-token, key: token}        # gbrain auth create
+    #   adminTokenSecret: {name: acme-brain-admin, key: token}      # gbrain's GBRAIN_ADMIN_BOOTSTRAP_TOKEN:
+    #                                       # creates each layer's gbrain source and client
     #   signingKeySecret: {name: acme-memory-seal, key: key}        # seals trust and layer
     #   timeoutSeconds / pageSize / recallLimit / timelineLimit: optional, null = default
     systems: []
@@ -335,19 +336,6 @@ config:
     #    token_file: /var/run/secrets/memory/token}
     #   {adapter: niuu.adapters.outbound.http_auth.NoAuthHeaderAdapter}   # no auth at all
     serviceAuth: {}
-    # -- Bifröst's base URL, e.g. http://bifrost:8080: memory_ask answers through
-    # /v1/messages. Required when enabled.
-    bifrostUrl: ""
-    # -- Seconds before a Bifröst call times out (an answer call waits for the whole
-    # answer). Null = the service default (300).
-    bifrostTimeoutSeconds: null
-    # -- Serve memory_ask. false is a choice to go without cited answers.
-    askEnabled: true
-    # -- The Bifröst model memory_ask answers with. Required when askEnabled.
-    answerModel: ""
-    # -- Search hits memory_ask reads before answering; reaching it is a listed gap.
-    # Null = the service default (10).
-    askRetrievalCount: null
     # -- Days a run or session layer outlives its run or session. Null = default (14).
     retentionDays: null
     # -- Seconds between retention sweeps. Null = the service default (3600).
@@ -359,9 +347,6 @@ config:
     # -- Memory-system reads in flight at once while one knowledge graph is built.
     # Null = the service default (8).
     graphConcurrency: null
-    # -- Pages (and, separately, sources) the knowledge graph reads from one layer; a larger
-    # layer fails the graph naming this setting. Null = the service default (5000).
-    graphMaxRecordsPerLayer: null
     # -- Roles that make a person an org admin (decides org proposals).
     # Empty = the service default ([volundr:admin]).
     orgAdminRoles: []

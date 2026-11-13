@@ -5,8 +5,8 @@ with the session's real layers, and runs one call, answering an MCP
 ``CallToolResult``. A refusal by the write rules, a validation error, a missing
 record or an unreachable layer is ``isError: true`` with a message that names
 the cause; every write result names the layer it landed in, or the proposal and
-who must approve it. ``memory_ask`` is listed when the gateway has an answer
-model; it is made with the session's own credential.
+who must approve it. The tools search and read; the gateway never writes an answer with a
+model, since each memory system already searches and synthesises on its own.
 """
 
 from __future__ import annotations
@@ -17,7 +17,6 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Any
 
-from mimir.memory.answers import Answer, MemoryAnswers
 from mimir.memory.gateway import (
     Disagreement,
     EntityCard,
@@ -41,9 +40,8 @@ from mimir.memory.models import (
 )
 from mimir.memory.review import proposal_title
 from mimir.memory.rules import RuleRefusalError, normalize_prefix
-from mimir.ports.answer_model import AnswerModelError, ModelCaller
 from mimir.ports.proposal_notifier import ProposalNotifier, ProposalNotifyError, WaitingProposal
-from niuu.cap_telemetry import OutputTruncatedError, record_degraded
+from niuu.cap_telemetry import record_degraded
 from niuu.domain.mimir_facts import Fact, FactError, FactKind, Omission
 
 
@@ -97,15 +95,6 @@ def _schema(properties: dict[str, Any], required: list[str]) -> dict[str, Any]:
         "additionalProperties": False,
     }
 
-
-ASK_DEFINITION: dict[str, Any] = {
-    "name": "memory_ask",
-    "description": (
-        "Answer a question from your memory layers, with citations (layer and record) and "
-        "the gaps memory could not answer. The answer is not stored."
-    ),
-    "inputSchema": _schema({"question": {"type": "string"}, "layers": _LAYERS}, ["question"]),
-}
 
 TOOL_DEFINITIONS: tuple[dict[str, Any], ...] = (
     {
@@ -264,10 +253,8 @@ TOOL_DEFINITIONS: tuple[dict[str, Any], ...] = (
     },
 )
 
-_ALL_DEFINITIONS = (*TOOL_DEFINITIONS, ASK_DEFINITION)
 
-
-def instructions(session: Session, *, asks: bool = False) -> str:
+def instructions(session: Session) -> str:
     """Design section 5's instructions, filled with this session's layers."""
     parts = [f"this session ({session.view.layers[0].id})"]
     run = next((lyr for lyr in session.layers if lyr.kind is LayerKind.RUN), None)
@@ -280,9 +267,8 @@ def instructions(session: Session, *, asks: bool = False) -> str:
     parts += [f"attached memory {lyr.key} ({lyr.id})" for lyr in attached]
     parts.append("the org (org)")
     layers = ", ".join(parts[:-1]) + f", and {parts[-1]}"
-    readers = "memory_ask and memory_search read" if asks else "memory_search reads"
     text = (
-        f"Your memory has layers: {layers}. {readers} all of them. "
+        f"Your memory has layers: {layers}. memory_search reads all of them. "
         "Before working on a subject, read its entity card. Write what you find to the "
         "session layer with evidence."
     )
@@ -540,18 +526,6 @@ class _Args:
         return value
 
 
-def _answer_result(answer: Answer) -> dict[str, Any]:
-    structured = {
-        "answer": answer.answer,
-        "citations": [{"layer": layer, "ref": ref} for layer, ref in answer.citations],
-        "gaps": list(answer.gaps),
-    }
-    lines = [answer.answer or "Memory does not answer this."]
-    lines += [f"[{layer}] {ref}" for layer, ref in answer.citations]
-    lines += [f"Gap: {gap}" for gap in answer.gaps]
-    return _ok("\n".join(lines), structured)
-
-
 def _waiting(proposal: Proposal, project_id: str) -> WaitingProposal:
     return WaitingProposal(
         proposal_id=proposal.id,
@@ -562,7 +536,7 @@ def _waiting(proposal: Proposal, project_id: str) -> WaitingProposal:
 
 
 class MemoryTools:
-    """The C2 tool surface over one gateway; ``memory_ask`` when *answers* can answer.
+    """The C2 tool surface over one gateway.
 
     With a *notifier*, a write that became a proposal to a project layer is announced to
     the project's approvers and owners through Forge, with the session's own credential.
@@ -571,11 +545,9 @@ class MemoryTools:
     def __init__(
         self,
         gateway: MemoryGateway,
-        answers: MemoryAnswers | None = None,
         notifier: ProposalNotifier | None = None,
     ) -> None:
         self._gateway = gateway
-        self._answers = answers
         self._notifier = notifier
         self._handlers: dict[
             str, Callable[[Session, _Args], Awaitable[dict[str, Any] | WriteOutcome]]
@@ -592,15 +564,8 @@ class MemoryTools:
             "memory_propose": self._propose,
         }
 
-    @property
-    def asks(self) -> bool:
-        return self._answers is not None and self._answers.asks
-
     def definitions(self) -> list[dict[str, Any]]:
-        tools = [dict(tool) for tool in TOOL_DEFINITIONS]
-        if self.asks:
-            tools.append(dict(ASK_DEFINITION))
-        return tools
+        return [dict(tool) for tool in TOOL_DEFINITIONS]
 
     def exists(self, name: str) -> bool:
         return any(tool["name"] == name for tool in self.definitions())
@@ -609,17 +574,12 @@ class MemoryTools:
         self, session: Session, name: str, arguments: Any, *, credential: str = ""
     ) -> dict[str, Any]:
         handler = self._handlers.get(name)
-        if name == ASK_DEFINITION["name"] and self.asks:
-
-            async def handler(session: Session, args: _Args) -> dict[str, Any] | WriteOutcome:
-                return await self._ask(session, args, credential)
-
         if handler is None:
             raise UnknownToolError(name)
         if not isinstance(arguments, dict):
             return tool_error(f"{name} takes a JSON object of arguments")
         allowed = set(
-            next(t for t in _ALL_DEFINITIONS if t["name"] == name)["inputSchema"]["properties"]
+            next(t for t in TOOL_DEFINITIONS if t["name"] == name)["inputSchema"]["properties"]
         )
         unknown = sorted(set(arguments) - allowed)
         if unknown:
@@ -642,10 +602,6 @@ class MemoryTools:
             return tool_error(f"revision conflict: {exc}")
         except LayerUnavailableError as exc:
             return tool_error(str(exc))
-        except OutputTruncatedError as exc:
-            return tool_error(str(exc), knob=exc.knob)
-        except AnswerModelError as exc:
-            return tool_error(f"the answer model failed: {exc}")
         except (MemoryStoreError, FactError) as exc:
             return tool_error(str(exc))
 
@@ -682,17 +638,6 @@ class MemoryTools:
         return result
 
     # -- handlers --------------------------------------------------------
-
-    async def _ask(self, session: Session, args: _Args, credential: str) -> dict[str, Any]:
-        if self._answers is None or not credential:
-            raise ToolArgumentError("memory_ask needs the session's credential")
-        answer = await self._answers.ask(
-            session,
-            args.text("question", required=True),
-            layers=args.strings("layers") or None,
-            caller=ModelCaller.session(credential),
-        )
-        return _answer_result(answer)
 
     async def _search(self, session: Session, args: _Args) -> dict[str, Any]:
         try:

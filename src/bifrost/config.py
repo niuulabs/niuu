@@ -1010,47 +1010,6 @@ class PATRevocationConfig(BaseModel):
     )
 
 
-class ForgeSessionAuthConfig(BaseModel):
-    """How Bifröst confirms a Forge session credential on its model routes.
-
-    A ``forge_session`` credential carrying ``forge:model`` is accepted on
-    ``/v1/messages``, ``/v1/chat/completions`` and ``/v1/responses`` in every
-    ``auth_mode``, and nowhere else. Bifröst presents it to Forge
-    (``GET {base_url}/api/v1/forge/sessions/{id}``); Forge's 200 is the proof, and its
-    answer (owner, tenant, session) is the identity usage is charged to. Without a
-    ``base_url`` Bifröst cannot confirm one, so it refuses a session credential with a
-    401 naming this setting; it never admits one unconfirmed.
-    """
-
-    base_url: str = Field(
-        default="",
-        description=(
-            "Forge's base URL (for example http://volundr:8080). Empty means session "
-            "credentials are not accepted: a model call that presents one is refused 401, "
-            "naming this setting. Set it wherever sessions (or the memory gateway acting for "
-            "one) call Bifröst with their Forge session credential."
-        ),
-    )
-    timeout_seconds: float = Field(
-        default=10.0,
-        gt=0,
-        allow_inf_nan=False,
-        description=(
-            "Per-request timeout when asking Forge about a session. Forge unreachable or "
-            "slower than this refuses the call with a 503 naming Forge; it is never "
-            "answered from a cache or admitted unconfirmed."
-        ),
-    )
-
-    @model_validator(mode="after")
-    def _base_url_is_http(self) -> ForgeSessionAuthConfig:
-        if self.base_url and not self.base_url.startswith(("http://", "https://")):
-            raise ValueError(
-                f"forge_session.base_url {self.base_url!r} must start with http:// or https://"
-            )
-        return self
-
-
 class BifrostConfig(BaseModel):
     """Top-level Bifröst gateway configuration."""
 
@@ -1145,13 +1104,6 @@ class BifrostConfig(BaseModel):
     pat_revocation: PATRevocationConfig = Field(
         default_factory=PATRevocationConfig,
         description="Revocation check applied to PATs accepted in auth_mode='pat'.",
-    )
-    forge_session: ForgeSessionAuthConfig = Field(
-        default_factory=ForgeSessionAuthConfig,
-        description=(
-            "Confirmation of Forge session credentials presented on the model routes, "
-            "in every auth_mode. See ForgeSessionAuthConfig."
-        ),
     )
     oidc_kwargs: dict[str, Any] = Field(
         default_factory=dict,

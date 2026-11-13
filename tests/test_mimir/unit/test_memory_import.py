@@ -16,7 +16,13 @@ from mimir.memory.importer import WikiImportError, import_wiki
 from mimir.memory.models import Layer, LayerKind
 from niuu.domain.mimir import compute_content_hash, compute_source_id
 from niuu.domain.mimir_facts import AuthorKind, FactAuthor, FactCaller, TrustLevel
-from tests.test_mimir.unit.memory_fakes import MCP, SIGNING_KEY, FakeGBrain, gbrain_backend
+from tests.test_mimir.unit.memory_fakes import (
+    ADMIN_TOKEN,
+    MCP,
+    SIGNING_KEY,
+    FakeGBrain,
+    gbrain_backend,
+)
 
 OPERATOR = FactCaller(FactAuthor(AuthorKind.OPERATOR, "jozef"))
 ORG = Layer(LayerKind.ORG)
@@ -79,7 +85,7 @@ def wiki(tmp_path: Path) -> Path:
 def brain():
     fake = FakeGBrain()
     with respx.mock(assert_all_called=False) as router:
-        router.post(MCP).mock(side_effect=fake.handle)
+        fake.mount(router)
         yield fake
 
 
@@ -209,7 +215,7 @@ def test_the_cli_imports_into_the_tenants_system(brain, wiki, tmp_path, monkeypa
         "    - name: acme-brain\n"
         "      adapter: mimir.backends.gbrain.GBrainBackend\n"
         f"      mcp_url: {MCP}\n"
-        "      api_token: tok\n"
+        f"      admin_token: {ADMIN_TOKEN}\n"
         f"      signing_key: {SIGNING_KEY}\n"
         "  tenants:\n"
         "    acme: acme-brain\n"
@@ -224,7 +230,7 @@ def test_the_cli_imports_into_the_tenants_system(brain, wiki, tmp_path, monkeypa
     assert result.exit_code == 0, result.output
     assert "2 page(s)" in result.output
     assert "not imported: wiki/index.md" in result.output
-    assert f"l/project-{project}/entities/ines-moreau" in brain.pages
+    assert f"project-{project}/entities/ines-moreau" in brain.pages
 
     listed = runner.invoke(
         cli, ["list-proposals", "--tenant", "acme", "--layer", "org", "--limit", "5"]

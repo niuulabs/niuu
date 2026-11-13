@@ -14,9 +14,7 @@ import pytest
 import respx
 
 from mimir.memory.graph import (
-    MAX_RECORDS_KNOB,
     GraphLayerError,
-    GraphTooLargeError,
     KnowledgeGraph,
     first_sentence,
     normalize_slug,
@@ -120,7 +118,7 @@ class FakeBackend:
         self.peak = max(self.peak, self.in_flight)
         await asyncio.sleep(0)
 
-    async def list_pages(self, namespace: str, *, limit: int) -> list[PageRef]:
+    async def list_pages(self, namespace: str, *, limit: int | None) -> list[PageRef]:
         await self._enter("list_pages", namespace)
         self.in_flight -= 1
         pages = sorted(self.pages.get(namespace, {}))
@@ -134,7 +132,7 @@ class FakeBackend:
             await asyncio.sleep(0)
             self.in_flight -= 1
 
-    async def list_sources(self, namespace: str, *, limit: int) -> list[SourceRef]:
+    async def list_sources(self, namespace: str, *, limit: int | None) -> list[SourceRef]:
         await self._enter("list_sources", namespace)
         self.in_flight -= 1
         ids = sorted(self.sources.get(namespace, {}))
@@ -172,14 +170,12 @@ def graph_of(
     backend: FakeBackend,
     *,
     concurrency: int = 4,
-    max_records: int = 100,
     cache_seconds: float = 30.0,
     clock: Clock | None = None,
 ) -> KnowledgeGraph:
     return KnowledgeGraph(
         FakeSystems(backend),  # type: ignore[arg-type]
         concurrency=concurrency,
-        max_records_per_layer=max_records,
         cache_seconds=cache_seconds,
         clock=clock or Clock(),
     )
@@ -504,27 +500,20 @@ class TestFailures:
         with pytest.raises(GraphLayerError, match="timeline_limit"):
             build(backend, A)
 
-    def test_a_layer_over_the_cap_fails_loudly_and_is_counted(self) -> None:
-        backend = FakeBackend().add(*(page(A, f"p{i}", "P.") for i in range(4)))
-        with pytest.raises(GraphTooLargeError, match=MAX_RECORDS_KNOB) as caught:
-            build(backend, A, max_records=3)
-        assert A.id in str(caught.value)
-        assert cap_hit_counts()[MAX_RECORDS_KNOB] == 1
-
-    def test_a_layer_exactly_at_the_cap_is_fine(self) -> None:
-        backend = FakeBackend().add(*(page(A, f"p{i}", "P.") for i in range(3)))
-        assert len(build(backend, A, max_records=3)["nodes"]) == 3
+    def test_a_large_layer_is_read_whole_and_nothing_is_counted(self) -> None:
+        backend = FakeBackend().add(*(page(A, f"p{i}", "P.") for i in range(250)))
+        assert len(build(backend, A)["nodes"]) == 250
         assert cap_hit_counts() == {}
 
-    def test_a_layer_with_too_many_sources_fails_loudly_and_is_counted(self) -> None:
+    def test_every_source_of_a_layer_is_read(self) -> None:
         backend = FakeBackend().add(
-            page(A, "p", "P.", rows=(row("2026-11-03", "Read", f"source:{SRC_1}"),)),
-            source(A, SRC_1, "one"),
+            page(A, "p", "P.", rows=(row("2026-11-03", "Read", f"source:{SRC_2}"),)),
+            *(source(A, f"src_{i:03d}", f"s{i}") for i in range(150)),
             source(A, SRC_2, "two"),
         )
-        with pytest.raises(GraphTooLargeError, match="sources"):
-            build(backend, A, max_records=1)
-        assert cap_hit_counts()[MAX_RECORDS_KNOB] == 1
+        graph = build(backend, A)
+        assert f"{A.id}/_sources/{SRC_2}" in {n["id"] for n in graph["nodes"]}
+        assert cap_hit_counts() == {}
 
     def test_an_org_without_a_memory_system_is_not_hidden(self) -> None:
         with pytest.raises(TenantNotConfiguredError):
@@ -599,7 +588,6 @@ class TestConcurrencyAndCache:
         ("options", "message"),
         [
             ({"concurrency": 0}, "graph_concurrency"),
-            ({"max_records": 0}, MAX_RECORDS_KNOB),
             ({"cache_seconds": -1}, "graph_cache_seconds"),
         ],
     )

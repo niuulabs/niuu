@@ -251,7 +251,7 @@ class MimirPortBackend(MemoryBackend):
         if not removed:
             raise RecordNotFoundError(f"attached memory {self._label} has no page {slug}")
 
-    async def list_pages(self, namespace: str, *, limit: int) -> list[PageRef]:
+    async def list_pages(self, namespace: str, *, limit: int | None) -> list[PageRef]:
         self._check(namespace)
         metas = await self._call("list pages", self._port.list_pages())
         return [
@@ -277,7 +277,7 @@ class MimirPortBackend(MemoryBackend):
         query: str,
         *,
         kinds: frozenset[HitKind],
-        limit: int,
+        limit: int | None,
     ) -> list[SearchHit]:
         for namespace in namespaces:
             self._check(namespace)
@@ -307,7 +307,7 @@ class MimirPortBackend(MemoryBackend):
     async def get_source(self, namespace: str, source_id: str) -> SourceRecord:
         raise self._missing("sources")
 
-    async def list_sources(self, namespace: str, *, limit: int) -> list[SourceRef]:
+    async def list_sources(self, namespace: str, *, limit: int | None) -> list[SourceRef]:
         raise self._missing("sources")
 
     async def remember(self, namespace: str, new: NewFact) -> RememberResult:

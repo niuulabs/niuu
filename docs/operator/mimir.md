@@ -242,27 +242,32 @@ memory:
     - name: acme-brain
       adapter: mimir.backends.gbrain.GBrainBackend
       mcp_url: http://acme-brain:3131/mcp
-      api_token_file: /etc/mimir-memory/acme-brain/token
+      admin_token_file: /etc/mimir-memory/acme-brain/admin-token  # gbrain GBRAIN_ADMIN_BOOTSTRAP_TOKEN
       signing_key_file: /etc/mimir-memory/acme-brain/signing-key
   tenants:
     acme: acme-brain                         # tenant id -> system name
   service_auth:                              # the gateway as a service (Forge)
     adapter: niuu.adapters.outbound.http_auth.FileBearerTokenAuthAdapter
     token_file: /var/run/secrets/memory/token
-  bifrost_url: http://bifrost:8080
-  bifrost_timeout_seconds: 300
-  ask_enabled: true
-  answer_model: claude-fable-5-1             # memory_ask answers with this model
-  ask_retrieval_count: 10
   retention_days: 14
   retention_sweep_seconds: 3600
   org_admin_roles: [volundr:admin]
   connector_service_subjects: [ting]         # who may write connector sources
 ```
 
+Each layer is its own gbrain source (`org`, and `p-`/`r-`/`s-` plus a hash of the
+layer for projects, runs and sessions), written through its own gbrain client
+(`mimir-layer-<layer>`, client credentials bound to that source). The gateway creates
+both on a layer's first write with gbrain's owner bootstrap token and keeps no layer
+secret: any replica recovers the same client from gbrain. Deleting a layer removes its
+source and revokes its client. gbrain must allow `sources_add` over MCP (no managed
+persistence). Search sends one `query` per layer source and caps nothing: gbrain's own
+`search.searchLimit` decides how many hits each layer returns. People search with
+`GET …/memory/search?q=…[&project_id=…]`.
+
 In the chart these come from `config.memory` (`forgeBaseUrl`, `systems[]` with
-`mcpUrl`, `apiTokenSecret`, `signingKeySecret`, `tenants`, `serviceAuth`,
-`bifrostUrl`, `answerModel`, `askEnabled`, `retentionDays`,
+`mcpUrl`, `adminTokenSecret`, `signingKeySecret`, `tenants`, `serviceAuth`,
+`retentionDays`,
 `retentionSweepSeconds`, `orgAdminRoles`, `connectorServiceSubjects` and the optional
 timeouts); each
 system's two secrets are mounted under `/etc/mimir-memory/<name>/`. The chart
@@ -270,8 +275,7 @@ renders `serviceAuth` as given and does not project a ServiceAccount token, so
 mount whatever the chosen adapter reads. In mini mode without auth use
 `niuu.adapters.outbound.http_auth.NoAuthHeaderAdapter`. Startup fails on a system
 that cannot be built, a tenant naming a missing system, a system lacking a
-capability its layers need, a missing `service_auth` or `bifrost_url`, and a
-missing `answer_model` while `ask_enabled`. A session whose org is not in
+capability its layers need, and a missing `service_auth`. A session whose org is not in
 `tenants` gets a 503 naming `memory.tenants`.
 
 **Session routes.** `GET {base}/memory/tools` (instructions and tool
@@ -284,15 +288,10 @@ the same token. Anything but Forge's 200 is a 401, so a person's login is
 refused here. Mímir's own identity checks skip exactly these three routes and
 nothing else.
 
-**memory_ask.** Searches the session's layers (`ask_retrieval_count` hits),
-reads each hit in full from its layer and recalls the current facts about each
-hit page, then makes one call to `POST {bifrost_url}/v1/messages` with the
-session's own credential (Bifröst confirms it with Forge and charges the
-session's owner), model `answer_model`, no `max_tokens`. A cut-off answer is a
-tool error naming `memory.answer_model`. Every citation must be a retrieved
-record, and an answer that says something must cite one, or it is refused and
-counted (`memory.ask.citations`). Disagreements between layers and a full
-retrieval are listed as gaps. The answer is never stored.
+**No model-written answers.** The gateway never writes an answer with a model.
+Each memory system (gbrain) has its own search and synthesis; Niuu searches every
+system that holds one of the reader's layers and collates the hits. The agent tool
+`memory_search` and the people route `GET {base}/memory/search` (below) do that.
 
 **Context pack.** Unbudgeted: it holds everything it selects, and the answer is
 `{"text": "..."}`. That is the pages the session's objective and project brief
@@ -304,11 +303,23 @@ project.
 mini mode without auth, the configured dev principal); a session or workload
 credential is a 403. Forge is asked with the person's own `Authorization`.
 
+- `GET {base}/memory/search?q=<text>[&project_id=<id>]` — searches the layers the
+  person reads in every memory system that holds one: the org and every project they
+  are on, or, with `project_id`, that project, the memories it attaches and the org (a
+  project they are not on is a 404). The answer is `{"query": ..., "hits": [{"layer":
+  "project:<id>", "layer_name": "...", "kind": "page"|"source", "ref": ..., "title": ...,
+  "snippet": ...}]}` in the gateway's order (each system ranks its own hits; they are
+  interleaved by rank). A source's `ref` is `source:<id>`. The route takes no limit and
+  adds no cap: it returns every hit the memory systems return. A blank `q` is a 422.
 - `GET {base}/memory/proposals?layer=project:<id>|org[&limit=n]` — pending
   proposals, for a project member with role `approver` or `owner` (Forge
   `GET /api/v1/forge/projects/{id}/role`; tenant admins are owners) or, for the
   org, a holder of one of `org_admin_roles`. Other members get 403, a non-member
-  404.
+  404. Every pending proposal is returned unless the caller names a `limit`.
+- `GET {base}/memory/review[?layer=...][&limit=n]` — every proposal waiting on the person,
+  oldest first, across the layers they decide (or one `layer`). With a `limit`, each layer
+  is read up to it and `more` names the layers that reached it; without one, `more` is
+  empty.
 - `POST {base}/memory/proposals/{id}/approve` `{"layer": ...}` — applies the
   change at `operator` trust as the approver, with the proposal's evidence plus
   `proposal:<layer>/<id>`, whose record names the proposer. A change that no
@@ -341,12 +352,11 @@ other `[[slug]]` is `mentions`, and a timeline row citing `source:<id>` is a `ci
 dated by the row (`since`; a link's `since` is the oldest timeline row that links it, else
 null). A link resolves to the nearest readable layer holding the page (its own layer, then
 project, then org); a link to no readable page is listed under `unresolved`, not drawn.
-A layer that cannot be read fails the whole response (502 naming the layer), as does a
-layer with more than `memory.graph_max_records_per_layer` (default 5000) pages or sources
-(counted on the cap counter). Reads run `memory.graph_concurrency` (default 8) at a time,
+A layer that cannot be read fails the whole response (502 naming the layer). Every page
+and source of each layer is read; the graph has no record cap. Reads run `memory.graph_concurrency` (default 8) at a time,
 and a graph is kept per org and layer set for `memory.graph_cache_seconds` (default 30,
 the most a graph may be stale; 0 rebuilds every time). In the chart: `graphCacheSeconds`,
-`graphConcurrency`, `graphMaxRecordsPerLayer`.
+`graphConcurrency`.
 
 **Connector route.** `POST {base}/memory/sources` lets an import service (Ting's
 Linear import) keep what it fetched as an immutable source. Only a platform

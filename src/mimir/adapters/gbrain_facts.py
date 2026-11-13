@@ -225,14 +225,19 @@ class FactCodec:
             str(namespace) if namespace is not None else None,
         )
 
-    def decode(self, row: dict[str, Any], *, subject: str | None = None) -> tuple[Fact, str | None]:
+    def decode(
+        self, row: dict[str, Any], *, subject: str | None = None, id_entity: str | None = None
+    ) -> tuple[Fact, str | None]:
         """The fact a recall row holds and the namespace sealed into it (None if none).
 
         *subject* replaces the row's entity slug as the fact's subject (the id keeps
-        the slug, which ``get`` needs to find the row again).
+        the slug, which ``get`` needs to find the row again). *id_entity* replaces the
+        entity part of the ids the fact carries (its own and its successor's) when the
+        row's slug alone does not say where to find it, as in a brain that keeps each
+        layer in a source of its own.
         """
         provenance, trust, claimed_from, namespace = self._provenance_of(row)
-        slug = row.get("entity_slug")
+        slug = id_entity if id_entity is not None else row.get("entity_slug")
         recorded = _moment(row.get("created_at")) or _moment(row.get("valid_from"))
         native_from = _moment(row.get("valid_from")) or recorded
         if recorded is None or native_from is None:

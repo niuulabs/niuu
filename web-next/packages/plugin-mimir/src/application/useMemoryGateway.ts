@@ -3,11 +3,17 @@ import { useService } from '@niuulabs/plugin-sdk';
 import type { MemoryProposal } from '../domain/memoryGateway';
 import { MEMORY_GATEWAY_SERVICE_KEY, type IMemoryGatewayService } from '../ports/IMemoryGateway';
 
-/** Ask what the team knows; one project's memory when `projectId` is given. */
-export function useAskMemory(projectId?: string) {
+/**
+ * Search every memory the person reads for `query`; one project's when `projectId` is given.
+ * Nothing is fetched for a blank query.
+ */
+export function useMemorySearch(query: string, projectId?: string) {
   const gateway = useService<IMemoryGatewayService>(MEMORY_GATEWAY_SERVICE_KEY);
-  return useMutation({
-    mutationFn: (question: string) => gateway.ask(question, projectId),
+  const trimmed = query.trim();
+  return useQuery({
+    queryKey: ['mimir', 'memory', 'search', projectId ?? '', trimmed],
+    queryFn: () => gateway.search(trimmed, projectId ? { projectId } : {}),
+    enabled: trimmed.length > 0,
   });
 }
 

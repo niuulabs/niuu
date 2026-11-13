@@ -6,19 +6,17 @@ Mímir stores (InMemoryMimirAdapter) opened from the gateway's registry.
 
 from __future__ import annotations
 
-import json
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 
-import httpx
 import pytest
 import respx
 
 from mimir.adapters.attached_registry import RegistryAttachedMemories
-from mimir.adapters.bifrost_answers import BifrostAnswerModel
+from mimir.adapters.gbrain_layers import source_id_of
 from mimir.backends.mimir_port import MimirPortBackend
-from mimir.memory.answers import MemoryAnswers
+from mimir.memory.context_pack import ContextPackBuilder
 from mimir.memory.gateway import LayerUnavailableError, MemoryGateway
 from mimir.memory.models import (
     Attachment,
@@ -34,7 +32,6 @@ from mimir.memory.models import (
 from mimir.memory.rules import Rule, RuleRefusalError, SessionView, Verdict
 from mimir.memory.systems import MemorySystems
 from mimir.memory.tools import MemoryTools, instructions
-from mimir.ports.answer_model import ModelCaller
 from mimir.ports.attached_memory import AttachedMemories, AttachedMemoryError
 from mimir.ports.memory_backend import MemoryBackend
 from mimir.registry import MimirRegistryEntry, MimirRegistryStore
@@ -42,7 +39,6 @@ from niuu.cap_telemetry import cap_hit_counts, reset_cap_hits
 from niuu.domain.mimir_facts import TrustLevel
 from tests.test_mimir.unit.fakes import InMemoryMimirAdapter
 from tests.test_mimir.unit.memory_fakes import (
-    MCP,
     SESSION_ID,
     FakeGBrain,
     context,
@@ -81,7 +77,7 @@ class FakeAttached(AttachedMemories):
 def brain():
     fake = FakeGBrain()
     with respx.mock(assert_all_called=False) as router:
-        router.post(MCP).mock(side_effect=fake.handle)
+        fake.mount(router)
         yield fake
 
 
@@ -180,11 +176,11 @@ class TestLayers:
         assert fact.value.rule is Rule.ATTACHED_PAGES_ONLY
 
     def test_the_instructions_name_run_and_attached_layers(self, session) -> None:
-        text = instructions(session, asks=True)
+        text = instructions(session)
         assert f"run:{RUN_ID}" in text and "run layer" in text
         assert "attached:vendor is read-only" in text
         assert "attached:team_notes takes pages only under its write prefixes (notes/)" in text
-        assert "memory_ask and memory_search read" in text
+        assert "memory_search reads all of them" in text
 
 
 # ---------------------------------------------------------------------------
@@ -196,7 +192,7 @@ class TestRunLayer:
     async def test_the_run_layer_is_placed_and_shared_by_member_sessions(
         self, brain, gateway, session
     ) -> None:
-        assert any(a["slug"] == f"l/run-{RUN_ID}/_namespace" for _, a in brain.calls)
+        assert source_id_of(f"run-{RUN_ID}") in brain.sources
         written = await gateway.write_page(
             session,
             "plan/schema",
@@ -416,42 +412,10 @@ def test_evidence_can_cite_a_proposal() -> None:
         Evidence.parse("proposal:just text")
 
 
-class TestAnswersOverAttachedLayers:
-    async def test_ask_cites_an_attached_page_and_the_pack_holds_it(self, brain, gateway) -> None:
-        model = BifrostAnswerModel("http://bifrost.test", timeout_seconds=5)
-        answers = MemoryAnswers(
-            gateway,
-            model,
-            answer_model="m",
-            retrieval_count=5,
-        )
+class TestContextPackOverAttachedLayers:
+    async def test_the_pack_holds_an_attached_page(self, brain, gateway) -> None:
         with respx.mock(assert_all_called=False) as router:
-            router.post(MCP).mock(side_effect=brain.handle)
-            router.post("http://bifrost.test/v1/messages").mock(
-                return_value=httpx.Response(
-                    200,
-                    json={
-                        "content": [
-                            {
-                                "type": "text",
-                                "text": json.dumps(
-                                    {
-                                        "answer": "Ines.",
-                                        "citations": [
-                                            {"layer": "attached:vendor", "ref": "guides/booking.md"}
-                                        ],
-                                    }
-                                ),
-                            }
-                        ],
-                        "stop_reason": "end_turn",
-                    },
-                )
-            )
+            brain.mount(router)
             session = await gateway.open(_context(objective="booking cut-over"))
-            answer = await answers.ask(
-                session, "booking cut-over", layers=None, caller=ModelCaller.session("t")
-            )
-            pack = await answers.context_pack(session)
-        assert answer.citations == (("attached:vendor", "guides/booking.md"),)
+            pack = await ContextPackBuilder(gateway).context_pack(session)
         assert "## guides/booking.md [attached:vendor]" in pack.text

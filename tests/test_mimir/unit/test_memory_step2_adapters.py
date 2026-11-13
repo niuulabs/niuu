@@ -8,7 +8,6 @@ import httpx
 import pytest
 import respx
 
-from mimir.adapters.bifrost_answers import BifrostAnswerModel
 from mimir.adapters.forge_people import ForgePeopleDirectory
 from mimir.backends.mimir_port import MimirPortBackend
 from mimir.memory.models import (
@@ -23,7 +22,6 @@ from mimir.memory.models import (
     RecordNotFoundError,
     RevisionConflictError,
 )
-from mimir.ports.answer_model import AnswerModelError, ModelCaller
 from mimir.ports.people_directory import (
     ForgeUnavailableError,
     NotVisibleError,
@@ -34,7 +32,6 @@ from niuu.domain.mimir_facts import TrustLevel
 from tests.test_mimir.unit.fakes import InMemoryMimirAdapter
 
 FORGE = "http://forge.test"
-BIFROST = "http://bifrost.test"
 PERSON = Person("ines", "acme", ("volundr:developer",), authorization="Bearer login")
 NS = "attached-notes"
 
@@ -127,62 +124,6 @@ class TestForgePeopleDirectory:
             ForgePeopleDirectory("", timeout_seconds=1)
         with pytest.raises(ValueError, match="timeout"):
             ForgePeopleDirectory(FORGE, timeout_seconds=0)
-
-
-# ---------------------------------------------------------------------------
-# Bifröst
-# ---------------------------------------------------------------------------
-
-
-@pytest.fixture
-async def bifrost():
-    model = BifrostAnswerModel(BIFROST + "/", timeout_seconds=5)
-    yield model
-    await model.close()
-
-
-class TestBifrostAnswerModel:
-    @pytest.mark.parametrize(
-        ("response", "match"),
-        [
-            (httpx.Response(500, text="provider down"), "provider down"),
-            (httpx.Response(200, text="not json"), "not JSON"),
-            (httpx.Response(200, json={"content": "text"}), "no content blocks"),
-        ],
-    )
-    @respx.mock
-    async def test_an_unusable_answer_is_an_error(self, bifrost, response, match) -> None:
-        respx.post(f"{BIFROST}/v1/messages").mock(return_value=response)
-        with pytest.raises(AnswerModelError, match=match):
-            await bifrost.answer(model="m", system="s", prompt="p", caller=ModelCaller.session("t"))
-
-    @respx.mock
-    async def test_an_unreachable_bifrost_is_an_error(self, bifrost) -> None:
-        respx.post(f"{BIFROST}/v1/messages").mock(side_effect=httpx.ConnectError("refused"))
-        with pytest.raises(AnswerModelError, match="could not be reached"):
-            await bifrost.answer(model="m", system="s", prompt="p", caller=ModelCaller.session("t"))
-
-    @respx.mock
-    async def test_tool_use_blocks_are_kept(self, bifrost) -> None:
-        respx.post(f"{BIFROST}/v1/messages").mock(
-            return_value=httpx.Response(
-                200,
-                json={
-                    "content": [{"type": "tool_use", "id": "x"}, {"type": "text", "text": "hi"}],
-                    "stop_reason": "tool_use",
-                },
-            )
-        )
-        reply = await bifrost.answer(
-            model="m", system="s", prompt="p", caller=ModelCaller.session("t")
-        )
-        assert reply.content == "hi" and len(reply.tool_calls) == 1
-
-    def test_settings_are_checked(self) -> None:
-        with pytest.raises(ValueError, match="bifrost_url"):
-            BifrostAnswerModel("", timeout_seconds=1)
-        with pytest.raises(ValueError, match="timeout"):
-            BifrostAnswerModel(BIFROST, timeout_seconds=0)
 
 
 # ---------------------------------------------------------------------------

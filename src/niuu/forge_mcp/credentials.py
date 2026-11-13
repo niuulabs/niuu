@@ -1,7 +1,7 @@
 """How Forge MCP grants map onto the scopes of a ``forge_session`` credential.
 
 Every session holds ``forge:notify``, ``forge:session:read``, ``forge:session:secret``,
-``forge:mesh:identity``, ``forge:memory`` and ``forge:model``. An operator
+``forge:mesh:identity`` and ``forge:memory``. An operator
 grant adds one scope each: ``message`` → ``forge:session:message`` and
 ``lifecycle`` → ``forge:session:lifecycle``. Forge enforces the scopes; Skuld and
 the MCP hosts only read them (unverified) to decide which tools to offer.
@@ -17,7 +17,6 @@ import jwt
 from niuu.domain.services.token_scope import (
     FORGE_MEMORY_SCOPE,
     FORGE_MESH_IDENTITY_SCOPE,
-    FORGE_MODEL_SCOPE,
     FORGE_NOTIFY_SCOPE,
     FORGE_SESSION_LIFECYCLE_SCOPE,
     FORGE_SESSION_MESSAGE_SCOPE,
@@ -34,7 +33,6 @@ DEFAULT_SESSION_SCOPES: tuple[str, ...] = (
     FORGE_SESSION_SECRET_SCOPE,
     FORGE_MESH_IDENTITY_SCOPE,
     FORGE_MEMORY_SCOPE,
-    FORGE_MODEL_SCOPE,
 )
 
 #: The scope each operator grant adds.

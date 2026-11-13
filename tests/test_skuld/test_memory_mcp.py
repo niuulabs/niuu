@@ -39,7 +39,7 @@ GATEWAY = "http://gateway.test/api/v1/mimir"
 FORGE_CREDENTIAL = "forge-session-credential-do-not-leak"
 INSTRUCTIONS = "Your memory has layers. Read the entity card first."
 TOOLS = [
-    {"name": "memory_ask", "description": "Answer from every layer.", "inputSchema": {}},
+    {"name": "memory_read", "description": "Read one page.", "inputSchema": {}},
     {"name": "memory_search", "description": "Ranked hits.", "inputSchema": {}},
 ]
 SECRET = "loopback-secret"
@@ -373,15 +373,15 @@ class TestRoutes:
         broker = _routes_broker(tmp_path, gateway)
         async with _client(broker) as client:
             response = await client.post(
-                "/api/memory-mcp/tools/memory_ask", json={"question": "who owns billing?"}
+                "/api/memory-mcp/tools/memory_search", json={"query": "who owns billing?"}
             )
         assert response.status_code == 200
         body = response.json()
         assert body["isError"] is False
-        assert body["structuredContent"]["echo"] == {"question": "who owns billing?"}
+        assert body["structuredContent"]["echo"] == {"query": "who owns billing?"}
         [request] = gateway.requests
         assert request.method == "POST"
-        assert str(request.url) == f"{GATEWAY}/memory/tools/memory_ask"
+        assert str(request.url) == f"{GATEWAY}/memory/tools/memory_search"
         assert request.headers["authorization"] == f"Bearer {FORGE_CREDENTIAL}"
 
     async def test_the_credential_is_never_in_what_the_agent_side_receives(
@@ -390,7 +390,7 @@ class TestRoutes:
         broker = _routes_broker(tmp_path, gateway)
         async with _client(broker) as client:
             listing = await client.get("/api/memory-mcp/tools")
-            call = await client.post("/api/memory-mcp/tools/memory_ask", json={})
+            call = await client.post("/api/memory-mcp/tools/memory_search", json={})
         assert FORGE_CREDENTIAL not in listing.text + call.text
         assert "authorization" not in {key.lower() for key in call.headers}
 
@@ -415,7 +415,7 @@ class TestRoutes:
         async with _client(broker, authorized=False) as client:
             assert (await client.get("/api/memory-mcp/tools")).status_code == 401
             assert (
-                await client.post("/api/memory-mcp/tools/memory_ask", json={})
+                await client.post("/api/memory-mcp/tools/memory_search", json={})
             ).status_code == 401
         assert gateway.requests == []
 
@@ -426,7 +426,7 @@ class TestRoutes:
         async with _client(broker) as client:
             assert (await client.get("/api/memory-mcp/tools")).status_code == 404
             assert (
-                await client.post("/api/memory-mcp/tools/memory_ask", json={})
+                await client.post("/api/memory-mcp/tools/memory_search", json={})
             ).status_code == 404
         assert gateway.requests == []
 
@@ -438,7 +438,7 @@ class TestRoutes:
         gateway.listing = lambda _r: httpx.Response(status, json={"detail": "scope missing"})
         broker = _routes_broker(tmp_path, gateway)
         async with _client(broker) as client:
-            call = await client.post("/api/memory-mcp/tools/memory_ask", json={})
+            call = await client.post("/api/memory-mcp/tools/memory_search", json={})
             listing = await client.get("/api/memory-mcp/tools")
         body = call.json()
         assert body["isError"] is True
@@ -459,7 +459,7 @@ class TestRoutes:
         gateway.listing = down
         broker = _routes_broker(tmp_path, gateway)
         async with _client(broker) as client:
-            call = await client.post("/api/memory-mcp/tools/memory_ask", json={})
+            call = await client.post("/api/memory-mcp/tools/memory_search", json={})
             listing = await client.get("/api/memory-mcp/tools")
         assert call.json()["isError"] is True
         assert GATEWAY in call.json()["content"][0]["text"]
@@ -479,7 +479,7 @@ class TestRoutes:
         gateway.call = slow
         broker = _routes_broker(tmp_path, gateway)
         async with _client(broker) as client:
-            call = await client.post("/api/memory-mcp/tools/memory_ask", json={})
+            call = await client.post("/api/memory-mcp/tools/memory_search", json={})
         assert call.json()["isError"] is True
         assert GATEWAY in call.json()["content"][0]["text"]
 
@@ -489,7 +489,7 @@ class TestRoutes:
         gateway.call = lambda _r: httpx.Response(502, json={"detail": "layer org unreachable"})
         broker = _routes_broker(tmp_path, gateway)
         async with _client(broker) as client:
-            call = await client.post("/api/memory-mcp/tools/memory_ask", json={})
+            call = await client.post("/api/memory-mcp/tools/memory_search", json={})
         text = call.json()["content"][0]["text"]
         assert call.json()["isError"] is True
         assert "502" in text and "layer org unreachable" in text and GATEWAY in text
@@ -528,9 +528,9 @@ class TestRoutes:
         broker = _routes_broker(tmp_path, gateway)
         async with _client(broker) as client:
             gateway.call = lambda _r: httpx.Response(200, json={"isError": False})
-            no_content = await client.post("/api/memory-mcp/tools/memory_ask", json={})
+            no_content = await client.post("/api/memory-mcp/tools/memory_search", json={})
             gateway.call = lambda _r: httpx.Response(200, json=["x"])
-            not_object = await client.post("/api/memory-mcp/tools/memory_ask", json={})
+            not_object = await client.post("/api/memory-mcp/tools/memory_search", json={})
         for response in (no_content, not_object):
             assert response.json()["isError"] is True
             assert GATEWAY in response.json()["content"][0]["text"]
@@ -540,9 +540,9 @@ class TestRoutes:
     ) -> None:
         broker = _routes_broker(tmp_path, gateway)
         async with _client(broker) as client:
-            garbled = await client.post("/api/memory-mcp/tools/memory_ask", content=b"{nope")
-            listy = await client.post("/api/memory-mcp/tools/memory_ask", json=[1])
-            empty = await client.post("/api/memory-mcp/tools/memory_ask")
+            garbled = await client.post("/api/memory-mcp/tools/memory_search", content=b"{nope")
+            listy = await client.post("/api/memory-mcp/tools/memory_search", json=[1])
+            empty = await client.post("/api/memory-mcp/tools/memory_search")
         assert garbled.status_code == 400 and listy.status_code == 400
         assert empty.status_code == 200  # no body is no arguments
         assert len(gateway.requests) == 1
@@ -892,7 +892,7 @@ class FakeBroker:
                 if not self.path.startswith("/api/memory-mcp/tools/"):
                     self._send(404, {"detail": "wrong path"})
                     return
-                if name != "memory_ask":
+                if name != "memory_search":
                     self._send(404, {"detail": f"unknown tool: {name}"})
                     return
                 self._send(
@@ -969,17 +969,17 @@ class TestStdioProfile:
                 "jsonrpc": "2.0",
                 "id": 3,
                 "method": "tools/call",
-                "params": {"name": "memory_ask", "arguments": {"question": "q"}},
+                "params": {"name": "memory_search", "arguments": {"query": "q"}},
             },
         )
         by_id = {frame["id"]: frame["result"] for frame in frames}
         assert by_id[2]["tools"] == TOOLS
         assert by_id[3]["isError"] is False
-        assert by_id[3]["structuredContent"]["echo"] == {"question": "q"}
+        assert by_id[3]["structuredContent"]["echo"] == {"query": "q"}
         assert (
             "POST",
-            "/api/memory-mcp/tools/memory_ask",
-            {"question": "q"},
+            "/api/memory-mcp/tools/memory_search",
+            {"query": "q"},
             f"Bearer {SECRET}",
         ) in (fake_broker.calls)
         assert all(call[3] == f"Bearer {SECRET}" for call in fake_broker.calls)
@@ -1021,7 +1021,7 @@ class TestStdioProfile:
                 "jsonrpc": "2.0",
                 "id": 1,
                 "method": "tools/call",
-                "params": {"name": "memory_ask", "arguments": {}},
+                "params": {"name": "memory_search", "arguments": {}},
             },
         )
         assert frame["result"]["isError"] is True
@@ -1088,7 +1088,7 @@ class TestStdioProfile:
             )
 
 
-@pytest.mark.parametrize("name", ["../tools", "memory_ask/../x", "Memory_Ask", "a" * 65, ""])
+@pytest.mark.parametrize("name", ["../tools", "memory_search/../x", "Memory_Search", "a" * 65, ""])
 async def test_a_tool_name_the_gateway_could_not_serve_is_refused_before_any_request(
     name: str,
 ) -> None:

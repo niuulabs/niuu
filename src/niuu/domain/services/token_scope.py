@@ -36,8 +36,7 @@ Enforcement is **stateless and fail-closed for scoped tokens only**:
 - At the edge (:func:`credential_allows_route`), a scoped credential is
   admitted only on its named entry points. A ``forge_session`` credential is
   admitted only on the Forge session allow-list
-  (``niuu.domain.services.forge_session_policy``) and, with ``forge:model``, on
-  Bifröst's three model routes (Bifröst confirms it with Forge itself).
+  (``niuu.domain.services.forge_session_policy``).
 - At a route (:func:`require_scope`), a scoped token is admitted only when it
   holds one of the required scopes *of its own family*; a check naming no
   scope of its family does not apply to a ``valkyrie_build`` token or scoped
@@ -104,12 +103,6 @@ FORGE_MESH_IDENTITY_SCOPE = "forge:mesh:identity"
 #: credential, ``GET /sessions/{id}/memory-context`` (own session only). Granted to every
 #: session; it reads nothing the session does not already know about itself.
 FORGE_MEMORY_SCOPE = "forge:memory"
-#: Ask Bifröst for a model answer charged to the session's owner: the one thing a session
-#: credential does at Bifröst, on its three model routes only (``/v1/messages``,
-#: ``/v1/chat/completions``, ``/v1/responses``). Bifröst enforces it (not Forge) and
-#: confirms the credential with Forge's live-session check before it admits the call.
-#: Granted to every session; it spends the owner's own model access, never more.
-FORGE_MODEL_SCOPE = "forge:model"
 
 #: Ring the token's own owner's phone with a resident's ``call.request`` (a VoIP push
 #: from the Guild push gateway). It reaches no other owner, so any workload mapping may
@@ -169,7 +162,6 @@ FORGE_SESSION_SCOPES: frozenset[str] = frozenset(
         FORGE_SESSION_LIFECYCLE_SCOPE,
         FORGE_MESH_IDENTITY_SCOPE,
         FORGE_MEMORY_SCOPE,
-        FORGE_MODEL_SCOPE,
     }
 )
 
@@ -382,18 +374,8 @@ def is_notification_delivery_token(token: str) -> bool:
     return is_notification_delivery_claims(_decode_claims(token))
 
 
-#: Bifröst's three model routes, bare and under the host's ``/api/v1/bifrost`` prefix: the
-#: only place besides the Forge allow-list a ``forge_session`` credential is admitted, and
-#: only with :data:`FORGE_MODEL_SCOPE`. Bifröst confirms the credential with Forge itself.
-_BIFROST_MODEL_ROUTE = re.compile(
-    r"(?:/api/v1/bifrost)?/v1/(?:messages|chat/completions|responses)"
-)
-
-
 def _forge_session_allows_route(claims: dict, method: str, path: str) -> bool:
     """Route and scope half of the Forge session allow-list (Forge checks bindings)."""
-    if method == "POST" and _BIFROST_MODEL_ROUTE.fullmatch(path):
-        return FORGE_MODEL_SCOPE in credential_scopes(claims)
     # Imported lazily: the policy module builds on this module's scope constants.
     from niuu.domain.services.forge_session_policy import policy_refusal
 
@@ -520,7 +502,6 @@ __all__ = [
     "EXCHANGE_GRANTABLE_SCOPES",
     "FORGE_MEMORY_SCOPE",
     "FORGE_MESH_IDENTITY_SCOPE",
-    "FORGE_MODEL_SCOPE",
     "FORGE_NOTIFY_SCOPE",
     "FORGE_PUSH_CALL_SCOPE",
     "FORGE_SESSION_LIFECYCLE_SCOPE",

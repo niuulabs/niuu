@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { sourceLabel, sourcePlace, type ReviewSource } from './memoryGateway';
+import { hitPlace, sourceLabel, type MemoryHit, type ReviewSource } from './memoryGateway';
 
 const base: ReviewSource = { ref: 'x', kind: 'tool_call', title: null, url: null, kept: true };
 
@@ -31,12 +31,19 @@ describe('sourceLabel', () => {
   });
 });
 
-describe('sourcePlace', () => {
-  it('says where a cited record is', () => {
-    const cited = { layer: 'org', layerName: '', ref: 'r', title: 't', url: null };
-    expect(sourcePlace({ ...cited, kind: 'page' })).toBe('a page in memory');
-    expect(sourcePlace({ ...cited, kind: 'source', layerName: 'Booking' })).toBe(
-      'a source in Booking',
+describe('hitPlace', () => {
+  it('names where a hit is held and what it is', () => {
+    const hit: MemoryHit = {
+      layer: 'org',
+      layerName: '',
+      kind: 'page',
+      ref: 'r',
+      title: 't',
+      snippet: 's',
+    };
+    expect(hitPlace(hit)).toBe('memory · page');
+    expect(hitPlace({ ...hit, kind: 'source', layerName: 'Booking platform' })).toBe(
+      'Booking platform · source',
     );
   });
 });

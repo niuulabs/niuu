@@ -416,19 +416,18 @@ def _build_memory_router(
     ``memory.enabled`` is off.
 
     Enabled means every part must be buildable now: Forge's URL, each memory
-    system, every tenant's system and the capabilities its layers need, Bifröst's
-    URL, the service credential, and the answer model when memory_ask is on.
+    system, every tenant's system and the capabilities its layers need, and the
+    service credential.
     """
     memory = config.memory
     if not memory.enabled:
         return None
     from mimir.adapters.attached_registry import RegistryAttachedMemories
-    from mimir.adapters.bifrost_answers import BifrostAnswerModel
     from mimir.adapters.forge_directory import ForgeSessionDirectory
     from mimir.adapters.forge_lifetimes import ForgeLayerLifetimes
     from mimir.adapters.forge_people import ForgePeopleDirectory
     from mimir.adapters.forge_proposals import ForgeProposalNotifier
-    from mimir.memory.answers import MemoryAnswers
+    from mimir.memory.context_pack import ContextPackBuilder
     from mimir.memory.curation import Curation
     from mimir.memory.gateway import MemoryGateway
     from mimir.memory.graph import KnowledgeGraph
@@ -436,11 +435,6 @@ def _build_memory_router(
     from mimir.memory.retention import RetentionSweeper
     from mimir.memory.systems import MemorySystems
 
-    if memory.ask_enabled and not memory.answer_model.strip():
-        raise ValueError(
-            "memory.answer_model is empty while memory.ask_enabled: name the Bifröst model "
-            "memory_ask answers with, or set ask_enabled: false to go without memory_ask"
-        )
     service_auth = _service_auth(memory.service_auth)
     directory = ForgeSessionDirectory(
         memory.forge_base_url, timeout_seconds=memory.forge_timeout_seconds
@@ -454,12 +448,7 @@ def _build_memory_router(
         default_result_count=memory.default_result_count,
         attached=attached,
     )
-    answers = MemoryAnswers(
-        gateway,
-        BifrostAnswerModel(memory.bifrost_url, timeout_seconds=memory.bifrost_timeout_seconds),
-        answer_model=memory.answer_model if memory.ask_enabled else "",
-        retrieval_count=memory.ask_retrieval_count,
-    )
+    packs = ContextPackBuilder(gateway)
     people = ForgePeopleDirectory(
         memory.forge_base_url, timeout_seconds=memory.forge_timeout_seconds
     )
@@ -479,7 +468,6 @@ def _build_memory_router(
         KnowledgeGraph(
             systems,
             concurrency=memory.graph_concurrency,
-            max_records_per_layer=memory.graph_max_records_per_layer,
             cache_seconds=memory.graph_cache_seconds,
         ),
         identity=identity,
@@ -493,7 +481,7 @@ def _build_memory_router(
         directory,
         tenant_id=config.tenant_id,
         systems=systems,
-        answers=answers,
+        packs=packs,
         curation=curation,
         identity=identity,
         sweeper=sweeper,

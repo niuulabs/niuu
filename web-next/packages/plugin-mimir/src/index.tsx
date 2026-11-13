@@ -8,7 +8,7 @@ import { RegistryWorkspace } from './ui/RegistryWorkspace';
 import { MimirSubnav } from './ui/MimirSubnav';
 import { MimirTopbar } from './ui/MimirTopbar';
 import { validateMemoryViewSearch } from './application/memoryViewSearch';
-import { AskPage } from './ui/everyday/AskPage';
+import { SearchPage } from './ui/everyday/SearchPage';
 import { ReviewPage } from './ui/everyday/ReviewPage';
 
 /** A legacy route's `search.mount`, if any — everything else is dropped. */
@@ -22,6 +22,23 @@ function redirectToMemory({ location }: { location: { search: unknown } }): neve
   throw redirect({ to: '/mimir', search: legacySearch(location.search) as never });
 }
 
+/** What the Search page reads from the address: one project to narrow to, and a query. */
+export function validateSearchPageSearch(search: Record<string, unknown>): {
+  project?: string;
+  q?: string;
+} {
+  const out: { project?: string; q?: string } = {};
+  if (search.project !== undefined && search.project !== '') out.project = String(search.project);
+  if (search.q !== undefined && search.q !== '') out.q = String(search.q);
+  return out;
+}
+
+/** Redirect the retired `/mimir/ask` to Search, keeping `project` and `q`. */
+function redirectToSearch({ location }: { location: { search: unknown } }): never {
+  const search = validateSearchPageSearch(location.search as Record<string, unknown>);
+  throw redirect({ to: '/mimir/search', search: search as never });
+}
+
 export const mimirPlugin = definePlugin({
   id: 'mimir',
   rune: 'M',
@@ -32,7 +49,7 @@ export const mimirPlugin = definePlugin({
   // (Explore/Focus/Ask/Replay) is its home.
   tabs: [
     { id: 'memory', label: 'Explore', path: '/mimir' },
-    { id: 'ask', label: 'Ask', path: '/mimir/ask' },
+    { id: 'search', label: 'Search', path: '/mimir/search' },
     { id: 'review', label: 'Review', path: '/mimir/review' },
     { id: 'registry', label: 'Library', path: '/mimir/registry' },
   ],
@@ -67,27 +84,29 @@ export const mimirPlugin = definePlugin({
       path: '/mimir/analytics',
       component: RegistryWorkspace,
     }),
-    // Ask what the team knows, and keep or discard what agents propose.
-    createRoute({ getParentRoute: () => rootRoute, path: '/mimir/ask', component: AskPage }),
+    // Search what the team knows, and keep or discard what agents propose.
+    createRoute({
+      getParentRoute: () => rootRoute,
+      path: '/mimir/search',
+      validateSearch: validateSearchPageSearch,
+      component: SearchPage,
+    }),
+    // The page used to be called Ask; old links and bookmarks land on Search.
+    createRoute({
+      getParentRoute: () => rootRoute,
+      path: '/mimir/ask',
+      beforeLoad: redirectToSearch,
+    }),
     createRoute({ getParentRoute: () => rootRoute, path: '/mimir/review', component: ReviewPage }),
     // Legacy tabs — Pages/Sources/Search/Graph/Ingest/Entities, and the retired
     // Health/Lint/Doctor — are all the one Memory scene now; only the mount scope still carries over.
-    ...[
-      'pages',
-      'sources',
-      'search',
-      'graph',
-      'ingest',
-      'entities',
-      'health',
-      'lint',
-      'doctor',
-    ].map((legacy) =>
-      createRoute({
-        getParentRoute: () => rootRoute,
-        path: `/mimir/${legacy}`,
-        beforeLoad: redirectToMemory,
-      }),
+    ...['pages', 'sources', 'graph', 'ingest', 'entities', 'health', 'lint', 'doctor'].map(
+      (legacy) =>
+        createRoute({
+          getParentRoute: () => rootRoute,
+          path: `/mimir/${legacy}`,
+          beforeLoad: redirectToMemory,
+        }),
     ),
   ],
   subnav: (ctx: PluginCtx) => <MimirSubnav ctx={ctx} />,
@@ -99,15 +118,19 @@ export {
   buildMemoryGatewayHttpAdapter,
   createMemoryGatewayMockAdapter,
 } from './adapters/memoryGateway';
-export { MEMORY_GATEWAY_SERVICE_KEY, type IMemoryGatewayService } from './ports/IMemoryGateway';
+export {
+  MEMORY_GATEWAY_SERVICE_KEY,
+  type IMemoryGatewayService,
+  type MemorySearchOptions,
+} from './ports/IMemoryGateway';
 export type {
-  MemoryAnswer,
+  MemoryHit,
   MemoryProposal,
   MemoryReview,
-  MemorySource,
+  MemorySearchResult,
   ReviewSource,
 } from './domain/memoryGateway';
-export { AskPage } from './ui/everyday/AskPage';
+export { SearchPage } from './ui/everyday/SearchPage';
 export { ReviewPage } from './ui/everyday/ReviewPage';
 export { buildMimirHttpAdapter } from './adapters/http';
 export type {

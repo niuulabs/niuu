@@ -17,10 +17,14 @@ import hashlib
 import hmac
 import json
 import logging
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
 
 import httpx
+
+#: Yields the bearer token for the next call (a static token, or one a layer client fetches).
+BearerProvider = Callable[[], Awaitable[str]]
 
 logger = logging.getLogger(__name__)
 
@@ -97,19 +101,37 @@ def result_payload(result: dict[str, Any]) -> Any:
 
 
 class GBrainMcpClient:
-    """One gbrain MCP endpoint, called with a bearer token."""
+    """One gbrain MCP endpoint, called with a bearer token.
 
-    def __init__(self, mcp_url: str, api_token: str, *, timeout_seconds: float) -> None:
+    The token is either fixed (*api_token*, a ``gbrain auth create`` token) or fetched
+    for each call by *bearer*, which is how a per-layer OAuth client presents a token
+    that expires and is renewed. Exactly one of the two is given. Many clients may share one
+    *http* connection pool; a shared pool is closed by its owner, not by the client.
+    """
+
+    def __init__(
+        self,
+        mcp_url: str,
+        api_token: str = "",
+        *,
+        timeout_seconds: float,
+        bearer: BearerProvider | None = None,
+        http: httpx.AsyncClient | None = None,
+    ) -> None:
         if not mcp_url:
             raise ValueError("a gbrain MCP URL is required")
-        if not api_token:
+        if bearer is not None and api_token:
+            raise ValueError("give a gbrain client either an API token or a bearer provider")
+        if bearer is None and not api_token:
             raise ValueError(
                 "a gbrain API token is required; create one with `gbrain auth create <name>`"
             )
         self.url = mcp_url.rstrip("/")
         self._token = api_token
+        self._bearer = bearer
         self._timeout = float(timeout_seconds)
-        self._client: httpx.AsyncClient | None = None
+        self._client: httpx.AsyncClient | None = http
+        self._owns_client = http is None
 
     def http(self) -> httpx.AsyncClient:
         if self._client is None:
@@ -118,9 +140,12 @@ class GBrainMcpClient:
 
     @property
     def token(self) -> str:
+        """The fixed API token; empty on a client that fetches its bearer per call."""
         return self._token
 
     async def close(self) -> None:
+        if not self._owns_client:
+            return
         if self._client is not None and not self._client.is_closed:
             await self._client.aclose()
         self._client = None
@@ -132,11 +157,12 @@ class GBrainMcpClient:
             GBrainTransportError: the HTTP call failed, the reply could not be parsed,
                 it was a JSON-RPC error, or it carried no result object.
         """
+        token = await self._bearer() if self._bearer is not None else self._token
         try:
             response = await self.http().post(
                 self.url,
                 headers={
-                    "Authorization": f"Bearer {self._token}",
+                    "Authorization": f"Bearer {token}",
                     "Accept": "application/json, text/event-stream",
                     "Content-Type": "application/json",
                 },

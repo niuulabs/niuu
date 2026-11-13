@@ -523,7 +523,9 @@ def import_wiki_command(
 def list_proposals_command(
     tenant: str = typer.Option(..., "--tenant", help="The org whose memory system holds them."),
     layer: str = typer.Option(..., "--layer", help="org, or project:<project id>."),
-    limit: int = typer.Option(..., "--limit", min=1, help="How many proposals to list."),
+    limit: int | None = typer.Option(
+        None, "--limit", min=1, help="List at most this many; every pending proposal by default."
+    ),
 ) -> None:
     """List the pending proposals for a layer, for its owner (decide them over the API)."""
     from mimir.memory.gateway import list_proposals

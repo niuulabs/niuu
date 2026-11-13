@@ -1,9 +1,9 @@
 import { createRootRoute, isRedirect } from '@tanstack/react-router';
 import { describe, expect, it } from 'vitest';
-import { mimirPlugin } from './index';
+import { mimirPlugin, validateSearchPageSearch } from './index';
 import { MemoryExploreView } from './ui/memory/MemoryExploreView';
 import { validateMemoryViewSearch } from './application/memoryViewSearch';
-import { AskPage } from './ui/everyday/AskPage';
+import { SearchPage } from './ui/everyday/SearchPage';
 import { ReviewPage } from './ui/everyday/ReviewPage';
 
 function routesOf() {
@@ -37,11 +37,11 @@ describe('mimirPlugin', () => {
     expect(home.options.component).toBe(MemoryExploreView);
   });
 
-  it('has Explore, Ask, Review and Library tabs', () => {
-    expect(mimirPlugin.tabs?.map((t) => t.id)).toEqual(['memory', 'ask', 'review', 'registry']);
+  it('has Explore, Search, Review and Library tabs', () => {
+    expect(mimirPlugin.tabs?.map((t) => t.id)).toEqual(['memory', 'search', 'review', 'registry']);
     expect(mimirPlugin.tabs?.map((t) => t.path)).toEqual([
       '/mimir',
-      '/mimir/ask',
+      '/mimir/search',
       '/mimir/review',
       '/mimir/registry',
     ]);
@@ -68,15 +68,34 @@ describe('mimirPlugin', () => {
     }
   });
 
-  it('serves Ask and Review as their own pages', () => {
-    expect(routeAt('/mimir/ask').options.component).toBe(AskPage);
+  it('serves Search and Review as their own pages', () => {
+    expect(routeAt('/mimir/search').options.component).toBe(SearchPage);
     expect(routeAt('/mimir/review').options.component).toBe(ReviewPage);
+  });
+
+  it('keeps /mimir/ask as a redirect to Search, carrying the project and the query', () => {
+    const redirected = caughtRedirect('/mimir/ask', {
+      project: 'p-1',
+      q: 'cut-over',
+      mount: 'platform',
+    });
+    expect(redirected.options.to).toBe('/mimir/search');
+    expect(redirected.options.search).toEqual({ project: 'p-1', q: 'cut-over' });
+    expect(caughtRedirect('/mimir/ask').options.search).toEqual({});
+  });
+
+  it('reads only a project and a query from the Search address', () => {
+    expect(validateSearchPageSearch({ project: 'p-1', q: 42, mount: 'x' })).toEqual({
+      project: 'p-1',
+      q: '42',
+    });
+    expect(validateSearchPageSearch({ project: '', q: '' })).toEqual({});
+    expect(routeAt('/mimir/search').options.validateSearch).toBe(validateSearchPageSearch);
   });
 
   for (const legacy of [
     'pages',
     'sources',
-    'search',
     'graph',
     'ingest',
     'entities',

@@ -103,7 +103,6 @@ class TestKnownWorkloadScopes:
             {
                 "forge:mesh:identity",
                 "forge:memory",
-                "forge:model",
                 "forge:session:create",
                 "forge:session:room-role",
                 "ting:workflow:coordinate",
@@ -144,55 +143,23 @@ class TestKnownWorkloadScopes:
         )
 
 
-class TestForgeModelScopeAtTheEdge:
-    """``forge:model`` admits a session credential on Bifröst's model routes, nowhere else."""
-
-    MODEL_ROUTES = (
-        "/v1/messages",
-        "/v1/chat/completions",
-        "/v1/responses",
-        "/api/v1/bifrost/v1/messages",
-        "/api/v1/bifrost/v1/chat/completions",
-        "/api/v1/bifrost/v1/responses",
-    )
-
-    @pytest.mark.parametrize("path", MODEL_ROUTES)
-    def test_admitted_on_the_three_model_routes_with_the_scope(self, path: str) -> None:
-        token = _session_token(["forge:model"])
-        assert credential_allows_route(token, "POST", path) is True
-
-    @pytest.mark.parametrize("path", MODEL_ROUTES)
-    def test_refused_on_the_model_routes_without_the_scope(self, path: str) -> None:
-        token = _session_token([FORGE_NOTIFY_SCOPE, FORGE_SESSION_READ_SCOPE])
-        assert credential_allows_route(token, "POST", path) is False
+class TestSessionCredentialAtBifrost:
+    """A session credential is not a model credential: Bifröst's routes never admit it."""
 
     @pytest.mark.parametrize(
-        ("method", "path"),
+        "path",
         [
-            ("GET", "/v1/messages"),
-            ("POST", "/v1/models"),
-            ("GET", "/v1/models"),
-            ("POST", "/v1/messages/count_tokens"),
-            ("POST", "/v1/usage"),
-            ("POST", "/admin/reload-keys"),
-            ("POST", "/api/v1/bifrost/admin/reload-keys"),
-            ("POST", "/api/v1/bifrost/api/chat"),
-            ("POST", "/api/v1/forge/sessions"),
-            ("GET", "/api/v1/mimir/memory/context-pack"),
-            ("POST", "/v1/messages/../models"),
+            "/v1/messages",
+            "/v1/chat/completions",
+            "/v1/responses",
+            "/api/v1/bifrost/v1/messages",
+            "/api/v1/bifrost/v1/chat/completions",
+            "/api/v1/bifrost/v1/responses",
         ],
     )
-    def test_the_scope_admits_nothing_else(self, method: str, path: str) -> None:
-        token = _session_token(["forge:model"])
-        assert credential_allows_route(token, method, path) is False
-
-    def test_other_scoped_credentials_are_not_admitted_on_model_routes(self) -> None:
-        build = _build_token(["forge:model"])
-        assert credential_allows_route(build, "POST", "/v1/messages") is False
-
-    def test_token_has_scope_follows_the_scopes_claim(self) -> None:
-        assert token_has_scope(_session_token(["forge:model"]), "forge:model") is True
-        assert token_has_scope(_session_token([FORGE_NOTIFY_SCOPE]), "forge:model") is False
+    def test_refused_on_the_model_routes_with_every_session_scope(self, path: str) -> None:
+        token = _session_token(sorted(FORGE_SESSION_SCOPES))
+        assert credential_allows_route(token, "POST", path) is False
 
 
 class TestTokenRequiresScopeCheck:
@@ -392,7 +359,6 @@ class TestForgeSessionScopes:
             FORGE_SESSION_LIFECYCLE_SCOPE,
             "forge:mesh:identity",
             "forge:memory",
-            "forge:model",
         }
         assert FORGE_SESSION_SCOPES <= KNOWN_WORKLOAD_SCOPES
         assert not FORGE_SESSION_SCOPES & VALKYRIE_BUILD_SCOPES

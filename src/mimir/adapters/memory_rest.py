@@ -10,16 +10,17 @@ answer, or none, is a 401. A person's login names no session and is refused.
 The app's ``enforce_identity`` middleware skips exactly these routes
 (:func:`is_session_route`), and nothing else.
 
-**People routes** — ``POST {base}/memory/ask``, ``GET {base}/memory/review``,
+**People routes** — ``GET {base}/memory/search``, ``GET {base}/memory/review``,
 ``GET {base}/memory/proposals``, ``POST {base}/memory/proposals/{id}/approve`` and
 ``/reject``, and ``POST {base}/memory/promotions`` — take the person's own login through
 Mímir's identity adapter (in mini mode without auth, the configured dev principal). A
 scoped credential (a session's, a workload's) is refused on them. Forge is asked
 about the person's roles, projects and ownership with their own ``Authorization``
-header. ``memory/ask`` answers over the layers the person reads
-(:mod:`mimir.memory.readers`) and its answer call goes through Bifröst as the person,
-so it is charged to them. Deciding a proposal to a project settles the notification
-Forge sent its deciders, with the deciding person's login.
+header. ``memory/search`` searches the layers the person reads (:mod:`mimir.memory.readers`)
+in every memory system that holds one and collates the hits; the gateway writes no answers
+with a model, since each memory system already searches and synthesises on its own. Deciding
+a proposal to a project settles the notification Forge sent its deciders, with the deciding
+person's login.
 
 **Connector route** — ``POST {base}/memory/sources`` (contract C11) — takes only a
 platform service credential: a verified workload-identity token whose actor
@@ -46,10 +47,11 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 
 from identity.adapters.http_auth import presented_actor
-from mimir.memory.answers import Answer, AnswerRefusedError, MemoryAnswers
+from mimir.memory.context_pack import ContextPackBuilder
 from mimir.memory.curation import Curation, CurationRefusedError, Decided, DecisionError, Review
-from mimir.memory.gateway import LayerUnavailableError, MemoryGateway, Session
+from mimir.memory.gateway import LabelledHit, LayerUnavailableError, MemoryGateway, Session
 from mimir.memory.models import (
+    HitKind,
     Layer,
     LayerKind,
     MemoryStoreError,
@@ -62,7 +64,6 @@ from mimir.memory.readers import PersonReader
 from mimir.memory.retention import RetentionSweeper
 from mimir.memory.systems import MemorySystems, TenantNotConfiguredError
 from mimir.memory.tools import MemoryTools, UnknownToolError, instructions
-from mimir.ports.answer_model import AnswerModelError, ModelCaller
 from mimir.ports.attached_memory import AttachedMemories
 from mimir.ports.people_directory import (
     ForgeUnavailableError,
@@ -72,7 +73,7 @@ from mimir.ports.people_directory import (
 )
 from mimir.ports.proposal_notifier import ProposalNotifier, ProposalNotifyError
 from mimir.ports.session_directory import SessionDirectory, SessionNotConfirmedError
-from niuu.cap_telemetry import OutputTruncatedError, record_degraded
+from niuu.cap_telemetry import record_degraded
 from niuu.domain.mimir_facts import FactError
 from niuu.domain.services.forge_session_token import SESSION_ID_CLAIM
 from niuu.domain.services.token_scope import credential_allows_route, scoped_credential_claims
@@ -188,20 +189,21 @@ def _review(review: Review) -> dict[str, Any]:
     }
 
 
-def _answer(answer: Answer, names: dict[str, str]) -> dict[str, Any]:
+def _search(query: str, hits: Sequence[LabelledHit], names: dict[str, str]) -> dict[str, Any]:
     return {
-        "answer": answer.answer,
-        "gaps": list(answer.gaps),
-        "sources": [
+        "query": query,
+        "hits": [
             {
-                "layer": cited.layer,
-                "layer_name": names.get(cited.layer, ""),
-                "ref": cited.ref,
-                "kind": cited.kind,
-                "title": cited.title,
-                "url": cited.url,
+                "layer": found.layer.id,
+                "layer_name": names.get(found.layer.id, ""),
+                "kind": found.hit.kind.value,
+                "ref": found.hit.ref
+                if found.hit.kind is HitKind.PAGE
+                else f"source:{found.hit.ref}",
+                "title": found.hit.title,
+                "snippet": found.hit.snippet,
             }
-            for cited in answer.cited
+            for found in hits
         ],
     }
 
@@ -255,7 +257,7 @@ class MemoryRouter:
     directory: asks Forge who a session is.
     tenant_id: when this Mímir belongs to one tenant, callers of any other are refused.
     systems: the memory systems to close with the router.
-    answers: memory_ask and the context pack.
+    packs: builds the launch context pack.
     curation: the people routes (proposals and promotions).
     identity: Mímir's identity adapter, for the people routes.
     sweeper: the retention sweep, started with :meth:`start`.
@@ -264,7 +266,7 @@ class MemoryRouter:
         (``memory.connector_service_subjects``).
     allow_all_identity: Mímir's identity adapter is the allow-all one (local mini mode), so
         nothing verifies callers and the connector route admits the local caller.
-    reader: the layers a person reads, for the people ask route.
+    reader: the layers a person reads, for the people search route.
     notifier: tells a project's deciders through Forge that a proposal waits, and settles
         it when decided.
     """
@@ -276,7 +278,7 @@ class MemoryRouter:
         *,
         tenant_id: str = "",
         systems: MemorySystems | None = None,
-        answers: MemoryAnswers | None = None,
+        packs: ContextPackBuilder | None = None,
         curation: Curation | None = None,
         identity: HeaderAuthenticationPort | None = None,
         sweeper: RetentionSweeper | None = None,
@@ -289,7 +291,7 @@ class MemoryRouter:
         self._gateway = gateway
         self._directory = directory
         self._systems = systems
-        self._answers = answers
+        self._packs = packs
         self._curation = curation
         self._identity = identity
         self._sweeper = sweeper
@@ -297,7 +299,7 @@ class MemoryRouter:
         self._sweep_task: asyncio.Task[None] | None = None
         self._reader = reader
         self._notifier = notifier
-        self._tools = MemoryTools(gateway, answers, notifier)
+        self._tools = MemoryTools(gateway, notifier)
         self._tenant_id = tenant_id
         self._connector_subjects = frozenset(connector_subjects)
         self._allow_all_identity = allow_all_identity
@@ -449,20 +451,13 @@ class MemoryRouter:
                 return HTTPException(status_code=exc.status, detail=str(exc))
             case CurationRefusedError():
                 return HTTPException(status_code=403, detail=str(exc))
-            case AnswerRefusedError():
-                return HTTPException(status_code=422, detail=str(exc))
             case DecisionError() | RevisionConflictError() | FactError():
                 return HTTPException(status_code=409, detail=str(exc))
             case MemoryValidationError():
                 return HTTPException(status_code=422, detail=str(exc))
             case TenantNotConfiguredError():
                 return HTTPException(status_code=503, detail=str(exc))
-            case (
-                ForgeUnavailableError()
-                | MemoryStoreError()
-                | AnswerModelError()
-                | OutputTruncatedError()
-            ):
+            case ForgeUnavailableError() | MemoryStoreError():
                 return HTTPException(status_code=502, detail=str(exc))
         raise exc
 
@@ -474,8 +469,6 @@ class MemoryRouter:
         TenantNotConfiguredError,
         MemoryStoreError,
         FactError,
-        AnswerModelError,
-        OutputTruncatedError,
     )
 
     async def _settled(self, person: Person, decided: Decided, outcome: str) -> dict[str, Any]:
@@ -513,7 +506,7 @@ class MemoryRouter:
         async def list_tools(request: Request) -> dict[str, Any]:
             session, _ = await self._session(request)
             return {
-                "instructions": instructions(session, asks=self._tools.asks),
+                "instructions": instructions(session),
                 "tools": self._tools.definitions(),
             }
 
@@ -537,10 +530,10 @@ class MemoryRouter:
         @router.get("/memory/context-pack")
         async def context_pack(request: Request) -> dict[str, Any]:
             session, _ = await self._session(request)
-            if self._answers is None:
+            if self._packs is None:
                 raise HTTPException(status_code=503, detail="this gateway builds no context packs")
             try:
-                pack = await self._answers.context_pack(session)
+                pack = await self._packs.context_pack(session)
             except (MemoryStoreError, FactError) as exc:
                 raise HTTPException(status_code=502, detail=str(exc)) from exc
             return {"text": pack.text}
@@ -567,48 +560,35 @@ class MemoryRouter:
                 "new": imported.new,
             }
 
-        @router.post("/memory/ask")
-        async def person_ask(request: Request) -> dict[str, Any]:
+        @router.get("/memory/search")
+        async def search(
+            request: Request, q: str = "", project_id: str | None = None
+        ) -> dict[str, Any]:
             person = await self._person(request)
-            if self._reader is None or self._answers is None or not self._answers.asks:
-                raise HTTPException(
-                    status_code=503,
-                    detail="this gateway answers no questions: set memory.answer_model",
-                )
-            body = await _json(request)
-            question = body.get("question")
-            project = body.get("project_id")
-            if not isinstance(question, str) or not question.strip():
-                raise HTTPException(status_code=422, detail="question is required")
-            if project is not None and (not isinstance(project, str) or not project.strip()):
+            if self._reader is None:
+                raise HTTPException(status_code=503, detail="this gateway serves no people routes")
+            if not q.strip():
+                raise HTTPException(status_code=422, detail="q is required")
+            if project_id is not None and not project_id.strip():
                 raise HTTPException(status_code=422, detail="project_id must be a project id")
             try:
-                session = await self._reader.open(person, project)
+                session = await self._reader.open(person, project_id)
                 names = await self._layer_names(person, session)
-                answer = await self._answers.ask(
-                    session,
-                    question,
-                    layers=None,
-                    caller=ModelCaller.person(
-                        authorization=person.authorization,
-                        user_id=person.user_id,
-                        tenant_id=person.tenant_id,
-                    ),
-                )
+                # No limit: the route adds no cap, it returns every hit the memory systems do.
+                found = await self._gateway.search(session, q, limit=None)
             except self._PEOPLE_ERRORS as exc:
                 raise self._people_error(exc) from exc
-            return _answer(answer, names)
+            return _search(q, found, names)
 
         @router.get("/memory/review")
         async def review(
             request: Request, layer: str | None = None, limit: int | None = None
         ) -> dict[str, Any]:
             person = await self._person(request)
-            count = limit if limit is not None else self._gateway.default_result_count
-            if count < 1:
+            if limit is not None and limit < 1:
                 raise HTTPException(status_code=422, detail="limit must be at least 1")
             try:
-                found = await self._curator().review(person, layer or None, limit=count)
+                found = await self._curator().review(person, layer or None, limit=limit)
             except self._PEOPLE_ERRORS as exc:
                 raise self._people_error(exc) from exc
             return _review(found)
@@ -616,14 +596,13 @@ class MemoryRouter:
         @router.get("/memory/proposals")
         async def proposals(request: Request, layer: str, limit: int | None = None) -> dict:
             person = await self._person(request)
-            count = limit if limit is not None else self._gateway.default_result_count
-            if count < 1:
+            if limit is not None and limit < 1:
                 raise HTTPException(status_code=422, detail="limit must be at least 1")
             try:
-                found = await self._curator().pending(person, layer, limit=count)
+                found = await self._curator().pending(person, layer, limit=limit)
             except self._PEOPLE_ERRORS as exc:
                 raise self._people_error(exc) from exc
-            return {"layer": layer, "limit": count, "proposals": [_proposal(p) for p in found]}
+            return {"layer": layer, "limit": limit, "proposals": [_proposal(p) for p in found]}
 
         @router.post("/memory/proposals/{proposal_id}/approve")
         async def approve(proposal_id: str, request: Request) -> dict:
@@ -686,7 +665,7 @@ class MemoryRouter:
                 await self._sweep_task
             self._sweep_task = None
         await self._directory.close()
-        for part in (self._sweeper, self._answers, self._curation, self._attached, self._notifier):
+        for part in (self._sweeper, self._curation, self._attached, self._notifier):
             if part is not None:
                 await part.close()
         if self._systems is not None:

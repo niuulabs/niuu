@@ -314,7 +314,8 @@ class Session:
 class MemoryGateway:
     """Args:
     systems: the memory systems and which org lives on which.
-    default_result_count: results a list read returns when the caller names no limit.
+    default_result_count: how many changes the change feed is asked for per call (a page
+        size: the feed is read until it has no more).
     attached: opens the stores behind attached layers; None on a gateway that serves
         no attached memories, where a session that has one is refused.
     """
@@ -428,6 +429,12 @@ class MemoryGateway:
             raise MemoryValidationError("limit must be at least 1")
         return limit
 
+    @staticmethod
+    def _search_limit(limit: int | None) -> int | None:
+        if limit is not None and limit < 1:
+            raise MemoryValidationError("limit must be at least 1")
+        return limit
+
     def _layers(self, session: Session, names: Sequence[str] | None) -> tuple[Layer, ...]:
         if not names:
             return session.layers
@@ -445,8 +452,14 @@ class MemoryGateway:
         kinds: Iterable[HitKind] | None = None,
         limit: int | None = None,
     ) -> list[LabelledHit]:
+        """Ranked hits across the chosen layers, each labelled with its layer.
+
+        *limit* None means no cap: the gateway applies none of its own (not
+        ``default_result_count``), and each memory system returns what its own search
+        does. A caller that names a limit gets at most that many.
+        """
         chosen = self._layers(session, layers)
-        count = self._limit(limit)
+        count = self._search_limit(limit)
         wanted = frozenset(kinds or HitKind)
         ranked: list[list[SearchHit]] = []
         for system, backend, group in session.groups(chosen):
@@ -465,7 +478,9 @@ class MemoryGateway:
             for rank in range(max((len(g) for g in ranked), default=0))
             for group in ranked
             if rank < len(group)
-        ][:count]
+        ]
+        if count is not None:
+            hits = hits[:count]
         by_ref: dict[tuple[HitKind, str], list[LabelledHit]] = {}
         order: list[tuple[HitKind, str]] = []
         for hit in hits:
@@ -1287,8 +1302,13 @@ def proposal_from_page(page: PageRecord) -> Proposal:
     )
 
 
-async def list_proposals(backend: MemoryBackend, layer: Layer, *, limit: int) -> list[Proposal]:
-    """Up to *limit* pending proposals for *layer*, oldest first, for its owner to decide."""
+async def list_proposals(
+    backend: MemoryBackend, layer: Layer, *, limit: int | None = None
+) -> list[Proposal]:
+    """Pending proposals for *layer*, oldest first, for its owner to decide.
+
+    Every pending proposal when *limit* is None; otherwise up to the caller's *limit*.
+    """
     namespace = layer.proposals_namespace
     refs = await backend.list_pages(namespace, limit=limit)
     proposals = []

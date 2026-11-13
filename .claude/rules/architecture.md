@@ -207,15 +207,13 @@ The memory gateway (the Mímir service, `docs/design/memory/README.md`) is the o
 non-Forge service that accepts this credential, on exactly three routes:
 `GET …/memory/tools`, `POST …/memory/tools/{name}` and `GET …/memory/context-pack`
 (the only routes its identity middleware exempts). Its people routes
-(`POST …/memory/ask`, `GET …/memory/review`, `…/memory/proposals…`, `…/memory/promotions`,
+(`GET …/memory/search`, `GET …/memory/review`, `…/memory/proposals…`, `…/memory/promotions`,
 and `…/memory/graph`, the knowledge graph of the layers that person reads) take a person's
 own login through Mímir's identity adapter, refuse any credential carrying
 `workload_session_id` or that `credential_allows_route` denies, and pass the person's
-`Authorization` on to Forge. `memory/ask` reads only the layers Forge says the person may
-see (the org, the projects they are on, a named project's attached memories) and makes its
-answer call to Bifröst with the person's own `Authorization` plus `X-Agent-Id` /
-`X-Tenant-Id` naming them, so it is charged to the person (a verifying Bifröst charges the
-verified login; only `auth_mode: open` reads the headers). Its own service credential
+`Authorization` on to Forge. `memory/search` reads only the layers Forge says the person
+may see (the org, the projects they are on, a named project's attached memories). The
+gateway calls no model: it collates what each memory system's own search returns. Its own service credential
 (`memory.service_auth`) is used only for `POST /api/v1/forge/memory/ended`. It does not
 verify the token itself. It reads the unverified `workload_session_id` only to address
 `GET /api/v1/forge/sessions/{id}/memory-context` (scope `forge:memory`, the session's own
@@ -268,25 +266,6 @@ nobody. A person, a `forge_session` or other scoped credential and any other ser
 (403). With the allow-all identity of local mini mode the local caller passes, still
 never with a session or scoped credential. The route is not exempt from Mímir's identity
 middleware.
-
-### Exception: Forge session credentials at Bifröst (`forge:model`)
-
-Bifröst accepts a `forge_session` credential carrying `forge:model` (every session has it)
-on its three model routes only: `POST /v1/messages`, `/v1/chat/completions` and
-`/v1/responses`, in every `auth_mode`, in front of the configured adapter. Every other
-Bifröst route behaves as before. The memory gateway uses it to answer `memory_ask` with
-the session's own credential, so the answer is charged to the session's owner.
-
-- Bifröst never verifies the token itself. It reads `workload_session_id` unverified only
-  to address Forge, and presents the credential to `GET /api/v1/forge/sessions/{id}`
-  (`forge_session.base_url`, `.timeout_seconds`). Forge's 200 is the proof; the answer must
-  name the same session, an owner and a tenant.
-- Usage is charged to Forge's answer: agent = `owner_id`, tenant = `tenant_id`, session =
-  the id. Attribution headers are never read for this credential.
-- Nothing is cached, so a stopped session or a new launch loses access on its next call.
-- Refusals are 401 naming why, a missing scope is 403, Forge unreachable is 503. Without
-  `forge_session.base_url` the credential is refused.
-- `credential_allows_route` admits the credential at the edge on these three routes only.
 
 ### Exception: mesh sender attestation (`mesh_peer` certificates)
 

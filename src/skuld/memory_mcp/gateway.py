@@ -20,7 +20,7 @@ from typing import Any
 import httpx
 
 TOOLS_SEGMENT = "memory/tools"
-#: The shape of every tool name the gateway serves (memory_search, memory_ask, …). A name
+#: The shape of every tool name the gateway serves (memory_search, memory_read, …). A name
 #: outside it is refused here, before any request, so nothing the agent sends shapes the
 #: gateway URL beyond one plain path segment.
 TOOL_NAME = re.compile(r"^[a-z][a-z0-9_]{0,63}$")

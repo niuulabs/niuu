@@ -25,6 +25,7 @@ from mimir.config import MimirServiceConfig
 from niuu.cap_telemetry import reset_cap_hits
 from niuu.domain.mimir_facts import TrustLevel
 from tests.test_mimir.unit.memory_fakes import (
+    ADMIN_TOKEN,
     MCP,
     PROJECT_ID,
     SESSION_ID,
@@ -43,7 +44,6 @@ from tests.test_mimir.unit.test_auth_mode import (
 )
 
 FORGE = "http://forge.test"
-BIFROST = "http://bifrost.test"
 _BACKEND = {"adapter": "tests.test_mimir.unit.fakes.InMemoryMimirAdapter"}
 PROJECT = f"project:{PROJECT_ID}"
 NAMESPACE = f"project-{PROJECT_ID}"
@@ -70,14 +70,12 @@ def _memory(**overrides) -> dict:
                 "name": "acme-brain",
                 "adapter": "mimir.backends.gbrain.GBrainBackend",
                 "mcp_url": MCP,
-                "api_token": "tok",
+                "admin_token": ADMIN_TOKEN,
                 "signing_key": SIGNING_KEY,
             }
         ],
         "tenants": {"acme": "acme-brain"},
         "service_auth": {"adapter": "niuu.adapters.outbound.http_auth.NoAuthHeaderAdapter"},
-        "bifrost_url": BIFROST,
-        "answer_model": "answer-model-1",
         **overrides,
     }
 
@@ -136,7 +134,7 @@ def forge():
 @pytest.fixture
 def brain(forge):
     brain = FakeGBrain()
-    forge.post(MCP).mock(side_effect=brain.handle)
+    brain.mount(forge)
     forge.get(JWKS_URI).mock(return_value=httpx.Response(200, json={"keys": [PUBLIC_JWK]}))
     return brain
 
@@ -156,7 +154,7 @@ def _stored(namespace: str, source_id: str):
     """Read a source back from the fake brain the way the gateway does."""
 
     async def read():
-        backend = GBrainBackend(MCP, "tok", signing_key=SIGNING_KEY)
+        backend = GBrainBackend(MCP, admin_token=ADMIN_TOKEN, signing_key=SIGNING_KEY)
         try:
             return await backend.get_source(namespace, source_id)
         finally:
@@ -289,8 +287,11 @@ class TestOtherRoutesBehaveAsBefore:
             promotion = client.post(
                 "/mimir/memory/promotions", headers=_service(), json={"refs": []}
             )
+            search = client.get("/mimir/memory/search", params={"q": "x"}, headers=_service())
         assert proposals.status_code == 403
         assert promotion.status_code == 403
+        assert search.status_code == 403
+        assert "connector" in search.json()["detail"]
         assert "connector" in proposals.json()["detail"]
 
     def test_a_connector_credential_is_refused_on_the_session_routes(self, tmp_path, brain) -> None:
@@ -323,7 +324,7 @@ class TestTheWrite:
         assert first["new"] is True and again["new"] is False
         assert again["source_id"] == first["source_id"]
         assert [slug for slug in brain.pages if first["source_id"] in slug] == [
-            f"l/{NAMESPACE}/_sources/{first['source_id']}"
+            f"{NAMESPACE}/_sources/{first['source_id']}"
         ]
 
     def test_a_changed_ticket_is_a_new_source_and_the_old_one_stays(self, tmp_path, brain) -> None:

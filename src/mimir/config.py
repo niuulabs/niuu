@@ -133,11 +133,11 @@ class MimirFactsConfig(BaseModel):
 
 class MemoryGatewayConfig(BaseModel):
     """The memory gateway (docs/design/memory): sessions' ``memory`` tools over their layers,
-    the context pack, the people routes for proposals and promotions, and retention.
+    the context pack, the people routes for search, proposals and promotions, and retention.
 
     Off unless ``enabled``. When enabled, every setting below is checked at startup:
     a system that cannot be built, a tenant naming a system that does not exist, a
-    system lacking a capability its layers need, a missing Bifröst URL or service
+    system lacking a capability its layers need, or a missing service
     credential stops the service.
     """
 
@@ -145,8 +145,8 @@ class MemoryGatewayConfig(BaseModel):
         default=False,
         description=(
             "Serve the memory routes (/memory/tools, /memory/context-pack, /memory/proposals, "
-            "/memory/promotions, /memory/graph) on the Mímir API prefixes, and sweep expired "
-            "layers."
+            "/memory/promotions, /memory/search, /memory/graph) on the Mímir API prefixes, and "
+            "sweep expired layers."
         ),
     )
     forge_base_url: str = Field(
@@ -183,10 +183,9 @@ class MemoryGatewayConfig(BaseModel):
         default=10,
         ge=1,
         description=(
-            "How many results memory_search and list reads return when the caller names no "
-            "`limit`. A default, not a cap: a caller may ask for more. The context pack "
-            "considers this many pages for the session's objective and for its project brief; "
-            "reaching it is counted (memory.default_result_count on the cap counter)."
+            "How many changes the change feed (the context pack's changes since the owner's "
+            "previous session) asks of a memory system per call. A page size, not a cap: the "
+            "feed is read until it has no more."
         ),
     )
     service_auth: dict[str, Any] | None = Field(
@@ -210,47 +209,6 @@ class MemoryGatewayConfig(BaseModel):
             "verifies callers the route answers 403 naming this setting. With the allow-all "
             "identity of local mini mode nothing verifies callers, so the local caller passes "
             "(still never with a session or scoped credential)."
-        ),
-    )
-    bifrost_url: str = Field(
-        default="",
-        description=(
-            "Bifröst's base URL. memory_ask answers through POST {bifrost_url}/v1/messages "
-            "with the session's own credential, charged to the session's owner. Required "
-            "when enabled."
-        ),
-    )
-    bifrost_timeout_seconds: float = Field(
-        default=300.0,
-        gt=0,
-        description=(
-            "Timeout of each Bifröst call. An answer call waits for the whole answer, so this "
-            "bounds the longest answer memory_ask can wait for; a timeout is a tool error."
-        ),
-    )
-    ask_enabled: bool = Field(
-        default=True,
-        description=(
-            "Serve the memory_ask tool. False is the operator's choice to go without cited "
-            "answers; the other tools and the context pack are unaffected."
-        ),
-    )
-    answer_model: str = Field(
-        default="",
-        description=(
-            "The Bifröst model memory_ask answers with. Required when ask_enabled. No output "
-            "cap is sent: the model's own limit bounds the answer, and an answer cut off by it "
-            "is an error naming this setting."
-        ),
-    )
-    ask_retrieval_count: int = Field(
-        default=10,
-        ge=1,
-        description=(
-            "Search hits memory_ask reads in full before answering (plus the current facts "
-            "about each hit page's subject). Bounded by what the answer model's context can "
-            "hold. When a search returns this many, the answer lists it as a gap and the hit "
-            "is counted."
         ),
     )
     retention_days: float = Field(
@@ -286,16 +244,6 @@ class MemoryGatewayConfig(BaseModel):
             "Reads against the memory system in flight at once while one knowledge graph is "
             "built (page, timeline and source reads). Bounded by what the memory system's "
             "endpoint serves in parallel; builds are slower, never wrong, with a lower value."
-        ),
-    )
-    graph_max_records_per_layer: int = Field(
-        default=5000,
-        ge=1,
-        description=(
-            "Pages (and, separately, sources) the knowledge graph reads from one layer. Bounded "
-            "by what one response and the 3D scene can carry. A layer with more fails the whole "
-            "graph, naming the layer and this setting, and is counted "
-            "(memory.graph_max_records_per_layer on the cap counter)."
         ),
     )
     org_admin_roles: list[str] = Field(

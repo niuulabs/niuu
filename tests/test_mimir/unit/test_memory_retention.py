@@ -11,6 +11,7 @@ import pytest
 import respx
 
 from mimir.adapters.forge_lifetimes import ForgeLayerLifetimes
+from mimir.adapters.gbrain_layers import source_id_of
 from mimir.memory.gateway import MemoryGateway
 from mimir.memory.retention import SWEEP_PATH, RetentionSweeper
 from mimir.memory.systems import MemorySystems
@@ -23,7 +24,7 @@ from mimir.ports.layer_lifetimes import (
 )
 from niuu.adapters.outbound.http_auth import NoAuthHeaderAdapter, StaticBearerTokenAuthAdapter
 from niuu.cap_telemetry import degraded_counts, reset_cap_hits
-from tests.test_mimir.unit.memory_fakes import MCP, FakeGBrain, context, gbrain_backend
+from tests.test_mimir.unit.memory_fakes import PROJECT_ID, FakeGBrain, context, gbrain_backend
 
 FORGE = "http://forge.test"
 ENDED_URL = f"{FORGE}/api/v1/forge/memory/ended"
@@ -59,7 +60,7 @@ class FakeLifetimes(LayerLifetimes):
 def brain():
     fake = FakeGBrain()
     with respx.mock(assert_all_called=False) as router:
-        router.post(MCP).mock(side_effect=fake.handle)
+        fake.mount(router)
         yield fake
 
 
@@ -120,12 +121,13 @@ class TestSweep:
             [f"session-{OLD}", f"session-{GONE}", f"run-{RUN}"]
         )
         assert sorted(reports[0].kept) == sorted([f"session:{RECENT}", f"session:{ACTIVE}"])
-        assert _live(brain, f"l/session-{OLD}/") == []
-        assert _live(brain, f"l/run-{RUN}/") == []
-        assert _live(brain, f"l/session-{GONE}/") == []
-        assert _live(brain, f"l/session-{RECENT}/")
-        assert _live(brain, f"l/session-{ACTIVE}/")
-        assert _live(brain, "l/project-")  # long-lived layers are never swept
+        assert _live(brain, f"session-{OLD}/") == []
+        assert _live(brain, f"run-{RUN}/") == []
+        assert _live(brain, f"session-{GONE}/") == []
+        assert _live(brain, f"session-{RECENT}/")
+        assert _live(brain, f"session-{ACTIVE}/")
+        # long-lived layers are never swept
+        assert source_id_of(f"project-{PROJECT_ID}") in brain.sources
         assert sorted(forgotten) == sorted(reports[0].deleted)
 
     async def test_a_layer_ended_exactly_at_retention_goes(self, brain, gateway) -> None:
@@ -140,12 +142,12 @@ class TestSweep:
         lifetimes.fail = True
         sweeper = _sweeper(gateway, lifetimes)
         assert await sweeper.sweep() == []
-        assert _live(brain, f"l/session-{OLD}/")
+        assert _live(brain, f"session-{OLD}/")
         assert degraded_counts()[SWEEP_PATH] == 1
         assert sweeper.failed_sweeps == 1
 
     async def test_a_system_that_cannot_be_listed_is_counted(self, brain, gateway) -> None:
-        brain.fail_tools.add("list_pages")
+        brain.fail_paths.add("/admin/api/sources")
         sweeper = _sweeper(gateway, FakeLifetimes({}, {}))
         assert await sweeper.sweep() == []
         assert degraded_counts()[SWEEP_PATH] == 1

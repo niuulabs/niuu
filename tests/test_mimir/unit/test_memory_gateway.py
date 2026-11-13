@@ -46,13 +46,13 @@ from tests.test_mimir.unit.memory_fakes import (
     OTHER_SESSION_ID,
     PROJECT_ID,
     SESSION_ID,
-    SIGNING_KEY,
     FakeGBrain,
     context,
     gbrain_backend,
 )
 
-GLOBEX_MCP = "https://globex-brain.test/mcp"
+GLOBEX_BASE = "https://globex-brain.test"
+GLOBEX_MCP = f"{GLOBEX_BASE}/mcp"
 URL = "url:https://linear.app/acme/LIN-482"
 PROJECT_NS = f"project-{PROJECT_ID}"
 
@@ -64,10 +64,10 @@ def _reset_caps():
 
 @pytest.fixture
 def brains():
-    acme, globex = FakeGBrain(), FakeGBrain()
+    acme, globex = FakeGBrain(), FakeGBrain(base=GLOBEX_BASE)
     with respx.mock(assert_all_called=False) as router:
-        router.post(MCP).mock(side_effect=acme.handle)
-        router.post(GLOBEX_MCP).mock(side_effect=globex.handle)
+        acme.mount(router)
+        globex.mount(router)
         yield acme, globex
 
 
@@ -81,7 +81,7 @@ async def systems(brains):
     built = MemorySystems(
         {
             "acme-brain": gbrain_backend(),
-            "globex-brain": GBrainBackend(GLOBEX_MCP, "tok", signing_key=SIGNING_KEY),
+            "globex-brain": gbrain_backend(GLOBEX_MCP),
         },
         {"acme": "acme-brain", "globex": "globex-brain"},
     )
@@ -126,14 +126,10 @@ class TestOpening:
     async def test_each_layer_is_placed_once(self, brain, gateway) -> None:
         await gateway.open(context())
         await gateway.open(context())
-        markers = [
-            a["slug"]
-            for n, a in brain.calls
-            if n == "put_page" and a["slug"].endswith("_namespace")
-        ]
-        assert sorted(markers) == sorted(
-            [f"l/session-{SESSION_ID}/_namespace", f"l/{PROJECT_NS}/_namespace", "l/org/_namespace"]
-        )
+        created = [a["name"] for n, a in brain.calls if n == "sources_add"]
+        assert sorted(created) == sorted([f"session-{SESSION_ID}", PROJECT_NS, "org"])
+        layers = {s["name"] for s in brain.sources.values()} - {"default"}
+        assert layers == set(created)
 
     async def test_an_org_without_a_memory_system_names_the_setting(self, gateway) -> None:
         with pytest.raises(TenantNotConfiguredError, match="memory.tenants"):
@@ -145,7 +141,7 @@ class TestOpening:
             def capabilities(self):
                 return frozenset(Capability) - {Capability.CHANGES}
 
-        backend = NoChanges(MCP, "tok", signing_key="k")
+        backend = NoChanges(MCP, admin_token="t", signing_key="k")
         with pytest.raises(CapabilityMissingError, match="changes"):
             MemorySystems({"weak": backend}, {"acme": "weak"})
 
@@ -169,7 +165,7 @@ class TestWrites:
         assert outcome.layer.id == f"session:{SESSION_ID}"
         assert outcome.proposal is None
         assert f"session:{SESSION_ID}" in outcome.summary
-        assert f"l/session-{SESSION_ID}/findings/db" in brain.pages
+        assert f"session-{SESSION_ID}/findings/db" in brain.pages
 
     async def test_a_project_page_under_a_write_prefix_lands_in_the_project(
         self, brain, gateway, session
@@ -235,10 +231,10 @@ class TestWrites:
             layer="project",
         )
         assert outcome.proposal is not None
-        assert f"l/{PROJECT_NS}/services/booking-api" not in brain.pages
+        assert f"{PROJECT_NS}/services/booking-api" not in brain.pages
         assert outcome.proposal.approver == f"the owners of project {PROJECT_ID}"
         assert outcome.proposal.id in outcome.summary and "must approve" in outcome.summary
-        stored = f"l/_proposals/{PROJECT_NS}/{outcome.proposal.id}"
+        stored = f"{PROJECT_NS}/_proposals/{outcome.proposal.id}"
         assert stored in brain.pages
         listed = await list_proposals(
             session.backend, Layer(LayerKind.PROJECT, PROJECT_ID), limit=10
@@ -271,7 +267,7 @@ class TestWrites:
         assert fact.proposal is not None and fact.proposal.action is ChangeAction.REMEMBER
         assert org.proposal is not None and org.proposal.approver == "an org admin"
         assert brain.facts == []
-        assert f"l/_proposals/org/{org.proposal.id}" in brain.pages
+        assert f"org/_proposals/{org.proposal.id}" in brain.pages
 
     async def test_tool_output_is_not_a_source_and_the_refusal_is_counted(
         self, gateway, session
@@ -424,7 +420,7 @@ class TestReads:
         await _seed(session, "org", "cutover", "booking cutover is owned by platform")
         await _seed(session, "project", "cutover", "booking cutover is owned by Ines")
         await _seed(session, "project", "people/ines", "Ines runs the booking cutover")
-        brain.seed_page("l/project-other/cutover", "booking cutover elsewhere")
+        brain.seed_page("project-other/cutover", "booking cutover elsewhere")
         hits = await gateway.search(session, "cutover")
         assert [(h.layer.kind, h.hit.ref) for h in hits] == [
             (LayerKind.PROJECT, "cutover"),
@@ -435,6 +431,27 @@ class TestReads:
         assert {h.layer.kind for h in only_org} == {LayerKind.ORG}
         assert len(await gateway.search(session, "cutover", limit=1)) == 1
         assert await gateway.search(session, "cutover", kinds=[HitKind.SOURCE]) == []
+
+    async def test_a_search_without_a_limit_applies_none_of_the_gateways_own(
+        self, brain, gateway, session
+    ) -> None:
+        # The gateway's default_result_count is 10; 25 pages are more than that.
+        for index in range(25):
+            await _seed(session, "project", f"notes/n{index:02d}", "booking cutover note")
+        brain.search_limit = 1000
+        unbounded = await gateway.search(session, "cutover")
+        assert len(unbounded) == 25 > gateway.default_result_count
+        assert all("limit" not in a for n, a in brain.calls if n == "query")
+        assert len(await gateway.search(session, "cutover", limit=7)) == 7
+        assert 7 in {a.get("limit") for n, a in brain.calls if n == "query"}
+
+    async def test_gbrains_own_search_decides_how_many_hits_a_search_returns(
+        self, brain, gateway, session
+    ) -> None:
+        for index in range(25):
+            await _seed(session, "project", f"notes/n{index:02d}", "booking cutover note")
+        brain.search_limit = 12  # what the operator configured in gbrain
+        assert len(await gateway.search(session, "cutover")) == 12
 
     async def test_facts_come_highest_trust_first_and_disagreements_are_reported(
         self, gateway, session
@@ -522,7 +539,7 @@ async def test_systems_are_checked_at_startup() -> None:
         "name": "acme-brain",
         "adapter": "mimir.backends.gbrain.GBrainBackend",
         "mcp_url": MCP,
-        "api_token": "t",
+        "admin_token": "t",
         "signing_key": "k",
     }
     with pytest.raises(MimirConfigurationError, match="two memory systems"):

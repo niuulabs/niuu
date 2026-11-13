@@ -109,8 +109,8 @@ class MemoryBackend(ABC):
     async def get_source(self, namespace: str, source_id: str) -> SourceRecord: ...
 
     @abstractmethod
-    async def list_sources(self, namespace: str, *, limit: int) -> list[SourceRef]:
-        """Up to *limit* sources, or all of them when there are fewer."""
+    async def list_sources(self, namespace: str, *, limit: int | None) -> list[SourceRef]:
+        """Up to *limit* sources; every source when *limit* is None."""
 
     # -- pages -----------------------------------------------------------
 
@@ -145,8 +145,8 @@ class MemoryBackend(ABC):
         """Remove one page. RecordNotFoundError when there is none."""
 
     @abstractmethod
-    async def list_pages(self, namespace: str, *, limit: int) -> list[PageRef]:
-        """Up to *limit* pages, or all of them when there are fewer."""
+    async def list_pages(self, namespace: str, *, limit: int | None) -> list[PageRef]:
+        """Up to *limit* pages; every page when *limit* is None."""
 
     @abstractmethod
     async def backlinks(self, namespace: str, slug: str) -> list[PageRef]:
@@ -189,9 +189,14 @@ class MemoryBackend(ABC):
         query: str,
         *,
         kinds: frozenset[HitKind],
-        limit: int,
+        limit: int | None,
     ) -> list[SearchHit]:
-        """Up to *limit* ranked hits from these namespaces, best first."""
+        """Ranked hits from these namespaces, best first.
+
+        *limit* None means the caller asked for no cap: a backend adds none of its own and
+        returns what the system's search returns (it does not page or truncate). With a
+        limit, at most that many.
+        """
 
     # -- changes ---------------------------------------------------------
 
@@ -210,7 +215,10 @@ class MemoryBackend(ABC):
 
     @abstractmethod
     async def delete_namespace(self, namespace: str) -> NamespaceRemoval:
-        """Remove every page of *namespace* and withdraw its facts."""
+        """Remove every page of *namespace* and withdraw its facts.
+
+        Removing something already gone is not an error: the result says what was removed.
+        """
 
     @abstractmethod
     async def list_namespaces(self) -> list[str]:

@@ -22,7 +22,7 @@ interface MimirTopbarProps {
 export function MimirTopbar({ ctx: _ctx }: MimirTopbarProps) {
   const pathname = useRouterState({ select: (state) => state.location.pathname });
   if (pathname === '/mimir') return null;
-  if (pathname === '/mimir/ask' || pathname === '/mimir/review') return null;
+  if (pathname === '/mimir/search' || pathname === '/mimir/review') return null;
   return <MimirTopbarStats />;
 }
 

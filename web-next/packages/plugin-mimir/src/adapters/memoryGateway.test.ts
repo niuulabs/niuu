@@ -21,24 +21,57 @@ function client(answers: Record<string, unknown>): ApiClient & { calls: unknown[
 }
 
 describe('buildMemoryGatewayHttpAdapter', () => {
-  it('asks over the people route and maps the answer', async () => {
+  it('searches over the people route and maps every hit', async () => {
+    const raw = {
+      query: 'cut-over',
+      hits: [
+        {
+          layer: 'project:p-1',
+          layer_name: 'Booking platform',
+          kind: 'page',
+          ref: 'projects/booking-cutover',
+          title: 'Booking cut-over',
+          snippet: 'The cut-over is on 12 December.',
+        },
+        {
+          layer: 'org',
+          layer_name: 'the org',
+          kind: 'source',
+          ref: 'source:src_1',
+          title: 'Thread',
+          snippet: 'Ines decides.',
+        },
+      ],
+    };
     const api = client({
-      '/memory/ask': {
-        answer: 'a',
-        gaps: [],
-        sources: [
-          { layer: 'org', layer_name: 'the org', ref: 'r', kind: 'page', title: 't', url: null },
-        ],
-      },
+      '/memory/search?q=cut-over': raw,
+      '/memory/search?q=cut+over&project_id=p-1': { ...raw, hits: [] },
     });
     const gateway = buildMemoryGatewayHttpAdapter(api);
-    const answer = await gateway.ask('q', 'p-1');
-    await gateway.ask('q');
-    expect(answer.sources[0]?.layerName).toBe('the org');
+    const all = await gateway.search('cut-over');
+    const one = await gateway.search('cut over', { projectId: 'p-1' });
+    expect(one.hits).toEqual([]);
+    expect(all.query).toBe('cut-over');
+    expect(all.hits[0]).toEqual({
+      layer: 'project:p-1',
+      layerName: 'Booking platform',
+      kind: 'page',
+      ref: 'projects/booking-cutover',
+      title: 'Booking cut-over',
+      snippet: 'The cut-over is on 12 December.',
+    });
+    expect(all.hits[1]?.layerName).toBe('the org');
     expect(api.calls).toEqual([
-      ['POST', '/memory/ask', { question: 'q', project_id: 'p-1' }],
-      ['POST', '/memory/ask', { question: 'q' }],
+      ['GET', '/memory/search?q=cut-over'],
+      ['GET', '/memory/search?q=cut+over&project_id=p-1'],
     ]);
+  });
+
+  it('lets a failed search reach the caller', async () => {
+    const api = client({});
+    (api.get as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error('502 bad gateway'));
+    const gateway = buildMemoryGatewayHttpAdapter(api);
+    await expect(gateway.search('x')).rejects.toThrow('502 bad gateway');
   });
 
   it('reviews, keeps and discards', async () => {
@@ -73,9 +106,18 @@ describe('buildMemoryGatewayHttpAdapter', () => {
 });
 
 describe('createMemoryGatewayMockAdapter', () => {
-  it('answers, filters by layer and forgets what was decided', async () => {
+  it('searches fixed records, narrows to a project, and refuses an empty query', async () => {
     const gateway = createMemoryGatewayMockAdapter();
-    await expect(gateway.ask(' ')).rejects.toThrow('question is required');
+    await expect(gateway.search(' ')).rejects.toThrow('query is required');
+    const all = await gateway.search('CUT-OVER');
+    expect(all.hits.map((hit) => hit.kind)).toEqual(['page', 'source']);
+    const one = await gateway.search('cut-over', { projectId: 'booking' });
+    expect(one.hits.map((hit) => hit.layer)).toEqual(['project:booking']);
+    expect((await gateway.search('zebra')).hits).toEqual([]);
+  });
+
+  it('filters reviews by layer and forgets what was decided', async () => {
+    const gateway = createMemoryGatewayMockAdapter();
     expect((await gateway.review('org')).proposals).toEqual([]);
     await gateway.keep({ id: 'p-1', layer: 'project:booking' });
     await gateway.discard({ id: 'p-2', layer: 'project:booking' }, 'r');

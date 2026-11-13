@@ -20,15 +20,13 @@ _BACKEND = {"mcpUrl": "http://gbrain:3131/mcp", "apiTokenSecret": {"name": "gbra
 _SYSTEM = {
     "name": "acme-brain",
     "mcpUrl": "http://acme-brain:3131/mcp",
-    "apiTokenSecret": {"name": "acme-brain-token", "key": "token"},
+    "adminTokenSecret": {"name": "acme-brain-admin", "key": "token"},
     "signingKeySecret": {"name": "acme-memory-seal", "key": "key"},
 }
 
 
 _STEP2 = {
     "serviceAuth": {"adapter": "niuu.adapters.outbound.http_auth.NoAuthHeaderAdapter"},
-    "bifrostUrl": "http://bifrost:8080",
-    "answerModel": "answer-model-1",
 }
 
 
@@ -81,8 +79,7 @@ def test_an_enabled_gateway_renders_its_systems_tenants_and_secret_mounts(
     )
     memory = _config(docs)["memory"]
     assert memory["service_auth"] == _STEP2["serviceAuth"]
-    assert memory["bifrost_url"] == "http://bifrost:8080"
-    assert memory["ask_enabled"] is True and memory["answer_model"] == "answer-model-1"
+    assert not {"bifrost_url", "bifrost_timeout_seconds", "ask_enabled"} & set(memory)
     assert (memory["retention_days"], memory["retention_sweep_seconds"]) == (7, 600)
     assert memory["org_admin_roles"] == ["admin"]
     assert memory["connector_service_subjects"] == ["ting"]
@@ -95,7 +92,7 @@ def test_an_enabled_gateway_renders_its_systems_tenants_and_secret_mounts(
             "name": "acme-brain",
             "adapter": "mimir.backends.gbrain.GBrainBackend",
             "mcp_url": "http://acme-brain:3131/mcp",
-            "api_token_file": "/etc/mimir-memory/acme-brain/token",
+            "admin_token_file": "/etc/mimir-memory/acme-brain/admin-token",
             "signing_key_file": "/etc/mimir-memory/acme-brain/signing-key",
             "page_size": 50,
             "recall_limit": 100,
@@ -109,7 +106,7 @@ def test_an_enabled_gateway_renders_its_systems_tenants_and_secret_mounts(
     volume = next(v for v in pod["volumes"] if v["name"] == "memory-system-0")
     secrets = [s["secret"] for s in volume["projected"]["sources"]]
     assert [(s["name"], s["items"][0]["path"]) for s in secrets] == [
-        ("acme-brain-token", "token"),
+        ("acme-brain-admin", "admin-token"),
         ("acme-memory-seal", "signing-key"),
     ]
     mount = next(m for m in pod["containers"][0]["volumeMounts"] if m["name"] == "memory-system-0")
@@ -127,16 +124,6 @@ def test_an_enabled_gateway_renders_its_systems_tenants_and_secret_mounts(
         (
             {"enabled": True, "forgeBaseUrl": "http://f", "systems": [_SYSTEM]},
             "config.memory.serviceAuth.adapter is required",
-        ),
-        (
-            {
-                "enabled": True,
-                "forgeBaseUrl": "http://f",
-                "systems": [_SYSTEM],
-                **_STEP2,
-                "answerModel": "",
-            },
-            "config.memory.answerModel is required",
         ),
         ({"enabled": True, "forgeBaseUrl": "http://f"}, "at least one memory system"),
         (
@@ -166,16 +153,3 @@ def test_the_backend_is_still_required(tmp_path: Path) -> None:
     )
     assert rendered.returncode != 0
     assert "config.backend.mcpUrl is required" in rendered.stderr
-
-
-def test_ask_can_be_turned_off_without_an_answer_model(tmp_path: Path) -> None:
-    memory = {
-        "enabled": True,
-        "forgeBaseUrl": "http://f",
-        "systems": [_SYSTEM],
-        **_STEP2,
-        "answerModel": "",
-        "askEnabled": False,
-    }
-    rendered = _config(_docs(_helm(tmp_path, memory)))["memory"]
-    assert rendered["ask_enabled"] is False and "answer_model" not in rendered

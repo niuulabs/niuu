@@ -82,8 +82,8 @@ MEMORY_CONTEXT_HEADING = "## Memory context at launch"
 MEMORY_CONTEXT_PREAMBLE = (
     "This is what the memory gateway held about this session's project and objective when "
     "it started: the entities involved, their open threads, the facts that hold now and "
-    "what changed since your owner's last session. It is a snapshot; ask `memory_ask` or "
-    "`memory_search` for anything current or missing."
+    "what changed since your owner's last session. It is a snapshot; use `memory_search` and "
+    "`memory_read` for anything current or missing."
 )
 
 

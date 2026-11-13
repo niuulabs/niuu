@@ -8,9 +8,8 @@ A session of another project saw none of it. A second org could not be run in mi
 mode, so org isolation is covered by tests only.
 
 Step 2 is built too and was proven live the same way: a planner session of a workflow
-run wrote its decision to the run layer; the implementer's `memory_ask` answered from
-the run and project layers with citations, through Bifröst with the session's own
-credential and charged to its owner; the context pack reached the harness at launch;
+run wrote its decision to the run layer; the implementer answered from
+the run and project layers with citations (through `memory_ask`, since removed); the context pack reached the harness at launch;
 the run's owner promoted the decision, a project owner approved it, and it landed at
 `operator` trust with the planner's evidence and the proposal reference; and the run
 and session layers were deleted once their retention (shortened for the proof) had
@@ -27,9 +26,10 @@ under a write prefix; a lower trust now proposes such a rewrite. GitHub and Slac
 connectors, a real Linear install, and scheduling beyond the import's own polling are
 not built.
 
-Step 4 has started with the everyday screens (mockups agreed 2026-11-12): **Ask**
-(`/mimir/ask`, the people route `POST …/memory/ask` over the org, the person's projects
-and a named project's attached memories, charged to the person through Bifröst),
+Step 4 has started with the everyday screens (mockups agreed 2026-11-12): **Search**
+(`/mimir/search`, the people route `GET …/memory/search` over the org, the person's
+projects and a named project's attached memories, one list collated from each memory
+system's own search),
 **Review** (`/mimir/review`, `GET …/memory/review`: one proposal at a time with what the
 layer says now, what it would say, the proposer's `why` and its sources resolved), and the
 project's **Memory settings** (attached memories, write prefixes, the Linear import). The
@@ -38,9 +38,20 @@ make keeping it the agent's job, so no Skuld nudge at session end), and Forge te
 project's approvers and owners in its own feed, settled when one decides. Proven live in
 mini mode against a local gbrain: two Claude Code sessions wrote a project decision and
 proposed two pages; the owner got a feed item linking to Review, kept one and discarded
-the other (the item settled), and Ask answered from the project page through Bifröst. The
+the other (the item settled). The
 Linear switch was not run against a real project Linear connection; person and resident
 layers are not built.
+
+Answers are the memory system's job, not Niuu's (decided 2026-11-13). The first Ask
+page and the agents' `memory_ask` wrote answers with a model through Bifröst, which
+duplicated what gbrain already does (`think`). Both are gone, with the `forge:model`
+scope that only they used. People search and get one list collated from each memory
+system's search; agents are themselves the model and answer from `memory_search` and
+`memory_read`. Each layer is its own gbrain source with its own client, so gbrain
+scopes every read itself; search sends one `query` per layer and caps nothing, and
+gbrain's own search limit decides how much each layer returns. gbrain's `think` stays
+unused for now: a client is bound to one source, so one call cannot answer across a
+person's layers.
 
 Step 3 decisions: connectors run in Ting (the only service that reads a project's team
 integrations with the project's credential, recording each use) and write through the
@@ -248,7 +259,6 @@ spec, as it already derives project mounts (`with_project_memory`,
 
 | Tool | Does |
 |---|---|
-| `memory_ask(question)` | Answers from every layer with citations (layer + record) and gaps. |
 | `memory_search(query, layers?)` | Ranked hits across layers, each labelled. |
 | `memory_read(ref)` | A page, source or fact by reference. |
 | `memory_entity(name)` | The merged card: summary, aliases, links, open threads, facts that hold now. |
@@ -267,7 +277,7 @@ never a silent downgrade.
 The instructions every harness gets, in full:
 
 > Your memory has layers: this session, this run, project X, the org, and your
-> owner's private notes. `memory_ask` and `memory_search` read all of them.
+> owner's private notes. `memory_search` and `memory_read` read all of them.
 > Before working on a subject, read its entity card. Write what you find to
 > the session layer with evidence. Write to the project only under its write
 > prefixes; otherwise propose. Never store your own conclusions as facts about
@@ -367,21 +377,22 @@ Markdown wiki adapter is retired; its content imports into gbrain.
 - **One gbrain per org**, with its own database and credentials, deployed
   through the existing knowledge deployment port (local and Flux adapters).
   Two orgs never share a memory system instance.
-- **Each layer is a namespace** inside its org's system. On gbrain that is a
-  slug prefix in one source (`l/org/…`, `l/project-<id>/…`, `l/run-<id>/…`,
-  `l/session-<id>/…`, `l/person-<id>/…`, `l/resident-<id>/…`), and each fact
-  carries its layer in the provenance the gateway seals. It is not a gbrain
-  source per layer: gbrain sends every remote write to the one source its
-  client is bound to, and a client is registered with gbrain's command line on
-  the gbrain host, so a source per project or session would need host access
-  for every launch. Creating a namespace costs nothing; deleting one removes
-  its pages and withdraws its facts.
+- **Each layer is its own gbrain source** inside its org's system (decided
+  2026-11-13): `org`, and `p-`, `r-` or `s-` plus a hash of the layer for
+  projects, runs and sessions (gbrain source ids are at most 32 characters). Each
+  source has its own gbrain client, `mimir-layer-<layer>`, bound to it with
+  client credentials, because gbrain writes every remote call into the one source
+  its client is bound to. The gateway creates the source and client on a layer's
+  first write through gbrain's owner API with the owner bootstrap token, and keeps
+  no layer secret: gbrain's register and recover calls give every replica the same
+  client. Each fact carries its layer in the provenance the gateway seals.
+  Deleting a layer withdraws its facts, removes its source and revokes its client.
 - The gateway is the only caller of an org's system, so its rules are the
-  boundary inside an org. It filters every read to the caller's layers;
-  gbrain's `think` is never used, because it would read across all of them.
-- Proposals are pages in a reserved namespace of the target layer's system
-  (`l/_proposals/…`), so they stay inside the org and the gateway keeps no
-  database of its own.
+  boundary inside an org. gbrain scopes every read to the layer source asked for;
+  search is one `query` per layer, with no cap of Niuu's own.
+- Proposals are pages in a reserved part of the target layer's own source
+  (`_proposals/…`, `_decided/…`), so they stay inside the org and the gateway
+  keeps no database of its own.
 - An `attached` memory may live elsewhere: another project's layer, or a
   separate system an operator registered on the Platform.
 
@@ -421,7 +432,7 @@ Mockups come before any of these is built.
   project memory mockup shows only attached memories; it needs the project
   layer and proposals added.
 - **Session, Memory tab**: what the session wrote, and Promote.
-- **Memory browser**: pages, sources, facts and Ask across the layers a person
+- **Memory browser**: pages, sources, facts and Search across the layers a person
   can see. It replaces today's Explore and Library views; it is the first
   screen with facts.
 - **Proposals**: one inbox per owner, across their layers.
@@ -484,10 +495,9 @@ Each step ends with a live proof, not only tests.
    session in one project both answer "who owns the booking cut-over?" from
    the project layer with a citation; a write outside the write prefixes
    becomes a proposal for both; a session of another org cannot see any of it.
-   Not in this step: `memory_ask` (it needs answer model calls through
-   Bifröst), the context pack at launch, and folding attached memories into
+   Not in this step: the context pack at launch, and folding attached memories into
    the `memory` server; they come with step 2.
-2. **Run layer, approving proposals, promotion, retention, `memory_ask`, the
+2. **Run layer, approving proposals, promotion, retention, the
    context pack, attached memories in the `memory` server.** Proof: the
    implementer of a workflow run reads the planner's decision from the run
    layer; a person promotes one finding to the project, an owner approves it,
@@ -523,11 +533,6 @@ Decided while building step 2:
   stores carry no sealed attribution), sit between project and org when
   reading, and never take proposals: `read` refuses every write, `read_write`
   takes pages and timeline rows under its prefixes.
-- **`memory_ask`** retrieves search hits plus the facts about each hit's
-  subject, makes one answer call through Bifröst with the session's own
-  credential (scope `forge:model`, charged to the owner), and refuses an answer
-  that cites anything it did not retrieve or says anything without a citation.
-  Nothing retrieved means no model call.
 - **The context pack** holds the pages the objective and project brief lead
   to, with their current facts, then the changes to the project and org layers
   since the owner's previous session in the project. It is not sized from

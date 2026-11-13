@@ -1,5 +1,5 @@
-"""What the people routes ask Forge and Bifröst: a person's projects and attached memories,
-the proposal notifications, a person's answer call, and a person's reading view."""
+"""What the people routes ask Forge: a person's projects and attached memories,
+the proposal notifications, and a person's reading view."""
 
 from __future__ import annotations
 
@@ -9,17 +9,14 @@ import httpx
 import pytest
 import respx
 
-from mimir.adapters.bifrost_answers import BifrostAnswerModel
 from mimir.adapters.forge_people import ForgePeopleDirectory
 from mimir.adapters.forge_proposals import ForgeProposalNotifier
 from mimir.memory.models import Attachment, AttachmentAccess, LayerKind, MemoryValidationError
 from mimir.memory.rules import LayerView, RuleRefusalError
-from mimir.ports.answer_model import ModelCaller
 from mimir.ports.people_directory import ForgeUnavailableError, Person
 from mimir.ports.proposal_notifier import ProposalNotifyError, WaitingProposal
 
 FORGE = "http://forge.test"
-BIFROST = "http://bifrost.test"
 PERSON = Person("ines", "acme", (), authorization="Bearer login")
 PROJECT_ID = "9a0e0000-0000-4000-8000-0000000000aa"
 
@@ -157,30 +154,6 @@ class TestProposalNotifier:
             ForgeProposalNotifier(" ", timeout_seconds=1)
         with pytest.raises(ValueError, match="positive"):
             ForgeProposalNotifier(FORGE, timeout_seconds=0)
-
-
-class TestPersonsAnswerCall:
-    @respx.mock
-    async def test_a_persons_call_names_them_for_bifrost(self) -> None:
-        route = respx.post(f"{BIFROST}/v1/messages").mock(
-            return_value=httpx.Response(
-                200, json={"content": [{"type": "text", "text": "hi"}], "stop_reason": "end_turn"}
-            )
-        )
-        model = BifrostAnswerModel(BIFROST, timeout_seconds=5)
-        caller = ModelCaller.person(authorization="", user_id="ines", tenant_id="acme")
-        await model.answer(model="m", system="s", prompt="p", caller=caller)
-        await model.close()
-        sent = route.calls.last.request.headers
-        assert "authorization" not in sent
-        assert sent["x-agent-id"] == "ines" and sent["x-tenant-id"] == "acme"
-
-    def test_a_caller_names_who_pays(self) -> None:
-        assert ModelCaller.session("t").authorization == "Bearer t"
-        with pytest.raises(ValueError, match="credential"):
-            ModelCaller.session(" ")
-        with pytest.raises(ValueError, match="org"):
-            ModelCaller.person(authorization="", user_id="ines", tenant_id="")
 
 
 class TestReadingView:

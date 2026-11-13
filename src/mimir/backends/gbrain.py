@@ -1,23 +1,30 @@
 """GBrainBackend — MemoryBackend over one org's gbrain, reached over MCP.
 
-One gbrain per org (design section 7, Tenancy). gbrain sends every remote write
-to the one source the client token is bound to, so a layer is not a gbrain
-source but a **slug namespace** in it:
+One gbrain per org (design section 7, Tenancy). **Each layer is a gbrain source** of
+its own and Mímir reaches it with a gbrain client bound to that source
+(:mod:`mimir.adapters.gbrain_layers`, which also says how a namespace maps to a
+source id and where the client's credentials come from). gbrain itself therefore
+scopes every read and write to the layer; nothing here filters one layer's rows out
+of another's.
+
+Inside a layer's source a page is stored under its own slug, and the backend's own
+records under slugs that start with ``_`` (callers' slugs may not):
 
 =====================  ==========================================================
-Record                 gbrain slug
+Record                 slug in the layer's source
 =====================  ==========================================================
-page                   ``l/<namespace>/<slug>``
-source                 ``l/<namespace>/_sources/<source id>``
-fact (entity)          facts are remembered on entity ``l/<namespace>/<subject>``
-fact index             ``l/<namespace>/_facts/<gbrain fact id>``, one per fact,
-                       so deleting a namespace can withdraw its facts
-namespace marker       ``l/<namespace>/_namespace``
-proposal               ``l/_proposals/<layer namespace>/<proposal id>`` (the
-                       gateway writes these as pages of that namespace)
+page                   ``<slug>``
+source (raw material)  ``_sources/<source id>``
+fact (entity)          facts are remembered on entity ``<subject>``
+fact index             ``_facts/<gbrain fact id>``, one per fact, so removing a
+                       layer can withdraw its facts
+proposal               ``_proposals/<proposal id>`` (the namespace
+                       ``_proposals/<layer namespace>``)
+decided proposal       ``_decided/<proposal id>`` (``_decided/<layer namespace>``)
 =====================  ==========================================================
 
-Segments starting with ``_`` are the backend's own; callers' slugs may not use them.
+A fact's id is ``<gbrain id>@<layer namespace>/<subject>``: the layer says which
+source to ask.
 
 **Attribution is sealed.** Every page, source and timeline row carries who wrote
 it, at what trust, from what evidence and in which namespace, sealed with an HMAC
@@ -26,14 +33,16 @@ whose seal is missing, does not verify, names another namespace or no longer
 matches its content reads as unattested, at the lowest trust. Facts carry the
 same in their provenance (``FactCodec``, shared with ``GBrainFactAdapter``).
 
-**Reads filter by namespace.** gbrain cannot filter by slug prefix, so reads page
-through gbrain's results with ``offset`` and keep only the caller's namespaces,
-until the caller's requested count is met or gbrain has no more. The bound is
-always the caller's count. Two gbrain limits remain and are reported when hit:
-``recall`` returns at most ``recall_limit`` facts per call and does not page,
-and ``get_timeline`` takes a limit and no offset (``timeline_limit``).
+**Search sends no limit.** One ``query`` per layer source, with the limit gbrain's
+own search mode and ``search.searchLimit`` give it, unless the caller names one.
+Results of several layers are interleaved by rank.
 
-gbrain's ``think`` is never called: it would read across every namespace.
+Two gbrain limits remain and are reported when hit: ``recall`` returns at most
+``recall_limit`` facts per call and does not page, and ``get_timeline`` takes a limit
+and no offset (``timeline_limit``).
+
+gbrain's ``think`` is never called: Mímir answers nothing itself and the people's
+search reads the ranked rows.
 """
 
 from __future__ import annotations
@@ -49,14 +58,13 @@ from typing import Any
 import yaml
 
 from mimir.adapters.gbrain_facts import FactCodec, fact_id, split_fact_id
-from mimir.adapters.gbrain_mcp import (
-    GBrainMcpClient,
-    GBrainTransportError,
-    Sealer,
-    read_secret,
-    result_payload,
-    text_result,
+from mimir.adapters.gbrain_layers import (
+    Address,
+    GBrainLayers,
+    call_tool,
+    parse_namespace,
 )
+from mimir.adapters.gbrain_mcp import GBrainMcpClient, Sealer, read_secret
 from mimir.memory.models import (
     Attribution,
     ChangeSet,
@@ -94,10 +102,8 @@ from niuu.domain.mimir_facts import (
     select_facts,
 )
 
-_ROOT = "l"
 _SOURCES = "_sources"
 _FACTS = "_facts"
-_MARKER = "_namespace"
 _PAGE_SEAL = "mp1"
 _ROW_SEAL = "mt1"
 _TIMELINE_SENTINEL = "<!-- timeline -->"
@@ -108,11 +114,8 @@ _RECALL_KNOB = "memory.systems[].recall_limit"
 _TIMELINE_KNOB = "memory.systems[].timeline_limit"
 _SLUG_KNOB = "memory.systems[].max_slug_chars"
 
-_NAMESPACE = re.compile(r"^_?[a-z0-9][a-z0-9-]*(/[a-z0-9][a-z0-9-]*)?$")
 _SEGMENT = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
 _JSON_FENCE = re.compile(r"```json\n(?P<body>.*)\n```", re.DOTALL)
-_NOT_FOUND_CODES = frozenset({"page_not_found", "not_found"})
-_CONFLICT_CODES = frozenset({"revision_conflict", "revision_required"})
 
 
 def _digest(text: str) -> str:
@@ -142,19 +145,39 @@ def _rows(payload: Any, *keys: str) -> list[dict[str, Any]]:
     return [row for row in candidate if isinstance(row, dict)]
 
 
+def _server_root(mcp_url: str, base_url: str) -> str:
+    """gbrain's server root: *base_url*, or the MCP URL without its ``/mcp``."""
+    if base_url:
+        return base_url
+    stripped = mcp_url.rstrip("/")
+    if not stripped.endswith("/mcp"):
+        raise ValueError(
+            f"cannot derive gbrain's server root from mcp_url {mcp_url!r}, which does not end "
+            "in /mcp; set base_url to the server root (where /token and /admin live)"
+        )
+    return stripped[: -len("/mcp")]
+
+
 class GBrainBackend(MemoryBackend):
     """One org's gbrain.
 
     Args:
         mcp_url: gbrain MCP endpoint (``http://acme-brain:3131/mcp``).
-        api_token / api_token_file: bearer token with read and write scope.
+        admin_token / admin_token_file: gbrain's owner bootstrap credential
+            (``GBRAIN_ADMIN_BOOTSTRAP_TOKEN`` of the server). It is how Mímir creates a
+            layer's source and client and recovers the client's secret; it is the only
+            gbrain secret Mímir holds. Required.
+        base_url: gbrain's server root, for ``/token`` and ``/admin/*``. Defaults to
+            ``mcp_url`` without its ``/mcp``.
         signing_key / signing_key_file: the secret that seals attribution; keep it
             with Mímir only. Required.
         protocol_version: the memory-verbs protocol this backend speaks (only 1).
         timeout_seconds: HTTP timeout per call.
-        page_size: rows asked of gbrain per call while paging. Not a limit on what a
-            caller gets: paging continues until the caller's count is met or gbrain
-            has no more.
+        token_refresh_margin_seconds: how long before a layer client's access token
+            expires a new one is fetched.
+        page_size: rows asked of ``list_pages`` per call while listing. Not a limit on
+            what a caller gets: listing continues until the caller's count is met or
+            the layer has no more.
         recall_limit: gbrain's documented per-call cap on ``recall`` rows (100).
             A recall that returns that many is reported as an omission and counted.
         timeline_limit: rows asked of ``get_timeline``, which does not page. A page
@@ -166,13 +189,15 @@ class GBrainBackend(MemoryBackend):
     def __init__(
         self,
         mcp_url: str,
-        api_token: str = "",
         *,
-        api_token_file: str = "",
+        admin_token: str = "",
+        admin_token_file: str = "",
+        base_url: str = "",
         signing_key: str = "",
         signing_key_file: str = "",
         protocol_version: int = 1,
         timeout_seconds: float = 30.0,
+        token_refresh_margin_seconds: float = 30.0,
         page_size: int = 100,
         recall_limit: int = 100,
         timeline_limit: int = 1000,
@@ -184,7 +209,14 @@ class GBrainBackend(MemoryBackend):
                 f"GBrainBackend speaks memory verbs protocol 1, not {protocol_version}; "
                 "pin a gbrain that serves protocol_version 1"
             )
-        api_token = read_secret(api_token, api_token_file, what="gbrain API token")
+        admin_token = read_secret(admin_token, admin_token_file, what="gbrain admin token")
+        if not admin_token:
+            raise ValueError(
+                "GBrainBackend requires gbrain's admin token (admin_token or admin_token_file): "
+                "it is the owner bootstrap credential of the gbrain server "
+                "(GBRAIN_ADMIN_BOOTSTRAP_TOKEN), which Mímir uses to give each layer a source "
+                "and a client of its own"
+            )
         signing_key = read_secret(signing_key, signing_key_file, what="memory signing key")
         if not signing_key:
             raise ValueError(
@@ -200,7 +232,15 @@ class GBrainBackend(MemoryBackend):
         ):
             if value < 1:
                 raise ValueError(f"{knob} must be positive")
-        self._mcp = GBrainMcpClient(mcp_url, api_token, timeout_seconds=timeout_seconds)
+        if token_refresh_margin_seconds < 0:
+            raise ValueError("token_refresh_margin_seconds must not be negative")
+        self._layers = GBrainLayers(
+            mcp_url=mcp_url,
+            base_url=_server_root(mcp_url, base_url),
+            admin_token=admin_token,
+            timeout_seconds=timeout_seconds,
+            token_refresh_margin_seconds=token_refresh_margin_seconds,
+        )
         self._sealer = Sealer(signing_key)
         self._codec = FactCodec(self._sealer, provenance_max_chars=provenance_max_chars)
         self._page_size = page_size
@@ -213,49 +253,40 @@ class GBrainBackend(MemoryBackend):
         return ALL_CAPABILITIES
 
     async def close(self) -> None:
-        await self._mcp.close()
+        await self._layers.close()
 
     # ------------------------------------------------------------------
-    # Transport
-    # ------------------------------------------------------------------
-
-    async def _call(self, name: str, arguments: dict[str, Any]) -> Any:
-        try:
-            result = await self._mcp.call(name, arguments)
-        except GBrainTransportError as exc:
-            raise MemoryBackendError(
-                f"{exc}. Check that the brain is running and the token has read and write scope"
-            ) from exc
-        payload = result_payload(result)
-        error = payload if isinstance(payload, dict) and "error" in payload else None
-        if not result.get("isError") and error is None:
-            return payload
-        code = str((error or {}).get("error") or "error")
-        message = str((error or {}).get("message") or text_result(result))
-        suggestion = str((error or {}).get("suggestion") or "")
-        text = f"gbrain {name} failed ({code}): {message}" + (
-            f" — {suggestion}" if suggestion else ""
-        )
-        if code in _NOT_FOUND_CODES:
-            raise RecordNotFoundError(text)
-        if code in _CONFLICT_CODES:
-            raise RevisionConflictError(text)
-        raise MemoryBackendError(text)
-
-    # ------------------------------------------------------------------
-    # Slugs
+    # Layers and slugs
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _check_namespace(namespace: str) -> str:
-        if not _NAMESPACE.fullmatch(namespace):
-            raise MemoryValidationError(f"{namespace!r} is not a memory namespace")
-        return namespace
+    def _layer_address(namespace: str) -> Address:
+        """The address of a layer namespace itself (not a proposals namespace)."""
+        address = parse_namespace(namespace)
+        if address.held:
+            raise MemoryValidationError(
+                f"{namespace!r} holds proposals, which have pages only: facts, sources, "
+                "search and changes belong to the layer"
+            )
+        return address
 
-    def _prefix(self, namespace: str) -> str:
-        return f"{_ROOT}/{self._check_namespace(namespace)}/"
+    async def _reader(self, address: Address, what: str) -> GBrainMcpClient:
+        """The client of a layer that must exist for *what* to be there."""
+        mcp = await self._layers.client(address.layer, create=False)
+        if mcp is None:
+            raise RecordNotFoundError(f"no {what}: layer {address.layer} has nothing recorded")
+        return mcp
 
-    def _full(self, namespace: str, slug: str, *, internal: bool = False) -> str:
+    async def _writer(self, address: Address) -> GBrainMcpClient:
+        mcp = await self._layers.client(address.layer, create=False)
+        if mcp is None:
+            raise MemoryBackendError(
+                f"layer {address.layer} has no gbrain source yet; create_namespace it before "
+                "writing to it"
+            )
+        return mcp
+
+    def _full(self, address: Address, slug: str, *, internal: bool = False) -> str:
         cleaned = slug.strip().strip("/")
         segments = cleaned.split("/") if cleaned else []
         if not segments:
@@ -269,7 +300,7 @@ class GBrainBackend(MemoryBackend):
                     f"page reference {slug!r} is not valid: use lowercase segments of letters, "
                     "digits, '.', '_' and '-', starting with a letter or digit, joined by '/'"
                 )
-        full = self._prefix(namespace) + "/".join(segments)
+        full = address.held + "/".join(segments)
         if len(full) > self._max_slug:
             record_cap_hit(
                 _SLUG_KNOB,
@@ -278,15 +309,9 @@ class GBrainBackend(MemoryBackend):
             )
             raise MemoryValidationError(
                 f"page reference {slug!r} is too long: gbrain slugs hold at most "
-                f"{self._max_slug} characters including the layer prefix (knob {_SLUG_KNOB})"
+                f"{self._max_slug} characters (knob {_SLUG_KNOB})"
             )
         return full
-
-    def _namespace_of(self, full_slug: str, namespaces: Sequence[str]) -> str | None:
-        for namespace in namespaces:
-            if full_slug.startswith(self._prefix(namespace)):
-                return namespace
-        return None
 
     @staticmethod
     def _is_internal(relative: str) -> bool:
@@ -341,19 +366,35 @@ class GBrainBackend(MemoryBackend):
         return f"---\n{header}---\n\n{body.strip()}\n"
 
     # ------------------------------------------------------------------
-    # Paging over the whole brain
+    # Listing a layer's pages
     # ------------------------------------------------------------------
 
     async def _scan(
-        self, prefix: str, *, want: int | None, include_internal: bool
+        self,
+        mcp: GBrainMcpClient,
+        address: Address,
+        *,
+        under: str,
+        want: int | None,
+        include_internal: bool,
     ) -> list[dict[str, Any]]:
-        """Every page under *prefix* (or the first *want*), by paging ``list_pages``."""
+        """Every page of the layer under *under* (or the first *want*), by paging ``list_pages``.
+
+        Each row's ``slug`` is the slug in the layer's source.
+        """
         found: list[dict[str, Any]] = []
         offset = 0
         while want is None or len(found) < want:
             rows = _rows(
-                await self._call(
-                    "list_pages", {"limit": self._page_size, "offset": offset, "sort": "slug"}
+                await call_tool(
+                    mcp,
+                    "list_pages",
+                    {
+                        "limit": self._page_size,
+                        "offset": offset,
+                        "sort": "slug",
+                        "source_id": address.source_id,
+                    },
                 ),
                 "pages",
                 "results",
@@ -363,9 +404,9 @@ class GBrainBackend(MemoryBackend):
             offset += len(rows)
             for row in rows:
                 slug = str(row.get("slug") or "")
-                if not slug.startswith(prefix):
+                if not slug.startswith(under):
                     continue
-                if not include_internal and self._is_internal(slug[len(prefix) :]):
+                if not include_internal and self._is_internal(slug[len(under) :]):
                     continue
                 found.append(row)
                 if want is not None and len(found) >= want:
@@ -376,8 +417,12 @@ class GBrainBackend(MemoryBackend):
     # Pages
     # ------------------------------------------------------------------
 
-    async def _raw_page(self, full: str) -> dict[str, Any]:
-        payload = await self._call("get_page", {"slug": full, "include_content": True})
+    async def _raw_page(self, mcp: GBrainMcpClient, address: Address, full: str) -> dict[str, Any]:
+        payload = await call_tool(
+            mcp,
+            "get_page",
+            {"slug": full, "include_content": True, "source_id": address.source_id},
+        )
         if not isinstance(payload, dict) or str(payload.get("slug") or full) != full:
             raise MemoryBackendError(f"gbrain get_page answered without page {full}")
         return payload
@@ -400,10 +445,12 @@ class GBrainBackend(MemoryBackend):
         )
 
     async def get_page(self, namespace: str, slug: str) -> PageRecord:
-        full = self._full(namespace, slug)
-        page = self._page_from(namespace, slug, await self._raw_page(full))
+        address = parse_namespace(namespace)
+        full = self._full(address, slug)
+        mcp = await self._reader(address, f"page {slug}")
+        page = self._page_from(namespace, slug, await self._raw_page(mcp, address, full))
         rows = _rows(
-            await self._call("get_timeline", {"slug": full, "limit": self._timeline_limit}),
+            await call_tool(mcp, "get_timeline", {"slug": full, "limit": self._timeline_limit}),
             "entries",
             "timeline",
         )
@@ -449,24 +496,12 @@ class GBrainBackend(MemoryBackend):
         *,
         expected_revision: str | None,
     ) -> PageRecord:
-        full = self._full(namespace, slug)
-        return await self._write_page(
-            namespace, slug, full, page, attribution, expected_revision=expected_revision
-        )
-
-    async def _write_page(
-        self,
-        namespace: str,
-        slug: str,
-        full: str,
-        page: PageWrite,
-        attribution: Attribution,
-        *,
-        expected_revision: str | None,
-    ) -> PageRecord:
+        address = parse_namespace(namespace)
+        full = self._full(address, slug)
+        mcp = await self._writer(address)
         tail = ""
         if expected_revision is not None:
-            current = await self._raw_page(full)
+            current = await self._raw_page(mcp, address, full)
             if str(current.get("revision") or "") != expected_revision:
                 raise RevisionConflictError(
                     f"page {slug} is at revision {current.get('revision')}, not "
@@ -488,19 +523,21 @@ class GBrainBackend(MemoryBackend):
         if expected_revision is not None:
             arguments["expected_revision"] = expected_revision
         try:
-            await self._call("put_page", arguments)
+            await call_tool(mcp, "put_page", arguments)
         except RevisionConflictError as exc:
             if expected_revision is None:
                 raise RevisionConflictError(
                     f"page {slug} already exists; read it and pass its revision to rewrite it"
                 ) from exc
             raise
-        return self._page_from(namespace, slug, await self._raw_page(full))
+        return self._page_from(namespace, slug, await self._raw_page(mcp, address, full))
 
     async def append_timeline(
         self, namespace: str, slug: str, row: NewTimelineRow, attribution: Attribution
     ) -> None:
-        full = self._full(namespace, slug)
+        address = parse_namespace(namespace)
+        full = self._full(address, slug)
+        mcp = await self._reader(address, f"page {slug}")
         seal = self._sealer.seal(
             _ROW_SEAL,
             {
@@ -520,17 +557,25 @@ class GBrainBackend(MemoryBackend):
         }
         if row.detail:
             arguments["detail"] = row.detail
-        await self._call("add_timeline_entry", arguments)
+        await call_tool(mcp, "add_timeline_entry", arguments)
 
     async def delete_page(self, namespace: str, slug: str) -> None:
-        await self._call("delete_page", {"slug": self._full(namespace, slug), "force": True})
+        address = parse_namespace(namespace)
+        full = self._full(address, slug)
+        mcp = await self._reader(address, f"page {slug}")
+        await call_tool(mcp, "delete_page", {"slug": full, "force": True})
 
-    async def list_pages(self, namespace: str, *, limit: int) -> list[PageRef]:
-        prefix = self._prefix(namespace)
-        rows = await self._scan(prefix, want=limit, include_internal=False)
+    async def list_pages(self, namespace: str, *, limit: int | None) -> list[PageRef]:
+        address = parse_namespace(namespace)
+        mcp = await self._layers.client(address.layer, create=False)
+        if mcp is None:
+            return []
+        rows = await self._scan(
+            mcp, address, under=address.held, want=limit, include_internal=False
+        )
         return [
             PageRef(
-                slug=str(row["slug"])[len(prefix) :],
+                slug=str(row["slug"])[len(address.held) :],
                 namespace=namespace,
                 title=str(row.get("title") or row["slug"]),
                 updated_at=_moment(row.get("updated_at")),
@@ -539,14 +584,19 @@ class GBrainBackend(MemoryBackend):
         ]
 
     async def backlinks(self, namespace: str, slug: str) -> list[PageRef]:
-        full = self._full(namespace, slug)
-        prefix = self._prefix(namespace)
-        rows = _rows(await self._call("get_backlinks", {"slug": full}), "backlinks", "links")
+        address = parse_namespace(namespace)
+        full = self._full(address, slug)
+        mcp = await self._layers.client(address.layer, create=False)
+        if mcp is None:
+            return []
+        rows = _rows(await call_tool(mcp, "get_backlinks", {"slug": full}), "backlinks", "links")
         refs: dict[str, PageRef] = {}
         for row in rows:
             source = str(row.get("from_slug") or row.get("source_slug") or row.get("slug") or "")
-            relative = source[len(prefix) :]
-            if not source.startswith(prefix) or self._is_internal(relative):
+            if not source.startswith(address.held):
+                continue
+            relative = source[len(address.held) :]
+            if not relative or self._is_internal(relative):
                 continue
             refs.setdefault(
                 relative,
@@ -563,8 +613,10 @@ class GBrainBackend(MemoryBackend):
     async def put_source(
         self, namespace: str, source: NewSource, attribution: Attribution
     ) -> tuple[SourceRecord, bool]:
+        address = self._layer_address(namespace)
         source_id = compute_source_id(source.content)
-        full = self._full(namespace, f"{_SOURCES}/{source_id}", internal=True)
+        full = self._full(address, f"{_SOURCES}/{source_id}", internal=True)
+        mcp = await self._writer(address)
         body = {
             "source_id": source_id,
             "title": source.title,
@@ -580,14 +632,18 @@ class GBrainBackend(MemoryBackend):
             _ATTRIBUTION_KEY: self._seal_attribution(namespace, attribution, fenced),
         }
         try:
-            await self._call("put_page", {"slug": full, "content": self._markdown(front, fenced)})
+            await call_tool(
+                mcp, "put_page", {"slug": full, "content": self._markdown(front, fenced)}
+            )
         except RevisionConflictError:
             return await self.get_source(namespace, source_id), False
         return await self.get_source(namespace, source_id), True
 
     async def get_source(self, namespace: str, source_id: str) -> SourceRecord:
-        full = self._full(namespace, f"{_SOURCES}/{source_id}", internal=True)
-        raw = await self._raw_page(full)
+        address = self._layer_address(namespace)
+        full = self._full(address, f"{_SOURCES}/{source_id}", internal=True)
+        mcp = await self._reader(address, f"source {source_id}")
+        raw = await self._raw_page(mcp, address, full)
         truth = str(raw.get("compiled_truth") or "").strip()
         match = _JSON_FENCE.search(truth)
         try:
@@ -620,12 +676,16 @@ class GBrainBackend(MemoryBackend):
             ),
         )
 
-    async def list_sources(self, namespace: str, *, limit: int) -> list[SourceRef]:
-        prefix = self._prefix(namespace) + f"{_SOURCES}/"
-        rows = await self._scan(prefix, want=limit, include_internal=True)
+    async def list_sources(self, namespace: str, *, limit: int | None) -> list[SourceRef]:
+        address = self._layer_address(namespace)
+        mcp = await self._layers.client(address.layer, create=False)
+        if mcp is None:
+            return []
+        under = f"{_SOURCES}/"
+        rows = await self._scan(mcp, address, under=under, want=limit, include_internal=True)
         return [
             SourceRef(
-                id=str(row["slug"])[len(prefix) :],
+                id=str(row["slug"])[len(under) :],
                 namespace=namespace,
                 title=str(row.get("title") or row["slug"]),
             )
@@ -636,50 +696,69 @@ class GBrainBackend(MemoryBackend):
     # Facts
     # ------------------------------------------------------------------
 
-    def _entity(self, namespace: str, subject: str) -> str:
-        return self._full(namespace, subject)
+    def _entity(self, address: Address, subject: str) -> str:
+        return self._full(address, subject)
 
-    def _subject_of(self, entity_slug: str) -> tuple[str, str] | None:
-        """``(namespace, subject)`` of an entity slug this backend made, else None."""
-        root, _, rest = entity_slug.partition("/")
-        namespace, _, subject = rest.partition("/")
-        if root != _ROOT or not namespace or not subject or not _NAMESPACE.fullmatch(namespace):
-            return None
-        return namespace, subject
+    @staticmethod
+    def _entity_id(layer: str, entity: str) -> str:
+        """The entity part of a fact id: the layer to ask, then the subject."""
+        return f"{layer}/{entity}"
 
-    def _decode(self, row: dict[str, Any]) -> LayeredFact | None:
-        """The fact if it is ours: sealed, and sealed into the namespace its entity names."""
-        located = self._subject_of(str(row.get("entity_slug") or ""))
-        if located is None:
-            return None
-        namespace, subject = located
-        fact, sealed = self._codec.decode(row, subject=subject)
-        if sealed != namespace:
-            return None
-        return LayeredFact(fact=fact, namespace=namespace)
+    def _locate(self, fact_id_: str) -> tuple[str, str, str]:
+        """``(raw gbrain id, layer, subject)`` of a fact id this backend made."""
+        raw, entity_id = split_fact_id(fact_id_)
+        layer, _, subject = entity_id.partition("/")
+        try:
+            self._layer_address(layer)
+        except MemoryValidationError as exc:
+            raise RecordNotFoundError(f"no fact {fact_id_}: {exc}") from exc
+        if not subject:
+            raise RecordNotFoundError(f"no fact {fact_id_}")
+        return raw, layer, subject
 
-    async def _verb(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-        payload = await self._call(name, arguments)
+    def _decode(self, row: dict[str, Any], layer: str) -> LayeredFact | None:
+        """The fact if it is ours: sealed into the layer whose source it was read from."""
+        entity = str(row.get("entity_slug") or "")
+        if not entity:
+            return None
+        fact, sealed = self._codec.decode(
+            row, subject=entity, id_entity=self._entity_id(layer, entity)
+        )
+        if sealed != layer:
+            return None
+        return LayeredFact(fact=fact, namespace=layer)
+
+    async def _verb(
+        self, mcp: GBrainMcpClient, name: str, arguments: dict[str, Any]
+    ) -> dict[str, Any]:
+        payload = await call_tool(mcp, name, arguments)
         if not isinstance(payload, dict):
             raise MemoryBackendError(f"gbrain {name} returned an unusable result: {payload}")
         return payload
 
     async def _fact_rows(
-        self, entity: str | None, *, include_expired: bool, contains: str | None
+        self,
+        mcp: GBrainMcpClient,
+        address: Address,
+        entity: str | None,
+        *,
+        include_expired: bool,
+        contains: str | None,
     ) -> tuple[list[dict[str, Any]], list[Omission]]:
         arguments: dict[str, Any] = {
             "limit": self._recall_limit,
             "include_expired": include_expired,
+            "source_id": address.source_id,
         }
         if entity:
             arguments["entity"] = entity
         if contains:
             arguments["grep"] = contains
-        rows = _rows(await self._verb("recall", arguments), "facts")
+        rows = _rows(await self._verb(mcp, "recall", arguments), "facts")
         omitted: list[Omission] = []
         if len(rows) >= self._recall_limit:
             message = (
-                f"gbrain returned {len(rows)} facts for {entity or 'the brain'}, its per-call "
+                f"gbrain returned {len(rows)} facts for {entity or address.layer}, its per-call "
                 "cap; there may be more. Narrow the request or retire stale facts"
             )
             record_cap_hit(_RECALL_KNOB, message)
@@ -687,7 +766,9 @@ class GBrainBackend(MemoryBackend):
         return rows, omitted
 
     async def remember(self, namespace: str, new: NewFact) -> RememberResult:
-        entity = self._entity(namespace, new.draft.subject)
+        address = self._layer_address(namespace)
+        entity = self._entity(address, new.draft.subject)
+        mcp = await self._writer(address)
         draft = new.draft
         arguments: dict[str, Any] = {
             "fact": draft.statement,
@@ -698,7 +779,7 @@ class GBrainBackend(MemoryBackend):
         }
         if draft.valid_until:
             arguments["ttl"] = draft.valid_until.astimezone(UTC).isoformat()
-        payload = await self._verb("remember", arguments)
+        payload = await self._verb(mcp, "remember", arguments)
         raw_id, slug, status = payload.get("id"), payload.get("entity_slug"), payload.get("status")
         if (
             raw_id in (None, "")
@@ -707,7 +788,8 @@ class GBrainBackend(MemoryBackend):
         ):
             raise MemoryBackendError(f"gbrain remember returned an unusable result: {payload}")
         if slug != entity:
-            await self._call(
+            await call_tool(
+                mcp,
                 "forget",
                 {
                     "id": str(raw_id),
@@ -717,42 +799,55 @@ class GBrainBackend(MemoryBackend):
                 },
             )
             raise MemoryBackendError(
-                f"gbrain filed the fact under entity {slug!r} instead of {entity!r}, outside "
-                f"layer namespace {namespace}; it was withdrawn. Remember it with a subject "
-                "that is not an alias of another page"
+                f"gbrain filed the fact under entity {slug!r} instead of {entity!r}; it was "
+                "withdrawn. Remember it with a subject that is not an alias of another page"
             )
-        stored = await self.get_fact(fact_id(raw_id, slug))
+        stored = await self.get_fact(fact_id(raw_id, self._entity_id(address.layer, entity)))
         if status != "duplicate":
-            await self._index_fact(namespace, str(raw_id), stored.fact.id)
+            await self._index_fact(mcp, address, str(raw_id), stored.fact.id)
         if status == "superseded":
-            await self._refuse_trust_inversion(stored)
+            await self._refuse_trust_inversion(mcp, address, stored)
         return RememberResult(fact=stored, status=status)
 
-    async def _index_fact(self, namespace: str, raw_id: str, full_id: str) -> None:
-        full = self._full(namespace, f"{_FACTS}/{raw_id}", internal=True)
+    async def _index_fact(
+        self, mcp: GBrainMcpClient, address: Address, raw_id: str, full_id: str
+    ) -> None:
+        full = self._full(address, f"{_FACTS}/{raw_id}", internal=True)
         front = {"title": full_id, "type": "niuu-fact-ref", "fact_id": full_id}
         try:
-            await self._call("put_page", {"slug": full, "content": self._markdown(front, full_id)})
+            await call_tool(
+                mcp, "put_page", {"slug": full, "content": self._markdown(front, full_id)}
+            )
         except RevisionConflictError:
             return
         except MemoryBackendError as exc:
             raise MemoryBackendError(
-                f"fact {full_id} is stored, but its index page in {namespace} could not be "
-                f"written ({exc}); deleting the namespace would not withdraw it. Retire the "
+                f"fact {full_id} is stored, but its index page in {address.layer} could not be "
+                f"written ({exc}); removing the layer would not withdraw it. Retire the "
                 "fact and remember it again"
             ) from exc
 
-    async def _refuse_trust_inversion(self, new: LayeredFact) -> None:
-        _, entity = split_fact_id(new.fact.id)
+    async def _refuse_trust_inversion(
+        self, mcp: GBrainMcpClient, address: Address, new: LayeredFact
+    ) -> None:
+        _, _, entity = self._locate(new.fact.id)
         payload = await self._verb(
-            "recall", {"entity": entity, "supersessions": True, "limit": self._recall_limit}
+            mcp,
+            "recall",
+            {
+                "entity": entity,
+                "supersessions": True,
+                "limit": self._recall_limit,
+                "source_id": address.source_id,
+            },
         )
+        entity_id = self._entity_id(address.layer, entity)
         for row in _rows(payload, "facts"):
             if row.get("superseded_by") in (None, ""):
                 continue
-            if fact_id(row["superseded_by"], entity) != new.fact.id:
+            if fact_id(row["superseded_by"], entity_id) != new.fact.id:
                 continue
-            retired = self._decode(row)
+            retired = self._decode(row, address.layer)
             if retired is not None and retired.fact.trust > new.fact.trust:
                 raise TrustError(
                     f"gbrain retired {retired.fact.trust.label}-level fact {retired.fact.id} "
@@ -761,21 +856,23 @@ class GBrainBackend(MemoryBackend):
                 )
 
     async def get_fact(self, fact_id_: str) -> LayeredFact:
-        raw, entity = split_fact_id(fact_id_)
-        if self._subject_of(entity) is None:
-            raise RecordNotFoundError(f"no fact {fact_id_}")
-        rows, omitted = await self._fact_rows(entity, include_expired=True, contains=None)
+        raw, layer, subject = self._locate(fact_id_)
+        address = self._layer_address(layer)
+        mcp = await self._reader(address, f"fact {fact_id_}")
+        rows, omitted = await self._fact_rows(
+            mcp, address, subject, include_expired=True, contains=None
+        )
         for row in rows:
             if str(row.get("fact_id") or row.get("id")) != raw:
                 continue
-            found = self._decode(row)
+            found = self._decode(row, layer)
             if found is None:
                 raise RecordNotFoundError(f"no fact {fact_id_} written through the gateway")
             return found
         if omitted:
             raise MemoryBackendError(
                 f"fact {fact_id_} was not among the {len(rows)} facts gbrain returned for "
-                f"{entity}, which is its per-call cap; it may exist beyond it"
+                f"{subject}, which is its per-call cap; it may exist beyond it"
             )
         raise RecordNotFoundError(f"no fact {fact_id_}")
 
@@ -789,18 +886,21 @@ class GBrainBackend(MemoryBackend):
     ) -> LayeredRecall:
         now = datetime.now(UTC)
         moment = as_of or now
-        wanted = {self._check_namespace(ns) for ns in namespaces}
         found: list[LayeredFact] = []
         omitted: list[Omission] = []
-        entities = [self._entity(ns, subject) for ns in namespaces] if subject else [None]
-        for entity in entities:
+        for namespace in namespaces:
+            address = self._layer_address(namespace)
+            entity = self._entity(address, subject) if subject else None
+            mcp = await self._layers.client(address.layer, create=False)
+            if mcp is None:
+                continue
             rows, cut = await self._fact_rows(
-                entity, include_expired=moment < now, contains=contains
+                mcp, address, entity, include_expired=moment < now, contains=contains
             )
             omitted.extend(cut)
             for row in rows:
-                fact = self._decode(row)
-                if fact is not None and fact.namespace in wanted:
+                fact = self._decode(row, address.layer)
+                if fact is not None:
                     found.append(fact)
         kept, dropped = select_facts(
             [f.fact for f in found], min_trust=TrustLevel.AGENT, as_of=moment
@@ -819,37 +919,39 @@ class GBrainBackend(MemoryBackend):
             raise RecordNotFoundError(f"no fact {fact_id_} in {namespace}")
         if current.fact.retired is not None:
             return current
-        raw, _ = split_fact_id(fact_id_)
+        raw, _, _ = self._locate(fact_id_)
         note: dict[str, Any] = {"by": by, "why": why}
         if superseded_by:
             note["sb"] = superseded_by
+        mcp = await self._writer(self._layer_address(namespace))
         payload = await self._verb(
-            "forget", {"id": raw, "reason": self._codec.retirement_note(note)}
+            mcp, "forget", {"id": raw, "reason": self._codec.retirement_note(note)}
         )
         if "expired" not in payload:
             raise MemoryBackendError(f"gbrain forget returned an unusable result: {payload}")
         return await self.get_fact(fact_id_)
 
     async def entity(self, namespace: str, subject: str) -> EntityLayer:
-        full = self._entity(namespace, subject)
-        prefix = self._prefix(namespace)
+        address = self._layer_address(namespace)
+        full = self._entity(address, subject)
         try:
             page: PageRecord | None = await self.get_page(namespace, subject)
         except RecordNotFoundError:
             page = None
-        payload = await self._verb("entity", {"name": full})
-        card = payload.get("card") if payload.get("found") else None
+        mcp = await self._layers.client(address.layer, create=False)
         aliases: tuple[str, ...] = ()
         links: list[str] = []
-        if isinstance(card, dict) and (card.get("entity") or {}).get("slug") == full:
-            aliases = tuple(str(a) for a in card.get("aka") or [] if a)
-            for edge in card.get("edges") or []:
-                if not isinstance(edge, dict):
-                    continue
-                target = str(edge.get("to_slug") or edge.get("slug") or "")
-                relative = target[len(prefix) :]
-                if target.startswith(prefix) and not self._is_internal(relative):
-                    links.append(relative)
+        if mcp is not None:
+            payload = await self._verb(mcp, "entity", {"name": full})
+            card = payload.get("card") if payload.get("found") else None
+            if isinstance(card, dict) and (card.get("entity") or {}).get("slug") == full:
+                aliases = tuple(str(a) for a in card.get("aka") or [] if a)
+                for edge in card.get("edges") or []:
+                    if not isinstance(edge, dict):
+                        continue
+                    target = str(edge.get("to_slug") or edge.get("slug") or "")
+                    if target and not self._is_internal(target):
+                        links.append(target)
         recalled = await self.recall([namespace], subject=subject)
         return EntityLayer(
             namespace=namespace,
@@ -871,48 +973,56 @@ class GBrainBackend(MemoryBackend):
         query: str,
         *,
         kinds: frozenset[HitKind],
-        limit: int,
+        limit: int | None,
     ) -> list[SearchHit]:
+        """Ranked hits of these layers: one gbrain ``query`` per layer source.
+
+        The query carries no ``limit`` unless the caller names one, so gbrain applies the
+        search mode and ``search.searchLimit`` its operator configured; the backend does
+        not page, cap or truncate. Hits of several layers are interleaved by rank (each
+        source ranks its own; their scores do not compare).
+        """
         if not query.strip():
             raise MemoryValidationError("a search needs a query")
-        hits: dict[str, SearchHit] = {}
-        offset = 0
-        while len(hits) < limit:
-            rows = _rows(
-                await self._call(
-                    "query",
-                    {
-                        "query": query,
-                        "limit": self._page_size,
-                        "offset": offset,
-                        # Variants are generated per call, so paging over them would skip
-                        # and repeat results; autocut would end a page early.
-                        "expand": False,
-                        "autocut": False,
-                    },
-                ),
-                "results",
-            )
-            if not rows:
-                break
-            offset += len(rows)
+        ranked: list[list[SearchHit]] = []
+        for namespace in namespaces:
+            address = self._layer_address(namespace)
+            mcp = await self._layers.client(address.layer, create=False)
+            if mcp is None:
+                continue
+            arguments: dict[str, Any] = {
+                "query": query,
+                "source_id": address.source_id,
+                "expand": False,
+                "autocut": False,
+            }
+            if limit is not None:
+                arguments["limit"] = limit
+            rows = _rows(await call_tool(mcp, "query", arguments), "results")
+            hits: dict[str, SearchHit] = {}
             for row in rows:
-                hit = self._hit(row, namespaces, kinds)
-                if hit is None or f"{hit.namespace}/{hit.ref}" in hits:
-                    continue
-                hits[f"{hit.namespace}/{hit.ref}"] = hit
-                if len(hits) >= limit:
-                    break
-        return list(hits.values())
+                hit = self._hit(row, address, kinds)
+                if hit is not None:
+                    hits.setdefault(f"{hit.kind}/{hit.ref}", hit)
+            ranked.append(list(hits.values()))
+        merged = [
+            group[rank]
+            for rank in range(max((len(g) for g in ranked), default=0))
+            for group in ranked
+            if rank < len(group)
+        ]
+        return merged if limit is None else merged[:limit]
 
     def _hit(
-        self, row: dict[str, Any], namespaces: Sequence[str], kinds: frozenset[HitKind]
+        self, row: dict[str, Any], address: Address, kinds: frozenset[HitKind]
     ) -> SearchHit | None:
-        slug = str(row.get("slug") or "")
-        namespace = self._namespace_of(slug, namespaces)
-        if namespace is None:
-            return None
-        relative = slug[len(self._prefix(namespace)) :]
+        returned = row.get("source_id")
+        if returned not in (None, address.source_id):
+            raise MemoryBackendError(
+                f"gbrain returned a hit from source {returned} for layer {address.layer} "
+                f"(source {address.source_id}); the layer's client is bound to the wrong source"
+            )
+        relative = str(row.get("slug") or "")
         kind = HitKind.PAGE
         if relative.startswith(f"{_SOURCES}/"):
             kind, relative = HitKind.SOURCE, relative[len(_SOURCES) + 1 :]
@@ -924,7 +1034,7 @@ class GBrainBackend(MemoryBackend):
         return SearchHit(
             kind=kind,
             ref=relative,
-            namespace=namespace,
+            namespace=address.layer,
             title=str(row.get("title") or relative),
             snippet=str(snippet),
         )
@@ -934,6 +1044,19 @@ class GBrainBackend(MemoryBackend):
     # ------------------------------------------------------------------
 
     async def delta(self, namespaces: Sequence[str], *, since: str, limit: int) -> ChangeSet:
+        """Pages and facts changed in one layer after *since*, oldest first.
+
+        A change cursor follows one source's clock, so exactly one layer is named.
+        """
+        if len(namespaces) != 1:
+            raise MemoryValidationError(
+                f"changes are read one layer at a time (a cursor follows one gbrain source); "
+                f"got {len(namespaces)} layers"
+            )
+        address = self._layer_address(namespaces[0])
+        mcp = await self._layers.client(address.layer, create=False)
+        if mcp is None:
+            return ChangeSet(pages=(), facts=(), cursor=since, has_more=False)
         moment, _, after_slug = since.partition("|")
         pages: list[PageRef] = []
         facts: dict[str, LayeredFact] = {}
@@ -942,25 +1065,23 @@ class GBrainBackend(MemoryBackend):
             arguments: dict[str, Any] = {"since": moment}
             if after_slug:
                 arguments["since_slug"] = after_slug
-            payload = await self._verb("delta", arguments)
+            payload = await self._verb(mcp, "delta", arguments)
             for row in _rows(payload, "facts"):
-                fact = self._decode(row)
-                if fact is not None and fact.namespace in namespaces:
+                fact = self._decode(row, address.layer)
+                if fact is not None:
                     facts.setdefault(fact.fact.id, fact)
             batch = _rows(payload, "pages")
             stopped_inside = False
             for index, row in enumerate(batch):
                 slug = str(row.get("slug") or "")
-                # The cursor moves past every page read, ours or not: delivery resumes after it.
+                # The cursor moves past every page read: delivery resumes after it.
                 moment, after_slug = str(row.get("updated_at") or moment), slug
-                namespace = self._namespace_of(slug, namespaces)
-                relative = slug[len(self._prefix(namespace)) :] if namespace else ""
-                if namespace is not None and not self._is_internal(relative):
+                if not self._is_internal(slug):
                     pages.append(
                         PageRef(
-                            slug=relative,
-                            namespace=namespace,
-                            title=str(row.get("title") or relative),
+                            slug=slug,
+                            namespace=address.layer,
+                            title=str(row.get("title") or slug),
                             updated_at=_moment(row.get("updated_at")),
                         )
                     )
@@ -985,52 +1106,52 @@ class GBrainBackend(MemoryBackend):
     # ------------------------------------------------------------------
 
     async def create_namespace(self, namespace: str) -> bool:
-        full = self._full(namespace, _MARKER, internal=True)
-        front = {
-            "title": f"namespace {namespace}",
-            "type": "niuu-namespace",
-            _ATTRIBUTION_KEY: self._sealer.seal(_PAGE_SEAL, {"ns": namespace, "kind": "marker"}),
-        }
-        try:
-            await self._call(
-                "put_page", {"slug": full, "content": self._markdown(front, namespace)}
-            )
-        except RevisionConflictError:
-            return False
-        return True
+        """Make a layer ready: its gbrain source and client exist.
+
+        A proposals namespace is part of its layer's source, so it makes the layer ready
+        too. False when the source already existed.
+        """
+        return await self._layers.create(parse_namespace(namespace).layer)
 
     async def list_namespaces(self) -> list[str]:
-        """Namespaces with a marker page, found by paging over every page under ``l/``."""
-        root = f"{_ROOT}/"
-        marker = f"/{_MARKER}"
-        found: list[str] = []
-        for row in await self._scan(root, want=None, include_internal=True):
-            slug = str(row.get("slug") or "")
-            if not slug.endswith(marker):
-                continue
-            namespace = slug[len(root) : -len(marker)]
-            if _NAMESPACE.fullmatch(namespace):
-                found.append(namespace)
-        return found
+        """The layers that have a source (or a client left over from a removed one).
+
+        Proposals namespaces are not listed: they are part of their layer's source and go
+        with it.
+        """
+        return await self._layers.layers()
 
     async def delete_namespace(self, namespace: str) -> NamespaceRemoval:
-        prefix = self._prefix(namespace)
-        rows = await self._scan(prefix, want=None, include_internal=True)
-        withdrawn = 0
+        """Remove a layer: withdraw its facts, remove its source, revoke its client.
+
+        A proposals namespace loses only its own pages.
+        """
+        address = parse_namespace(namespace)
+        mcp = await self._layers.client(address.layer, create=False)
+        if address.held:
+            if mcp is None:
+                return NamespaceRemoval(pages_removed=0, facts_withdrawn=0)
+            rows = await self._scan(
+                mcp, address, under=address.held, want=None, include_internal=True
+            )
+            for row in rows:
+                await call_tool(mcp, "delete_page", {"slug": str(row["slug"]), "force": True})
+            return NamespaceRemoval(pages_removed=len(rows), facts_withdrawn=0)
+        withdrawn = 0 if mcp is None else await self._withdraw_facts(mcp, address)
+        pages = await self._layers.remove(address.layer)
+        return NamespaceRemoval(pages_removed=pages, facts_withdrawn=withdrawn)
+
+    async def _withdraw_facts(self, mcp: GBrainMcpClient, address: Address) -> int:
+        under = f"{_FACTS}/"
         note = self._codec.retirement_note(
-            {"by": _SYSTEM_AUTHOR, "why": f"layer namespace {namespace} was deleted"}
+            {"by": _SYSTEM_AUTHOR, "why": f"layer namespace {address.layer} was deleted"}
         )
-        for row in rows:
-            relative = str(row["slug"])[len(prefix) :]
-            if not relative.startswith(f"{_FACTS}/"):
-                continue
+        withdrawn = 0
+        for row in await self._scan(mcp, address, under=under, want=None, include_internal=True):
+            raw_id = str(row["slug"])[len(under) :]
             try:
-                payload = await self._verb(
-                    "forget", {"id": relative[len(_FACTS) + 1 :], "reason": note}
-                )
+                payload = await self._verb(mcp, "forget", {"id": raw_id, "reason": note})
             except RecordNotFoundError:
                 continue
             withdrawn += 1 if payload.get("expired") else 0
-        for row in rows:
-            await self._call("delete_page", {"slug": str(row["slug"]), "force": True})
-        return NamespaceRemoval(pages_removed=len(rows), facts_withdrawn=withdrawn)
+        return withdrawn

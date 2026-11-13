@@ -1,25 +1,24 @@
 /**
- * What the memory gateway answers a person (its people routes): a cited answer to a
- * question, and the changes waiting for them to keep or discard.
+ * What the memory gateway tells a person (its people routes): the hits a search finds across
+ * every memory they read, and the changes waiting for them to keep or discard.
  */
 
-/** A record an answer rests on, as a person opens it. */
-export interface MemorySource {
+/** One thing memory holds that matches a search, from one of the memories the person reads. */
+export interface MemoryHit {
+  /** `project:<id>` or `org`. */
   layer: string;
   /** The project's name, or "the org". */
   layerName: string;
+  kind: 'page' | 'source';
+  /** A page's path, or `source:<id>`. */
   ref: string;
-  kind: 'page' | 'source' | 'fact';
   title: string;
-  url: string | null;
+  snippet: string;
 }
 
-export interface MemoryAnswer {
-  /** Empty when memory does not answer the question. */
-  answer: string;
-  /** What memory is not sure of, or could not answer. */
-  gaps: string[];
-  sources: MemorySource[];
+export interface MemorySearchResult {
+  query: string;
+  hits: MemoryHit[];
 }
 
 /** One piece of a proposal's evidence. */
@@ -89,10 +88,7 @@ export function sourceLabel(source: ReviewSource): string {
   }
 }
 
-/** Where a cited record is, in a few words. */
-export function sourcePlace(source: MemorySource): string {
-  const where = source.layerName || 'memory';
-  if (source.kind === 'page') return `a page in ${where}`;
-  if (source.kind === 'fact') return `what ${where} holds`;
-  return `a source in ${where}`;
+/** A quiet line naming where a hit is held and what it is. */
+export function hitPlace(hit: MemoryHit): string {
+  return `${hit.layerName || 'memory'} · ${hit.kind}`;
 }

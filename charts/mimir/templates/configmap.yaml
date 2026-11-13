@@ -70,7 +70,7 @@ data:
         - name: {{ $name | quote }}
           adapter: mimir.backends.gbrain.GBrainBackend
           mcp_url: {{ required (printf "config.memory.systems[%s].mcpUrl is required" $name) $system.mcpUrl | quote }}
-          api_token_file: {{ printf "%s/%s/token" (include "mimir.memorySecretsDir" $) $name | quote }}
+          admin_token_file: {{ printf "%s/%s/admin-token" (include "mimir.memorySecretsDir" $) $name | quote }}
           signing_key_file: {{ printf "%s/%s/signing-key" (include "mimir.memorySecretsDir" $) $name | quote }}
           {{- if not (kindIs "invalid" $system.timeoutSeconds) }}
           timeout_seconds: {{ $system.timeoutSeconds }}
@@ -91,22 +91,10 @@ data:
         {{- else }} {}
         {{- end }}
       {{- if not (and .serviceAuth .serviceAuth.adapter) }}
-      {{- fail "config.memory.serviceAuth.adapter is required when config.memory.enabled: how the gateway authenticates as a service to Forge and Bifröst" }}
+      {{- fail "config.memory.serviceAuth.adapter is required when config.memory.enabled: how the gateway authenticates as a service to Forge" }}
       {{- end }}
       service_auth:
         {{- toYaml .serviceAuth | nindent 8 }}
-      bifrost_url: {{ required "config.memory.bifrostUrl is required when config.memory.enabled: the context pack and memory_ask go through Bifröst" .bifrostUrl | quote }}
-      {{- if not (kindIs "invalid" .bifrostTimeoutSeconds) }}
-      bifrost_timeout_seconds: {{ .bifrostTimeoutSeconds }}
-      {{- end }}
-      {{- $ask := ternary true .askEnabled (kindIs "invalid" .askEnabled) }}
-      ask_enabled: {{ $ask }}
-      {{- if $ask }}
-      answer_model: {{ required "config.memory.answerModel is required when config.memory.askEnabled" .answerModel | quote }}
-      {{- end }}
-      {{- if not (kindIs "invalid" .askRetrievalCount) }}
-      ask_retrieval_count: {{ .askRetrievalCount }}
-      {{- end }}
       {{- if not (kindIs "invalid" .retentionDays) }}
       retention_days: {{ .retentionDays }}
       {{- end }}
@@ -118,9 +106,6 @@ data:
       {{- end }}
       {{- if not (kindIs "invalid" .graphConcurrency) }}
       graph_concurrency: {{ .graphConcurrency }}
-      {{- end }}
-      {{- if not (kindIs "invalid" .graphMaxRecordsPerLayer) }}
-      graph_max_records_per_layer: {{ .graphMaxRecordsPerLayer }}
       {{- end }}
       {{- with .orgAdminRoles }}
       org_admin_roles:

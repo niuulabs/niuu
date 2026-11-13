@@ -49,8 +49,8 @@ export function MimirSubnav({ ctx }: MimirSubnavProps) {
   // The Memory scene owns its own mount scoping, colour-by, and ask bar —
   // nothing here applies to it. Registry routes still get the subnav.
   if (pathname === '/mimir') return null;
-  // Ask and Review are one calm job each; mounts and filters do not apply to them.
-  if (pathname === '/mimir/ask' || pathname === '/mimir/review') return null;
+  // Search and Review are one calm job each; mounts and filters do not apply to them.
+  if (pathname === '/mimir/search' || pathname === '/mimir/review') return null;
 
   if (subnavCollapsed) {
     return (

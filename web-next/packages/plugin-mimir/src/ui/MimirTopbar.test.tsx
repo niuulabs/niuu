@@ -34,7 +34,7 @@ describe('MimirTopbar', () => {
     expect(container).toBeEmptyDOMElement();
   });
 
-  it.each(['/mimir/ask', '/mimir/review'])('renders nothing on %s, one calm job', (path) => {
+  it.each(['/mimir/search', '/mimir/review'])('renders nothing on %s, one calm job', (path) => {
     currentPathname = path;
     const { container } = wrap();
     expect(container).toBeEmptyDOMElement();

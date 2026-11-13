@@ -58,7 +58,6 @@ from mimir.memory.review import ReviewItem, review_item
 from mimir.memory.rules import approver_of
 from mimir.ports.memory_backend import MemoryBackend
 from mimir.ports.people_directory import NotVisibleError, PeopleDirectory, Person
-from niuu.cap_telemetry import record_cap_hit
 from niuu.domain.mimir_facts import (
     AuthorKind,
     FactAuthor,
@@ -94,17 +93,13 @@ class Review:
     """What waits for a person: each pending proposal as they review it, oldest first.
 
     ``names`` gives each layer a person-facing name (the project's name, or "the org").
-    ``more`` names the layers that had more pending proposals than were read; the cap hit
-    was counted under ``memory.default_result_count``.
+    ``more`` names the layers that had at least as many pending proposals as the limit the
+    caller named; it is empty when no limit was named, since every proposal was read.
     """
 
     items: tuple[ReviewItem, ...]
     names: dict[str, str]
     more: tuple[str, ...] = ()
-
-
-#: The knob a review's per-layer read is bounded by.
-REVIEW_COUNT_KNOB = "memory.default_result_count"
 
 
 class Curation:
@@ -172,7 +167,9 @@ class Curation:
 
     # -- listing ---------------------------------------------------------
 
-    async def pending(self, person: Person, layer_id: str, *, limit: int) -> list[Proposal]:
+    async def pending(
+        self, person: Person, layer_id: str, *, limit: int | None = None
+    ) -> list[Proposal]:
         layer = self.proposal_layer(layer_id)
         await self._require_decider(person, layer)
         system, backend = self._system(person.tenant_id)
@@ -200,11 +197,14 @@ class Curation:
                 layers.append((readable.layer, readable.name))
         return layers
 
-    async def review(self, person: Person, layer_id: str | None, *, limit: int) -> Review:
+    async def review(
+        self, person: Person, layer_id: str | None, *, limit: int | None = None
+    ) -> Review:
         """The proposals waiting for *person*: one layer's, or every layer they decide.
 
-        Each layer's pending proposals are read up to *limit*; a layer that has more is
-        counted and named in :attr:`Review.more`, never cut silently.
+        Every pending proposal is read, unless the caller names a *limit*: then each layer
+        is read up to it, and a layer that reached it is named in :attr:`Review.more`,
+        never cut silently.
         """
         if layer_id:
             layer = self.proposal_layer(layer_id)
@@ -228,12 +228,7 @@ class Curation:
                 raise LayerUnavailableError(
                     f"proposals for {layer.id} could not be read on memory system {system!r}: {exc}"
                 ) from exc
-            if len(pending) >= limit:
-                record_cap_hit(
-                    REVIEW_COUNT_KNOB,
-                    f"review read the first {limit} pending proposals of {layer.id}; more may "
-                    f"wait. Raise {REVIEW_COUNT_KNOB} to read more at once",
-                )
+            if limit is not None and len(pending) >= limit:
                 more.append(layer.id)
         items.sort(key=lambda item: item.proposal.created_at)
         return Review(

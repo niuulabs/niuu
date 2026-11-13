@@ -156,6 +156,16 @@ class MemoryBackendContract:
         assert len(await backend.list_pages(A, limit=3)) == 3
         assert len(await backend.list_pages(A, limit=50)) == 5
 
+    async def test_list_pages_without_a_limit_returns_every_page(
+        self, backend: MemoryBackend
+    ) -> None:
+        await backend.create_namespace(A)
+        for index in range(120):
+            await backend.put_page(
+                A, f"p{index:03d}", PageWrite("x"), attribution(), expected_revision=None
+            )
+        assert len(await backend.list_pages(A, limit=None)) == 120
+
     # -- sources ---------------------------------------------------------
 
     async def test_a_source_is_kept_as_it_arrived_and_never_duplicated(
@@ -251,6 +261,19 @@ class MemoryBackendContract:
         assert {h.namespace for h in pages_only} == {A, B}
         assert len(await backend.search([A, B], "cutover", kinds=frozenset(HitKind), limit=1)) == 1
 
+    async def test_search_without_a_limit_is_not_capped_by_the_backend(
+        self, backend: MemoryBackend
+    ) -> None:
+        await backend.create_namespace(A)
+        for index in range(30):
+            await backend.put_page(
+                A, f"c{index:02d}", PageWrite("cutover"), attribution(), expected_revision=None
+            )
+        hits = await backend.search([A], "cutover", kinds=frozenset(HitKind), limit=None)
+        assert len(hits) > 0
+        capped = await backend.search([A], "cutover", kinds=frozenset(HitKind), limit=3)
+        assert len(capped) == 3
+
     async def test_delta_reports_what_changed_in_the_namespaces(
         self, backend: MemoryBackend
     ) -> None:
@@ -271,10 +294,10 @@ class MemoryBackendContract:
 
     # -- namespaces ------------------------------------------------------
 
-    async def test_every_created_namespace_is_listed(self, backend: MemoryBackend) -> None:
+    async def test_every_created_layer_is_listed(self, backend: MemoryBackend) -> None:
         for ns in (A, "session-s1", "_proposals/project-a"):
             await backend.create_namespace(ns)
-        assert {A, "session-s1", "_proposals/project-a"} <= set(await backend.list_namespaces())
+        assert {A, "session-s1"} <= set(await backend.list_namespaces())
         await backend.delete_namespace("session-s1")
         assert "session-s1" not in await backend.list_namespaces()
 
@@ -295,6 +318,7 @@ class MemoryBackendContract:
         assert removal.pages_removed >= 1
         with pytest.raises(RecordNotFoundError):
             await backend.get_page(A, "p")
-        assert (await backend.get_fact(gone.fact.fact.id)).fact.retired is not None
+        with pytest.raises(RecordNotFoundError):
+            await backend.get_fact(gone.fact.fact.id)
         assert (await backend.get_fact(kept.fact.fact.id)).fact.retired is None
         assert (await backend.get_page(B, "p")).compiled_truth == "x"

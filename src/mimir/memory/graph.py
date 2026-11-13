@@ -16,8 +16,7 @@ text points at and the graph cannot show.
 Reads are bounded by ``memory.graph_concurrency`` and a graph is kept per (org,
 layer set) for ``memory.graph_cache_seconds``. A layer that cannot be read fails the
 whole build naming the layer: a partial graph is never presented as the whole one.
-A layer with more pages (or sources) than ``memory.graph_max_records_per_layer``
-fails it too, counted on the cap counter.
+Every page of a layer, and every source it holds, is read: the graph has no record cap.
 """
 
 from __future__ import annotations
@@ -43,10 +42,8 @@ from mimir.memory.models import (
 )
 from mimir.memory.person_layers import ReadableLayer
 from mimir.memory.systems import MemorySystems
-from niuu.cap_telemetry import record_cap_hit
 
 #: The cap_telemetry knob a layer larger than the graph reads is counted under.
-MAX_RECORDS_KNOB = "memory.graph_max_records_per_layer"
 
 MENTIONS = "mentions"
 CITES = "cites"
@@ -95,10 +92,6 @@ class GraphError(MemoryStoreError):
 
 class GraphLayerError(GraphError):
     """A layer could not be read."""
-
-
-class GraphTooLargeError(GraphError):
-    """A layer holds more records than ``memory.graph_max_records_per_layer``."""
 
 
 def normalize_slug(raw: str) -> str:
@@ -156,7 +149,6 @@ class KnowledgeGraph:
     Args:
         systems: the memory systems and which org lives on which.
         concurrency: reads in flight at once against the memory system.
-        max_records_per_layer: pages (and, separately, sources) one layer may hold.
         cache_seconds: how stale a graph may be; 0 keeps nothing.
         clock: monotonic seconds; the tests move it.
     """
@@ -166,19 +158,15 @@ class KnowledgeGraph:
         systems: MemorySystems,
         *,
         concurrency: int,
-        max_records_per_layer: int,
         cache_seconds: float,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         if concurrency < 1:
             raise ValueError("memory.graph_concurrency must be at least 1")
-        if max_records_per_layer < 1:
-            raise ValueError(f"{MAX_RECORDS_KNOB} must be at least 1")
         if cache_seconds < 0:
             raise ValueError("memory.graph_cache_seconds cannot be negative")
         self._systems = systems
         self._concurrency = concurrency
-        self._max = max_records_per_layer
         self._cache_seconds = cache_seconds
         self._clock = clock
         self._cache: dict[tuple[str, frozenset[str]], tuple[float, dict[str, Any]]] = {}
@@ -192,7 +180,6 @@ class KnowledgeGraph:
         Raises:
             TenantNotConfiguredError: the org has no memory system.
             GraphLayerError: a layer could not be read.
-            GraphTooLargeError: a layer holds more than the graph reads.
         """
         key = (tenant_id, frozenset(item.layer.id for item in layers))
         async with self._locks.setdefault(key, asyncio.Lock()):
@@ -222,11 +209,7 @@ class KnowledgeGraph:
         nearest = sorted(layers, key=lambda item: item.layer.distance)
 
         async def list_pages(item: ReadableLayer):
-            refs = await self._in(
-                item.layer, backend.list_pages(item.layer.namespace, limit=self._max + 1)
-            )
-            self._within_cap(item.layer, "pages", len(refs))
-            return refs
+            return await self._in(item.layer, backend.list_pages(item.layer.namespace, limit=None))
 
         listed = await self._all([lambda i=item: list_pages(i) for item in nearest])
 
@@ -257,11 +240,9 @@ class KnowledgeGraph:
             return {}
 
         async def list_sources(item: ReadableLayer) -> list[SourceRef]:
-            refs = await self._in(
-                item.layer, backend.list_sources(item.layer.namespace, limit=self._max + 1)
+            return await self._in(
+                item.layer, backend.list_sources(item.layer.namespace, limit=None)
             )
-            self._within_cap(item.layer, "sources", len(refs))
-            return refs
 
         listed = await self._all([lambda i=item: list_sources(i) for item in nearest])
         held = {
@@ -292,16 +273,6 @@ class KnowledgeGraph:
             return await call
         except MemoryStoreError as exc:
             raise GraphLayerError(layer.id, f"layer {layer.id} could not be read: {exc}") from exc
-
-    def _within_cap(self, layer: Layer, what: str, count: int) -> None:
-        if count <= self._max:
-            return
-        message = (
-            f"layer {layer.id} holds more than {self._max} {what}, more than the knowledge graph "
-            f"reads; raise {MAX_RECORDS_KNOB}"
-        )
-        record_cap_hit(MAX_RECORDS_KNOB, message)
-        raise GraphTooLargeError(layer.id, message)
 
     async def _all[T](self, calls: Sequence[Callable[[], Awaitable[T]]]) -> list[T]:
         """Run *calls*, at most ``concurrency`` in flight; the first failure cancels the rest."""

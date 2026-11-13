@@ -7,7 +7,6 @@ import pytest
 from niuu.domain.services.token_scope import (
     FORGE_MEMORY_SCOPE,
     FORGE_MESH_IDENTITY_SCOPE,
-    FORGE_MODEL_SCOPE,
     FORGE_NOTIFY_SCOPE,
     FORGE_SESSION_LIFECYCLE_SCOPE,
     FORGE_SESSION_MESSAGE_SCOPE,
@@ -72,7 +71,6 @@ class TestMintAtStart:
             FORGE_SESSION_SECRET_SCOPE,
             FORGE_MESH_IDENTITY_SCOPE,
             FORGE_MEMORY_SCOPE,
-            FORGE_MODEL_SCOPE,
         )
         stored = await forge.sessions.get(session.id)
         assert stored.workload_config["forge_mcp"] == {
@@ -121,7 +119,6 @@ class TestMintAtStart:
             FORGE_SESSION_SECRET_SCOPE,
             FORGE_MESH_IDENTITY_SCOPE,
             FORGE_MEMORY_SCOPE,
-            FORGE_MODEL_SCOPE,
             FORGE_SESSION_LIFECYCLE_SCOPE,
             FORGE_SESSION_MESSAGE_SCOPE,
         )

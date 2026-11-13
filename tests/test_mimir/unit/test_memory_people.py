@@ -19,6 +19,7 @@ from mimir.app import create_app
 from mimir.config import MimirServiceConfig
 from niuu.cap_telemetry import cap_hit_counts, degraded_counts, reset_cap_hits
 from tests.test_mimir.unit.memory_fakes import (
+    ADMIN_TOKEN,
     MCP,
     PROJECT_ID,
     SESSION_ID,
@@ -28,7 +29,6 @@ from tests.test_mimir.unit.memory_fakes import (
 )
 
 FORGE = "http://forge.test"
-BIFROST = "http://bifrost.test"
 RUN_ID = "a1b2c3d4-0000-4000-8000-000000000123"
 PROJECT = f"project:{PROJECT_ID}"
 URL = "url:https://linear.app/acme/LIN-482"
@@ -52,14 +52,12 @@ def _memory() -> dict:
                 "name": "acme-brain",
                 "adapter": "mimir.backends.gbrain.GBrainBackend",
                 "mcp_url": MCP,
-                "api_token": "tok",
+                "admin_token": ADMIN_TOKEN,
                 "signing_key": SIGNING_KEY,
             }
         ],
         "tenants": {"acme": "acme-brain"},
         "service_auth": {"adapter": "niuu.adapters.outbound.http_auth.NoAuthHeaderAdapter"},
-        "bifrost_url": BIFROST,
-        "answer_model": "answer-model-1",
     }
 
 
@@ -84,7 +82,7 @@ def _context(run_id: str | None = None) -> dict:
 def forge():
     brain = FakeGBrain()
     with respx.mock(assert_all_called=False) as router:
-        router.post(MCP).mock(side_effect=brain.handle)
+        brain.mount(router)
         router.get(f"{FORGE}/api/v1/forge/sessions/{SESSION_ID}/memory-context").mock(
             return_value=httpx.Response(200, json=_context(RUN_ID))
         )
@@ -236,7 +234,7 @@ class TestProposals:
         assert page["evidence"] == [URL, f"proposal:{PROJECT}/{proposal_id}"]
         assert pending["proposals"] == []
         assert again.status_code == 409
-        decided_page = f"l/_decided/project-{PROJECT_ID}/{proposal_id}"
+        decided_page = f"project-{PROJECT_ID}/_decided/{proposal_id}"
         assert f"agent:session:{SESSION_ID}" in _page(brain, decided_page)["compiled_truth"]
 
     def test_an_approved_fact_lands_at_operator_trust(self, tmp_path, forge) -> None:
@@ -264,7 +262,7 @@ class TestProposals:
         _role(router, "owner")
         with _client(tmp_path) as client:
             proposal_id = _propose_page(client)
-            brain.seed_page(f"l/project-{PROJECT_ID}/services/booking-api", "written meanwhile")
+            brain.seed_page(f"project-{PROJECT_ID}/services/booking-api", "written meanwhile")
             response = client.post(
                 f"/mimir/memory/proposals/{proposal_id}/approve", json={"layer": PROJECT}
             )
@@ -289,8 +287,8 @@ class TestProposals:
         assert response.status_code == 200, response.text
         assert response.json()["proposal"]["decision"] == "the budget is 250 ms"
         assert pending["proposals"] == []
-        assert f"l/project-{PROJECT_ID}/services/booking-api" not in brain.pages
-        decided = _page(brain, f"l/_decided/project-{PROJECT_ID}/{proposal_id}")
+        assert f"project-{PROJECT_ID}/services/booking-api" not in brain.pages
+        decided = _page(brain, f"project-{PROJECT_ID}/_decided/{proposal_id}")
         assert "the budget is 250 ms" in decided["compiled_truth"]
 
     @pytest.mark.parametrize(
@@ -421,7 +419,7 @@ class TestPromotions:
                 },
             )
         assert response.status_code == 404
-        assert not any(slug.startswith("l/_proposals/") and "/p-" in slug for slug in brain.pages)
+        assert not any("/_proposals/p-" in slug for slug in brain.pages)
 
     def test_promotion_refuses_a_long_lived_source(self, tmp_path, forge) -> None:
         with _client(tmp_path) as client:
@@ -452,8 +450,6 @@ class TestStartup:
         ("overrides", "match"),
         [
             ({"service_auth": None}, "memory.service_auth"),
-            ({"bifrost_url": ""}, "memory.bifrost_url"),
-            ({"answer_model": ""}, "memory.answer_model"),
         ],
     )
     def test_an_enabled_gateway_missing_a_part_does_not_start(
@@ -464,18 +460,6 @@ class TestStartup:
         )
         with pytest.raises(ValueError, match=match):
             create_app(settings)
-
-    def test_ask_can_be_turned_off(self, tmp_path, forge) -> None:
-        settings = MimirServiceConfig(
-            path=str(tmp_path / "mimir"),
-            backend=_BACKEND,
-            memory={**_memory(), "answer_model": "", "ask_enabled": False},
-            auth_mode="none",
-            identity_adapter="identity.adapters.identity.AllowAllHeaderAuthenticationAdapter",
-        )
-        with TestClient(create_app(settings)) as client:
-            tools = client.get("/mimir/memory/tools", headers=_session()).json()["tools"]
-        assert "memory_ask" not in [t["name"] for t in tools]
 
 
 PROJECTS_URL = f"{FORGE}/api/v1/forge/projects"
@@ -494,18 +478,6 @@ def _projects(router, *, mounts: list[dict] | None = None) -> None:
     router.get(MOUNTS_URL).mock(return_value=httpx.Response(200, json=mounts or []))
 
 
-def _bifrost(router, answer: dict) -> respx.Route:
-    return router.post(f"{BIFROST}/v1/messages").mock(
-        return_value=httpx.Response(
-            200,
-            json={
-                "content": [{"type": "text", "text": json.dumps(answer)}],
-                "stop_reason": "end_turn",
-            },
-        )
-    )
-
-
 def _write_project_page(client) -> None:
     result = _tool(
         client,
@@ -519,108 +491,133 @@ def _write_project_page(client) -> None:
     assert result["written"] is True, result
 
 
-class TestPersonAsk:
-    def test_a_person_asks_over_their_projects_and_the_org_charged_to_them(
+def _hit(layer: str, name: str, ref: str, title: str, kind: str = "page") -> dict:
+    return {"layer": layer, "layer_name": name, "kind": kind, "ref": ref, "title": title}
+
+
+def _without_snippets(response) -> list[dict]:
+    return [{k: v for k, v in hit.items() if k != "snippet"} for hit in response.json()["hits"]]
+
+
+class TestPersonSearch:
+    def _seed(self, brain: FakeGBrain) -> None:
+        brain.seed_page(
+            "org/glossary/booking-terms", "What a booking cut-over means.", title="Booking terms"
+        )
+        brain.seed_page(
+            f"project-{PROJECT_ID}/decisions/booking-cutover",
+            "The booking cut-over is the weekend of 12 December.",
+            title="Booking cut-over",
+        )
+
+    def test_a_person_searches_the_org_and_their_projects_with_layer_names(
         self, tmp_path, forge
     ) -> None:
-        _, router = forge
+        brain, router = forge
         _role(router, "contributor")
         _projects(router)
-        call = _bifrost(
-            router,
-            {
-                "answer": "The cut-over is the weekend of 12 December. Ines Moreau decides.",
-                "citations": [{"layer": PROJECT, "ref": "decisions/booking-cutover"}],
-                "gaps": ["Nobody has confirmed the date yet."],
-            },
-        )
+        self._seed(brain)
         with _client(tmp_path) as client:
-            _write_project_page(client)
-            response = client.post(
-                "/mimir/memory/ask",
-                json={"question": "When is the booking cut-over?"},
-                headers={"Authorization": "Bearer person-login"},
-            )
+            response = client.get("/mimir/memory/search", params={"q": "booking cut-over"})
         assert response.status_code == 200, response.text
         body = response.json()
-        assert body["answer"].startswith("The cut-over is the weekend of 12 December.")
-        assert body["gaps"] == ["Nobody has confirmed the date yet."]
-        assert body["sources"] == [
-            {
-                "layer": PROJECT,
-                "layer_name": "Booking platform",
-                "ref": "decisions/booking-cutover",
-                "kind": "page",
-                "title": "Booking cut-over",
-                "url": None,
-            }
+        assert set(body) == {"query", "hits"} and body["query"] == "booking cut-over"
+        # Each layer is a source of its own and ranks its own hits; the lists are
+        # interleaved by rank, the nearest layer first.
+        assert _without_snippets(response) == [
+            _hit(PROJECT, "Booking platform", "decisions/booking-cutover", "Booking cut-over"),
+            _hit("org", "the org", "glossary/booking-terms", "Booking terms"),
         ]
-        sent = call.calls.last.request
-        assert sent.headers["authorization"] == "Bearer person-login"
-        assert sent.headers["x-agent-id"] == "ines" and sent.headers["x-tenant-id"] == "acme"
+        assert body["hits"][0]["snippet"].startswith("The booking cut-over is the weekend")
 
-    def test_a_project_ask_reads_that_project_and_its_attached_memories(
+    def test_a_source_hit_is_named_source_and_its_id(self, tmp_path, forge) -> None:
+        brain, router = forge
+        _projects(router)
+        brain.seed_page(
+            f"project-{PROJECT_ID}/_sources/src_1",
+            "LIN-482 says the booking cut-over moved.",
+            title="LIN-482",
+        )
+        with _client(tmp_path) as client:
+            response = client.get("/mimir/memory/search", params={"q": "booking cut-over"})
+        assert response.status_code == 200, response.text
+        assert _without_snippets(response) == [
+            _hit(PROJECT, "Booking platform", "source:src_1", "LIN-482", kind="source")
+        ]
+
+    def test_a_project_id_narrows_to_that_project_its_attachments_and_the_org(
         self, tmp_path, forge
     ) -> None:
-        _, router = forge
+        brain, router = forge
         role = _role(router, "viewer")
         _projects(router)
-        mounts = router.get(MOUNTS_URL).mock(return_value=httpx.Response(200, json=[]))
-        _bifrost(router, {"answer": "", "citations": [], "gaps": ["Not known."]})
-        with _client(tmp_path) as client:
-            _write_project_page(client)
-            response = client.post(
-                "/mimir/memory/ask",
-                json={"question": "booking cut-over", "project_id": PROJECT_ID},
+        router.get(PROJECTS_URL).mock(
+            return_value=httpx.Response(
+                200,
+                json=[
+                    {"id": PROJECT_ID, "name": "Booking platform", "status": "active"},
+                    {"id": "other-project", "name": "Billing", "status": "active"},
+                ],
             )
-        assert response.status_code == 200, response.text
+        )
+        mounts = router.get(MOUNTS_URL).mock(return_value=httpx.Response(200, json=[]))
+        self._seed(brain)
+        brain.seed_page(
+            "project-other-project/decisions/billing", "booking cut-over billing", title="Billing"
+        )
+        with _client(tmp_path) as client:
+            everything = client.get("/mimir/memory/search", params={"q": "booking cut-over"})
+            narrowed = client.get(
+                "/mimir/memory/search", params={"q": "booking cut-over", "project_id": PROJECT_ID}
+            )
+        assert {h["layer"] for h in everything.json()["hits"]} == {
+            "org",
+            PROJECT,
+            "project:other-project",
+        }
+        assert {h["layer"] for h in narrowed.json()["hits"]} == {"org", PROJECT}
         assert role.called and mounts.called
-        assert response.json()["sources"] == []
 
     def test_a_project_the_person_is_not_on_is_not_found(self, tmp_path, forge) -> None:
         _, router = forge
         _role(router, None)
         _projects(router)
         with _client(tmp_path) as client:
-            response = client.post(
-                "/mimir/memory/ask", json={"question": "x", "project_id": PROJECT_ID}
+            response = client.get(
+                "/mimir/memory/search", params={"q": "x", "project_id": PROJECT_ID}
             )
         assert response.status_code == 404
 
-    def test_nothing_found_makes_no_model_call(self, tmp_path, forge) -> None:
+    def test_nothing_found_is_an_empty_list(self, tmp_path, forge) -> None:
         _, router = forge
         _projects(router)
-        call = router.post(f"{BIFROST}/v1/messages")
         with _client(tmp_path) as client:
-            response = client.post("/mimir/memory/ask", json={"question": "zebra"})
+            response = client.get("/mimir/memory/search", params={"q": "zebra"})
         assert response.status_code == 200, response.text
-        assert response.json()["answer"] == ""
-        assert "Nothing in your layers" in response.json()["gaps"][0]
-        assert not call.called
+        assert response.json() == {"query": "zebra", "hits": []}
 
     @pytest.mark.parametrize(
-        ("body", "status"), [({}, 422), ({"question": "x", "project_id": 3}, 422)]
+        "params",
+        [{}, {"q": ""}, {"q": "   "}, {"q": "x", "project_id": " "}],
     )
-    def test_a_malformed_question_is_refused(self, tmp_path, forge, body, status) -> None:
+    def test_a_malformed_search_is_refused(self, tmp_path, forge, params) -> None:
         with _client(tmp_path) as client:
-            response = client.post("/mimir/memory/ask", json=body)
-        assert response.status_code == status
+            response = client.get("/mimir/memory/search", params=params)
+        assert response.status_code == 422
+
+    def test_the_route_takes_no_limit_and_reports_no_more(self, tmp_path, forge) -> None:
+        brain, router = forge
+        _projects(router)
+        self._seed(brain)
+        with _client(tmp_path) as client:
+            response = client.get("/mimir/memory/search", params={"q": "booking", "limit": 1})
+        assert response.status_code == 200, response.text
+        assert "more" not in response.json()
 
     def test_a_session_credential_is_refused(self, tmp_path, forge) -> None:
         with _client(tmp_path) as client:
-            response = client.post("/mimir/memory/ask", json={"question": "x"}, headers=_session())
+            response = client.get("/mimir/memory/search", params={"q": "x"}, headers=_session())
         assert response.status_code == 403
-
-    def test_a_failed_answer_call_is_a_bad_gateway(self, tmp_path, forge) -> None:
-        _, router = forge
-        _role(router, "owner")
-        _projects(router)
-        router.post(f"{BIFROST}/v1/messages").mock(return_value=httpx.Response(500, text="down"))
-        with _client(tmp_path) as client:
-            _write_project_page(client)
-            response = client.post("/mimir/memory/ask", json={"question": "booking cut-over"})
-        assert response.status_code == 502
-        assert "down" in response.json()["detail"]
 
 
 class TestReview:
@@ -742,7 +739,9 @@ class TestReview:
         [item] = response.json()["proposals"]
         assert item["layer"] == "org" and item["layer_name"] == "the org"
 
-    def test_a_full_layer_is_named_and_counted(self, tmp_path, forge) -> None:
+    def test_a_named_limit_is_honoured_and_the_layer_that_reached_it_is_named(
+        self, tmp_path, forge
+    ) -> None:
         _, router = forge
         _role(router, "owner")
         _projects(router)
@@ -751,10 +750,25 @@ class TestReview:
             self._propose(client)
             response = client.get("/mimir/memory/review", params={"limit": 1})
             bad = client.get("/mimir/memory/review", params={"limit": 0})
+            bad_pending = client.get(
+                "/mimir/memory/proposals", params={"layer": PROJECT, "limit": 0}
+            )
         assert response.json()["more"] == [PROJECT]
         assert len(response.json()["proposals"]) == 1
-        assert cap_hit_counts()["memory.default_result_count"] >= 1
-        assert bad.status_code == 422
+        assert bad.status_code == 422 and bad_pending.status_code == 422
+
+    def test_without_a_limit_every_pending_proposal_is_returned(self, tmp_path, forge) -> None:
+        _, router = forge
+        _role(router, "owner")
+        _projects(router)
+        with _client(tmp_path) as client:
+            for _ in range(12):
+                self._propose(client)
+            review = client.get("/mimir/memory/review")
+            pending = client.get("/mimir/memory/proposals", params={"layer": PROJECT})
+        assert len(review.json()["proposals"]) == 12 and review.json()["more"] == []
+        assert len(pending.json()["proposals"]) == 12 and pending.json()["limit"] is None
+        assert cap_hit_counts() == {}
 
 
 class TestProposalNotifications:

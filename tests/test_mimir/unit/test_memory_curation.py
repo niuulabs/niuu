@@ -28,7 +28,6 @@ from niuu.domain.mimir_facts import (
     TrustLevel,
 )
 from tests.test_mimir.unit.memory_fakes import (
-    MCP,
     PROJECT_ID,
     SESSION_ID,
     FakeGBrain,
@@ -75,7 +74,7 @@ class FakePeople(PeopleDirectory):
 def brain():
     fake = FakeGBrain()
     with respx.mock(assert_all_called=False) as router:
-        router.post(MCP).mock(side_effect=fake.handle)
+        fake.mount(router)
         yield fake
 
 
@@ -199,7 +198,7 @@ class TestRefusals:
         outcome = await gateway.write_page(
             session, "services/x", compiled_truth="x", expected_revision=None, layer="project"
         )
-        slug = f"l/_proposals/project-{PROJECT_ID}/{outcome.proposal.id}"
+        slug = f"project-{PROJECT_ID}/_proposals/{outcome.proposal.id}"
         brain.pages[slug]["frontmatter"]["niuu_attribution"] = "forged"
         with pytest.raises(DecisionError, match="seal"):
             await _approve(_curation(gateway), outcome)

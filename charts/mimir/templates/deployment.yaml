@@ -196,10 +196,10 @@ spec:
             defaultMode: 0440
             sources:
               - secret:
-                  name: {{ required (printf "config.memory.systems[%s].apiTokenSecret.name is required: the gbrain bearer token" $system.name) ($system.apiTokenSecret).name }}
+                  name: {{ required (printf "config.memory.systems[%s].adminTokenSecret.name is required: gbrain's owner bootstrap token (GBRAIN_ADMIN_BOOTSTRAP_TOKEN), which creates each layer's source and client" $system.name) ($system.adminTokenSecret).name }}
                   items:
-                    - key: {{ ($system.apiTokenSecret).key | default "token" }}
-                      path: token
+                    - key: {{ ($system.adminTokenSecret).key | default "token" }}
+                      path: admin-token
               - secret:
                   name: {{ required (printf "config.memory.systems[%s].signingKeySecret.name is required: the key that seals trust and layer" $system.name) ($system.signingKeySecret).name }}
                   items:

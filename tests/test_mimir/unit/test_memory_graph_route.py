@@ -37,6 +37,7 @@ from mimir.memory.models import (
 from niuu.cap_telemetry import cap_hit_counts, reset_cap_hits
 from niuu.domain.mimir_facts import TrustLevel
 from tests.test_mimir.unit.memory_fakes import (
+    ADMIN_TOKEN,
     MCP,
     PROJECT_ID,
     SESSION_ID,
@@ -55,7 +56,6 @@ from tests.test_mimir.unit.test_auth_mode import (
 )
 
 FORGE = "http://forge.test"
-BIFROST = "http://bifrost.test"
 PROJECTS = f"{FORGE}/api/v1/forge/projects"
 OTHER_PROJECT = "9a0e0000-0000-4000-8000-0000000000bb"
 PROJECT = f"project:{PROJECT_ID}"
@@ -87,7 +87,7 @@ def world():
     """Forge, the identity provider's keys and the org's brain, over one respx router."""
     brain = FakeGBrain()
     with respx.mock(assert_all_called=False) as router:
-        router.post(MCP).mock(side_effect=brain.handle)
+        brain.mount(router)
         router.get(JWKS_URI).mock(return_value=httpx.Response(200, json={"keys": [PUBLIC_JWK]}))
         router.get(PROJECTS).mock(
             return_value=httpx.Response(200, json=[{"id": PROJECT_ID, "name": "Booking platform"}])
@@ -104,14 +104,12 @@ def _memory(**overrides: Any) -> dict:
                 "name": "acme-brain",
                 "adapter": "mimir.backends.gbrain.GBrainBackend",
                 "mcp_url": MCP,
-                "api_token": "tok",
+                "admin_token": ADMIN_TOKEN,
                 "signing_key": SIGNING_KEY,
             }
         ],
         "tenants": {"acme": "acme-brain"},
         "service_auth": {"adapter": "niuu.adapters.outbound.http_auth.NoAuthHeaderAdapter"},
-        "bifrost_url": BIFROST,
-        "answer_model": "answer-model-1",
         "connector_service_subjects": ["ting"],
         **overrides,
     }
@@ -146,8 +144,9 @@ def _write(namespace: str, slug: str, truth: str, *, page_type: str = "", rows=(
     """A page, and its timeline rows, written through the real backend."""
 
     async def go() -> None:
-        backend = GBrainBackend(MCP, "tok", signing_key=SIGNING_KEY)
+        backend = GBrainBackend(MCP, admin_token=ADMIN_TOKEN, signing_key=SIGNING_KEY)
         try:
+            await backend.create_namespace(namespace)
             await backend.put_page(
                 namespace,
                 slug,
@@ -171,8 +170,9 @@ def _write(namespace: str, slug: str, truth: str, *, page_type: str = "", rows=(
 
 def _write_source(namespace: str, title: str, content: str, kind: SourceKind) -> str:
     async def go() -> str:
-        backend = GBrainBackend(MCP, "tok", signing_key=SIGNING_KEY)
+        backend = GBrainBackend(MCP, admin_token=ADMIN_TOKEN, signing_key=SIGNING_KEY)
         try:
+            await backend.create_namespace(namespace)
             record, _ = await backend.put_source(
                 namespace, NewSource(title=title, content=content, kind=kind), _AUTHOR
             )
@@ -360,14 +360,14 @@ class TestFailures:
         assert "layer org" in detail or f"layer {PROJECT}" in detail
         assert "nodes" not in response.json()
 
-    def test_a_layer_over_the_cap_fails_and_names_the_setting(self, tmp_path, world) -> None:
-        for slug in ("a", "b", "c"):
-            _write("org", slug, "X.")
-        with _client(tmp_path, graph_max_records_per_layer=2) as client:
+    def test_a_large_layer_is_returned_whole(self, tmp_path, world) -> None:
+        for index in range(25):
+            _write("org", f"page-{index}", "X.")
+        with _client(tmp_path) as client:
             response = client.get(PATH)
-        assert response.status_code == 502
-        assert "memory.graph_max_records_per_layer" in response.json()["detail"]
-        assert cap_hit_counts()["memory.graph_max_records_per_layer"] == 1
+        assert response.status_code == 200, response.text
+        assert len(response.json()["nodes"]) == 25
+        assert cap_hit_counts() == {}
 
     def test_forge_refusing_the_login_is_passed_on(self, tmp_path, world) -> None:
         _, router = world
@@ -435,9 +435,9 @@ def test_the_settings_are_documented_with_defaults() -> None:
     assert (
         fields["graph_cache_seconds"].default,
         fields["graph_concurrency"].default,
-        fields["graph_max_records_per_layer"].default,
-    ) == (30.0, 8, 5000)
-    for name in ("graph_cache_seconds", "graph_concurrency", "graph_max_records_per_layer"):
+    ) == (30.0, 8)
+    assert "graph_max_records_per_layer" not in fields
+    for name in ("graph_cache_seconds", "graph_concurrency"):
         assert fields[name].description
 
 
@@ -457,12 +457,9 @@ class TestChart:
         return _config(_docs(_helm(tmp_path, memory)))["memory"]
 
     def test_the_graph_settings_render_from_named_values(self, tmp_path: Path) -> None:
-        memory = self._memory(
-            tmp_path, graphCacheSeconds=0, graphConcurrency=4, graphMaxRecordsPerLayer=900
-        )
+        memory = self._memory(tmp_path, graphCacheSeconds=0, graphConcurrency=4)
         assert memory["graph_cache_seconds"] == 0
         assert memory["graph_concurrency"] == 4
-        assert memory["graph_max_records_per_layer"] == 900
 
     def test_unset_graph_settings_leave_the_service_defaults(self, tmp_path: Path) -> None:
         memory = self._memory(tmp_path)

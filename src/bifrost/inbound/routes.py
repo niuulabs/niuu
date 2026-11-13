@@ -672,7 +672,6 @@ def create_router(
     event_emitter: CostEventEmitter,
     cache: CachePort | None = None,
     audit: AuditPort | None = None,
-    model_auth_adapter: AuthPort | None = None,
 ) -> APIRouter:
     """Build and return a configured ``APIRouter`` with all Bifröst routes.
 
@@ -683,16 +682,10 @@ def create_router(
         pricing_overrides: Per-model pricing overrides from config.
         auth_adapter:     Authentication adapter (open / pat / mesh).
         cache:            Optional response cache (disabled by default).
-        model_auth_adapter: Authentication for the three model routes
-            (``/v1/messages``, ``/v1/chat/completions``, ``/v1/responses``) only:
-            ``auth_adapter`` plus acceptance of a confirmed Forge session credential
-            (``bifrost.adapters.auth.forge_session.ForgeSessionModelAuth``). Defaults to
-            ``auth_adapter``, i.e. session credentials get that adapter's answer.
 
     Returns:
         A ``fastapi.APIRouter`` with all routes registered.
     """
-    model_auth = model_auth_adapter if model_auth_adapter is not None else auth_adapter
     _cache: CachePort
     if cache is None:
         from bifrost.adapters.cache.disabled import DisabledCache
@@ -1223,7 +1216,7 @@ def create_router(
         Token usage is tracked per-request and attributed to the caller.
         """
         # --- Authentication ---
-        identity = await model_auth.extract(raw_request)
+        identity = await auth_adapter.extract(raw_request)
 
         try:
             body = await raw_request.json()
@@ -1623,7 +1616,7 @@ def create_router(
         the provider verbatim (see ``_serve_native``).
         """
         # --- Authentication ---
-        identity = await model_auth.extract(raw_request)
+        identity = await auth_adapter.extract(raw_request)
 
         try:
             body = await raw_request.json()
@@ -1906,7 +1899,7 @@ def create_router(
         canonical path refuses them.
         """
         # --- Authentication ---
-        identity = await model_auth.extract(raw_request)
+        identity = await auth_adapter.extract(raw_request)
 
         try:
             body = await raw_request.json()
