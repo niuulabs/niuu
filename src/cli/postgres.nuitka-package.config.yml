@@ -1,5 +1,6 @@
-# PostgreSQL's executables and dynamically loaded modules are native code.
-# --include-data-dir intentionally excludes shared libraries.
+# Native code the binary carries: PostgreSQL's executables and dynamically loaded
+# modules, and mini mode's gbrain. --include-data-dir intentionally excludes shared
+# libraries.
 - module-name: 'niuu'
   dlls:
     - from_filenames:
@@ -15,3 +16,11 @@
         relative_path: '../../build/pginstall/lib/postgresql'
         prefixes: ['']
       dest_path: 'niuu/pginstall/lib/postgresql'
+# gbrain (mini mode's memory, scripts/build_gbrain.sh) is one native executable.
+- module-name: 'cli'
+  dlls:
+    - from_filenames:
+        relative_path: '../../build/gbrain'
+        prefixes: ['gbrain']
+        executable: 'yes'
+      dest_path: 'cli/gbrain'
