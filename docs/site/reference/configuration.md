@@ -71,6 +71,26 @@ See [Authentication mode on hosts without
 Envoy](../operations/security-and-permissions.md#authentication-mode-on-hosts-without-envoy)
 for what each mode covers today, path by path.
 
+### Memory (`local_memory`)
+
+In mini mode `niuu platform up` runs a database-only gbrain with the stack and
+points Mímir's store, the memory gateway and Forge's session `memory` server at it.
+It is on by default; `enabled: false` is how you run without it. It needs
+`host_auth.mode: none`. The section is `local_memory` because Forge reads `memory`
+from this same file.
+
+```yaml
+local_memory:
+  enabled: true
+  home: ~/.niuu/memory # gbrain's database, its log and the 0600 secrets
+  gbrain:
+    executable: "" # empty: the gbrain this niuu carries (make build-gbrain)
+    port: 3141
+```
+
+What runs, the files to back up and every setting are in
+`docs/operator/local-memory.md`.
+
 ## Environment overrides
 
 The Niuu CLI uses `NIUU_` and `__` for nested fields. For one foreground run on a

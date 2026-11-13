@@ -9,6 +9,8 @@ HTTP and MCP.
 This guide covers how it works, every way to use it, all configuration, and
 the deployment options. Where memory is going next is in
 [docs/design/memory/README.md](../design/memory/README.md).
+In mini mode `niuu platform up` runs the gbrain and wires all of this itself; see
+[local-memory.md](local-memory.md).
 
 ---
 
