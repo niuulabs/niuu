@@ -406,7 +406,7 @@ function generateEdges(
     const reverseKey = `${target}->${source}`;
     if (seen.has(key) || seen.has(reverseKey)) return;
     seen.add(key);
-    edges.push({ source, target, type: edgeType() });
+    edges.push({ source, target, relation: edgeType() });
   }
 
   // Only synthetic nodes originate new edges — seed nodes may be targets,
@@ -431,12 +431,14 @@ function generateEdges(
   // Guarantee at least one contradiction edge even if the random roll never
   // produced one — the scene's dashed-amber styling needs a demo case.
   if (
-    !edges.some((edge) => (CONTRADICTION_EDGE_KINDS as readonly string[]).includes(edge.type ?? ''))
+    !edges.some((edge) =>
+      (CONTRADICTION_EDGE_KINDS as readonly string[]).includes(edge.relation ?? ''),
+    )
   ) {
     const a = syntheticStart < allNodes.length ? syntheticStart : 0;
     const b = allNodes.length > a + 1 ? a + 1 : 0;
     if (allNodes[a] && allNodes[b] && a !== b) {
-      edges.push({ source: allNodes[a]!.id, target: allNodes[b]!.id, type: 'contradicts' });
+      edges.push({ source: allNodes[a]!.id, target: allNodes[b]!.id, relation: 'contradicts' });
     }
   }
 

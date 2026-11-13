@@ -43,7 +43,7 @@ export function neighborsWithinDepth(
         if (!node) continue;
         visited.add(neighborId);
         nextFrontier.push(neighborId);
-        results.push({ node, relation: relationLabel(edge.type ?? null), hops: hop });
+        results.push({ node, relation: relationLabel(edge.relation ?? null), hops: hop });
       }
     }
     frontier = nextFrontier;

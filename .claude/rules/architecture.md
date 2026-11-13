@@ -207,7 +207,8 @@ The memory gateway (the Mímir service, `docs/design/memory/README.md`) is the o
 non-Forge service that accepts this credential, on exactly three routes:
 `GET …/memory/tools`, `POST …/memory/tools/{name}` and `GET …/memory/context-pack`
 (the only routes its identity middleware exempts). Its people routes
-(`…/memory/proposals…`, `…/memory/promotions`) take a person's own login through Mímir's
+(`…/memory/proposals…`, `…/memory/promotions`, and `…/memory/graph`, the knowledge graph of the
+layers that person reads) take a person's own login through Mímir's
 identity adapter, refuse any credential carrying `workload_session_id` or that
 `credential_allows_route` denies, and pass the person's `Authorization` on to Forge. Its
 own service credential (`memory.service_auth`) is used only for

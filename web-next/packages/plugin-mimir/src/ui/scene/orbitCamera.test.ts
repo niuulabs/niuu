@@ -9,6 +9,7 @@ import {
   dollyBy,
   fitOrbitCamera,
   focusOrbitCamera,
+  centreOrbitCamera,
   easeOrbitCamera,
   clampPolar,
   clampDistance,
@@ -201,5 +202,22 @@ describe('easeOrbitCamera', () => {
     }
     expect(arrived).toBe(true);
     expect(camera).toEqual(destination);
+  });
+});
+
+describe('centreOrbitCamera', () => {
+  it('looks straight at the centre, keeping the framing distance and angle', () => {
+    const framed = fitOrbitCamera(
+      [
+        { x: 0, y: 0, z: 0 },
+        { x: 20, y: 0, z: 0 },
+      ],
+      1,
+    );
+    const centred = centreOrbitCamera(framed, { x: 3, y: 4, z: 5 });
+    expect(centred.target).toEqual({ x: 3, y: 4, z: 5 });
+    expect(centred.distance).toBe(framed.distance);
+    expect(centred.azimuth).toBe(framed.azimuth);
+    expect(centred.polar).toBe(framed.polar);
   });
 });

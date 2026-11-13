@@ -30,6 +30,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from identity.adapters.jwks import JwksBearerAuthenticationAdapter
+from mimir.adapters.memory_graph_rest import MemoryGraphRouter
 from mimir.adapters.memory_rest import MemoryRouter, is_session_route
 from mimir.backend import build_backend
 from mimir.config import MimirServiceConfig
@@ -146,9 +147,10 @@ def create_app(config: MimirServiceConfig) -> FastAPI:
         fact_callers = FactCallerResolver(
             config.facts.trust.role_levels, config.facts.trust.scope_levels
         )
-    memory_router = _build_memory_router(
+    memory_parts = _build_memory_router(
         config, registry_store=registry_store, identity=identity_adapter, auth_mode=auth_mode
     )
+    memory_router, memory_graph = memory_parts if memory_parts is not None else (None, None)
     mcp_server = MimirMcpServer(
         adapter=adapter,
         name=config.name,
@@ -177,6 +179,8 @@ def create_app(config: MimirServiceConfig) -> FastAPI:
                 await close_backend()
             if memory_router is not None:
                 await memory_router.close()
+            if memory_graph is not None:
+                await memory_graph.close()
 
     app = FastAPI(
         title=f"Mímir — {config.name}",
@@ -287,6 +291,10 @@ def create_app(config: MimirServiceConfig) -> FastAPI:
         memory_routes = memory_router.router()
         app.include_router(memory_routes, prefix="/mimir")
         app.include_router(memory_routes, prefix="/api/v1/mimir", include_in_schema=False)
+    if memory_graph is not None:
+        graph_routes = memory_graph.router()
+        app.include_router(graph_routes, prefix="/mimir")
+        app.include_router(graph_routes, prefix="/api/v1/mimir", include_in_schema=False)
     app.include_router(mimir_router.router, prefix="/mimir")
     app.include_router(mimir_router.router, prefix="/api/v1/mimir", include_in_schema=False)
     app.include_router(mcp_server.router(), prefix="/mcp")
@@ -403,8 +411,9 @@ def _build_memory_router(
     registry_store: MimirRegistryStore,
     identity: HeaderAuthenticationPort,
     auth_mode: str,
-) -> MemoryRouter | None:
-    """The memory gateway's routes, or None when ``memory.enabled`` is off.
+) -> tuple[MemoryRouter, MemoryGraphRouter] | None:
+    """The memory gateway's routes and its knowledge-graph route, or None when
+    ``memory.enabled`` is off.
 
     Enabled means every part must be buildable now: Forge's URL, each memory
     system, every tenant's system and the capabilities its layers need, Bifröst's
@@ -421,6 +430,7 @@ def _build_memory_router(
     from mimir.memory.answers import MemoryAnswers
     from mimir.memory.curation import Curation
     from mimir.memory.gateway import MemoryGateway
+    from mimir.memory.graph import KnowledgeGraph
     from mimir.memory.retention import RetentionSweeper
     from mimir.memory.systems import MemorySystems
 
@@ -464,7 +474,20 @@ def _build_memory_router(
         interval_seconds=memory.retention_sweep_seconds,
         forget=gateway.forget,
     )
-    return MemoryRouter(
+    graph = MemoryGraphRouter(
+        KnowledgeGraph(
+            systems,
+            concurrency=memory.graph_concurrency,
+            max_records_per_layer=memory.graph_max_records_per_layer,
+            cache_seconds=memory.graph_cache_seconds,
+        ),
+        identity=identity,
+        forge_base_url=memory.forge_base_url,
+        forge_timeout_seconds=memory.forge_timeout_seconds,
+        tenant_id=config.tenant_id,
+        connector_subjects=memory.connector_service_subjects,
+    )
+    router = MemoryRouter(
         gateway,
         directory,
         tenant_id=config.tenant_id,
@@ -477,3 +500,4 @@ def _build_memory_router(
         connector_subjects=memory.connector_service_subjects,
         allow_all_identity=auth_mode == "none",
     )
+    return router, graph

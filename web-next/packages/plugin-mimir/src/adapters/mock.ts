@@ -6,6 +6,7 @@ import type { Source } from '../domain/source';
 import type {
   MimirStats,
   MimirGraph,
+  KnowledgeGraph,
   GraphNode,
   GraphEdge,
   LiveActivity,
@@ -16,6 +17,7 @@ import type { RegistryMount } from '../domain/registry';
 import type { EvalReport, QueryStats } from '../domain/analytics';
 import { toPageMeta } from '../domain/page';
 import { generateMockMemoryGraph, generateMockLiveActivity } from './mockGraph';
+import { buildMockKnowledgeGraph } from './mockKnowledgeGraph';
 
 // ---------------------------------------------------------------------------
 // Seed data — Mounts
@@ -592,13 +594,13 @@ const REAL_GRAPH_NODES: GraphNode[] = ALL_PAGES.map((p) => ({
 }));
 
 const CURATED_GRAPH_EDGES: GraphEdge[] = [
-  { source: '/arch/overview', target: '/api/overview', type: 'explains' },
-  { source: '/infra/k8s', target: '/arch/overview', type: 'depends_on' },
-  { source: '/arch/overview', target: '/entities/hexagonal-arch', type: 'part_of' },
-  { source: '/entities/niuulabs', target: '/entities/ting', type: 'part_of' },
-  { source: '/entities/ting', target: '/arch/overview', type: 'depends_on' },
-  { source: '/api/overview', target: '/entities/asyncpg', type: 'depends_on' },
-  { source: '/entities/hexagonal-arch', target: '/entities/asyncpg', type: 'depends_on' },
+  { source: '/arch/overview', target: '/api/overview', relation: 'explains' },
+  { source: '/infra/k8s', target: '/arch/overview', relation: 'depends_on' },
+  { source: '/arch/overview', target: '/entities/hexagonal-arch', relation: 'part_of' },
+  { source: '/entities/niuulabs', target: '/entities/ting', relation: 'part_of' },
+  { source: '/entities/ting', target: '/arch/overview', relation: 'depends_on' },
+  { source: '/api/overview', target: '/entities/asyncpg', relation: 'depends_on' },
+  { source: '/entities/hexagonal-arch', target: '/entities/asyncpg', relation: 'depends_on' },
 ];
 
 const SYNTHETIC_GRAPH = generateMockMemoryGraph({
@@ -914,6 +916,21 @@ export function createMimirMockAdapter(): IMimirService {
         };
         sources = [source, ...sources];
         return source;
+      },
+
+      async getKnowledgeGraph(options): Promise<KnowledgeGraph> {
+        const graph = buildMockKnowledgeGraph(MOCK_GRAPH, Date.now());
+        const layers = options?.layers ?? [];
+        if (layers.length === 0) return graph;
+        const wanted = new Set(layers);
+        const nodes = graph.nodes.filter((n) => wanted.has(n.layer!));
+        const ids = new Set(nodes.map((n) => n.id));
+        return {
+          layers: graph.layers.filter((l) => wanted.has(l.id)),
+          nodes,
+          edges: graph.edges.filter((e) => ids.has(e.source) && ids.has(e.target)),
+          unresolved: graph.unresolved.filter((u) => ids.has(u.source)),
+        };
       },
 
       async getGraph(options): Promise<MimirGraph> {

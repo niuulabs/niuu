@@ -113,6 +113,15 @@ data:
       {{- if not (kindIs "invalid" .retentionSweepSeconds) }}
       retention_sweep_seconds: {{ .retentionSweepSeconds }}
       {{- end }}
+      {{- if not (kindIs "invalid" .graphCacheSeconds) }}
+      graph_cache_seconds: {{ .graphCacheSeconds }}
+      {{- end }}
+      {{- if not (kindIs "invalid" .graphConcurrency) }}
+      graph_concurrency: {{ .graphConcurrency }}
+      {{- end }}
+      {{- if not (kindIs "invalid" .graphMaxRecordsPerLayer) }}
+      graph_max_records_per_layer: {{ .graphMaxRecordsPerLayer }}
+      {{- end }}
       {{- with .orgAdminRoles }}
       org_admin_roles:
         {{- toYaml . | nindent 8 }}

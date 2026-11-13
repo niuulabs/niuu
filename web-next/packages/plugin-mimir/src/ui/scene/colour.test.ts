@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { proofBucket, ageBucket, nodeKindGroup, nodeColour } from './colour';
+import { proofBucket, ageBucket, nodeKindGroup, nodeColour, edgeColour } from './colour';
 import { TEST_PALETTE } from './test-helpers';
 
 const NOW = Date.parse('2026-04-19T12:00:00Z');
@@ -58,5 +58,33 @@ describe('nodeColour', () => {
 
   it('colours by recency under "age"', () => {
     expect(nodeColour(node, 'age', TEST_PALETTE, NOW)).toBe(TEST_PALETTE.age.today);
+  });
+});
+
+describe('heads-up display colouring', () => {
+  const node = { kind: 'decision', confidence: 'high', updatedAt: '2026-04-19T00:00:00Z' };
+
+  it('draws every node in the signal colour, and recent change in the recent colour', () => {
+    expect(nodeColour(node, 'hud', TEST_PALETTE, NOW)).toBe(TEST_PALETTE.focus);
+    expect(nodeColour(node, 'hud', TEST_PALETTE, NOW, true)).toBe(TEST_PALETTE.recent);
+  });
+
+  it('ignores recency outside the heads-up display', () => {
+    expect(nodeColour(node, 'type', TEST_PALETTE, NOW, true)).toBe(TEST_PALETTE.kind.decision);
+  });
+
+  it('colours links: dispute first, then recent/signal in the HUD, topic otherwise', () => {
+    expect(edgeColour({ contradiction: true, recent: true }, 'hud', TEST_PALETTE)).toBe(
+      TEST_PALETTE.dispute,
+    );
+    expect(edgeColour({ contradiction: false, recent: true }, 'hud', TEST_PALETTE)).toBe(
+      TEST_PALETTE.recent,
+    );
+    expect(edgeColour({ contradiction: false, recent: false }, 'hud', TEST_PALETTE)).toBe(
+      TEST_PALETTE.focus,
+    );
+    expect(edgeColour({ contradiction: false, recent: true }, 'type', TEST_PALETTE)).toBe(
+      TEST_PALETTE.kind.topic,
+    );
   });
 });

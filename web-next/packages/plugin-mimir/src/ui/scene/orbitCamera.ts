@@ -153,6 +153,15 @@ export function fitOrbitCamera(
   return { ...framing, distance: clampDistance(required * CAMERA3D.FIT_PADDING) };
 }
 
+/**
+ * Keep `camera`'s framing distance and angle but look straight at `centre`:
+ * the focused node sits at the middle of the view, its neighbourhood framed
+ * around it at the distance that fits them.
+ */
+export function centreOrbitCamera(camera: OrbitCamera, centre: Vec3): OrbitCamera {
+  return { ...camera, target: centre };
+}
+
 function centroidOfExtremes(points: readonly Vec3[]): Vec3 {
   const bounds = emptyBounds();
   for (const point of points) growBounds(bounds, point);

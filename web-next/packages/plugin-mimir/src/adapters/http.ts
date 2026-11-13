@@ -14,6 +14,7 @@ import type { Source, OriginType } from '../domain/source';
 import type {
   MimirStats,
   MimirGraph,
+  KnowledgeGraph,
   GraphNode,
   GraphEdge,
   LiveActivity,
@@ -164,6 +165,33 @@ interface RawGraphEdge {
 interface RawGraph {
   nodes: RawGraphNode[];
   edges: RawGraphEdge[];
+}
+
+/** One node of `GET /memory/graph` (contract G1): a page or a source in a readable layer. */
+interface RawKnowledgeNode {
+  id: string;
+  layer: string;
+  path: string;
+  title: string;
+  kind: string;
+  summary: string;
+  updated_at: string | null;
+  first_seen: string | null;
+  changed_at: string | null;
+}
+
+interface RawKnowledgeEdge {
+  source: string;
+  target: string;
+  relation: string;
+  since: string | null;
+}
+
+interface RawKnowledgeGraph {
+  layers: Array<{ id: string; name: string }>;
+  nodes: RawKnowledgeNode[];
+  edges: RawKnowledgeEdge[];
+  unresolved: Array<{ source: string; target_slug: string }>;
 }
 
 interface RawLiveActivity {
@@ -486,7 +514,48 @@ export function toGraphNode(raw: RawGraphNode): GraphNode {
 }
 
 export function toGraphEdge(raw: RawGraphEdge): GraphEdge {
-  return { source: raw.source, target: raw.target, type: raw.type };
+  return { source: raw.source, target: raw.target, relation: raw.type };
+}
+
+/**
+ * A G1 node in the scene's terms. The layer is what the scene clusters by,
+ * so it fills `mount`; the path's top folder is its `category`. G1 carries
+ * no confidence. A page with no dated timeline row was first seen at its
+ * last write (the definition of `firstSeen`); one with neither is known
+ * from no date, the same empty "unknown" the engine already reads.
+ */
+export function toKnowledgeNode(raw: RawKnowledgeNode): GraphNode {
+  return {
+    id: raw.id,
+    title: raw.title,
+    category: raw.path.split('/')[0] ?? raw.path,
+    path: raw.path,
+    kind: raw.kind,
+    summary: raw.summary,
+    mount: raw.layer,
+    layer: raw.layer,
+    updatedAt: raw.updated_at ?? '',
+    firstSeen: raw.first_seen ?? raw.updated_at ?? '',
+    changedAt: raw.changed_at,
+    confidence: null,
+  };
+}
+
+export function toKnowledgeGraph(raw: RawKnowledgeGraph): KnowledgeGraph {
+  return {
+    layers: raw.layers.map((layer) => ({ id: layer.id, name: layer.name })),
+    nodes: raw.nodes.map(toKnowledgeNode),
+    edges: raw.edges.map((edge) => ({
+      source: edge.source,
+      target: edge.target,
+      relation: edge.relation,
+      since: edge.since,
+    })),
+    unresolved: raw.unresolved.map((link) => ({
+      source: link.source,
+      targetSlug: link.target_slug,
+    })),
+  };
 }
 
 export function toGraph(raw: RawGraph): MimirGraph {
@@ -861,6 +930,13 @@ export function buildMimirHttpAdapter(
         const qs = options?.mountName ? `?mount=${encodeURIComponent(options.mountName)}` : '';
         const raw = await client.get<RawGraph>(`/graph${qs}`);
         return toGraph(raw);
+      },
+
+      async getKnowledgeGraph(options): Promise<KnowledgeGraph> {
+        const layers = options?.layers ?? [];
+        const qs = layers.length > 0 ? `?layers=${encodeURIComponent(layers.join(','))}` : '';
+        const raw = await client.get<RawKnowledgeGraph>(`/memory/graph${qs}`);
+        return toKnowledgeGraph(raw);
       },
 
       async getLiveActivity(options): Promise<LiveActivity[]> {
