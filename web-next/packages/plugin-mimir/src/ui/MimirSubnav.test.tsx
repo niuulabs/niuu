@@ -38,6 +38,12 @@ describe('MimirSubnav', () => {
     expect(container).toBeEmptyDOMElement();
   });
 
+  it.each(['/mimir/ask', '/mimir/review'])('renders nothing on %s, one calm job', (path) => {
+    currentPathname = path;
+    const { container } = wrap();
+    expect(container).toBeEmptyDOMElement();
+  });
+
   it('still renders the full subnav on a registry route', () => {
     currentPathname = '/mimir/registry/analytics';
     wrap();

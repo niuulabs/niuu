@@ -19,14 +19,17 @@ export function useProjectMemoryMounts(project: ForgeProject) {
   });
 }
 
-/** The registered memories a project can attach. */
+/** The registered memories a project can attach: enabled, and reachable by a session. */
 export function useRegisteredMemories() {
   const mimir = useService<IMimirService>('mimir');
   return useQuery({
     queryKey: ['realms', 'registered-memories'],
     queryFn: async () => {
       const entries = (await mimir.mounts.listRegistryMounts?.()) ?? [];
-      return entries.filter((entry) => entry.enabled && entry.lifecycle === 'registered');
+      return entries.filter(
+        (entry) =>
+          entry.enabled && entry.lifecycle === 'registered' && Boolean(entry.url || entry.adapter),
+      );
     },
   });
 }

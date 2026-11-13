@@ -22,7 +22,7 @@ const BOX =
   'niuu:flex niuu:flex-col niuu:rounded-xl niuu:border niuu:border-border-subtle niuu:bg-bg-secondary';
 const ROW =
   'niuu:flex niuu:items-center niuu:justify-between niuu:gap-3 niuu:px-4 niuu:py-3.5 niuu:text-text-primary';
-const CHECK = 'niuu:h-5 niuu:w-5 niuu:flex-none niuu:accent-brand-300';
+const CHECK = 'niuu:h-5 niuu:w-5 niuu:flex-none niuu:appearance-auto niuu:accent-brand-300';
 const INPUT =
   'niuu:min-h-12 niuu:w-full niuu:rounded-lg niuu:border niuu:border-border niuu:bg-bg-secondary niuu:px-3.5 niuu:font-mono niuu:text-sm niuu:text-text-primary';
 const QUIET = 'niuu:m-0 niuu:text-sm niuu:text-text-secondary';
