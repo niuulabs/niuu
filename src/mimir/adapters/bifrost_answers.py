@@ -1,10 +1,12 @@
 """BifrostAnswerModel — answer calls over Bifröst's HTTP API.
 
-- ``POST {bifrost}/v1/messages`` (Anthropic Messages shape) with the session's own
-  ``forge_session`` credential as the bearer (contract C8): Bifröst confirms it with
-  Forge and charges the call to the session's owner. No ``max_tokens`` is sent, so
-  the provider's own limit bounds the answer, and a cut-off answer is reported by
-  ``stop_reason``.
+- ``POST {bifrost}/v1/messages`` (Anthropic Messages shape). A session's call carries
+  the session's own ``forge_session`` credential as the bearer (contract C8): Bifröst
+  confirms it with Forge and charges the call to the session's owner. A person's call
+  carries their own ``Authorization`` header, which a verifying Bifröst charges, plus
+  ``X-Agent-Id`` / ``X-Tenant-Id`` naming them, which only ``auth_mode: open`` reads.
+  No ``max_tokens`` is sent, so the provider's own limit bounds the answer, and a
+  cut-off answer is reported by ``stop_reason``.
 """
 
 from __future__ import annotations
@@ -13,7 +15,7 @@ from typing import Any
 
 import httpx
 
-from mimir.ports.answer_model import AnswerModel, AnswerModelError, ModelReply
+from mimir.ports.answer_model import AnswerModel, AnswerModelError, ModelCaller, ModelReply
 
 
 class BifrostAnswerModel(AnswerModel):
@@ -44,17 +46,24 @@ class BifrostAnswerModel(AnswerModel):
             await self._client.aclose()
         self._client = None
 
-    async def answer(self, *, model: str, system: str, prompt: str, credential: str) -> ModelReply:
+    async def answer(
+        self, *, model: str, system: str, prompt: str, caller: ModelCaller
+    ) -> ModelReply:
         body = {
             "model": model,
             "system": system,
             "messages": [{"role": "user", "content": prompt}],
         }
+        headers = {"Accept": "application/json"}
+        if caller.authorization:
+            headers["Authorization"] = caller.authorization
+        if caller.user_id:
+            headers["X-Agent-Id"] = caller.user_id
+        if caller.tenant_id:
+            headers["X-Tenant-Id"] = caller.tenant_id
         try:
             response = await self._http().post(
-                f"{self._base}/v1/messages",
-                json=body,
-                headers={"Authorization": f"Bearer {credential}", "Accept": "application/json"},
+                f"{self._base}/v1/messages", json=body, headers=headers
             )
         except httpx.HTTPError as exc:
             raise AnswerModelError(f"Bifröst could not be reached at {self._base}: {exc}") from exc

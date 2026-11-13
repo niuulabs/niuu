@@ -12,6 +12,8 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
+from mimir.memory.models import Attachment
+
 
 @dataclass(frozen=True)
 class Person:
@@ -40,6 +42,14 @@ class Owned:
     session_ids: tuple[str, ...] = ()
 
 
+@dataclass(frozen=True)
+class ProjectSummary:
+    """A project the person is on, as Forge lists it for them."""
+
+    project_id: str
+    name: str
+
+
 class NotVisibleError(Exception):
     """Forge answered 404: the thing does not exist, or this person may not know it does."""
 
@@ -60,6 +70,14 @@ class PeopleDirectory(ABC):
     @abstractmethod
     async def project_role(self, project_id: str, person: Person) -> str:
         """``viewer``, ``contributor``, ``approver`` or ``owner`` (a tenant admin is owner)."""
+
+    @abstractmethod
+    async def projects(self, person: Person) -> list[ProjectSummary]:
+        """The active projects the person is on (created or was added to)."""
+
+    @abstractmethod
+    async def project_attachments(self, project_id: str, person: Person) -> tuple[Attachment, ...]:
+        """The memories the project attaches (its mounts), with the access each allows."""
 
     @abstractmethod
     async def session_owner(self, session_id: str, person: Person) -> Owned:

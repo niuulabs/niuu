@@ -54,9 +54,11 @@ from mimir.memory.models import (
     RecordNotFoundError,
     SourceKind,
 )
+from mimir.memory.review import ReviewItem, review_item
 from mimir.memory.rules import approver_of
 from mimir.ports.memory_backend import MemoryBackend
 from mimir.ports.people_directory import NotVisibleError, PeopleDirectory, Person
+from niuu.cap_telemetry import record_cap_hit
 from niuu.domain.mimir_facts import (
     AuthorKind,
     FactAuthor,
@@ -87,6 +89,24 @@ class Decided:
     summary: str
 
 
+@dataclass(frozen=True)
+class Review:
+    """What waits for a person: each pending proposal as they review it, oldest first.
+
+    ``names`` gives each layer a person-facing name (the project's name, or "the org").
+    ``more`` names the layers that had more pending proposals than were read; the cap hit
+    was counted under ``memory.default_result_count``.
+    """
+
+    items: tuple[ReviewItem, ...]
+    names: dict[str, str]
+    more: tuple[str, ...] = ()
+
+
+#: The knob a review's per-layer read is bounded by.
+REVIEW_COUNT_KNOB = "memory.default_result_count"
+
+
 class Curation:
     """Args:
     gateway: the memory gateway (its systems, and namespace placement).
@@ -108,6 +128,10 @@ class Curation:
         self._gateway = gateway
         self._people = people
         self._admin_roles = frozenset(org_admin_roles)
+
+    @property
+    def people(self) -> PeopleDirectory:
+        return self._people
 
     async def close(self) -> None:
         await self._people.close()
@@ -158,6 +182,69 @@ class Curation:
             raise LayerUnavailableError(
                 f"proposals for {layer.id} could not be read on memory system {system!r}: {exc}"
             ) from exc
+
+    async def deciding_layers(self, person: Person) -> list[tuple[Layer, str]]:
+        """The layers whose proposals this person decides, with a name for each.
+
+        The org when they are an org admin, and every active project they are on with
+        role ``approver`` or ``owner``.
+        """
+        layers: list[tuple[Layer, str]] = []
+        if self._admin_roles & set(person.roles):
+            layers.append((Layer(LayerKind.ORG), "the org"))
+        for project in await self._people.projects(person):
+            role = await self._people.project_role(project.project_id, person)
+            if role in DECIDING_ROLES:
+                layers.append((Layer(LayerKind.PROJECT, project.project_id), project.name))
+        return layers
+
+    async def review(self, person: Person, layer_id: str | None, *, limit: int) -> Review:
+        """The proposals waiting for *person*: one layer's, or every layer they decide.
+
+        Each layer's pending proposals are read up to *limit*; a layer that has more is
+        counted and named in :attr:`Review.more`, never cut silently.
+        """
+        if layer_id:
+            layer = self.proposal_layer(layer_id)
+            await self._require_decider(person, layer)
+            name = (
+                "the org"
+                if layer.kind is LayerKind.ORG
+                else await self._project_name(person, layer.key)
+            )
+            layers = [(layer, name)]
+        else:
+            layers = await self.deciding_layers(person)
+        system, backend = self._system(person.tenant_id)
+        items: list[ReviewItem] = []
+        more: list[str] = []
+        for layer, _name in layers:
+            try:
+                pending = await list_proposals(backend, layer, limit=limit)
+                items.extend([await review_item(backend, layer, p) for p in pending])
+            except (MemoryBackendError, FactBackendError) as exc:
+                raise LayerUnavailableError(
+                    f"proposals for {layer.id} could not be read on memory system {system!r}: {exc}"
+                ) from exc
+            if len(pending) >= limit:
+                record_cap_hit(
+                    REVIEW_COUNT_KNOB,
+                    f"review read the first {limit} pending proposals of {layer.id}; more may "
+                    f"wait. Raise {REVIEW_COUNT_KNOB} to read more at once",
+                )
+                more.append(layer.id)
+        items.sort(key=lambda item: item.proposal.created_at)
+        return Review(
+            items=tuple(items),
+            names={layer.id: name for layer, name in layers},
+            more=tuple(more),
+        )
+
+    async def _project_name(self, person: Person, project_id: str) -> str:
+        for project in await self._people.projects(person):
+            if project.project_id == project_id:
+                return project.name
+        raise NotVisibleError(f"project {project_id} was not found")
 
     # -- deciding --------------------------------------------------------
 

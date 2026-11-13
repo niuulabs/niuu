@@ -6,10 +6,10 @@ itself; gbrain's ``think`` is never used, since it would read across every layer
 **memory_ask.** The question is searched across the session's layers; the hits'
 pages and sources are read in full from the layer each came from, and the facts
 that hold now about each page's subject are recalled. That is the retrieved set.
-One answer call goes to the configured model through Bifröst, made with the
-session's own credential so it is charged to the session's owner, with no output
-cap; a cut-off answer raises (``require_complete``). Every citation must name a
-record of the retrieved set, and an answer that says something must cite it, or
+One answer call goes to the configured model through Bifröst, made as whoever asked
+(the session's own credential, charged to its owner; or a person's own login, charged
+to them), with no output cap; a cut-off answer raises (``require_complete``). Every
+citation must name a record of the retrieved set, and an answer that says something must cite it, or
 the answer is refused and counted. Disagreements found in the retrieved set are
 listed as gaps. An answer is never stored, so it is never evidence.
 
@@ -37,7 +37,8 @@ from mimir.memory.gateway import (
     page_disagreements,
 )
 from mimir.memory.models import HitKind, Layer, LayerKind, MemoryStoreError
-from mimir.ports.answer_model import AnswerModel
+from mimir.memory.review import subject_title
+from mimir.ports.answer_model import AnswerModel, ModelCaller
 from niuu.cap_telemetry import record_cap_hit, require_complete
 
 ANSWER_KNOB = "memory.answer_model"
@@ -73,10 +74,25 @@ class Retrieved:
     text: str
     trust: str
     attested: bool
+    #: What a person sees for the record: its title, and where it came from when it has
+    #: an origin (a source's URL).
+    title: str = ""
+    url: str | None = None
 
     @property
     def key(self) -> tuple[str, str]:
         return (self.layer.id, self.ref)
+
+
+@dataclass(frozen=True)
+class Cited:
+    """A record an answer cites, as a person opens it."""
+
+    layer: str
+    ref: str
+    kind: str
+    title: str
+    url: str | None
 
 
 @dataclass(frozen=True)
@@ -85,6 +101,7 @@ class Answer:
     citations: tuple[tuple[str, str], ...]
     gaps: tuple[str, ...]
     retrieved: tuple[tuple[str, str], ...] = ()
+    cited: tuple[Cited, ...] = ()
 
 
 # ---------------------------------------------------------------------------
@@ -169,6 +186,8 @@ class MemoryAnswers:
                         f"{labelled.source.title}\n{labelled.source.content}",
                         labelled.source.attribution.trust.label,
                         labelled.source.attribution.attested,
+                        title=labelled.source.title,
+                        url=labelled.source.origin_url,
                     )
                     found.setdefault(record.key, record)
                 continue
@@ -185,6 +204,7 @@ class MemoryAnswers:
                     + (f"\nTimeline:\n{rows}" if rows else ""),
                     page.attribution.trust.label,
                     page.attribution.attested,
+                    title=page.title or subject_title(page.slug),
                 )
                 found.setdefault(record.key, record)
                 # Facts hang off entities of the org's own layers; an attached store has none.
@@ -206,6 +226,7 @@ class MemoryAnswers:
                 f"about {fact.subject} ({fact.kind.value}): {fact.statement}",
                 fact.trust.label,
                 fact.provenance.attested,
+                title=subject_title(fact.subject),
             )
             found.setdefault(record.key, record)
         disagreements = [*page_disagreements(pages), *fact_disagreements(facts)]
@@ -214,7 +235,7 @@ class MemoryAnswers:
     # -- memory_ask ------------------------------------------------------
 
     async def ask(
-        self, session: Session, question: str, *, layers: Sequence[str] | None, credential: str
+        self, session: Session, question: str, *, layers: Sequence[str] | None, caller: ModelCaller
     ) -> Answer:
         if not self.asks:
             raise AnswerRefusedError("memory_ask is not enabled on this gateway")
@@ -227,7 +248,7 @@ class MemoryAnswers:
             return Answer(answer="", citations=(), gaps=tuple(gaps))
         prompt = self._prompt(question, records)
         reply = await self._model.answer(
-            model=self._answer_model, system=_SYSTEM, prompt=prompt, credential=credential
+            model=self._answer_model, system=_SYSTEM, prompt=prompt, caller=caller
         )
         require_complete(
             reply, knob=ANSWER_KNOB, budget=None, model=self._answer_model, purpose="memory_ask"
@@ -240,11 +261,23 @@ class MemoryAnswers:
             self._refuse(f"the answer cites records that were not retrieved: {refs}")
         if answer.strip() and not citations:
             self._refuse("the answer says something but cites no record")
+        by_key = {r.key: r for r in records}
+        cited = tuple(dict.fromkeys(citations))
         return Answer(
             answer=answer,
-            citations=tuple(dict.fromkeys(citations)),
+            citations=cited,
             gaps=tuple([*model_gaps, *gaps]),
             retrieved=tuple(r.key for r in records),
+            cited=tuple(
+                Cited(
+                    layer,
+                    ref,
+                    by_key[(layer, ref)].kind,
+                    by_key[(layer, ref)].title,
+                    by_key[(layer, ref)].url,
+                )
+                for layer, ref in cited
+            ),
         )
 
     @staticmethod
@@ -304,7 +337,7 @@ class MemoryAnswers:
         return ContextPack(text="\n".join([header, *(item.text for item in items)]))
 
     async def _pack_items(self, session: Session) -> list[PackItem]:
-        context = session.view.context
+        context = session.agent.context
         items: list[PackItem] = []
         subjects: list[str] = []
         attached: list[tuple[str, str]] = []

@@ -497,6 +497,10 @@ class Proposal:
     decided_at: datetime | None = None
     decision: str = ""
     applied: str = ""
+    #: The proposer's own words: what changed and why it is worth keeping. Empty on a
+    #: proposal made before proposals carried one, or a write that became a proposal
+    #: without one.
+    why: str = ""
 
     @property
     def ref(self) -> str:

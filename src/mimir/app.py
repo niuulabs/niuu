@@ -418,9 +418,11 @@ def _build_memory_router(
     from mimir.adapters.forge_directory import ForgeSessionDirectory
     from mimir.adapters.forge_lifetimes import ForgeLayerLifetimes
     from mimir.adapters.forge_people import ForgePeopleDirectory
+    from mimir.adapters.forge_proposals import ForgeProposalNotifier
     from mimir.memory.answers import MemoryAnswers
     from mimir.memory.curation import Curation
     from mimir.memory.gateway import MemoryGateway
+    from mimir.memory.readers import PersonReader
     from mimir.memory.retention import RetentionSweeper
     from mimir.memory.systems import MemorySystems
 
@@ -448,11 +450,10 @@ def _build_memory_router(
         answer_model=memory.answer_model if memory.ask_enabled else "",
         retrieval_count=memory.ask_retrieval_count,
     )
-    curation = Curation(
-        gateway,
-        ForgePeopleDirectory(memory.forge_base_url, timeout_seconds=memory.forge_timeout_seconds),
-        org_admin_roles=memory.org_admin_roles,
+    people = ForgePeopleDirectory(
+        memory.forge_base_url, timeout_seconds=memory.forge_timeout_seconds
     )
+    curation = Curation(gateway, people, org_admin_roles=memory.org_admin_roles)
     sweeper = RetentionSweeper(
         systems,
         ForgeLayerLifetimes(
@@ -476,4 +477,8 @@ def _build_memory_router(
         attached=attached,
         connector_subjects=memory.connector_service_subjects,
         allow_all_identity=auth_mode == "none",
+        reader=PersonReader(gateway, people),
+        notifier=ForgeProposalNotifier(
+            memory.forge_base_url, timeout_seconds=memory.forge_timeout_seconds
+        ),
     )

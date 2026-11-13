@@ -34,13 +34,16 @@ from mimir.memory.models import (
     HitKind,
     LayerKind,
     MemoryStoreError,
+    Proposal,
     RecordNotFoundError,
     RevisionConflictError,
     SourceKind,
 )
+from mimir.memory.review import proposal_title
 from mimir.memory.rules import RuleRefusalError, normalize_prefix
-from mimir.ports.answer_model import AnswerModelError
-from niuu.cap_telemetry import OutputTruncatedError
+from mimir.ports.answer_model import AnswerModelError, ModelCaller
+from mimir.ports.proposal_notifier import ProposalNotifier, ProposalNotifyError, WaitingProposal
+from niuu.cap_telemetry import OutputTruncatedError, record_degraded
 from niuu.domain.mimir_facts import Fact, FactError, FactKind, Omission
 
 
@@ -68,6 +71,14 @@ _LAYER = {
         "The layer to write: session (default), run, project or org, or a full id such as "
         "project:<id> or attached:<name>. Writing above the session follows the rules in "
         "the instructions."
+    ),
+}
+_WHY = {
+    "type": "string",
+    "description": (
+        "If this becomes a proposal: in plain words, what changed and why it is worth "
+        "keeping, so its owner can decide in one read (e.g. 'The payments freeze moved a "
+        "week, says LIN-501')."
     ),
 }
 _LAYERS = {
@@ -159,6 +170,7 @@ TOOL_DEFINITIONS: tuple[dict[str, Any], ...] = (
                 "url": {"type": "string", "description": "Where it came from, if anywhere."},
                 "evidence": _EVIDENCE,
                 "layer": _LAYER,
+                "why": _WHY,
             },
             ["title", "content", "kind"],
         ),
@@ -178,6 +190,7 @@ TOOL_DEFINITIONS: tuple[dict[str, Any], ...] = (
                 "type": {"type": "string"},
                 "evidence": _EVIDENCE,
                 "layer": _LAYER,
+                "why": _WHY,
             },
             ["ref", "compiled_truth"],
         ),
@@ -193,6 +206,7 @@ TOOL_DEFINITIONS: tuple[dict[str, Any], ...] = (
                 "date": {"type": "string", "description": "YYYY-MM-DD; today when omitted."},
                 "detail": {"type": "string"},
                 "layer": _LAYER,
+                "why": _WHY,
             },
             ["ref", "entry", "evidence"],
         ),
@@ -209,6 +223,7 @@ TOOL_DEFINITIONS: tuple[dict[str, Any], ...] = (
                 "valid_until": {"type": "string", "description": "ISO 8601 with a timezone."},
                 "replaces": {"type": "array", "items": {"type": "string"}},
                 "layer": _LAYER,
+                "why": _WHY,
             },
             ["fact", "about", "kind", "evidence"],
         ),
@@ -236,8 +251,15 @@ TOOL_DEFINITIONS: tuple[dict[str, Any], ...] = (
                     "required": ["action"],
                 },
                 "evidence": _EVIDENCE,
+                "why": {
+                    "type": "string",
+                    "description": (
+                        "In plain words: what changed and why it is worth keeping, so the "
+                        "layer's owner can decide in one read."
+                    ),
+                },
             },
-            ["layer", "change", "evidence"],
+            ["layer", "change", "evidence", "why"],
         ),
     },
 )
@@ -267,10 +289,15 @@ def instructions(session: Session, *, asks: bool = False) -> str:
     if run is not None:
         text += " Share what the other sessions of this run need in the run layer."
     if project is not None:
-        prefixes = [normalize_prefix(p) for p in session.view.context.project_write_prefixes]
+        prefixes = [normalize_prefix(p) for p in session.agent.context.project_write_prefixes]
         allowed = ", ".join(p for p in prefixes if p) or "none are set, so propose every change"
         text += (
             f" Write to the project only under its write prefixes ({allowed}); otherwise propose."
+            " Keeping what this session learned is your job: as you work, add timeline "
+            "entries and sources for what changed; before you finish, propose to the project "
+            "what others on it will need (decisions, corrections, findings), each with its "
+            "evidence and a why in plain words. A person reviews your proposals one at a "
+            "time; nobody sorts your session notes."
         )
     for lyr in attached:
         attachment = session.view.attachment(lyr)
@@ -525,13 +552,34 @@ def _answer_result(answer: Answer) -> dict[str, Any]:
     return _ok("\n".join(lines), structured)
 
 
-class MemoryTools:
-    """The C2 tool surface over one gateway; ``memory_ask`` when *answers* can answer."""
+def _waiting(proposal: Proposal, project_id: str) -> WaitingProposal:
+    return WaitingProposal(
+        proposal_id=proposal.id,
+        project_id=project_id,
+        title=proposal_title(proposal),
+        why=proposal.why,
+    )
 
-    def __init__(self, gateway: MemoryGateway, answers: MemoryAnswers | None = None) -> None:
+
+class MemoryTools:
+    """The C2 tool surface over one gateway; ``memory_ask`` when *answers* can answer.
+
+    With a *notifier*, a write that became a proposal to a project layer is announced to
+    the project's approvers and owners through Forge, with the session's own credential.
+    """
+
+    def __init__(
+        self,
+        gateway: MemoryGateway,
+        answers: MemoryAnswers | None = None,
+        notifier: ProposalNotifier | None = None,
+    ) -> None:
         self._gateway = gateway
         self._answers = answers
-        self._handlers: dict[str, Callable[[Session, _Args], Awaitable[dict[str, Any]]]] = {
+        self._notifier = notifier
+        self._handlers: dict[
+            str, Callable[[Session, _Args], Awaitable[dict[str, Any] | WriteOutcome]]
+        ] = {
             "memory_search": self._search,
             "memory_read": self._read,
             "memory_entity": self._entity,
@@ -563,7 +611,7 @@ class MemoryTools:
         handler = self._handlers.get(name)
         if name == ASK_DEFINITION["name"] and self.asks:
 
-            async def handler(session: Session, args: _Args) -> dict[str, Any]:
+            async def handler(session: Session, args: _Args) -> dict[str, Any] | WriteOutcome:
                 return await self._ask(session, args, credential)
 
         if handler is None:
@@ -580,7 +628,10 @@ class MemoryTools:
                 f"it takes {', '.join(sorted(allowed))}"
             )
         try:
-            return await handler(session, _Args(arguments))
+            result = await handler(session, _Args(arguments))
+            if isinstance(result, WriteOutcome):
+                return await self._written(session, result, credential)
+            return result
         except RuleRefusalError as exc:
             return tool_error(str(exc), rule=exc.rule.value)
         except ToolArgumentError as exc:
@@ -598,6 +649,38 @@ class MemoryTools:
         except (MemoryStoreError, FactError) as exc:
             return tool_error(str(exc))
 
+    async def _written(
+        self, session: Session, outcome: WriteOutcome, credential: str
+    ) -> dict[str, Any]:
+        """The write's result; a proposal to a project is announced to its deciders first.
+
+        The proposal is already recorded, so a failed announcement does not fail the call
+        (a retry would record it twice): it is counted as degraded and said in the result.
+        """
+        result = _write_result(outcome)
+        proposal = outcome.proposal
+        if proposal is None or self._notifier is None:
+            return result
+        if outcome.layer.kind is not LayerKind.PROJECT:
+            return result
+        try:
+            await self._notifier.waiting(
+                session.agent.context.session_id,
+                _waiting(proposal, outcome.layer.key),
+                credential=credential,
+            )
+        except ProposalNotifyError as exc:
+            message = (
+                f"proposal {proposal.id} was recorded, but its approvers were not told: {exc}. "
+                "It waits on their Review page"
+            )
+            record_degraded("memory.proposal_notify", message)
+            result["content"][0]["text"] += f" {message}."
+            result["structuredContent"]["notified"] = False
+            return result
+        result["structuredContent"]["notified"] = True
+        return result
+
     # -- handlers --------------------------------------------------------
 
     async def _ask(self, session: Session, args: _Args, credential: str) -> dict[str, Any]:
@@ -607,7 +690,7 @@ class MemoryTools:
             session,
             args.text("question", required=True),
             layers=args.strings("layers") or None,
-            credential=credential,
+            caller=ModelCaller.session(credential),
         )
         return _answer_result(answer)
 
@@ -653,7 +736,7 @@ class MemoryTools:
             raise ToolArgumentError(f"kinds are {', '.join(_FACT_KINDS)}") from None
         return _recall_result(about, await self._gateway.recall(session, about, kinds=kinds))
 
-    async def _add_source(self, session: Session, args: _Args) -> dict[str, Any]:
+    async def _add_source(self, session: Session, args: _Args) -> WriteOutcome:
         outcome = await self._gateway.add_source(
             session,
             title=args.text("title", required=True),
@@ -662,10 +745,11 @@ class MemoryTools:
             url=args.optional("url"),
             evidence=args.strings("evidence"),
             layer=args.optional("layer"),
+            why=args.text("why"),
         )
-        return _write_result(outcome)
+        return outcome
 
-    async def _write_page(self, session: Session, args: _Args) -> dict[str, Any]:
+    async def _write_page(self, session: Session, args: _Args) -> WriteOutcome:
         outcome = await self._gateway.write_page(
             session,
             args.text("ref", required=True),
@@ -675,10 +759,11 @@ class MemoryTools:
             page_type=args.text("type"),
             evidence=args.strings("evidence"),
             layer=args.optional("layer"),
+            why=args.text("why"),
         )
-        return _write_result(outcome)
+        return outcome
 
-    async def _add_timeline(self, session: Session, args: _Args) -> dict[str, Any]:
+    async def _add_timeline(self, session: Session, args: _Args) -> WriteOutcome:
         outcome = await self._gateway.add_timeline(
             session,
             args.text("ref", required=True),
@@ -687,10 +772,11 @@ class MemoryTools:
             on=args.day("date"),
             detail=args.text("detail"),
             layer=args.optional("layer"),
+            why=args.text("why"),
         )
-        return _write_result(outcome)
+        return outcome
 
-    async def _remember(self, session: Session, args: _Args) -> dict[str, Any]:
+    async def _remember(self, session: Session, args: _Args) -> WriteOutcome:
         outcome = await self._gateway.remember(
             session,
             fact=args.text("fact", required=True),
@@ -700,16 +786,16 @@ class MemoryTools:
             valid_until=args.moment("valid_until"),
             replaces=args.strings("replaces"),
             layer=args.optional("layer"),
+            why=args.text("why"),
         )
-        return _write_result(outcome)
+        return outcome
 
-    async def _retire(self, session: Session, args: _Args) -> dict[str, Any]:
-        outcome = await self._gateway.retire(
+    async def _retire(self, session: Session, args: _Args) -> WriteOutcome:
+        return await self._gateway.retire(
             session, args.text("fact", required=True), reason=args.text("reason", required=True)
         )
-        return _write_result(outcome)
 
-    async def _propose(self, session: Session, args: _Args) -> dict[str, Any]:
+    async def _propose(self, session: Session, args: _Args) -> WriteOutcome:
         change = dict(args.mapping("change"))
         action = change.pop("action", None)
         if not isinstance(action, str):
@@ -720,5 +806,6 @@ class MemoryTools:
             action=action,
             change=change,
             evidence=args.strings("evidence"),
+            why=args.text("why", required=True),
         )
-        return _write_result(outcome)
+        return outcome

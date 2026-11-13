@@ -23,7 +23,7 @@ from mimir.memory.models import (
     RecordNotFoundError,
     RevisionConflictError,
 )
-from mimir.ports.answer_model import AnswerModelError
+from mimir.ports.answer_model import AnswerModelError, ModelCaller
 from mimir.ports.people_directory import (
     ForgeUnavailableError,
     NotVisibleError,
@@ -154,13 +154,13 @@ class TestBifrostAnswerModel:
     async def test_an_unusable_answer_is_an_error(self, bifrost, response, match) -> None:
         respx.post(f"{BIFROST}/v1/messages").mock(return_value=response)
         with pytest.raises(AnswerModelError, match=match):
-            await bifrost.answer(model="m", system="s", prompt="p", credential="t")
+            await bifrost.answer(model="m", system="s", prompt="p", caller=ModelCaller.session("t"))
 
     @respx.mock
     async def test_an_unreachable_bifrost_is_an_error(self, bifrost) -> None:
         respx.post(f"{BIFROST}/v1/messages").mock(side_effect=httpx.ConnectError("refused"))
         with pytest.raises(AnswerModelError, match="could not be reached"):
-            await bifrost.answer(model="m", system="s", prompt="p", credential="t")
+            await bifrost.answer(model="m", system="s", prompt="p", caller=ModelCaller.session("t"))
 
     @respx.mock
     async def test_tool_use_blocks_are_kept(self, bifrost) -> None:
@@ -173,7 +173,9 @@ class TestBifrostAnswerModel:
                 },
             )
         )
-        reply = await bifrost.answer(model="m", system="s", prompt="p", credential="t")
+        reply = await bifrost.answer(
+            model="m", system="s", prompt="p", caller=ModelCaller.session("t")
+        )
         assert reply.content == "hi" and len(reply.tool_calls) == 1
 
     def test_settings_are_checked(self) -> None:

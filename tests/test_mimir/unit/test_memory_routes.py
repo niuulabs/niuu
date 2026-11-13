@@ -91,6 +91,9 @@ def services():
         router.post(MCP).mock(side_effect=brain.handle)
         forge = router.get(CONTEXT_URL).mock(return_value=httpx.Response(200, json=_forge_answer()))
         router.get(JWKS_URI).mock(return_value=httpx.Response(200, json={"keys": [PUBLIC_JWK]}))
+        router.post(f"{FORGE}/api/v1/forge/sessions/{SESSION_ID}/memory/proposals").mock(
+            return_value=httpx.Response(201, json={})
+        )
         yield brain, forge
 
 
