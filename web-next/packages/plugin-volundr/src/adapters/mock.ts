@@ -10,6 +10,7 @@ import type {
   SessionParticipant,
   TeamCatalogEntry,
   TeamIntegration,
+  ProjectMemoryMount,
   TeamIntegrationUse,
   TeamRoute,
 } from '../models/volundr.model';
@@ -1335,6 +1336,7 @@ const MOCK_USAGE_PAGE_SIZE = 3;
 export function createMockVolundrService(): IVolundrService {
   const sessions = [...SEED_SESSIONS];
   const projects = SEED_PROJECTS.map((project) => ({ ...project }));
+  const memoryMounts = new Map<string, ProjectMemoryMount[]>();
   /** Project members by project id; every seeded project starts with its creator as owner. */
   const projectMembers = new Map<string, ProjectMember[]>(
     projects.map((project) => [
@@ -1715,6 +1717,31 @@ export function createMockVolundrService(): IVolundrService {
       teamRoutes.set(
         project.id,
         (teamRoutes.get(project.id) ?? []).filter((route) => route.event !== event),
+      );
+    },
+    getProjectMemoryMounts: async (project) =>
+      (memoryMounts.get(project.id) ?? []).map((mount) => ({ ...mount })),
+    addProjectMemoryMount: async (project, mount) => {
+      const mounts = memoryMounts.get(project.id) ?? [];
+      if (mounts.some((existing) => existing.name === mount.name))
+        throw new Error(`Project already mounts a memory named ${mount.name}`);
+      const now = new Date().toISOString();
+      const added = {
+        name: mount.name,
+        registry_entry_id: mount.registryEntryId,
+        access: mount.access,
+        write_prefixes: [],
+        added_by: 'mock-user',
+        created_at: now,
+        updated_at: now,
+      };
+      memoryMounts.set(project.id, [...mounts, added]);
+      return { ...added };
+    },
+    removeProjectMemoryMount: async (project, name) => {
+      memoryMounts.set(
+        project.id,
+        (memoryMounts.get(project.id) ?? []).filter((mount) => mount.name !== name),
       );
     },
     getTeamIntegrationUsage: async (project, before) => {

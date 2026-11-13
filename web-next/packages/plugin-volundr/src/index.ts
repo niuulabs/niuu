@@ -319,6 +319,7 @@ export type {
   TeamConfigField,
   TeamCatalogEntry,
   TeamIntegration,
+  ProjectMemoryMount,
   TeamRouteEvent,
   TeamDeliverTo,
   TeamRoute,
