@@ -237,6 +237,27 @@ a2a:
     # -- Fail a campaign waiting this long for an answer (INPUT_REQUIRED).
     inputWaitTimeoutSeconds: 21600
 
+# Connectors that import a project's tickets into its memory as sources, and compile them.
+memoryImports:
+  # -- Serve /api/v1/ting/memory/imports and run the import loop. Needs gatewayUrl; with it
+  # empty the render fails rather than starting imports that cannot write.
+  enabled: false
+  # -- The Mimir API prefix the memory gateway's connector route lives under, for example
+  # http://mimir:8080/api/v1/mimir. Ting posts each ticket to {gatewayUrl}/memory/sources.
+  gatewayUrl: ""
+  # -- Credential Ting presents to the memory gateway. The gateway admits only a platform
+  # service whose subject is in memory.connector_service_subjects: use workload identity
+  # with audience mimir (WorkloadIdentityBearerTokenAuthAdapter) for the ting workload.
+  gatewayAuth:
+    adapter: "niuu.adapters.outbound.http_auth.NoAuthHeaderAdapter"
+    kwargs: {}
+  # -- Seconds the gateway has to accept one ticket. A slower answer fails the run, which
+  # records last_error on the import and runs again next interval.
+  gatewayTimeoutSeconds: 30
+  # -- Seconds between runs of every import. It is when to look again, never a cap on what
+  # a run reads: a run reads every ticket changed since the import's cursor.
+  pollSeconds: 300
+
 # The step engine that runs a workflow graph on harness sessions.
 workflowSteps:
   # -- Seconds a stage's offer may wait to be taken up, and a member's step may stay active,

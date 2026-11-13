@@ -333,6 +333,20 @@ class VolundrPort(ABC):
         """Ids of the Forge projects the caller is a member of."""
         raise NotImplementedError(f"{type(self).__name__} does not hold Forge projects")
 
+    async def get_project_role(
+        self,
+        project_id: str,
+        *,
+        auth_token: str | None = None,
+        principal: Principal | None = None,
+    ) -> str | None:
+        """The caller's role on the project (viewer, contributor, approver or owner).
+
+        ``None`` when this Forge has no such project or the caller is not on it: Forge
+        answers both the same way, so a caller cannot learn that a project exists.
+        """
+        raise NotImplementedError(f"{type(self).__name__} does not hold Forge projects")
+
     async def ensure_project(
         self,
         project_id: str,

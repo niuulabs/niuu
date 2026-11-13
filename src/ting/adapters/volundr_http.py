@@ -958,6 +958,24 @@ class VolundrHTTPAdapter(VolundrPort):
             resp.raise_for_status()
             return [str(project["id"]) for project in resp.json()]
 
+    async def get_project_role(
+        self,
+        project_id: str,
+        *,
+        auth_token: str | None = None,
+        principal: Principal | None = None,
+    ) -> str | None:
+        headers = self._headers(auth_token, principal)
+        client = await self._client(timeout=self._timeout)
+        async with client:
+            resp = await client.get(
+                f"{self._base_url}{FORGE_PROJECTS_PATH}/{project_id}/role", headers=headers
+            )
+            if resp.status_code == 404:
+                return None
+            resp.raise_for_status()
+            return str(resp.json()["role"])
+
     async def ensure_project(
         self,
         project_id: str,
