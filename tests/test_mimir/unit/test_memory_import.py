@@ -166,6 +166,34 @@ async def test_a_raw_source_that_fails_its_integrity_check_stops_the_import(back
         await import_wiki(backend, wiki, ORG, OPERATOR)
 
 
+async def test_a_source_under_the_older_id_scheme_is_kept_and_its_citations_follow(
+    backend, wiki
+) -> None:
+    """Before 2026-07-25 a source id was not its content hash; a real wiki holds 51 such."""
+    old_id = "src_044764104fdb67c9"
+    older = _raw("an older ticket text", source_id=old_id)
+    (wiki / "raw" / f"{old_id}.json").write_text(json.dumps(older))
+    (wiki / "wiki" / "entities" / "older.md").write_text(
+        PAGE.format(source_id=old_id).replace("# Ines Moreau", "# Older")
+    )
+
+    report = await import_wiki(backend, wiki, ORG, OPERATOR)
+
+    stored = compute_source_id("an older ticket text")
+    assert report.rekeyed == {old_id: stored}
+    assert "re-keyed" in report.summary()
+    page = await backend.get_page("org", "entities/older")
+    assert page.attribution.evidence[0].ref == f"source:{stored}"
+    assert page.timeline[0].attribution.evidence[0].ref == f"source:{stored}"
+
+
+async def test_an_older_id_without_a_content_hash_cannot_be_checked(backend, wiki) -> None:
+    unchecked = _raw("unverifiable", source_id="src_0000000000000000", content_hash="")
+    (wiki / "raw" / "unchecked.json").write_text(json.dumps(unchecked))
+    with pytest.raises(WikiImportError, match="no content_hash"):
+        await import_wiki(backend, wiki, ORG, OPERATOR)
+
+
 async def test_a_root_without_a_wiki_and_a_session_layer_are_refused(backend, tmp_path) -> None:
     with pytest.raises(WikiImportError, match="no wiki/"):
         await import_wiki(backend, tmp_path, ORG, OPERATOR)
@@ -217,3 +245,18 @@ def test_the_cli_imports_into_the_tenants_system(brain, wiki, tmp_path, monkeypa
         ["import-wiki", "--root", str(tmp_path / "nowhere"), "--tenant", "acme", "--layer", "org"],
     )
     assert failing.exit_code == 1 and "import failed" in failing.output
+
+
+async def test_an_older_free_form_source_type_is_kept_as_a_document(backend, wiki) -> None:
+    paper = _raw("a paper on retrieval", source_type="paper")
+    (wiki / "raw" / f"{paper['source_id']}.json").write_text(json.dumps(paper))
+    report = await import_wiki(backend, wiki, ORG, OPERATOR)
+    assert report.legacy_types == {"paper": 1}
+    assert "paper (1)" in report.summary()
+
+
+async def test_a_source_type_nobody_knows_names_where_to_add_it(backend, wiki) -> None:
+    odd = _raw("odd", source_type="hologram")
+    (wiki / "raw" / f"{odd['source_id']}.json").write_text(json.dumps(odd))
+    with pytest.raises(WikiImportError, match="LEGACY_SOURCE_TYPES"):
+        await import_wiki(backend, wiki, ORG, OPERATOR)

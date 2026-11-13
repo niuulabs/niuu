@@ -498,6 +498,142 @@ describe('buildMimirHttpAdapter', () => {
     });
   });
 
+  describe('pages.getKnowledgeGraph (G1, GET /memory/graph)', () => {
+    const rawKnowledgeGraph = {
+      layers: [
+        { id: 'org', name: 'Org' },
+        { id: 'project:p1', name: 'Booking platform' },
+      ],
+      nodes: [
+        {
+          id: 'project:p1/projects/booking-cutover',
+          layer: 'project:p1',
+          path: 'projects/booking-cutover',
+          title: 'Booking cut-over',
+          kind: 'decision',
+          summary: 'Bookings move to booking-api v2.',
+          updated_at: '2026-11-12T09:00:00Z',
+          first_seen: '2026-11-03',
+          changed_at: '2026-11-12',
+        },
+        {
+          id: 'project:p1/sources/lin-501',
+          layer: 'project:p1',
+          path: 'sources/lin-501',
+          title: 'LIN-501',
+          kind: 'ticket',
+          summary: '',
+          updated_at: '2026-11-12T08:00:00Z',
+          first_seen: null,
+          changed_at: null,
+        },
+        {
+          id: 'org/people/ines',
+          layer: 'org',
+          path: 'people/ines',
+          title: 'Ines Moreau',
+          kind: 'person',
+          summary: 'Lead.',
+          updated_at: null,
+          first_seen: null,
+          changed_at: null,
+        },
+      ],
+      edges: [
+        {
+          source: 'project:p1/sources/lin-501',
+          target: 'project:p1/projects/booking-cutover',
+          relation: 'moved',
+          since: '2026-11-12',
+        },
+        {
+          source: 'org/people/ines',
+          target: 'project:p1/projects/booking-cutover',
+          relation: 'owns',
+          since: null,
+        },
+      ],
+      unresolved: [{ source: 'org/people/ines', target_slug: 'teams/booking' }],
+    };
+
+    it('calls GET /memory/graph, narrowed by ?layers= only when layers are given', async () => {
+      const client = makeClient({ get: vi.fn().mockResolvedValue(rawKnowledgeGraph) });
+      const adapter = buildMimirHttpAdapter(client);
+      await adapter.pages.getKnowledgeGraph();
+      await adapter.pages.getKnowledgeGraph({ layers: [] });
+      await adapter.pages.getKnowledgeGraph({ layers: ['org', 'project:p1'] });
+      const calls = (client.get as ReturnType<typeof vi.fn>).mock.calls.map((c) => c[0]);
+      expect(calls).toEqual([
+        '/memory/graph',
+        '/memory/graph',
+        `/memory/graph?layers=${encodeURIComponent('org,project:p1')}`,
+      ]);
+    });
+
+    it('maps G1 nodes onto the scene graph: layer clusters, kind, summary, dates', async () => {
+      const client = makeClient({ get: vi.fn().mockResolvedValue(rawKnowledgeGraph) });
+      const graph = await buildMimirHttpAdapter(client).pages.getKnowledgeGraph();
+      expect(graph.layers).toEqual(rawKnowledgeGraph.layers);
+      expect(graph.nodes[0]).toEqual({
+        id: 'project:p1/projects/booking-cutover',
+        title: 'Booking cut-over',
+        category: 'projects',
+        path: 'projects/booking-cutover',
+        kind: 'decision',
+        summary: 'Bookings move to booking-api v2.',
+        mount: 'project:p1',
+        layer: 'project:p1',
+        updatedAt: '2026-11-12T09:00:00Z',
+        firstSeen: '2026-11-03',
+        changedAt: '2026-11-12',
+        confidence: null,
+      });
+    });
+
+    it('a page with no dated timeline row has no known first-seen date, not its last write', async () => {
+      // An import writes every page on one day; that must not read as "new this week".
+      const client = makeClient({ get: vi.fn().mockResolvedValue(rawKnowledgeGraph) });
+      const graph = await buildMimirHttpAdapter(client).pages.getKnowledgeGraph();
+      expect(graph.nodes[1]).toMatchObject({
+        updatedAt: '2026-11-12T08:00:00Z',
+        firstSeen: '',
+        changedAt: null,
+      });
+      expect(graph.nodes[2]).toMatchObject({ updatedAt: '', firstSeen: '', changedAt: null });
+    });
+
+    it('maps edges with relation and since, and unresolved links', async () => {
+      const client = makeClient({ get: vi.fn().mockResolvedValue(rawKnowledgeGraph) });
+      const graph = await buildMimirHttpAdapter(client).pages.getKnowledgeGraph();
+      expect(graph.edges).toEqual([
+        {
+          source: 'project:p1/sources/lin-501',
+          target: 'project:p1/projects/booking-cutover',
+          relation: 'moved',
+          since: '2026-11-12',
+        },
+        {
+          source: 'org/people/ines',
+          target: 'project:p1/projects/booking-cutover',
+          relation: 'owns',
+          since: null,
+        },
+      ]);
+      expect(graph.unresolved).toEqual([
+        { source: 'org/people/ines', targetSlug: 'teams/booking' },
+      ]);
+    });
+
+    it('propagates a failed layer as a failed call', async () => {
+      const client = makeClient({
+        get: vi.fn().mockRejectedValue(new Error('layer project:p1 could not be read')),
+      });
+      await expect(buildMimirHttpAdapter(client).pages.getKnowledgeGraph()).rejects.toThrow(
+        'layer project:p1 could not be read',
+      );
+    });
+  });
+
   describe('pages.getGraph', () => {
     it('calls GET /graph without query string when no options', async () => {
       const rawGraph = { nodes: [], edges: [] };
@@ -577,7 +713,7 @@ describe('buildMimirHttpAdapter', () => {
         confidence: 'high',
       });
       expect(graph.nodes[1]).toMatchObject({ kind: 'topic', confidence: null });
-      expect(graph.edges[0]).toMatchObject({ type: 'contradicts' });
+      expect(graph.edges[0]).toMatchObject({ relation: 'contradicts' });
     });
 
     it('passes a null confidence through as null', async () => {

@@ -1,6 +1,6 @@
 import type { PageMeta, Page, SearchResult } from '../domain/page';
 import type { Source, OriginType } from '../domain/source';
-import type { MimirStats, MimirGraph, LiveActivity } from '../domain/api-types';
+import type { MimirStats, MimirGraph, KnowledgeGraph, LiveActivity } from '../domain/api-types';
 import type { EntityKind, EntityMeta } from '../domain/entity';
 
 export type SearchMode = 'fts' | 'semantic' | 'hybrid';
@@ -71,6 +71,14 @@ export interface IPageStore {
    * Optionally scoped to a single mount.
    */
   getGraph(options?: { mountName?: string }): Promise<MimirGraph>;
+
+  /**
+   * The knowledge graph of every memory layer the signed-in person can read
+   * (`GET /memory/graph`): pages and sources as nodes, relations derived from
+   * page text as edges. `layers` narrows it to some of those layers, never
+   * widens it. A layer that cannot be read fails the whole call.
+   */
+  getKnowledgeGraph(options?: { layers?: readonly string[] }): Promise<KnowledgeGraph>;
 
   /**
    * Page reads and writes served recently, newest first

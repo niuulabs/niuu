@@ -352,6 +352,16 @@ config:
     retentionDays: null
     # -- Seconds between retention sweeps. Null = the service default (3600).
     retentionSweepSeconds: null
+    # -- How stale the knowledge graph (GET /memory/graph) may be, in seconds: a graph is
+    # served again for this long before it is rebuilt. 0 rebuilds on every request.
+    # Null = the service default (30).
+    graphCacheSeconds: null
+    # -- Memory-system reads in flight at once while one knowledge graph is built.
+    # Null = the service default (8).
+    graphConcurrency: null
+    # -- Pages (and, separately, sources) the knowledge graph reads from one layer; a larger
+    # layer fails the graph naming this setting. Null = the service default (5000).
+    graphMaxRecordsPerLayer: null
     # -- Roles that make a person an org admin (decides org proposals).
     # Empty = the service default ([volundr:admin]).
     orgAdminRoles: []

@@ -50,6 +50,18 @@ _DERIVED = frozenset({"index.md", "log.md"})
 _FRONTMATTER = re.compile(r"^---\n.*?\n---\n?", re.DOTALL)
 _HEADING = re.compile(r"^#\s+(.+)$", re.MULTILINE)
 _SOURCE_ID = re.compile(r"\bsrc_[0-9a-f]{16}\b")
+
+#: Source types the old wiki wrote free-form, and the kind each is kept as. A type that is
+#: neither a current kind nor listed here stops the import, naming it: add it here.
+LEGACY_SOURCE_TYPES: dict[str, SourceKind] = {
+    "paper": SourceKind.DOCUMENT,
+    "local-doc": SourceKind.DOCUMENT,
+    "local": SourceKind.DOCUMENT,
+    "markdown": SourceKind.DOCUMENT,
+    "csv": SourceKind.DOCUMENT,
+    "code": SourceKind.DOCUMENT,
+    "workflow-context": SourceKind.DOCUMENT,
+}
 _ZONE = re.compile(r"^## (Compiled Truth|Timeline)\s*$", re.MULTILINE)
 
 
@@ -65,6 +77,12 @@ class ImportReport:
     sources: int = 0
     sources_already_held: int = 0
     not_imported: list[tuple[str, str]] = field(default_factory=list)
+    #: Sources kept under an older id scheme (before 2026-07-25 the id was not the content
+    #: hash): old id -> the id the source is stored under now. Pages citing the old id
+    #: are rewritten to cite the stored one.
+    rekeyed: dict[str, str] = field(default_factory=dict)
+    #: Old free-form source types kept as a current kind: type -> how many.
+    legacy_types: dict[str, int] = field(default_factory=dict)
 
     def summary(self) -> str:
         return (
@@ -72,6 +90,17 @@ class ImportReport:
             f"{self.timeline_rows} timeline row(s), {self.sources} source(s) "
             f"({self.sources_already_held} already held), "
             f"{len(self.not_imported)} file(s) not imported"
+            + (
+                f", {len(self.rekeyed)} source id(s) from the older id scheme re-keyed"
+                if self.rekeyed
+                else ""
+            )
+            + (
+                ", older source types kept as documents: "
+                + ", ".join(f"{t} ({n})" for t, n in sorted(self.legacy_types.items()))
+                if self.legacy_types
+                else ""
+            )
         )
 
 
@@ -161,19 +190,33 @@ async def _import_source(
         kind = str(data.get("source_type") or "document")
     except (OSError, ValueError, KeyError, TypeError) as exc:
         raise WikiImportError(f"{name} is not a raw source record: {exc}") from exc
-    if compute_source_id(content) != source_id or (
-        data.get("content_hash") and compute_content_hash(content) != data["content_hash"]
-    ):
+    # A source is intact when its id is its content's hash (the current scheme) or, for a
+    # source kept under the older id scheme, when its recorded content_hash still matches.
+    current_id = compute_source_id(content) == source_id
+    recorded_hash = str(data.get("content_hash") or "")
+    if recorded_hash and compute_content_hash(content) != recorded_hash:
         raise WikiImportError(
-            f"{name} failed its integrity check: its content does not match its id {source_id}"
+            f"{name} failed its integrity check: its content does not match its content_hash"
+        )
+    if not current_id and not recorded_hash:
+        raise WikiImportError(
+            f"{name} failed its integrity check: its content does not match its id {source_id} "
+            "and it records no content_hash to check it by"
         )
     if kind in OPERATIONAL_SOURCE_TYPES:
         report.not_imported.append((name, f"{kind} is not a source; it is not carried over"))
         return
-    try:
-        source_kind = SourceKind(kind)
-    except ValueError:
-        raise WikiImportError(f"{name} has an unknown source_type {kind!r}") from None
+    if kind in LEGACY_SOURCE_TYPES:
+        source_kind = LEGACY_SOURCE_TYPES[kind]
+        report.legacy_types[kind] = report.legacy_types.get(kind, 0) + 1
+    else:
+        try:
+            source_kind = SourceKind(kind)
+        except ValueError:
+            raise WikiImportError(
+                f"{name} has an unknown source_type {kind!r}; add it to "
+                "mimir.memory.importer.LEGACY_SOURCE_TYPES with the kind it should be kept as"
+            ) from None
     origin = data.get("origin_url") or None
     cited = [_evidence(name)]
     if origin and str(origin).startswith(("http://", "https://")):
@@ -194,7 +237,9 @@ async def _import_source(
             f"{name} could not be imported: {exc}. Imported before it: {report.summary()}"
         ) from exc
     if record.id != source_id:
-        raise WikiImportError(f"{name} was stored as {record.id}, not {source_id}")
+        if current_id:
+            raise WikiImportError(f"{name} was stored as {record.id}, not {source_id}")
+        report.rekeyed[source_id] = record.id
     if new:
         report.sources += 1
     else:
@@ -219,7 +264,11 @@ async def _import_page(
     heading = _HEADING.search(_FRONTMATTER.sub("", content, count=1))
     title = str(parsed.frontmatter.get("title") or (heading.group(1) if heading else slug))
     cited = (
-        *(Evidence(EvidenceKind.SOURCE, sid) for sid in parsed.source_ids if _SOURCE_ID.match(sid)),
+        *(
+            Evidence(EvidenceKind.SOURCE, report.rekeyed.get(sid, sid))
+            for sid in parsed.source_ids
+            if _SOURCE_ID.match(sid)
+        ),
         _evidence(name),
     )
     rows = []
@@ -229,7 +278,10 @@ async def _import_page(
                 f"{name} has a timeline entry without a date ({entry.raw!r}); give it one "
                 "(- YYYY-MM-DD: ...) and run the import again"
             )
-        row_evidence = [Evidence(EvidenceKind.SOURCE, s) for s in _SOURCE_ID.findall(entry.source)]
+        row_evidence = [
+            Evidence(EvidenceKind.SOURCE, report.rekeyed.get(s, s))
+            for s in _SOURCE_ID.findall(entry.source)
+        ]
         rows.append(
             NewTimelineRow(
                 on=date.fromisoformat(entry.date),

@@ -145,7 +145,8 @@ class MemoryGatewayConfig(BaseModel):
         default=False,
         description=(
             "Serve the memory routes (/memory/tools, /memory/context-pack, /memory/proposals, "
-            "/memory/promotions) on the Mímir API prefixes, and sweep expired layers."
+            "/memory/promotions, /memory/graph) on the Mímir API prefixes, and sweep expired "
+            "layers."
         ),
     )
     forge_base_url: str = Field(
@@ -267,6 +268,34 @@ class MemoryGatewayConfig(BaseModel):
         description=(
             "Seconds between retention sweeps. A failed sweep is logged at error, counted "
             "(memory.retention_sweep on the degraded counter) and tried again after this long."
+        ),
+    )
+    graph_cache_seconds: float = Field(
+        default=30.0,
+        ge=0,
+        description=(
+            "How stale the knowledge graph (GET /memory/graph) may be: a graph built for an org "
+            "and a set of layers is served again for this many seconds before it is rebuilt "
+            "from the memory system. 0 keeps nothing and rebuilds on every request."
+        ),
+    )
+    graph_concurrency: int = Field(
+        default=8,
+        ge=1,
+        description=(
+            "Reads against the memory system in flight at once while one knowledge graph is "
+            "built (page, timeline and source reads). Bounded by what the memory system's "
+            "endpoint serves in parallel; builds are slower, never wrong, with a lower value."
+        ),
+    )
+    graph_max_records_per_layer: int = Field(
+        default=5000,
+        ge=1,
+        description=(
+            "Pages (and, separately, sources) the knowledge graph reads from one layer. Bounded "
+            "by what one response and the 3D scene can carry. A layer with more fails the whole "
+            "graph, naming the layer and this setting, and is counted "
+            "(memory.graph_max_records_per_layer on the cap counter)."
         ),
     )
     org_admin_roles: list[str] = Field(

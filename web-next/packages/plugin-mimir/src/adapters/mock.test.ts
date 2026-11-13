@@ -302,7 +302,7 @@ describe('createMimirMockAdapter', () => {
       const svc = createMimirMockAdapter();
       const graph = await svc.pages.getGraph();
       const contradictionTypes = new Set(['contradicts', 'disagrees_with', 'conflicts_with']);
-      expect(graph.edges.some((e) => contradictionTypes.has(e.type ?? ''))).toBe(true);
+      expect(graph.edges.some((e) => contradictionTypes.has(e.relation ?? ''))).toBe(true);
     });
   });
 

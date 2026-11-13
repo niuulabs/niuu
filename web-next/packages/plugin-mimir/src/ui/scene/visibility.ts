@@ -12,6 +12,7 @@ import type { GraphEdge, GraphNode, MimirGraph } from '../../domain/api-types';
 import { kindGroup, type KindGroup } from '../../domain/memoryKinds';
 import { BORN_WINDOW_MS } from './scene3dConfig';
 import { isContradictionRelation, relationLabel } from '../../domain/relationLabel';
+import { isRecent, isRecentNode } from '../../domain/hud';
 import type { SceneAnswer, SceneFocus } from './types';
 
 export type LitLevel = 'lit' | 'dim-strong' | 'dim-soft' | 'normal';
@@ -22,19 +23,27 @@ export interface NodeVisibility {
   litLevel: LitLevel;
   bornRing: boolean;
   answerNumber: number | null;
+  /** Changed or first seen within the recent window of the time shown: drawn amber. */
+  recent: boolean;
+  /** First seen within the recent window: labelled "new this week". */
+  fresh: boolean;
+  /** The focused node itself. */
+  isFocus: boolean;
 }
 
 export interface EdgeVisibility {
   key: string;
   source: string;
   target: string;
-  type: string | undefined;
+  relation: string | undefined;
   visible: boolean;
   litLevel: LitLevel;
   contradiction: boolean;
   label: string | null;
   /** 1-based position in `path` when this edge is a step of it, else null. */
   pathOrder: number | null;
+  /** Introduced within the recent window of the time shown. */
+  recent: boolean;
 }
 
 export interface SceneVisibility {
@@ -50,6 +59,14 @@ export interface VisibilityInput {
   answers?: readonly SceneAnswer[];
   path?: readonly string[] | null;
   asOf?: string | null;
+  /**
+   * Node kinds kept by the kind filter; null or absent keeps every kind.
+   * Other nodes recede into the dim cloud (never lit, never labelled),
+   * except the focused node, which a filter never hides.
+   */
+  kinds?: ReadonlySet<string> | null;
+  /** Epoch ms "now", for what counts as recent when `asOf` is null. */
+  now?: number;
 }
 
 function buildAdjacency(
@@ -105,6 +122,12 @@ function isNodeHidden(
   return firstSeenMs > asOfMs;
 }
 
+function isAfter(iso: string | null | undefined, asOfMs: number | null): boolean {
+  if (asOfMs === null || !iso) return false;
+  const at = Date.parse(iso);
+  return !Number.isNaN(at) && at > asOfMs;
+}
+
 function isBornRing(node: GraphNode, asOfMs: number | null): boolean {
   if (asOfMs === null || !node.firstSeen) return false;
   const firstSeenMs = Date.parse(node.firstSeen);
@@ -117,31 +140,41 @@ function isBornRing(node: GraphNode, asOfMs: number | null): boolean {
 export function computeVisibility(graph: MimirGraph, input: VisibilityInput): SceneVisibility {
   const hiddenGroups = new Set(input.hiddenGroups ?? []);
   const asOfMs = input.asOf ? Date.parse(input.asOf) : null;
+  const refMs = asOfMs ?? input.now ?? Date.now();
+  const kinds = input.kinds ?? null;
+  const focusId = input.focus?.nodeId ?? null;
   const answerByNode = new Map((input.answers ?? []).map((a) => [a.nodeId, a.n]));
   const path = input.path ?? [];
   const pathSet = new Set(path);
 
   const visibleIds = new Set<string>();
+  const filteredOut = new Set<string>();
   const nodes = new Map<string, NodeVisibility>();
 
   for (const node of graph.nodes) {
     const hidden = isNodeHidden(node, hiddenGroups, asOfMs);
     if (!hidden) visibleIds.add(node.id);
+    if (kinds && node.id !== focusId && !kinds.has(node.kind ?? '')) filteredOut.add(node.id);
     nodes.set(node.id, {
       id: node.id,
       visible: !hidden,
       litLevel: 'normal',
       bornRing: !hidden && isBornRing(node, asOfMs),
       answerNumber: answerByNode.get(node.id) ?? null,
+      recent: !hidden && isRecentNode(node, refMs),
+      fresh: !hidden && isRecent(node.firstSeen, refMs),
+      isFocus: node.id === focusId,
     });
   }
 
-  const adjacency = buildAdjacency(visibleIds, graph.edges);
+  const liveEdges = graph.edges.filter((edge) => !isAfter(edge.since, asOfMs));
+  const adjacency = buildAdjacency(visibleIds, liveEdges);
 
-  const focusSet =
-    input.focus && visibleIds.has(input.focus.nodeId)
-      ? bfsWithinDepth(input.focus.nodeId, Math.max(0, input.focus.depth), adjacency)
-      : null;
+  const focusVisible = focusId !== null && visibleIds.has(focusId);
+  const focusDepth = Math.max(0, input.focus?.depth ?? 0);
+  const focusSet = focusVisible ? bfsWithinDepth(focusId, focusDepth, adjacency) : null;
+  /** One hop past the lit neighbourhood: drawn receded but readable, "more nearby". */
+  const nearSet = focusVisible ? bfsWithinDepth(focusId, focusDepth + 1, adjacency) : null;
   const answerSet =
     input.answers && input.answers.length > 0
       ? new Set(input.answers.map((a) => a.nodeId).filter((id) => visibleIds.has(id)))
@@ -156,17 +189,25 @@ export function computeVisibility(graph: MimirGraph, input: VisibilityInput): Sc
     ...(answerSet ?? []),
     ...(pathVisibleSet ?? []),
   ]);
+  for (const id of filteredOut) litSet.delete(id);
 
-  if (hasSpotlight) {
-    for (const [id, visibility] of nodes) {
-      if (!visibility.visible) continue;
-      visibility.litLevel = litSet.has(id) ? 'lit' : strongDim ? 'dim-strong' : 'dim-soft';
+  for (const [id, visibility] of nodes) {
+    if (!visibility.visible) continue;
+    if (filteredOut.has(id)) {
+      visibility.litLevel = 'dim-strong';
+      continue;
     }
+    if (!hasSpotlight) continue;
+    if (litSet.has(id)) visibility.litLevel = 'lit';
+    else if (nearSet?.has(id) || visibility.recent || !strongDim) visibility.litLevel = 'dim-soft';
+    else visibility.litLevel = 'dim-strong';
   }
 
   const edges: EdgeVisibility[] = graph.edges.map((edge, index) => {
-    const bothVisible = visibleIds.has(edge.source) && visibleIds.has(edge.target);
-    const contradiction = isContradictionRelation(edge.type);
+    const bothVisible =
+      visibleIds.has(edge.source) && visibleIds.has(edge.target) && !isAfter(edge.since, asOfMs);
+    const touchesFiltered = filteredOut.has(edge.source) || filteredOut.has(edge.target);
+    const contradiction = isContradictionRelation(edge.relation);
 
     let pathOrder: number | null = null;
     if (pathSet.has(edge.source) && pathSet.has(edge.target)) {
@@ -181,23 +222,30 @@ export function computeVisibility(graph: MimirGraph, input: VisibilityInput): Sc
       answerSet && answerSet.has(edge.source) && answerSet.has(edge.target),
     );
     const litByPath = pathOrder !== null;
-    const lit = bothVisible && (litByFocus || litByAnswers || litByPath);
+    const lit = bothVisible && !touchesFiltered && (litByFocus || litByAnswers || litByPath);
+    const near = Boolean(nearSet && nearSet.has(edge.source) && nearSet.has(edge.target));
 
     let litLevel: LitLevel = 'normal';
-    if (hasSpotlight && bothVisible) {
-      litLevel = lit ? 'lit' : strongDim ? 'dim-strong' : 'dim-soft';
+    if (bothVisible && touchesFiltered) litLevel = 'dim-strong';
+    else if (hasSpotlight && bothVisible) {
+      litLevel = lit ? 'lit' : near || !strongDim ? 'dim-soft' : 'dim-strong';
     }
+
+    /** Relations are read only near the focus (its own links) and along a traced path. */
+    const touchesFocus = edge.source === focusId || edge.target === focusId;
+    const labelled = lit && ((litByFocus && touchesFocus) || litByPath);
 
     return {
       key: `${edge.source}->${edge.target}#${index}`,
       source: edge.source,
       target: edge.target,
-      type: edge.type,
+      relation: edge.relation,
       visible: bothVisible,
       litLevel,
       contradiction,
-      label: lit ? relationLabel(edge.type) : null,
+      label: labelled ? relationLabel(edge.relation) : null,
       pathOrder,
+      recent: bothVisible && isRecent(edge.since, refMs),
     };
   });
 

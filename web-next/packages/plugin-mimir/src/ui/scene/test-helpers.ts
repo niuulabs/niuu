@@ -46,6 +46,8 @@ export const TEST_PALETTE: MemoryPalette = {
     older: 'rgb(0, 0, 4)',
   },
   dispute: 'rgb(9, 9, 0)',
+  focus: 'rgb(0, 9, 9)',
+  recent: 'rgb(9, 6, 0)',
 };
 
 /**

@@ -203,3 +203,26 @@ describe('easeOrbitCamera', () => {
     expect(camera).toEqual(destination);
   });
 });
+
+describe('fitOrbitCamera around a focused node', () => {
+  const focus = { x: 0, y: 0, z: 0 };
+  const neighbours = [focus, { x: 30, y: 0, z: 0 }, { x: -2, y: 0, z: 0 }];
+
+  it('looks straight at the focus, not at the middle of its neighbourhood', () => {
+    const fitted = fitOrbitCamera(neighbours, 1, undefined, { centre: focus });
+    expect(fitted.target).toEqual(focus);
+  });
+
+  it('backs off far enough that a lopsided neighbourhood stays in view around the focus', () => {
+    const middle = fitOrbitCamera(neighbours, 1);
+    const centred = fitOrbitCamera(neighbours, 1, undefined, { centre: focus });
+    // the far neighbour is 30 from the focus but only ~16 from the middle of the group
+    expect(centred.distance).toBeGreaterThan(middle.distance);
+  });
+
+  it('frames inside a share of the width, leaving room for the heads-up card', () => {
+    const full = fitOrbitCamera(neighbours, 1, undefined, { centre: focus });
+    const narrow = fitOrbitCamera(neighbours, 1, undefined, { centre: focus, widthShare: 0.6 });
+    expect(narrow.distance).toBeGreaterThan(full.distance);
+  });
+});

@@ -325,6 +325,29 @@ credential is a 403. Forge is asked with the person's own `Authorization`.
 Decided proposals move from `l/_proposals/<layer>/` to `l/_decided/<layer>/` and
 stay there, so the evidence reference resolves.
 
+**Knowledge graph.** `GET {base}/memory/graph[?layers=org,project:<id>]` is the
+graph behind the 3D memory scene. It is a people route (a person's own login; session,
+workload and connector credentials get 403), and it covers the layers that person can
+read: the org layer and every project Forge lists for them (`GET /api/v1/forge/projects`
+with their own `Authorization`, which returns member projects only). There is no person
+layer yet. `?layers=` narrows to a subset of those and never widens: a layer they cannot
+read is a 404. The answer is `{layers, nodes, edges, unresolved}`. Nodes are the pages of
+those layers (`id` is `<layer>/<path>`, `kind` is `decision|person|service|ticket|runbook|page`
+from the page type or first folder, `summary` the first sentence of the compiled truth,
+`first_seen` / `changed_at` the oldest and newest timeline row) and the sources their
+timelines cite (`<layer>/_sources/<id>`, kind `ticket` or `source`). Edges are read from
+page text, never from gbrain's links: `[[slug]] — rel: <verb> — …` is a `<verb>` edge, any
+other `[[slug]]` is `mentions`, and a timeline row citing `source:<id>` is a `cites` edge
+dated by the row (`since`; a link's `since` is the oldest timeline row that links it, else
+null). A link resolves to the nearest readable layer holding the page (its own layer, then
+project, then org); a link to no readable page is listed under `unresolved`, not drawn.
+A layer that cannot be read fails the whole response (502 naming the layer), as does a
+layer with more than `memory.graph_max_records_per_layer` (default 5000) pages or sources
+(counted on the cap counter). Reads run `memory.graph_concurrency` (default 8) at a time,
+and a graph is kept per org and layer set for `memory.graph_cache_seconds` (default 30,
+the most a graph may be stale; 0 rebuilds every time). In the chart: `graphCacheSeconds`,
+`graphConcurrency`, `graphMaxRecordsPerLayer`.
+
 **Connector route.** `POST {base}/memory/sources` lets an import service (Ting's
 Linear import) keep what it fetched as an immutable source. Only a platform
 service credential is admitted: a verified workload-identity token, unscoped,

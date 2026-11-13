@@ -207,15 +207,22 @@ The memory gateway (the Mímir service, `docs/design/memory/README.md`) is the o
 non-Forge service that accepts this credential, on exactly three routes:
 `GET …/memory/tools`, `POST …/memory/tools/{name}` and `GET …/memory/context-pack`
 (the only routes its identity middleware exempts). Its people routes
-(`POST …/memory/ask`, `GET …/memory/review`, `…/memory/proposals…`, `…/memory/promotions`)
-take a person's own login through Mímir's identity adapter, refuse any credential carrying
+(`POST …/memory/ask`, `GET …/memory/review`, `…/memory/proposals…`, `…/memory/promotions`,
+and `…/memory/graph`, the knowledge graph of the layers that person reads) take a person's
+own login through Mímir's identity adapter, refuse any credential carrying
 `workload_session_id` or that `credential_allows_route` denies, and pass the person's
 `Authorization` on to Forge. `memory/ask` reads only the layers Forge says the person may
 see (the org, the projects they are on, a named project's attached memories) and makes its
 answer call to Bifröst with the person's own `Authorization` plus `X-Agent-Id` /
 `X-Tenant-Id` naming them, so it is charged to the person (a verifying Bifröst charges the
 verified login; only `auth_mode: open` reads the headers). Its own service credential
-(`memory.service_auth`) is used only for `POST /api/v1/forge/memory/ended`.
+(`memory.service_auth`) is used only for `POST /api/v1/forge/memory/ended`. It does not
+verify the token itself. It reads the unverified `workload_session_id` only to address
+`GET /api/v1/forge/sessions/{id}/memory-context` (scope `forge:memory`, the session's own
+only), presents the same token there, and treats Forge's 200 as the verification; any
+other answer is a 401. The broker makes these calls; the `memory` stdio server the agent
+runs only reaches the broker's loopback routes, so the credential stays out of the agent.
+Do not admit the credential on any other Mímir route.
 
 Proposal notifications stay in Forge's feed, never a second channel. When an agent's write
 becomes a proposal to a project, the gateway calls
@@ -226,13 +233,7 @@ it, the gateway calls `POST /api/v1/forge/projects/{id}/memory/proposals/{pid}/d
 with that person's own login; Forge settles the rows only for an approver or owner of the
 project. A notice that fails is counted as degraded (`memory.proposal_notify`), never
 retried as a second proposal or decision. Org-layer proposals are not announced: Forge
-cannot list an org's admins. It does not verify the token
-itself. It reads the unverified `workload_session_id` only to address
-`GET /api/v1/forge/sessions/{id}/memory-context` (scope `forge:memory`, the session's own
-only), presents the same token there, and treats Forge's 200 as the verification; any
-other answer is a 401. The broker makes these calls; the `memory` stdio server the agent
-runs only reaches the broker's loopback routes, so the credential stays out of the agent.
-Do not admit the credential on any other Mímir route.
+cannot list an org's admins.
 
 ### Exception: the memory gateway's service credential (`memory.gateway_service_subject`)
 

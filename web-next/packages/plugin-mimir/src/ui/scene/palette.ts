@@ -20,6 +20,10 @@ export interface MemoryPalette {
   proof: Record<ProofBucket, string>;
   age: Record<AgeBucket, string>;
   dispute: string;
+  /** The heads-up display's signal colour: the focused node, its lit links, the rings and reticle. */
+  focus: string;
+  /** What changed recently. */
+  recent: string;
 }
 
 const KIND_VARS: Record<KindGroup, string> = {
@@ -48,6 +52,8 @@ const AGE_VARS: Record<AgeBucket, string> = {
 };
 
 const DISPUTE_VAR = '--color-memory-dispute';
+const FOCUS_VAR = '--color-brand';
+const RECENT_VAR = '--color-accent-amber';
 
 /** Every custom property the palette reads, for installing them in tests and for the error below. */
 export const MEMORY_PALETTE_VARS: readonly string[] = [
@@ -56,6 +62,8 @@ export const MEMORY_PALETTE_VARS: readonly string[] = [
   ...Object.values(PROOF_VARS),
   ...Object.values(AGE_VARS),
   DISPUTE_VAR,
+  FOCUS_VAR,
+  RECENT_VAR,
 ];
 
 function mapRecord<K extends string>(
@@ -86,6 +94,8 @@ export function memoryPalette(el: HTMLElement): MemoryPalette {
     proof: mapRecord(PROOF_VARS, read),
     age: mapRecord(AGE_VARS, read),
     dispute: read(DISPUTE_VAR),
+    focus: read(FOCUS_VAR),
+    recent: read(RECENT_VAR),
   };
   if (missing.length > 0) {
     throw new Error(
