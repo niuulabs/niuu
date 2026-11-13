@@ -2070,6 +2070,61 @@ def test_project_role_reaches_the_nodes_forge() -> None:
 
 
 @respx.mock
+def test_a_memory_proposal_notice_reaches_the_sessions_forge() -> None:
+    client = _client([_instance("alpha", base_url="http://alpha")])
+    respx.get("http://alpha/api/v1/forge/sessions/s1").mock(
+        return_value=Response(200, json={"id": "s1"})
+    )
+    route = respx.post("http://alpha/api/v1/forge/sessions/s1/memory/proposals").mock(
+        return_value=Response(200, json={"told": ["marc"], "reason": None})
+    )
+    body = {"proposal_id": "p-1", "project_id": PROJECT_ID, "title": "t"}
+    response = client.post(
+        "/api/v1/forge/sessions/s1/memory/proposals", json=body, headers=_headers()
+    )
+    assert response.status_code == 200
+    assert response.json() == {"told": ["marc"], "reason": None}
+    assert json.loads(route.calls.last.request.content) == body
+    assert route.calls.last.request.headers["content-type"] == "application/json"
+
+
+@pytest.mark.parametrize(
+    ("method", "tail"),
+    [
+        ("GET", "memory"),
+        ("POST", "memory"),
+        ("PATCH", "memory/notes"),
+        ("DELETE", "memory/notes"),
+        ("POST", "memory/proposals/p-1/decided"),
+    ],
+)
+@respx.mock
+def test_project_memory_routes_reach_the_projects_forge(method, tail) -> None:
+    client = _client([_instance("alpha", base_url="http://alpha", is_default=True)])
+    route = respx.route(
+        method=method, url=f"http://alpha/api/v1/forge/projects/{PROJECT_ID}/{tail}"
+    ).mock(return_value=Response(200, json={}))
+    response = client.request(
+        method,
+        f"/api/v1/forge/projects/{PROJECT_ID}/{tail}",
+        headers=_headers(),
+        json={} if method in ("POST", "PATCH") else None,
+    )
+    assert response.status_code == 200, response.text
+    assert route.called
+
+
+@respx.mock
+def test_other_project_memory_operations_stay_unknown() -> None:
+    client = _client([_instance("alpha", base_url="http://alpha", is_default=True)])
+    for method, tail in (("PUT", "memory"), ("GET", "memory/proposals/p-1/decided")):
+        response = client.request(
+            method, f"/api/v1/forge/projects/{PROJECT_ID}/{tail}", headers=_headers()
+        )
+        assert response.status_code in (404, 405), (method, tail, response.status_code)
+
+
+@respx.mock
 def test_project_role_refusals_pass_through_with_their_status() -> None:
     client = _client([_instance("alpha", base_url="http://alpha", is_default=True)])
     respx.get(f"http://alpha/api/v1/forge/projects/{PROJECT_ID}/role").mock(
