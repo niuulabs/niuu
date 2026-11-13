@@ -16,6 +16,15 @@ export interface LabelCandidate {
   anchorY: number;
   /** Higher priority labels are placed first and are never displaced by a later one. */
   priority: number;
+  /**
+   * Coarser than priority: every label of a higher tier is placed before any
+   * of a lower one (the focus, then page names, then relations). Default 0.
+   */
+  tier?: number;
+  /** This label's own collision box, when it differs from the call's default. */
+  box?: { width: number; height: number };
+  /** Centre the label on its anchor first (a relation on a link's midpoint), before the usual sides. */
+  centred?: boolean;
 }
 
 export interface PlacedLabel {
@@ -53,18 +62,23 @@ export function layoutLabels(
   candidates: readonly LabelCandidate[],
   box: { width: number; height: number } = LABEL_BOX,
 ): PlacedLabel[] {
-  const ordered = [...candidates].sort((a, b) => b.priority - a.priority);
+  const ordered = [...candidates].sort(
+    (a, b) => (b.tier ?? 0) - (a.tier ?? 0) || b.priority - a.priority,
+  );
   const placedRects: Rect[] = [];
   const results: PlacedLabel[] = [];
 
   for (const candidate of ordered) {
     let chosen: Rect | null = null;
-    for (const offset of candidateOffsets(box.width, box.height)) {
+    const size = candidate.box ?? box;
+    const offsets = candidateOffsets(size.width, size.height);
+    if (candidate.centred) offsets.unshift({ dx: -size.width / 2, dy: -size.height / 2 });
+    for (const offset of offsets) {
       const rect: Rect = {
         x: candidate.anchorX + offset.dx,
         y: candidate.anchorY + offset.dy,
-        width: box.width,
-        height: box.height,
+        width: size.width,
+        height: size.height,
       };
       if (!placedRects.some((existing) => overlaps(existing, rect))) {
         chosen = rect;

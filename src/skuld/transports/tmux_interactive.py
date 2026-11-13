@@ -3865,7 +3865,6 @@ class TmuxInteractiveTransport(CLITransport):
             env["CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS"] = "1"
         _, shim_env = ensure_codex_tool_shims(
             self.workspace_dir,
-            mcp_servers=self._raw_mcp_servers,
             session_env=self._session_tools.env if self._session_tools else None,
         )
         env.update(shim_env)

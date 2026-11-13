@@ -10,7 +10,12 @@
 import type { MimirGraph } from '../../domain/api-types';
 import type { KindGroup } from '../../domain/memoryKinds';
 
-export type ColourBy = 'type' | 'proof' | 'age';
+/**
+ * How nodes are coloured. `hud` is the heads-up display: every node in the
+ * signal colour, what changed recently in the recent colour, and the focus
+ * and spotlight carried by brightness alone.
+ */
+export type ColourBy = 'hud' | 'type' | 'proof' | 'age';
 
 export type SceneView = '3d' | '2d';
 
@@ -50,9 +55,14 @@ export interface SceneQuestion {
   nearNodeId: string | null;
 }
 
-/** A camera instruction. `key` changes each time so the same target can be flown to twice. */
+/**
+ * A camera instruction. `key` changes each time so the same target can be
+ * flown to twice. A fly-to with `centre` keeps that node at the centre of
+ * the view while framing the others around it.
+ */
 export type SceneCameraCommand =
-  { kind: 'fit'; key: number } | { kind: 'fly-to'; nodeIds: string[]; key: number };
+  | { kind: 'fit'; key: number }
+  | { kind: 'fly-to'; nodeIds: string[]; key: number; centre?: string };
 
 /** The WebGL surface; injected so the scene runs in tests without a GPU. */
 export interface SceneRenderer {
@@ -70,6 +80,13 @@ export interface MemorySceneProps {
   colourBy: ColourBy;
   /** Legend groups switched off; their pages and links are not drawn. */
   hiddenGroups: ReadonlySet<KindGroup>;
+  /**
+   * The kind filter: node kinds kept lit and labelled; every other node
+   * recedes into the dim cloud. Null keeps every kind.
+   */
+  kinds: ReadonlySet<string> | null;
+  /** Layer id → display name, for the hover card and readouts. */
+  layerNames: ReadonlyMap<string, string>;
   /** Whether unanswered-question nodes are drawn. */
   showQuestions: boolean;
   view: SceneView;
@@ -86,8 +103,6 @@ export interface MemorySceneProps {
   asOf: string | null;
   markers: readonly SceneMarker[];
   questions: readonly SceneQuestion[];
-  /** Node ids of pages flagged with a contradiction (lint L02); drawn with an amber ring. */
-  disputedIds: ReadonlySet<string>;
   camera: SceneCameraCommand | null;
   /** Click on a page. `shift` is true for shift-click (trace a path). */
   onSelectNode: (nodeId: string, options: { shift: boolean }) => void;

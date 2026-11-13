@@ -2,7 +2,7 @@
 
 The port supplies working defaults for ``summarize`` and ``read_source_excerpt``
 so an adapter that cannot answer them cheaply is still correct. Adapters that
-can — the Markdown store, the HTTP client — override them; these defaults are
+can — the HTTP client — override them; these defaults are
 what keeps everything else, including test doubles, honest.
 """
 
@@ -13,7 +13,6 @@ from datetime import UTC, datetime
 import pytest
 
 from niuu.domain.mimir import (
-    MimirLintReport,
     MimirPage,
     MimirPageMeta,
     MimirQueryResult,
@@ -36,9 +35,6 @@ class _MinimalMimir(MimirPort):
 
     async def query(self, question: str) -> MimirQueryResult:
         raise NotImplementedError
-
-    async def lint(self, fix: bool = False) -> MimirLintReport:
-        raise AssertionError("the default summary must not lint")
 
     async def search(self, query: str) -> list[MimirPage]:
         raise NotImplementedError

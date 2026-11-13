@@ -34,8 +34,17 @@ import {
   RunWorkflowGraph,
   buildRunGateService,
   buildTingAuditLogHttpAdapter,
+  buildMemoryImportsHttpAdapter,
+  createMockMemoryImportsService,
+  MEMORY_IMPORTS_SERVICE_KEY,
 } from '@niuulabs/plugin-ting';
-import { createMimirMockAdapter, buildMimirHttpAdapter } from '@niuulabs/plugin-mimir';
+import {
+  createMimirMockAdapter,
+  buildMimirHttpAdapter,
+  buildMemoryGatewayHttpAdapter,
+  createMemoryGatewayMockAdapter,
+  MEMORY_GATEWAY_SERVICE_KEY,
+} from '@niuulabs/plugin-mimir';
 import {
   buildSetupHttpAdapter,
   createMockSetupService,
@@ -1569,6 +1578,9 @@ export function buildServices(config: NiuuConfig): ServicesMap {
           artifactRegistryBase ? createApiClient(artifactRegistryBase) : null,
         )
       : demoService(config, 'ting.runLog', createMockRunLogService),
+    [MEMORY_IMPORTS_SERVICE_KEY]: tingClient
+      ? buildMemoryImportsHttpAdapter(tingClient)
+      : demoService(config, MEMORY_IMPORTS_SERVICE_KEY, createMockMemoryImportsService),
     'ting.workflowExecutions': tingClient
       ? buildWorkflowExecutionHttpAdapter(tingClient)
       : unavailableService<IWorkflowExecutionService>('ting.workflowExecutions'),
@@ -1587,6 +1599,9 @@ export function buildServices(config: NiuuConfig): ServicesMap {
     'ravn.personas': ravnPersonas,
     setup,
     mimir,
+    [MEMORY_GATEWAY_SERVICE_KEY]: hasHttpBackend(mimirSvc)
+      ? buildMemoryGatewayHttpAdapter(createApiClient(mimirSvc.baseUrl))
+      : demoService(config, MEMORY_GATEWAY_SERVICE_KEY, createMemoryGatewayMockAdapter),
     bifrost,
     volundr,
     'niuu.repos': repoCatalogService,

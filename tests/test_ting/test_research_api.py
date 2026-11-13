@@ -278,7 +278,8 @@ def _research_workflow(root: Path) -> WorkflowDefinition:
                     "resourceType": "mimir",
                     "bindingMode": "registry",
                     "mount_name": "local",
-                    "path": str(root),
+                    "adapter": "tests.support.directory_mimir.DirectoryMimirAdapter",
+                    "kwargs": {"root": str(root)},
                 },
                 {
                     "id": "frame",
@@ -354,7 +355,8 @@ def _non_research_workflow(root: Path) -> WorkflowDefinition:
                     "resourceType": "mimir",
                     "bindingMode": "registry",
                     "mount_name": "local",
-                    "path": str(root),
+                    "adapter": "tests.support.directory_mimir.DirectoryMimirAdapter",
+                    "kwargs": {"root": str(root)},
                 },
                 {
                     "id": "plan",
@@ -907,7 +909,7 @@ def test_detail_survives_mimir_timeout_without_regressing_stage_state(
         raise httpx.ReadTimeout("mimir took too long")
 
     monkeypatch.setattr(
-        "mimir.adapters.markdown.MarkdownMimirAdapter.list_pages",
+        "tests.test_mimir.unit.fakes.InMemoryMimirAdapter.list_pages",
         _timeout,
         raising=False,
     )
@@ -1182,26 +1184,25 @@ def test_non_a2a_campaign_is_unaffected() -> None:
 
 
 @pytest.mark.asyncio
-async def test_artifact_summaries_read_each_mount_once(tmp_path: Path, monkeypatch) -> None:
+async def test_artifact_summaries_read_each_mount_once(monkeypatch) -> None:
     """The whole list costs three reads, not four per campaign.
 
     Mímir serves on one worker, so per-campaign summaries queued behind each
     other and eighteen campaigns took about as long as doing it serially.
     """
-    from mimir.adapters.markdown import MarkdownMimirAdapter
+    from tests.test_mimir.unit.fakes import InMemoryMimirAdapter
 
-    adapter = MarkdownMimirAdapter(root=tmp_path / "mimir")
+    adapter = InMemoryMimirAdapter()
     for slug in ("first", "second"):
         for rel, body in [
             (f"research/campaigns/{slug}/final.md", f"# Final {slug}\n<!-- sources: s1 s2 -->"),
             (f"research/campaigns/{slug}/critique.md", f"# Critique {slug}\n<!-- sources: s2 -->"),
             (f"learnings/research/{slug}.md", f"# Learning {slug}\n"),
         ]:
-            path = adapter._wiki / rel
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(body, encoding="utf-8")
-    manifest = adapter._wiki / "research/campaigns/first/manifest.md"
-    manifest.write_text("# Manifest\nresearch/campaigns/first/final.md", encoding="utf-8")
+            await adapter.upsert_page(rel, body)
+    await adapter.upsert_page(
+        "research/campaigns/first/manifest.md", "# Manifest\nresearch/campaigns/first/final.md"
+    )
 
     monkeypatch.setattr(
         research_api, "_campaign_knowledge", lambda campaign, settings, **kwargs: adapter
@@ -1212,13 +1213,13 @@ async def test_artifact_summaries_read_each_mount_once(tmp_path: Path, monkeypat
     ]
 
     listings: list[str | None] = []
-    original = MarkdownMimirAdapter.list_pages
+    original = InMemoryMimirAdapter.list_pages
 
     async def _tracking(self, category=None, prefix=None):  # type: ignore[no-untyped-def]
         listings.append(prefix)
         return await original(self, category=category, prefix=prefix)
 
-    monkeypatch.setattr(MarkdownMimirAdapter, "list_pages", _tracking)
+    monkeypatch.setattr(InMemoryMimirAdapter, "list_pages", _tracking)
     summaries = await research_api._campaign_artifact_summaries(campaigns, settings=object())
 
     # Three prefixes for the mount, however many campaigns share it.
@@ -1240,17 +1241,15 @@ async def test_artifact_summaries_do_not_leak_between_campaigns(
     tmp_path: Path, monkeypatch
 ) -> None:
     """Slugs share a prefix root, so each campaign must claim only its own."""
-    from mimir.adapters.markdown import MarkdownMimirAdapter
+    from tests.test_mimir.unit.fakes import InMemoryMimirAdapter
 
-    adapter = MarkdownMimirAdapter(root=tmp_path / "mimir")
+    adapter = InMemoryMimirAdapter()
     for rel in (
         "research/campaigns/alpha/final.md",
         "research/campaigns/alpha-extended/final.md",
         "research/campaigns/alpha-extended/plan.md",
     ):
-        path = adapter._wiki / rel
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text("# Page\n", encoding="utf-8")
+        await adapter.upsert_page(rel, "# Page\n")
 
     monkeypatch.setattr(
         research_api, "_campaign_knowledge", lambda campaign, settings, **kwargs: adapter
@@ -1283,9 +1282,6 @@ async def test_artifact_summaries_report_unknown_when_mimir_raises(monkeypatch) 
     class _Broken:
         async def list_pages(self, **_kwargs: object) -> list[object]:
             raise RuntimeError("503 Service Unavailable")
-
-        def filesystem_root(self) -> None:
-            return None
 
     monkeypatch.setattr(
         research_api, "_campaign_knowledge", lambda campaign, settings, **kwargs: _Broken()

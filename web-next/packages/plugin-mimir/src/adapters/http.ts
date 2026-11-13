@@ -12,16 +12,9 @@ import type { IMimirService, SearchMode, RecentWrite } from '../ports';
 import type { PageMeta, Page, SearchResult, Zone } from '../domain/page';
 import type { Source, OriginType } from '../domain/source';
 import type {
-  LintReport,
-  LintIssue,
-  IssueSeverity,
-  LintRule,
-  ActivityEvent,
-  ActivityEventKind,
-} from '../domain/lint';
-import type {
   MimirStats,
   MimirGraph,
+  KnowledgeGraph,
   GraphNode,
   GraphEdge,
   LiveActivity,
@@ -29,12 +22,8 @@ import type {
 } from '../domain/api-types';
 import type { EmbeddingSearchResult } from '../ports/IEmbeddingStore';
 import type { EntityKind, EntityMeta } from '../domain/entity';
-import type { FactEvidence, RelatedPage, ReviseRequest } from '../domain/evidence';
-import type { WriteRoutingRule } from '../domain/routing';
 import type { RegistryMount } from '../domain/registry';
 import type { EvalReport, EvalMetrics, QueryStats } from '../domain/analytics';
-import type { DoctorReport, DoctorCheck } from '../domain/doctor';
-import { tallySeverity } from '../domain/lint';
 
 // ---------------------------------------------------------------------------
 // Raw wire types
@@ -51,7 +40,6 @@ interface RawMount {
   status: string;
   pages: number;
   sources: number;
-  lint_issues: number;
   last_write: string;
   embedding: string;
   size_kb: number;
@@ -66,7 +54,6 @@ interface RawRegistryMount {
   role: string;
   access_scope?: Mount['accessScope'];
   url: string;
-  path: string;
   categories: string[] | null;
   adapter?: string;
   kwargs?: Record<string, unknown>;
@@ -123,33 +110,6 @@ interface RawSearchResult {
   score_breakdown?: Record<string, number>;
 }
 
-interface RawLintIssue {
-  id: string;
-  severity: string;
-  rule?: string;
-  page?: string;
-  page_path?: string;
-  mount?: string;
-  auto_fix?: boolean;
-  auto_fixable?: boolean;
-  message: string;
-}
-
-interface RawLintMount {
-  name: string;
-  status: 'linted' | 'unsupported';
-  pages_checked: number;
-  issues: number;
-  detail: string;
-}
-
-interface RawLintReport {
-  issues: RawLintIssue[];
-  pages_checked: number;
-  /** Absent from Mímir services that predate per-mount lint status. */
-  mounts?: RawLintMount[];
-}
-
 interface RawEmbeddingResult {
   path: string;
   title: string;
@@ -182,16 +142,6 @@ interface RawSource {
   content?: string;
 }
 
-interface RawActivityEvent {
-  id: string;
-  timestamp: string;
-  kind: string;
-  mount: string;
-  ravn: string;
-  message: string;
-  page?: string;
-}
-
 interface RawGraphNode {
   id: string;
   title: string;
@@ -217,6 +167,33 @@ interface RawGraph {
   edges: RawGraphEdge[];
 }
 
+/** One node of `GET /memory/graph` (contract G1): a page or a source in a readable layer. */
+interface RawKnowledgeNode {
+  id: string;
+  layer: string;
+  path: string;
+  title: string;
+  kind: string;
+  summary: string;
+  updated_at: string | null;
+  first_seen: string | null;
+  changed_at: string | null;
+}
+
+interface RawKnowledgeEdge {
+  source: string;
+  target: string;
+  relation: string;
+  since: string | null;
+}
+
+interface RawKnowledgeGraph {
+  layers: Array<{ id: string; name: string }>;
+  nodes: RawKnowledgeNode[];
+  edges: RawKnowledgeEdge[];
+  unresolved: Array<{ source: string; target_slug: string }>;
+}
+
 interface RawLiveActivity {
   id: string;
   timestamp: string;
@@ -224,22 +201,6 @@ interface RawLiveActivity {
   mount: string;
   path: string;
   actor: string | null;
-}
-
-interface RawFactEvidence {
-  fact: string;
-  proof_count: number;
-  trend: string;
-  latest_support?: string | null;
-  supporting_dates?: string[];
-  source_proof_count?: number;
-}
-
-interface RawRelatedPage {
-  path: string;
-  hop: number;
-  rel?: string | null;
-  direction: string;
 }
 
 interface RawEntityMeta {
@@ -269,22 +230,6 @@ interface RawQueryStats {
   recent: Array<{ ts: string; query: string; result_count: number }>;
 }
 
-interface RawDoctorCheck {
-  id: string;
-  title: string;
-  status: string;
-  detail: string;
-  remediation: string;
-  fixable: boolean;
-}
-
-interface RawDoctorReport {
-  score: string;
-  /** Worst status across checks — the live API field is `status`. */
-  status: string;
-  checks: RawDoctorCheck[];
-}
-
 // ---------------------------------------------------------------------------
 // Mapping helpers
 // ---------------------------------------------------------------------------
@@ -301,7 +246,6 @@ export function toMount(raw: RawMount): Mount {
     status: raw.status as Mount['status'],
     pages: raw.pages,
     sources: raw.sources,
-    lintIssues: raw.lint_issues,
     lastWrite: raw.last_write,
     embedding: raw.embedding,
     sizeKb: raw.size_kb,
@@ -318,7 +262,6 @@ export function toRegistryMount(raw: RawRegistryMount): RegistryMount {
     role: raw.role as RegistryMount['role'],
     accessScope: raw.access_scope,
     url: raw.url,
-    path: raw.path,
     categories: raw.categories,
     adapter: raw.adapter,
     kwargs: raw.kwargs,
@@ -518,34 +461,6 @@ export function escapeRegExp(text: string): string {
   return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-export function toLintIssue(raw: RawLintIssue): LintIssue {
-  return {
-    id: raw.id,
-    rule: (raw.rule ?? raw.id) as LintRule,
-    severity: normalizeSeverity(raw.severity),
-    page: raw.page ?? raw.page_path ?? '',
-    mount: raw.mount ?? 'local',
-    autoFix: raw.auto_fix ?? raw.auto_fixable ?? false,
-    message: raw.message,
-  };
-}
-
-export function toLintReport(raw: RawLintReport): LintReport {
-  const issues = raw.issues.map(toLintIssue);
-  return {
-    issues,
-    pagesChecked: raw.pages_checked,
-    summary: tallySeverity(issues),
-    mounts: (raw.mounts ?? []).map((mount) => ({
-      name: mount.name,
-      status: mount.status,
-      pagesChecked: mount.pages_checked,
-      issues: mount.issues,
-      detail: mount.detail,
-    })),
-  };
-}
-
 export function toEmbeddingResult(raw: RawEmbeddingResult): EmbeddingSearchResult {
   return {
     path: raw.path,
@@ -582,18 +497,6 @@ export function toSource(raw: RawSource): Source {
   };
 }
 
-export function toActivityEvent(raw: RawActivityEvent): ActivityEvent {
-  return {
-    id: raw.id,
-    timestamp: raw.timestamp,
-    kind: raw.kind as ActivityEventKind,
-    mount: raw.mount,
-    ravn: raw.ravn,
-    message: raw.message,
-    page: raw.page,
-  };
-}
-
 export function toGraphNode(raw: RawGraphNode): GraphNode {
   return {
     id: raw.id,
@@ -611,7 +514,49 @@ export function toGraphNode(raw: RawGraphNode): GraphNode {
 }
 
 export function toGraphEdge(raw: RawGraphEdge): GraphEdge {
-  return { source: raw.source, target: raw.target, type: raw.type };
+  return { source: raw.source, target: raw.target, relation: raw.type };
+}
+
+/**
+ * A G1 node in the scene's terms. The layer is what the scene clusters by,
+ * so it fills `mount`; the path's top folder is its `category`. G1 carries
+ * no confidence. A page with no dated timeline row has no known first-seen
+ * date: its last write is when it was stored (an import writes every page on
+ * one day), not when it became known, so it stays the empty "unknown" the
+ * engine already reads and never reads as new this week.
+ */
+export function toKnowledgeNode(raw: RawKnowledgeNode): GraphNode {
+  return {
+    id: raw.id,
+    title: raw.title,
+    category: raw.path.split('/')[0] ?? raw.path,
+    path: raw.path,
+    kind: raw.kind,
+    summary: raw.summary,
+    mount: raw.layer,
+    layer: raw.layer,
+    updatedAt: raw.updated_at ?? '',
+    firstSeen: raw.first_seen ?? '',
+    changedAt: raw.changed_at,
+    confidence: null,
+  };
+}
+
+export function toKnowledgeGraph(raw: RawKnowledgeGraph): KnowledgeGraph {
+  return {
+    layers: raw.layers.map((layer) => ({ id: layer.id, name: layer.name })),
+    nodes: raw.nodes.map(toKnowledgeNode),
+    edges: raw.edges.map((edge) => ({
+      source: edge.source,
+      target: edge.target,
+      relation: edge.relation,
+      since: edge.since,
+    })),
+    unresolved: raw.unresolved.map((link) => ({
+      source: link.source,
+      targetSlug: link.target_slug,
+    })),
+  };
 }
 
 export function toGraph(raw: RawGraph): MimirGraph {
@@ -676,25 +621,6 @@ export function toQueryStats(raw: RawQueryStats): QueryStats {
   };
 }
 
-export function toDoctorCheck(raw: RawDoctorCheck): DoctorCheck {
-  return {
-    id: raw.id,
-    title: raw.title,
-    status: raw.status as DoctorCheck['status'],
-    detail: raw.detail,
-    remediation: raw.remediation,
-    fixable: raw.fixable,
-  };
-}
-
-export function toDoctorReport(raw: RawDoctorReport): DoctorReport {
-  return {
-    score: raw.score,
-    worst: raw.status as DoctorReport['worst'],
-    checks: raw.checks.map(toDoctorCheck),
-  };
-}
-
 /** Run a request, mapping missing-route errors (optional backend capability) to null. */
 async function nullOnMissingRoute<T>(request: () => Promise<T>): Promise<T | null> {
   try {
@@ -716,37 +642,12 @@ export function isMissingRouteError(error: unknown): error is { status: number }
   );
 }
 
-export function toFactEvidence(raw: RawFactEvidence): FactEvidence {
-  return {
-    fact: raw.fact,
-    proofCount: raw.proof_count,
-    trend: raw.trend as FactEvidence['trend'],
-    latestSupport: raw.latest_support ?? null,
-    supportingDates: raw.supporting_dates ?? [],
-    sourceProofCount: raw.source_proof_count ?? 0,
-  };
-}
-
-export function toRelatedPage(raw: RawRelatedPage): RelatedPage {
-  return {
-    path: raw.path,
-    hop: raw.hop,
-    rel: raw.rel ?? null,
-    direction: raw.direction === 'in' ? 'in' : 'out',
-  };
-}
-
 export function inferPageType(path: string, category: string): PageMeta['type'] {
   if (path.startsWith('/entities/') || category === 'entity') return 'entity';
   if (path.includes('/decisions/') || category === 'decision') return 'decision';
   if (path.includes('/preferences/') || category === 'preference') return 'preference';
   if (path.includes('/directives/') || category === 'directive') return 'directive';
   return 'topic';
-}
-
-export function normalizeSeverity(severity: string): IssueSeverity {
-  if (severity === 'warning') return 'warn';
-  return severity as IssueSeverity;
 }
 
 export function normalizeOriginType(originType: string | undefined): OriginType {
@@ -816,7 +717,6 @@ export function buildMimirHttpAdapter(
               status: stats.healthy ? 'healthy' : 'degraded',
               pages: stats.page_count,
               sources: 0,
-              lintIssues: 0,
               lastWrite: '',
               embedding: 'fts',
               sizeKb: 0,
@@ -840,7 +740,6 @@ export function buildMimirHttpAdapter(
             lifecycle: 'registered',
             role: mount.role,
             url: mount.url,
-            path: '',
             categories: mount.categories,
             authRef: null,
             defaultReadPriority: mount.priority,
@@ -859,7 +758,6 @@ export function buildMimirHttpAdapter(
           lifecycle: mount.lifecycle,
           role: mount.role,
           url: mount.url,
-          path: mount.path,
           categories: mount.categories,
           adapter: mount.adapter ?? '',
           kwargs: mount.kwargs ?? {},
@@ -884,7 +782,6 @@ export function buildMimirHttpAdapter(
           lifecycle: mount.lifecycle,
           role: mount.role,
           url: mount.url,
-          path: mount.path,
           categories: mount.categories,
           adapter: mount.adapter ?? '',
           kwargs: mount.kwargs ?? {},
@@ -901,23 +798,6 @@ export function buildMimirHttpAdapter(
 
       async deleteRegistryMount(id: string): Promise<void> {
         await client.delete<void>(`/registry/mounts/${id}`);
-      },
-
-      async listRoutingRules(): Promise<WriteRoutingRule[]> {
-        try {
-          return await client.get<WriteRoutingRule[]>('/routing/rules');
-        } catch (error) {
-          if (!isMissingRouteError(error)) throw error;
-          return [];
-        }
-      },
-
-      async upsertRoutingRule(rule: WriteRoutingRule): Promise<WriteRoutingRule> {
-        return client.put<WriteRoutingRule>(`/routing/rules/${rule.id}`, rule);
-      },
-
-      async deleteRoutingRule(id: string): Promise<void> {
-        await client.delete<void>(`/routing/rules/${id}`);
       },
 
       async getRecentWrites(limit?: number): Promise<RecentWrite[]> {
@@ -983,26 +863,6 @@ export function buildMimirHttpAdapter(
       async deployInstance(request) {
         return deployments.post('/deployments', request);
       },
-      async getDoctor(mountName?: string): Promise<DoctorReport | null> {
-        return nullOnMissingRoute(async () =>
-          toDoctorReport(
-            await client.get<RawDoctorReport>(
-              '/doctor' + (mountName ? '?mount=' + encodeURIComponent(mountName) : ''),
-            ),
-          ),
-        );
-      },
-
-      async runDoctorFixes(mountName?: string): Promise<DoctorReport | null> {
-        return nullOnMissingRoute(async () =>
-          toDoctorReport(
-            await client.post<RawDoctorReport>(
-              '/doctor/fix' + (mountName ? '?mount=' + encodeURIComponent(mountName) : ''),
-              {},
-            ),
-          ),
-        );
-      },
     },
 
     pages: {
@@ -1067,52 +927,17 @@ export function buildMimirHttpAdapter(
         }));
       },
 
-      /**
-       * GET /evidence?path= — the route takes no mount, so the serving
-       * instance answers 404 for a page it does not itself keep. That, and a
-       * store with no evidence subsystem (501), mean "no proof rows here";
-       * anything else is a real failure and raises.
-       */
-      async getEvidence(path: string): Promise<FactEvidence[]> {
-        try {
-          const raw = await client.get<RawFactEvidence[]>(
-            `/evidence?path=${encodeURIComponent(path)}`,
-          );
-          return raw.map(toFactEvidence);
-        } catch (error) {
-          if (!isMissingRouteError(error)) throw error;
-          return [];
-        }
-      },
-
-      /** GET /related?path=&depth=&rel= — same absence rules as getEvidence. */
-      async getRelated(path: string, depth = 1, rel?: string): Promise<RelatedPage[]> {
-        const params = new URLSearchParams({ path, depth: String(depth) });
-        if (rel) params.set('rel', rel);
-        try {
-          const raw = await client.get<RawRelatedPage[]>(`/related?${params.toString()}`);
-          return raw.map(toRelatedPage);
-        } catch (error) {
-          if (!isMissingRouteError(error)) throw error;
-          return [];
-        }
-      },
-
-      /** POST /page/revise — write-authenticated; a refusal raises. */
-      async revisePage(request: ReviseRequest): Promise<Page> {
-        const raw = await client.post<RawPage>('/page/revise', {
-          path: request.path,
-          old_fact: request.oldFact,
-          new_fact: request.newFact,
-          attribution: request.attribution,
-        });
-        return toPage(raw);
-      },
-
       async getGraph(options): Promise<MimirGraph> {
         const qs = options?.mountName ? `?mount=${encodeURIComponent(options.mountName)}` : '';
         const raw = await client.get<RawGraph>(`/graph${qs}`);
         return toGraph(raw);
+      },
+
+      async getKnowledgeGraph(options): Promise<KnowledgeGraph> {
+        const layers = options?.layers ?? [];
+        const qs = layers.length > 0 ? `?layers=${encodeURIComponent(layers.join(','))}` : '';
+        const raw = await client.get<RawKnowledgeGraph>(`/memory/graph${qs}`);
+        return toKnowledgeGraph(raw);
       },
 
       async getLiveActivity(options): Promise<LiveActivity[]> {
@@ -1249,30 +1074,6 @@ export function buildMimirHttpAdapter(
             score: Math.max(0, 1 - index * 0.1),
             mountName: mountName ?? 'local',
           }));
-        }
-      },
-    },
-
-    lint: {
-      async getLintReport(mountName?: string): Promise<LintReport> {
-        const qs = mountName ? `?mount=${encodeURIComponent(mountName)}` : '';
-        const raw = await client.get<RawLintReport>(`/lint${qs}`);
-        return toLintReport(raw);
-      },
-
-      async runAutoFix(issueIds?: string[]): Promise<LintReport> {
-        const body = issueIds ? { issue_ids: issueIds } : {};
-        const raw = await client.post<RawLintReport>('/lint/fix', body);
-        return toLintReport(raw);
-      },
-
-      async getActivityLog(limit = 50): Promise<ActivityEvent[]> {
-        try {
-          const raw = await client.get<RawActivityEvent[]>(`/activity?limit=${limit}`);
-          return raw.map(toActivityEvent);
-        } catch (error) {
-          if (!isMissingRouteError(error)) throw error;
-          return [];
         }
       },
     },

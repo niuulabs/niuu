@@ -199,7 +199,7 @@ class TestConstruction:
                 {
                     "name": "mimir-local",
                     "command": "python3",
-                    "args": ["-m", "mimir", "mcp", "--path", "/tmp/mimir"],
+                    "args": ["-m", "mimir", "mcp"],
                 }
             ],
         )
@@ -612,7 +612,7 @@ class TestSpawnAppServer:
                 {
                     "name": "mimir-local",
                     "command": "python3",
-                    "args": ["-m", "mimir", "mcp", "--path", "/tmp/mimir"],
+                    "args": ["-m", "mimir", "mcp"],
                 }
             ],
         )

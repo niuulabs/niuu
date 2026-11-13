@@ -1,7 +1,7 @@
 """Build the Mímir client adapters a runtime mounts, from configuration.
 
-``build_mimir`` turns a ``MimirConfig`` into a ``MimirPort``: a single local
-markdown store, or a ``CompositeMimirAdapter`` over several instances. It takes
+``build_mimir`` turns a ``MimirConfig`` into a ``MimirPort``: a
+``CompositeMimirAdapter`` over the configured instances. It takes
 any settings object carrying a ``mimir`` section, an ``environment.id`` and a
 ``gateway.platform`` section, so a host runtime (Ravn's ``Settings``) and the
 standalone loader (``mimir.client_settings.MimirClientSettings``) share it.
@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from mimir.client_config import MimirConfig
+from mimir.exceptions import MimirConfigurationError
 
 logger = logging.getLogger(__name__)
 
@@ -131,54 +132,57 @@ def build_mimir_auth(settings: MimirClientHost, auth_config: Any) -> Any:
 
 
 def build_mimir(settings: MimirClientHost) -> Any:
-    """Build the Mímir adapter from config, or None if disabled."""
+    """Build the Mímir adapter from config, or None when Mímir is disabled.
+
+    ``mimir.enabled: false`` is the operator's decision to run without Mímir. An
+    enabled Mímir with no instances has nothing to talk to and raises, naming
+    the setting to fix: there is no implicit local store.
+    """
     if not settings.mimir.enabled:
         return None
 
-    if settings.mimir.instances:
-        from mimir.adapters.composite import CompositeMimirAdapter
-        from mimir.connections import resolve_mimir_connection
-        from mimir.domain import MimirMount, WriteRouting
-
-        mounts: list[Any] = []
-        for inst in settings.mimir.instances:
-            port = resolve_mimir_connection(
-                adapter=inst.adapter,
-                kwargs=inst.kwargs,
-                secret_kwargs_env=inst.secret_kwargs_env,
-                path=inst.path,
-                url=inst.url,
-                environment_id=settings.environment.id,
-                auth=build_mimir_auth(settings, inst.auth) if inst.auth is not None else None,
-            )
-            mounts.append(
-                MimirMount(
-                    name=inst.name,
-                    port=port,
-                    role=inst.role,
-                    read_priority=inst.read_priority,
-                    categories=inst.categories,
-                )
-            )
-
-        if not mounts:
-            return None
-
-        wr = settings.mimir.write_routing
-        routing = WriteRouting(
-            rules=[(r["prefix"], r["mounts"]) for r in wr.rules],
-            default=wr.default,
-        )
-        retry = settings.mimir.read_retry
-        return CompositeMimirAdapter(
-            mounts=mounts,
-            write_routing=routing,
-            read_retry_max_seconds=retry.max_seconds,
-            read_retry_initial_backoff_seconds=retry.initial_backoff_seconds,
-            read_retry_max_backoff_seconds=retry.max_backoff_seconds,
+    if not settings.mimir.instances:
+        raise MimirConfigurationError(
+            "mimir.enabled is true but mimir.instances is empty. Add an instance "
+            "(an `adapter:` MimirPort class such as "
+            "mimir.adapters.gbrain.GBrainMimirAdapter with its `kwargs:`, or a `url:`), "
+            "or set mimir.enabled: false to run without Mímir."
         )
 
-    # Single local instance
-    from mimir.adapters.markdown import MarkdownMimirAdapter
+    from mimir.adapters.composite import CompositeMimirAdapter
+    from mimir.connections import resolve_mimir_connection
+    from mimir.domain import MimirMount, WriteRouting
 
-    return MarkdownMimirAdapter(root=settings.mimir.path)
+    mounts: list[Any] = []
+    for inst in settings.mimir.instances:
+        port = resolve_mimir_connection(
+            adapter=inst.adapter,
+            kwargs=inst.kwargs,
+            secret_kwargs_env=inst.secret_kwargs_env,
+            url=inst.url,
+            environment_id=settings.environment.id,
+            auth=build_mimir_auth(settings, inst.auth) if inst.auth is not None else None,
+        )
+        mounts.append(
+            MimirMount(
+                name=inst.name,
+                port=port,
+                role=inst.role,
+                read_priority=inst.read_priority,
+                categories=inst.categories,
+            )
+        )
+
+    wr = settings.mimir.write_routing
+    routing = WriteRouting(
+        rules=[(r["prefix"], r["mounts"]) for r in wr.rules],
+        default=wr.default,
+    )
+    retry = settings.mimir.read_retry
+    return CompositeMimirAdapter(
+        mounts=mounts,
+        write_routing=routing,
+        read_retry_max_seconds=retry.max_seconds,
+        read_retry_initial_backoff_seconds=retry.initial_backoff_seconds,
+        read_retry_max_backoff_seconds=retry.max_backoff_seconds,
+    )

@@ -17,6 +17,7 @@ from skuld.channels import TelegramChannelError
 from skuld.chronicle_watcher import ChronicleWatcher
 from skuld.codex_auth import CodexAuthProviderPort
 from skuld.conversation_models import ConversationTurn
+from skuld.memory_mcp.gateway import MemoryContextPackError
 from skuld.personas.projection import PersonaProjectionError, ProjectionContext
 from skuld.personas.registry import projector_for
 from skuld.service_manager import ServiceManager
@@ -336,6 +337,20 @@ class TransportLifecycleMixin:
         if self._room_bridge is not None:
             self._room_bridge.start_presence_sweep()
 
+        # The memory context pack goes into the harness instructions, so it is fetched once
+        # before the transport is created. No gateway answer, no start: an empty pack never
+        # stands in for the missing one.
+        try:
+            await self._load_memory_context_pack()
+        except MemoryContextPackError as exc:
+            self._fail_startup(exc)
+            logger.critical(
+                "Memory context pack unavailable; broker remains unready: %s",
+                self._startup_failure,
+            )
+            self._report_startup_failure()
+            return
+
         # Initialize transport
         try:
             self._transport = self._create_transport()
@@ -576,3 +591,4 @@ class TransportLifecycleMixin:
         if self._session_http_client:
             await self._session_http_client.aclose()
             self._session_http_client = None
+        await self._close_memory_gateway()

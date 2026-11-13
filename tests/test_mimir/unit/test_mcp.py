@@ -1,12 +1,13 @@
-"""Unit tests for MimirMcpServer — JSON-RPC protocol, all seven tools, and transports.
+"""Unit tests for MimirMcpServer — JSON-RPC protocol, its tools, and transports.
 
-Tests use a real MarkdownMimirAdapter backed by a tmp_path — no network, no mocking.
+Tests use an in-memory MimirPort — no network, no mocking.
 """
 
 from __future__ import annotations
 
 import io
 import json
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -14,22 +15,30 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from identity.adapters.identity import EnvoyHeaderAuthenticationAdapter
-from mimir.adapters.markdown import MarkdownMimirAdapter
 from mimir.live_activity import LiveActivityRecorder
 from mimir.mcp import MimirMcpServer
+from tests.test_mimir.unit.fakes import InMemoryMimirAdapter
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
 
+_STORES: dict[Path, InMemoryMimirAdapter] = {}
+
+
+def _store(tmp_path: Path) -> InMemoryMimirAdapter:
+    """The one in-memory store of this test (``tmp_path`` is unique per test)."""
+    return _STORES.setdefault(tmp_path, InMemoryMimirAdapter())
+
+
 def _make_server(tmp_path: Path) -> MimirMcpServer:
-    adapter = MarkdownMimirAdapter(root=tmp_path / "mimir")
+    adapter = _store(tmp_path)
     return MimirMcpServer(adapter=adapter, name="test")
 
 
 def _make_client(tmp_path: Path) -> TestClient:
-    adapter = MarkdownMimirAdapter(root=tmp_path / "mimir")
+    adapter = _store(tmp_path)
     server = MimirMcpServer(adapter=adapter, name="test")
     app = FastAPI()
     app.include_router(server.router(), prefix="/mcp")
@@ -51,7 +60,7 @@ def _make_client_and_server(
     LiveActivityRecorder can be inspected directly (there is no HTTP route
     exposing MCP-originated activity on its own — mimir.app.create_app
     shares one recorder between MimirRouter and MimirMcpServer)."""
-    adapter = MarkdownMimirAdapter(root=tmp_path / "mimir")
+    adapter = _store(tmp_path)
     live_activity = LiveActivityRecorder(buffer_size=100, window_seconds=3600)
     server = MimirMcpServer(
         adapter=adapter,
@@ -66,16 +75,14 @@ def _make_client_and_server(
 
 
 def _seed_page(tmp_path: Path) -> None:
-    """Write a wiki page directly so tools have something to find."""
-    wiki = tmp_path / "mimir" / "wiki" / "technical"
-    wiki.mkdir(parents=True, exist_ok=True)
-    (wiki / "ravn.md").write_text(
+    """Put a wiki page in the store so tools have something to find."""
+    _store(tmp_path).pages["technical/ravn.md"] = (
         "# Ravn Architecture\n"
         "Ravn is the autonomous agent framework.\n\n"
         "## Overview\n"
         "Six regions collaborate via nng synapses.\n"
         "<!-- sources: src_abc123 -->",
-        encoding="utf-8",
+        datetime.now(UTC),
     )
 
 
@@ -114,9 +121,7 @@ class TestProtocol:
             "mimir_write",
             "mimir_ingest",
             "mimir_read_source",
-            "mimir_lint",
             "mimir_stats",
-            "mimir_related",
         }
 
     def test_method_not_found(self, tmp_path: Path) -> None:
@@ -301,9 +306,8 @@ class TestWriteTool:
         result = json.loads(result_content[0]["text"])
         assert result["path"] == "decisions/adr-001.md"
 
-        # Verify the frontmatter was written to disk
-        page_path = tmp_path / "mimir" / "wiki" / "decisions" / "adr-001.md"
-        raw = page_path.read_text()
+        # Verify the frontmatter was written with the page
+        raw = _store(tmp_path).pages["decisions/adr-001.md"][0]
         assert raw.startswith("---\n")
         assert "type: decision" in raw
 
@@ -322,8 +326,7 @@ class TestWriteTool:
                 },
             ),
         )
-        page_path = tmp_path / "mimir" / "wiki" / "technical" / "plain.md"
-        raw = page_path.read_text()
+        raw = _store(tmp_path).pages["technical/plain.md"][0]
         assert not raw.startswith("---")
 
 
@@ -442,44 +445,6 @@ class TestIngestTool:
         assert read_result["source_id"] == source_id
         assert read_result["title"] == "Auto Title"
         assert "Body text here." in read_result["content"]
-
-
-# ---------------------------------------------------------------------------
-# Tool: mimir_lint
-# ---------------------------------------------------------------------------
-
-
-class TestLintTool:
-    def test_lint_empty_wiki(self, tmp_path: Path) -> None:
-        client = _make_client(tmp_path)
-        resp = client.post(
-            "/mcp",
-            json=_jsonrpc(
-                "tools/call",
-                {"name": "mimir_lint", "arguments": {}},
-            ),
-        )
-        result_content = resp.json()["result"]["content"]
-        result = json.loads(result_content[0]["text"])
-        assert result["pages_checked"] == 0
-        assert result["issues_found"] is False
-        assert "summary" in result
-        assert isinstance(result["issues"], list)
-
-    def test_lint_detects_issues(self, tmp_path: Path) -> None:
-        _seed_page(tmp_path)
-        client = _make_client(tmp_path)
-        resp = client.post(
-            "/mcp",
-            json=_jsonrpc(
-                "tools/call",
-                {"name": "mimir_lint", "arguments": {}},
-            ),
-        )
-        result_content = resp.json()["result"]["content"]
-        result = json.loads(result_content[0]["text"])
-        assert result["pages_checked"] >= 1
-        assert "issues" in result
 
 
 # ---------------------------------------------------------------------------
@@ -631,7 +596,7 @@ class TestLiveActivity:
 
         is always unattributed — this is correct, not a gap (no headers
         exist over stdio to attribute to)."""
-        adapter = MarkdownMimirAdapter(root=tmp_path / "mimir")
+        adapter = _store(tmp_path)
         live_activity = LiveActivityRecorder(buffer_size=10, window_seconds=3600)
         server = MimirMcpServer(
             adapter=adapter,
@@ -659,7 +624,7 @@ class TestLiveActivity:
 
     async def test_no_shared_window_records_nothing(self, tmp_path: Path) -> None:
         """The stdio entry point passes no recorder: tool calls still succeed."""
-        server = MimirMcpServer(adapter=MarkdownMimirAdapter(root=tmp_path / "mimir"), name="t")
+        server = MimirMcpServer(adapter=_store(tmp_path), name="t")
         stdin = io.StringIO(
             json.dumps(
                 _jsonrpc(

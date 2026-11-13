@@ -30,7 +30,7 @@ describe('useMemoryUrl', () => {
     expect(applyNavigate()).toEqual({ mount: 'platform', focus: '/a' });
   });
 
-  it('setDepth / setMount / setView / setColour / setAsOf / setQuestion patch their field', () => {
+  it('setDepth / setMount / setView / setShow / setAsOf / setQuestion patch their field', () => {
     const { result } = renderHook(() => useMemoryUrl());
     result.current.setDepth(2);
     expect(applyNavigate()).toEqual({ depth: 2 });
@@ -38,8 +38,10 @@ describe('useMemoryUrl', () => {
     expect(applyNavigate()).toEqual({ mount: 'shared' });
     result.current.setView('2d');
     expect(applyNavigate()).toEqual({ view: '2d' });
-    result.current.setColour('age');
-    expect(applyNavigate()).toEqual({ colour: 'age' });
+    result.current.setShow('tickets');
+    expect(applyNavigate()).toEqual({ show: 'tickets' });
+    result.current.setShow(null);
+    expect(applyNavigate()).toEqual({});
     result.current.setQuestion('why do routes 403?');
     expect(applyNavigate()).toEqual({ q: 'why do routes 403?' });
     result.current.setAsOf('2026-04-01');

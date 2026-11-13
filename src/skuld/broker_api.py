@@ -55,6 +55,7 @@ from skuld.event_log import FORGE_SESSIONS_PATH
 from skuld.file_routes import register_file_routes
 from skuld.forge_mcp.routes import register_forge_mcp_routes
 from skuld.harness_control import HarnessControl, HarnessControlError
+from skuld.memory_mcp.routes import register_memory_mcp_routes
 from skuld.path_security import (
     UnsafePathError,
     resolve_contained_path,
@@ -1015,6 +1016,7 @@ async def get_preview_ports() -> dict:
 # handling or room-role gate (skuld.preview).
 app.add_middleware(PreviewMiddleware, forwarder_provider=lambda: broker.preview_forwarder)
 register_forge_mcp_routes(app, lambda: broker, dependencies=_LOOPBACK_GUARD)
+register_memory_mcp_routes(app, lambda: broker, dependencies=_LOOPBACK_GUARD)
 
 # --------------------------------------------------------------------------- present-file
 #

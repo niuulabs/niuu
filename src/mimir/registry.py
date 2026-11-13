@@ -24,7 +24,6 @@ class MimirRegistryEntry(BaseModel):
     lifecycle: RegistryMountLifecycle = "registered"
     role: str = "shared"
     url: str = ""
-    path: str = ""
     categories: list[str] | None = None
     adapter: str = ""
     kwargs: dict[str, Any] = Field(default_factory=dict)
@@ -95,7 +94,6 @@ class MimirRegistryStore:
         kind: RegistryMountKind,
         lifecycle: RegistryMountLifecycle = "registered",
         url: str = "",
-        path: str = "",
         categories: list[str] | None = None,
         default_read_priority: int = 10,
         desc: str = "",
@@ -110,7 +108,6 @@ class MimirRegistryStore:
             kind=kind,
             lifecycle=lifecycle,
             url=url,
-            path=path,
             categories=categories,
             default_read_priority=default_read_priority,
             desc=desc,

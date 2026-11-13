@@ -8,18 +8,22 @@ from fastapi.testclient import TestClient
 
 from identity.adapters.identity import EnvoyHeaderAuthenticationAdapter
 from mimir.adapters.flux import FluxKnowledgeDeploymentAdapter
-from mimir.adapters.markdown import MarkdownMimirAdapter
 from mimir.ports.deployment import DeploymentRequest
 from mimir.router import MimirRouter
+from tests.test_mimir.unit.fakes import InMemoryMimirAdapter
+
+
+class _InspectableStore(InMemoryMimirAdapter):
+    async def inspect_instance(self) -> dict:
+        return {"backend": "memory", "metrics": {"Pages": len(self.pages)}, "unavailable": []}
 
 
 def adapter():
     return FluxKnowledgeDeploymentAdapter(
         namespace="knowledge",
-        envoy={"enabled": True, "jwt": {"enabled": True}},
         source_name="niuu",
-        chart_versions={"gbrain": "0.1.0", "mimir": "1.0.0"},
-        images={"gbrain": "registry/gbrain:0.48.5.0", "mimir": "registry/niuu:1.0.0"},
+        chart_versions={"gbrain": "0.1.0"},
+        images={"gbrain": "registry/gbrain:0.48.5.0"},
     )
 
 
@@ -53,14 +57,14 @@ async def test_gbrain_creates_postgres_flux_release():
     assert values["existingSecret"] == ""
 
 
-def test_deployment_requires_admin_and_inspection_reports_real_counts(tmp_path):
+def test_deployment_requires_admin_and_inspection_reports_real_counts():
     a = adapter()
     a.list_deployments = AsyncMock(return_value={"releases": []})
     a.deploy = AsyncMock(return_value={"ready": False})
     app = FastAPI()
     app.include_router(
         MimirRouter(
-            MarkdownMimirAdapter(root=tmp_path),
+            _InspectableStore(),
             deployment=a,
             auth=EnvoyHeaderAuthenticationAdapter(),
         ).router
@@ -68,7 +72,7 @@ def test_deployment_requires_admin_and_inspection_reports_real_counts(tmp_path):
     with TestClient(app) as client:
         assert client.get("/deployments").status_code == 403
         assert (
-            client.post("/deployments", json={"name": "test", "backend": "mimir"}).status_code
+            client.post("/deployments", json={"name": "test", "backend": "gbrain"}).status_code
             == 403
         )
         response = client.get("/instances/inspect")
@@ -80,7 +84,7 @@ def test_deployment_requires_admin_and_inspection_reports_real_counts(tmp_path):
         }
         assert (
             client.post(
-                "/deployments", headers=headers, json={"name": "test", "backend": "mimir"}
+                "/deployments", headers=headers, json={"name": "test", "backend": "gbrain"}
             ).status_code
             == 202
         )
@@ -88,7 +92,7 @@ def test_deployment_requires_admin_and_inspection_reports_real_counts(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_status_ignores_stale_ready_and_mimir_keeps_its_storage():
+async def test_status_ignores_stale_ready():
     a = adapter()
     api = AsyncMock()
     obj = {
@@ -96,19 +100,47 @@ async def test_status_ignores_stale_ready_and_mimir_keeps_its_storage():
             "name": "notes",
             "generation": 2,
             "annotations": {"niuu.world/tenant-id": "tenant-a"},
-            "labels": {"niuu.world/knowledge-backend": "mimir"},
+            "labels": {"niuu.world/knowledge-backend": "gbrain"},
         },
         "status": {"observedGeneration": 1, "conditions": [{"type": "Ready", "status": "True"}]},
     }
     api.list_namespaced_custom_object.return_value = {"items": [obj]}
-    api.create_namespaced_custom_object.side_effect = lambda *args: args[-1]
     a._get_api = AsyncMock(return_value=api)
     result = await a.list_deployments(tenant_id="tenant-a")
     assert result["releases"][0]["ready"] is False
-    await a.deploy(DeploymentRequest(tenant_id="tenant-a", name="notes", backend="mimir"))
-    values = api.create_namespaced_custom_object.call_args.args[-1]["spec"]["values"]
-    assert values["config"]["name"] == "notes"
-    assert "engine" not in values
+
+
+def test_the_markdown_mimir_backend_is_no_longer_deployable():
+    with pytest.raises(ValueError, match="gbrain"):
+        DeploymentRequest(tenant_id="tenant-a", name="notes", backend="mimir")
+
+
+@pytest.mark.asyncio
+async def test_only_gbrain_is_listed_as_a_backend():
+    api = AsyncMock()
+    api.list_namespaced_custom_object.return_value = {"items": []}
+
+    a = adapter()
+    a._get_api = AsyncMock(return_value=api)
+    assert (await a.list_deployments(tenant_id="tenant-a"))["backends"] == ["gbrain"]
+
+    unconfigured = FluxKnowledgeDeploymentAdapter(
+        namespace="knowledge", source_name="niuu", chart_versions={}, images={}
+    )
+    unconfigured._get_api = AsyncMock(return_value=api)
+    assert (await unconfigured.list_deployments(tenant_id="tenant-a"))["backends"] == []
+
+
+@pytest.mark.asyncio
+async def test_deploying_an_unconfigured_backend_is_refused():
+    unconfigured = FluxKnowledgeDeploymentAdapter(
+        namespace="knowledge", source_name="niuu", chart_versions={}, images={}
+    )
+    unconfigured._get_api = AsyncMock(return_value=AsyncMock())
+    with pytest.raises(ValueError, match="No chart and image configured for gbrain"):
+        await unconfigured.deploy(
+            DeploymentRequest(tenant_id="tenant-a", name="notes", backend="gbrain")
+        )
 
 
 @pytest.mark.asyncio
@@ -144,10 +176,6 @@ async def test_flux_uses_operator_credentials():
     values = api.create_namespaced_custom_object.call_args.args[-1]["spec"]["values"]
     assert values["existingSecret"] == "brain-research"
     assert "warden" not in values
-    await a.deploy(DeploymentRequest(tenant_id="tenant-a", name="research", backend="mimir"))
-    values = api.create_namespaced_custom_object.call_args.args[-1]["spec"]["values"]
-    assert "warden" not in values
-    assert values["config"]["name"] == "research"
 
 
 @pytest.mark.asyncio
@@ -169,10 +197,6 @@ async def test_gbrain_config_is_applied_to_new_tenant_releases_only():
     # Mutating the returned values must not corrupt the adapter's own copy.
     values["config"]["deepseek_api_key"] = "tampered"
     assert a.gbrain_config["deepseek_api_key"] == "unused-bifrost-open-mode"
-
-    await a.deploy(DeploymentRequest(tenant_id="tenant-a", name="notes", backend="mimir"))
-    values = api.create_namespaced_custom_object.call_args.args[-1]["spec"]["values"]
-    assert values["config"] == {"name": "notes", "role": "shared"}
 
 
 @pytest.mark.asyncio
@@ -215,13 +239,13 @@ async def test_remote_inspection_reports_older_server_capability():
         (["volundr:admin"], "", 403),
     ],
 )
-def test_deployment_auth_accepts_envoy_array_claims(tmp_path, roles, user, expected):
+def test_deployment_auth_accepts_envoy_array_claims(roles, user, expected):
     a = adapter()
     a.list_deployments = AsyncMock(return_value={"releases": []})
     app = FastAPI()
     app.include_router(
         MimirRouter(
-            MarkdownMimirAdapter(root=tmp_path),
+            _InspectableStore(),
             deployment=a,
             auth=EnvoyHeaderAuthenticationAdapter(),
         ).router
@@ -236,23 +260,21 @@ def test_deployment_auth_accepts_envoy_array_claims(tmp_path, roles, user, expec
 
 
 @pytest.mark.asyncio
-async def test_flux_target_supplies_storage_class_to_both_engines():
+async def test_flux_target_supplies_storage_class_to_gbrain():
     a = adapter()
     a.storage_class = "harvester-data"
     api = AsyncMock()
     api.create_namespaced_custom_object.side_effect = lambda *args: args[-1]
     a._get_api = AsyncMock(return_value=api)
-    for backend in ("mimir", "gbrain"):
-        await a.deploy(DeploymentRequest(tenant_id="tenant-a", name="brain", backend=backend))
-        values = api.create_namespaced_custom_object.call_args.args[-1]["spec"]["values"]
-        assert values["persistence"]["storageClass"] == "harvester-data"
-        assert values["niuu"] == {
-            "cluster": a.cluster,
-            "instanceId": "brain",
-            "tenantId": "tenant-a",
-        }
-        if backend == "gbrain":
-            assert values["postgres"]["storageClass"] == "harvester-data"
+    await a.deploy(DeploymentRequest(tenant_id="tenant-a", name="brain", backend="gbrain"))
+    values = api.create_namespaced_custom_object.call_args.args[-1]["spec"]["values"]
+    assert values["persistence"]["storageClass"] == "harvester-data"
+    assert values["niuu"] == {
+        "cluster": a.cluster,
+        "instanceId": "brain",
+        "tenantId": "tenant-a",
+    }
+    assert values["postgres"]["storageClass"] == "harvester-data"
 
 
 @pytest.mark.asyncio

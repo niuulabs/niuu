@@ -2273,6 +2273,16 @@ export function buildVolundrHttpAdapter(
         projectMembersPath(project, `integrations/routes/${encodeURIComponent(event)}`),
       );
     },
+    getProjectMemoryMounts: (project) => forgeClient.get(projectMembersPath(project, 'memory')),
+    addProjectMemoryMount: (project, mount) =>
+      forgeClient.post(projectMembersPath(project, 'memory'), {
+        name: mount.name,
+        registry_entry_id: mount.registryEntryId,
+        access: mount.access,
+      }),
+    removeProjectMemoryMount: async (project, name) => {
+      await forgeClient.delete(projectMembersPath(project, `memory/${encodeURIComponent(name)}`));
+    },
     getTeamIntegrationUsage: (project, before) =>
       forgeClient.get(projectMembersPath(project, 'integrations/usage', before ? { before } : {})),
     getSessionParticipants: async (id, options) => {

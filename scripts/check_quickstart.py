@@ -115,6 +115,15 @@ def main() -> None:
     parser.add_argument("--live", action="store_true", help="Require real model file creation")
     parser.add_argument("--model", default="sonnet")
     parser.add_argument("--timeout", type=float, default=180)
+    parser.add_argument(
+        "--mimir-backend",
+        required=True,
+        help=(
+            "JSON for the store Mímir serves, passed as MIMIR__BACKEND, for example "
+            '{"adapter": "mimir.adapters.gbrain.GBrainMimirAdapter", "mcp_url": "<gbrain /mcp>", '
+            '"api_token_file": "<token file>"}. Mímir has no default store.'
+        ),
+    )
     args = parser.parse_args()
     binary = args.niuu.resolve(strict=True)
     if not shutil.which("claude"):
@@ -135,6 +144,7 @@ def main() -> None:
         PATH=f"{run / 'bin'}{os.pathsep}{env['PATH']}",
         NIUU_CONFIG=str(run / "config.yaml"),
         MIMIR__PATH=str(run / "mimir"),
+        MIMIR__BACKEND=args.mimir_backend,
         NIUU_PGDATA_DIR=str(run / "pgdata"),
         NIUU_FORGE_STATE_FILE=str(run / "forge-state.json"),
         NIUU_SERVER__HOST="127.0.0.1",

@@ -13,6 +13,20 @@ import {
 // ---------------------------------------------------------------------------
 
 describe('createMockVolundrService', () => {
+  it('keeps the memories a project reads, one per name', async () => {
+    const svc = createMockVolundrService();
+    const [project] = await svc.getProjects();
+    await svc.addProjectMemoryMount(project!, { name: 'n', registryEntryId: 'r', access: 'read' });
+    await expect(
+      svc.addProjectMemoryMount(project!, { name: 'n', registryEntryId: 'r', access: 'read' }),
+    ).rejects.toThrow('already mounts');
+    expect((await svc.getProjectMemoryMounts(project!)).map((m) => m.registry_entry_id)).toEqual([
+      'r',
+    ]);
+    await svc.removeProjectMemoryMount(project!, 'n');
+    expect(await svc.getProjectMemoryMounts(project!)).toEqual([]);
+  });
+
   it('returns an object implementing IVolundrService', () => {
     const svc = createMockVolundrService();
     expect(typeof svc.getSessions).toBe('function');

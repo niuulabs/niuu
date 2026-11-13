@@ -459,6 +459,13 @@ class SessionService:
         """
         return await self._repository.list_by_project(project_ids, tenant_id)
 
+    async def list_workflow_run_sessions(self, run_ids: list[str]) -> list[Session]:
+        """Sessions of the workflow runs, across tenants, oldest first, without access checks.
+
+        A lookup for the memory routes, which scope the answer to their caller themselves.
+        """
+        return await self._repository.list_by_workflow_runs(run_ids)
+
     async def with_read_states(
         self, sessions: list[Session], principal: Principal | None
     ) -> list[Session]:
@@ -2140,6 +2147,23 @@ class SessionService:
         if getattr(self._pod_manager, "delivers_forge_session_token", False):
             return True
         return self._forge_session_projection is not None
+
+    @property
+    def delivers_forge_session_somewhere(self) -> bool:
+        """Whether some launch can give its broker the session credential.
+
+        A placement manager runs sessions on several runtimes. A feature that needs the
+        credential is possible when one of them delivers it; a session placed on one that
+        does not finds out at its own start, where Skuld refuses the feature by name.
+        """
+        if self._forge_session_tokens is None:
+            return False
+        if self._forge_session_projection is not None:
+            return True
+        somewhere = getattr(self._pod_manager, "delivers_forge_session_token_somewhere", None)
+        if somewhere is not None:
+            return bool(somewhere)
+        return bool(getattr(self._pod_manager, "delivers_forge_session_token", False))
 
     def _delivers_forge_session_to(self, session: Session) -> bool:
         """Whether the pod manager that runs *session* hands its broker the credential.

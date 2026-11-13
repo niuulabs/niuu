@@ -1,10 +1,19 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, cleanup } from '@testing-library/react';
 import { act } from 'react';
-import { NormalBlending, AdditiveBlending, Points, ShaderMaterial } from 'three';
+import {
+  NormalBlending,
+  AdditiveBlending,
+  Points,
+  ShaderMaterial,
+  Group,
+  LineLoop,
+  Color,
+} from 'three';
 import { MemoryScene } from './MemoryScene';
 import { computeLayout } from './layout';
 import { createFakeRenderer, installMemoryPaletteTokens } from './test-helpers';
+import { MEMORY_PALETTE_VARS } from './palette';
 import type { MimirGraph } from '../../domain/api-types';
 import type { MemorySceneProps } from './types';
 import type { Scene3DRenderer } from './webglRenderer';
@@ -59,7 +68,7 @@ function graph(overrides: Partial<MimirGraph> = {}): MimirGraph {
         confidence: null,
       },
     ],
-    edges: [{ source: '/a', target: '/b', type: 'depends_on' }],
+    edges: [{ source: '/a', target: '/b', relation: 'depends_on' }],
     ...overrides,
   };
 }
@@ -70,6 +79,8 @@ function baseProps(overrides: Partial<MemorySceneProps> = {}): MemorySceneProps 
     view: '3d',
     colourBy: 'type',
     hiddenGroups: new Set(),
+    kinds: null,
+    layerNames: new Map(),
     showQuestions: false,
     focus: null,
     answers: [],
@@ -77,7 +88,6 @@ function baseProps(overrides: Partial<MemorySceneProps> = {}): MemorySceneProps 
     asOf: null,
     markers: [],
     questions: [],
-    disputedIds: new Set(),
     camera: null,
     onSelectNode: vi.fn(),
     onBackgroundClick: vi.fn(),
@@ -208,6 +218,181 @@ describe('MemoryScene — focus', () => {
   });
 });
 
+describe('MemoryScene — heads-up display', () => {
+  const DAY = 24 * 60 * 60 * 1000;
+  const iso = (daysAgo: number) => new Date(Date.now() - daysAgo * DAY).toISOString();
+
+  /** decision ← owns — ines; decision — planned in → ticket (new today); ticket — mentions → far; lone. */
+  function hudGraph(): MimirGraph {
+    const n = (id: string, kind: string, firstSeen: number, changed: number | null) => ({
+      id,
+      title: `T ${id}`,
+      category: kind,
+      path: id,
+      mount: 'project:p',
+      layer: 'project:p',
+      kind,
+      updatedAt: iso(changed ?? firstSeen),
+      firstSeen: iso(firstSeen),
+      changedAt: changed === null ? null : iso(changed),
+      confidence: null,
+    });
+    return {
+      nodes: [
+        n('decision', 'decision', 40, 30),
+        n('ines', 'person', 90, null),
+        n('ticket', 'ticket', 0, null),
+        n('far', 'page', 90, null),
+        n('lone', 'page', 90, null),
+      ],
+      edges: [
+        { source: 'ines', target: 'decision', relation: 'owns', since: iso(30).slice(0, 10) },
+        {
+          source: 'decision',
+          target: 'ticket',
+          relation: 'planned in',
+          since: iso(0).slice(0, 10),
+        },
+        { source: 'ticket', target: 'far', relation: 'covered by', since: null },
+      ],
+    };
+  }
+
+  function hudProps(overrides: Partial<MemorySceneProps> = {}): MemorySceneProps {
+    return baseProps({
+      graph: hudGraph(),
+      colourBy: 'hud',
+      layerNames: new Map([['project:p', 'Booking platform']]),
+      ...overrides,
+    });
+  }
+
+  it('puts a targeting reticle and two orbital rings on the focused node only', () => {
+    const renderer = createFakeRenderer();
+    const { rerender } = render(<MemoryScene {...hudProps({ createRenderer: () => renderer })} />);
+    expect(screen.queryByTestId('memory-reticle')).not.toBeInTheDocument();
+
+    rerender(
+      <MemoryScene
+        {...hudProps({ createRenderer: () => renderer, focus: { nodeId: 'decision', depth: 1 } })}
+      />,
+    );
+    expect(screen.getByTestId('memory-reticle')).toBeInTheDocument();
+    const scene = vi.mocked(renderer.render).mock.calls.at(-1)![0] as import('three').Scene;
+    const rings: LineLoop[] = [];
+    scene.traverse((o) => {
+      if (o instanceof LineLoop && o.parent?.parent instanceof Group) rings.push(o);
+    });
+    expect(rings.filter((r) => r.parent?.parent?.parent === scene)).toHaveLength(2);
+
+    rerender(<MemoryScene {...hudProps({ createRenderer: () => renderer, focus: null })} />);
+    expect(screen.queryByTestId('memory-reticle')).not.toBeInTheDocument();
+  });
+
+  it('with a node focused, names only it and its lit neighbours — never the rest of the cloud', () => {
+    render(<MemoryScene {...hudProps({ focus: { nodeId: 'decision', depth: 1 } })} />);
+    expect(screen.getByTestId('memory-label-decision')).toHaveClass('niuu-memory-label--focus');
+    expect(screen.getByTestId('memory-label-ines')).toBeInTheDocument();
+    expect(screen.getByTestId('memory-label-ticket')).toBeInTheDocument();
+    expect(screen.queryByTestId('memory-label-far')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('memory-label-lone')).not.toBeInTheDocument();
+  });
+
+  it('labels the focus’s own links with their relation, and nothing two hops out', () => {
+    render(<MemoryScene {...hudProps({ focus: { nodeId: 'decision', depth: 2 } })} />);
+    expect(screen.getByText('owns')).toHaveClass('niuu-memory-relation');
+    expect(screen.getByText('planned in')).toBeInTheDocument();
+    // ticket—far is lit at depth 2 but is not the focus's own link.
+    expect(screen.queryByText('covered by')).not.toBeInTheDocument();
+  });
+
+  it('marks what changed this week in amber: the new ticket and the link introduced today', () => {
+    render(<MemoryScene {...hudProps({ focus: { nodeId: 'decision', depth: 1 } })} />);
+    const ticket = screen.getByTestId('memory-label-ticket');
+    expect(ticket).toHaveClass('niuu-memory-label--recent');
+    expect(ticket).toHaveTextContent('T ticket · new this week');
+    expect(screen.getByTestId('memory-label-ines')).not.toHaveClass('niuu-memory-label--recent');
+    expect(screen.getByText('planned in')).toHaveClass('niuu-memory-relation--recent');
+    expect(screen.getByText('owns')).not.toHaveClass('niuu-memory-relation--recent');
+  });
+
+  it('draws recent nodes in the amber token and the rest in the signal token', () => {
+    const renderer = createFakeRenderer();
+    render(<MemoryScene {...hudProps({ createRenderer: () => renderer })} />);
+    const scene = vi.mocked(renderer.render).mock.calls.at(-1)![0] as import('three').Scene;
+    const points = scene.children.find((c) => c instanceof Points) as Points;
+    const colours = points.geometry.getAttribute('aColor');
+    const tokenColour = (name: string) =>
+      new Color(`rgb(${MEMORY_PALETTE_VARS.indexOf(name) + 1}, 1, 1)`);
+    const amber = tokenColour('--color-accent-amber');
+    const signal = tokenColour('--color-brand');
+    const order = ['decision', 'ines', 'ticket', 'far', 'lone'];
+    const colourOf = (id: string) => {
+      const i = order.indexOf(id);
+      return new Color(colours.getX(i), colours.getY(i), colours.getZ(i));
+    };
+    const near = (a: Color, b: Color) =>
+      Math.abs(a.r - b.r) + Math.abs(a.g - b.g) + Math.abs(a.b - b.b) < 1e-5;
+    expect(near(colourOf('ticket'), amber)).toBe(true);
+    expect(near(colourOf('ines'), signal)).toBe(true);
+    expect(near(colourOf('ines'), amber)).toBe(false);
+  });
+
+  it('keeps the focused node in the signal colour even when it changed this week', () => {
+    const renderer = createFakeRenderer();
+    render(
+      <MemoryScene
+        {...hudProps({ createRenderer: () => renderer, focus: { nodeId: 'ticket', depth: 1 } })}
+      />,
+    );
+    const scene = vi.mocked(renderer.render).mock.calls.at(-1)![0] as import('three').Scene;
+    const colours = (
+      scene.children.find((c) => c instanceof Points) as Points
+    ).geometry.getAttribute('aColor');
+    const signal = new Color(`rgb(${MEMORY_PALETTE_VARS.indexOf('--color-brand') + 1}, 1, 1)`);
+    const i = 2; // 'ticket'
+    expect(
+      Math.abs(colours.getX(i) - signal.r) + Math.abs(colours.getY(i) - signal.g),
+    ).toBeLessThan(1e-5);
+  });
+
+  it('shows mono readouts: node and link counts, what changed, and the focus coordinates', () => {
+    const { rerender } = render(<MemoryScene {...hudProps()} />);
+    const readout = screen.getByTestId('memory-readout');
+    expect(readout).toHaveTextContent('NODES5');
+    expect(readout).toHaveTextContent('LINKS3');
+    expect(readout).toHaveTextContent('CHANGED THIS WEEK1');
+    expect(screen.queryByTestId('memory-focus-coords')).not.toBeInTheDocument();
+
+    rerender(<MemoryScene {...hudProps({ focus: { nodeId: 'decision', depth: 1 } })} />);
+    expect(readout).toHaveTextContent('LIT3');
+    expect(screen.getByTestId('memory-focus-coords').textContent).toMatch(
+      /^X [+-]\d{3}\.\d Y [+-]\d{3}\.\d Z [+-]\d{3}\.\d$/,
+    );
+  });
+
+  it('a kind filter recedes the other kinds: no hub labels for them', () => {
+    render(<MemoryScene {...hudProps({ kinds: new Set(['person']) })} />);
+    expect(screen.getByTestId('memory-label-ines')).toBeInTheDocument();
+    expect(screen.queryByTestId('memory-label-decision')).not.toBeInTheDocument();
+    expect(screen.getByTestId('memory-readout')).toHaveTextContent('NODES5');
+  });
+
+  it('names the layer in the hover card', () => {
+    render(<MemoryScene {...hudProps()} />);
+    const canvas = screen.getByTestId('memory-scene-canvas-host').querySelector('canvas')!;
+    let found = false;
+    for (let x = 0; x <= 800 && !found; x += 20) {
+      for (let y = 0; y <= 600 && !found; y += 20) {
+        fireEvent.pointerMove(canvas, { clientX: x, clientY: y, buttons: 0 });
+        if (screen.queryByTestId('memory-hover-card')) found = true;
+      }
+    }
+    expect(found).toBe(true);
+    expect(screen.getByTestId('memory-hover-card')).toHaveTextContent('Booking platform');
+  });
+});
+
 describe('MemoryScene — spotlight camera', () => {
   /** Run queued animation frames by hand so camera easing can be observed. */
   function manualFrames() {
@@ -245,7 +430,9 @@ describe('MemoryScene — spotlight camera', () => {
       title: `Node ${i}`,
       category: 'topic',
       path: `/n${i}`,
-      mount: mounts[i % mounts.length]!,
+      // Blocks of 20 per layer, so a page's neighbours in the chain share its cluster:
+      // framing neighbours spread over far-apart layers backs the camera off instead.
+      mount: mounts[Math.floor(i / 20)]!,
       kind: 'topic',
       updatedAt: '2026-04-19T00:00:00Z',
       firstSeen: '2026-04-18T00:00:00Z',
@@ -253,7 +440,7 @@ describe('MemoryScene — spotlight camera', () => {
     }));
     const edges = nodes
       .slice(1)
-      .map((n, i) => ({ source: nodes[i]!.id, target: n.id, type: 'part_of' }));
+      .map((n, i) => ({ source: nodes[i]!.id, target: n.id, relation: 'part_of' }));
     const props = baseProps({ graph: { nodes, edges }, createRenderer: () => renderer });
     const layout = computeLayout(props.graph);
     const a = layout.nodes.get('/n30')!.position;
@@ -387,6 +574,51 @@ describe('MemoryScene — camera commands', () => {
     ).not.toThrow();
   });
 
+  it('a fly-to with a centre looks straight at that node', () => {
+    const renderer = createFakeRenderer();
+    const step = (() => {
+      let queue: FrameRequestCallback[] = [];
+      vi.spyOn(window, 'requestAnimationFrame').mockImplementation((cb) => {
+        queue.push(cb);
+        return queue.length;
+      });
+      vi.spyOn(window, 'cancelAnimationFrame').mockImplementation(() => {});
+      return (count: number) => {
+        for (let i = 0; i < count; i += 1) {
+          const run = queue;
+          queue = [];
+          act(() => run.forEach((cb) => cb(performance.now())));
+        }
+      };
+    })();
+    const props = baseProps({ createRenderer: () => renderer });
+    const { rerender } = render(<MemoryScene {...props} />);
+    rerender(
+      <MemoryScene
+        {...props}
+        camera={{ kind: 'fly-to', nodeIds: ['/a', '/b'], centre: '/b', key: 7 }}
+      />,
+    );
+    step(200);
+    const camera = vi
+      .mocked(renderer.render)
+      .mock.calls.at(-1)![1] as import('three').PerspectiveCamera;
+    const b = computeLayout(props.graph).nodes.get('/b')!.position;
+    // The camera looks along its forward vector straight through /b.
+    const toB = {
+      x: b.x - camera.position.x,
+      y: b.y - camera.position.y,
+      z: b.z - camera.position.z,
+    };
+    const len = Math.hypot(toB.x, toB.y, toB.z);
+    const forward = camera.getWorldDirection(
+      new (camera.position.constructor as typeof import('three').Vector3)(),
+    );
+    expect(
+      forward.x * (toB.x / len) + forward.y * (toB.y / len) + forward.z * (toB.z / len),
+    ).toBeCloseTo(1, 3);
+  });
+
   it('re-triggers when the key changes', () => {
     const { rerender } = render(
       <MemoryScene {...baseProps({ camera: { kind: 'fit', key: 1 } })} />,
@@ -474,7 +706,7 @@ describe('MemoryScene — hover card', () => {
     }
 
     expect(found).toBe(true);
-    expect(screen.getByTestId('memory-hover-card')).toHaveTextContent('click to focus');
+    expect(screen.getByTestId('memory-hover-card')).toHaveTextContent('click to fly');
   });
 });
 
@@ -508,14 +740,6 @@ describe('MemoryScene — path', () => {
     render(<MemoryScene {...baseProps({ path: ['/a', '/b'] })} />);
     expect(screen.getByTestId('memory-label-/a')).toBeInTheDocument();
     expect(screen.getByTestId('memory-label-/b')).toBeInTheDocument();
-  });
-});
-
-describe('MemoryScene — disputedIds', () => {
-  it('renders without throwing when a node is disputed', () => {
-    expect(() =>
-      render(<MemoryScene {...baseProps({ disputedIds: new Set(['/a']) })} />),
-    ).not.toThrow();
   });
 });
 

@@ -1,7 +1,7 @@
 /**
  * MimirTopbar — shell topbar-right slot for the Mímir plugin.
  *
- * Shows: active mount name · pages count · lint count (red if > 0),
+ * Shows: active mount name · pages count,
  * on every Mímir route except the memory view.
  */
 
@@ -9,7 +9,6 @@ import type { PluginCtx } from '@niuulabs/plugin-sdk';
 import { useRouterState } from '@tanstack/react-router';
 import { useActiveMount } from '../application/useActiveMount';
 import { useMimirPages } from './useMimirPages';
-import { useLint } from '../application/useLint';
 import './MimirTopbar.css';
 
 interface MimirTopbarProps {
@@ -23,6 +22,7 @@ interface MimirTopbarProps {
 export function MimirTopbar({ ctx: _ctx }: MimirTopbarProps) {
   const pathname = useRouterState({ select: (state) => state.location.pathname });
   if (pathname === '/mimir') return null;
+  if (pathname === '/mimir/search' || pathname === '/mimir/review') return null;
   return <MimirTopbarStats />;
 }
 
@@ -30,14 +30,12 @@ function MimirTopbarStats() {
   const { activeMount, mountName } = useActiveMount();
 
   const { data: pages = [] } = useMimirPages(mountName ? { mountName } : undefined);
-  const { summary: lintSummary } = useLint(mountName);
 
   const mountLabel = activeMount === 'all' ? 'all mounts' : activeMount;
   const pageCount =
     activeMount === 'all'
       ? pages.length
       : pages.filter((p) => p.mounts.includes(activeMount)).length;
-  const lintCount = lintSummary.error + lintSummary.warn + lintSummary.info;
 
   return (
     <div className="mm-topbar-stats" aria-label="Memory stats">
@@ -51,18 +49,6 @@ function MimirTopbarStats() {
       <span className="mm-topbar-stat">
         <span className="mm-topbar-stat__k">pages</span>
         <strong className="mm-topbar-stat__v">{pageCount.toLocaleString()}</strong>
-      </span>
-      <span className="mm-topbar-sep" aria-hidden>
-        ·
-      </span>
-      <span className="mm-topbar-stat">
-        <span className="mm-topbar-stat__k">lint</span>
-        <strong
-          className={`mm-topbar-stat__v${lintCount > 0 ? ' mm-topbar-stat__v--warn' : ''}`}
-          aria-label={`${lintCount} lint issues`}
-        >
-          {lintCount}
-        </strong>
       </span>
     </div>
   );

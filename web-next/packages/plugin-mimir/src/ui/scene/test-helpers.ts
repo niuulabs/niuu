@@ -31,7 +31,6 @@ export const TEST_PALETTE: MemoryPalette = {
     preference: 'rgb(5, 0, 0)',
     goal: 'rgb(6, 0, 0)',
     observation: 'rgb(7, 0, 0)',
-    thread: 'rgb(8, 0, 0)',
     page: 'rgb(9, 0, 0)',
   },
   proof: {
@@ -47,6 +46,8 @@ export const TEST_PALETTE: MemoryPalette = {
     older: 'rgb(0, 0, 4)',
   },
   dispute: 'rgb(9, 9, 0)',
+  focus: 'rgb(0, 9, 9)',
+  recent: 'rgb(9, 6, 0)',
 };
 
 /**

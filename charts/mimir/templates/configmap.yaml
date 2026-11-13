@@ -17,16 +17,30 @@ data:
   MIMIR_CATEGORIES: {{ .Values.config.categories | join "," | quote }}
   {{- end }}
 
-  {{- if or .Values.knowledgeDeployment .Values.niuu.tenantId .Values.config.observability .Values.config.liveActivity }}
   config.yaml: |
     tenant_id: {{ .Values.niuu.tenantId | default "" | quote }}
+    backend:
+      adapter: mimir.adapters.gbrain.GBrainMimirAdapter
+      mcp_url: {{ required "config.backend.mcpUrl is required: Mímir has no default store; set it to the gbrain /mcp endpoint" .Values.config.backend.mcpUrl | quote }}
+      api_token_file: {{ include "mimir.backendTokenFile" . | quote }}
+      {{- with .Values.config.backend.ingestUrl }}
+      ingest_url: {{ . | quote }}
+      {{- end }}
+      {{- if not (kindIs "invalid" .Values.config.backend.timeoutSeconds) }}
+      timeout_seconds: {{ .Values.config.backend.timeoutSeconds }}
+      {{- end }}
+      {{- if not (kindIs "invalid" .Values.config.backend.searchLimit) }}
+      search_limit: {{ .Values.config.backend.searchLimit }}
+      {{- end }}
+      {{- with .Values.config.backend.thinkModel }}
+      think_model: {{ . | quote }}
+      {{- end }}
+      {{- if not (kindIs "invalid" .Values.config.backend.queryExpansion) }}
+      query_expansion: {{ .Values.config.backend.queryExpansion }}
+      {{- end }}
     {{- if .Values.knowledgeDeployment }}
     deployment:
-      {{- if eq .Values.knowledgeDeployment.adapter "mimir.adapters.flux.FluxKnowledgeDeploymentAdapter" }}
-      {{- toYaml (mergeOverwrite (deepCopy .Values.knowledgeDeployment) (dict "envoy" .Values.envoy)) | nindent 6 }}
-      {{- else }}
       {{- toYaml .Values.knowledgeDeployment | nindent 6 }}
-      {{- end }}
     {{- end }}
     {{- with .Values.config.observability }}
     observability:
@@ -36,4 +50,70 @@ data:
     live_activity:
       {{- toYaml . | nindent 6 }}
     {{- end }}
-  {{- end }}
+    {{- with .Values.config.memory }}
+    {{- if .enabled }}
+    memory:
+      enabled: true
+      forge_base_url: {{ required "config.memory.forgeBaseUrl is required when config.memory.enabled: the gateway asks Forge who each session is" .forgeBaseUrl | quote }}
+      {{- if not (kindIs "invalid" .forgeTimeoutSeconds) }}
+      forge_timeout_seconds: {{ .forgeTimeoutSeconds }}
+      {{- end }}
+      {{- if not (kindIs "invalid" .defaultResultCount) }}
+      default_result_count: {{ .defaultResultCount }}
+      {{- end }}
+      {{- if not .systems }}
+      {{- fail "config.memory.systems needs at least one memory system when config.memory.enabled" }}
+      {{- end }}
+      systems:
+        {{- range $system := .systems }}
+        {{- $name := required "config.memory.systems[].name is required" $system.name }}
+        - name: {{ $name | quote }}
+          adapter: mimir.backends.gbrain.GBrainBackend
+          mcp_url: {{ required (printf "config.memory.systems[%s].mcpUrl is required" $name) $system.mcpUrl | quote }}
+          admin_token_file: {{ printf "%s/%s/admin-token" (include "mimir.memorySecretsDir" $) $name | quote }}
+          signing_key_file: {{ printf "%s/%s/signing-key" (include "mimir.memorySecretsDir" $) $name | quote }}
+          {{- if not (kindIs "invalid" $system.timeoutSeconds) }}
+          timeout_seconds: {{ $system.timeoutSeconds }}
+          {{- end }}
+          {{- if not (kindIs "invalid" $system.pageSize) }}
+          page_size: {{ $system.pageSize }}
+          {{- end }}
+          {{- if not (kindIs "invalid" $system.recallLimit) }}
+          recall_limit: {{ $system.recallLimit }}
+          {{- end }}
+          {{- if not (kindIs "invalid" $system.timelineLimit) }}
+          timeline_limit: {{ $system.timelineLimit }}
+          {{- end }}
+        {{- end }}
+      tenants:
+        {{- range $tenant, $system := .tenants }}
+        {{ $tenant | quote }}: {{ $system | quote }}
+        {{- else }} {}
+        {{- end }}
+      {{- if not (and .serviceAuth .serviceAuth.adapter) }}
+      {{- fail "config.memory.serviceAuth.adapter is required when config.memory.enabled: how the gateway authenticates as a service to Forge" }}
+      {{- end }}
+      service_auth:
+        {{- toYaml .serviceAuth | nindent 8 }}
+      {{- if not (kindIs "invalid" .retentionDays) }}
+      retention_days: {{ .retentionDays }}
+      {{- end }}
+      {{- if not (kindIs "invalid" .retentionSweepSeconds) }}
+      retention_sweep_seconds: {{ .retentionSweepSeconds }}
+      {{- end }}
+      {{- if not (kindIs "invalid" .graphCacheSeconds) }}
+      graph_cache_seconds: {{ .graphCacheSeconds }}
+      {{- end }}
+      {{- if not (kindIs "invalid" .graphConcurrency) }}
+      graph_concurrency: {{ .graphConcurrency }}
+      {{- end }}
+      {{- with .orgAdminRoles }}
+      org_admin_roles:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .connectorServiceSubjects }}
+      connector_service_subjects:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    {{- end }}
+    {{- end }}

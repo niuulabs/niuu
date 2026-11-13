@@ -146,7 +146,7 @@ It owns:
 
 ### `mimir`
 
-`mimir` owns memory, search, sources, graph, and linting.
+`mimir` owns the memory API, sources, and graph. It serves a configured backend for storage and search.
 
 It should continue to be treated as its own domain even when it is co-hosted in
 the same image.

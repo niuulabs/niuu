@@ -35,7 +35,13 @@ describe('memoryPalette', () => {
     expect(palette.kind.topic).toBe(
       `rgb(${MEMORY_PALETTE_VARS.indexOf('--color-memory-kind-topic') + 1}, 1, 1)`,
     );
-    expect(palette.dispute).toBe(`rgb(${MEMORY_PALETTE_VARS.length}, 1, 1)`);
+    expect(palette.dispute).toBe(
+      `rgb(${MEMORY_PALETTE_VARS.indexOf('--color-memory-dispute') + 1}, 1, 1)`,
+    );
+    // The heads-up display's signal and change colours are the brand and amber accent tokens.
+    expect(palette.focus).toBe(`rgb(${MEMORY_PALETTE_VARS.indexOf('--color-brand') + 1}, 1, 1)`);
+    expect(palette.recent).toBe(`rgb(${MEMORY_PALETTE_VARS.length}, 1, 1)`);
+    expect(MEMORY_PALETTE_VARS.at(-1)).toBe('--color-accent-amber');
     el.remove();
   });
 

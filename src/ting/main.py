@@ -52,6 +52,9 @@ from ting.adapters.guild_instances import GuildInstanceRegistryClient
 from ting.adapters.inbound.rest_integrations import create_telegram_setup_router
 from ting.adapters.inbound.rest_pats import create_pats_router
 from ting.adapters.inbound.rest_telegram_webhook import create_telegram_webhook_router
+from ting.adapters.memory_compile_launcher import WorkflowCompileLauncher
+from ting.adapters.memory_gateway_http import HttpMemorySourceGateway
+from ting.adapters.memory_import_worker import MemoryImportWorker
 from ting.adapters.offer_signing import MeshOfferSigner
 from ting.adapters.plain_child_gates import (
     SchemaOnlyChildResultVerifier,
@@ -60,6 +63,7 @@ from ting.adapters.plain_child_gates import (
 from ting.adapters.postgres_a2a_launches import PostgresA2ALaunchReservationRepository
 from ting.adapters.postgres_a2a_push import PostgresA2APushConfigRepository
 from ting.adapters.postgres_dispatcher import PostgresDispatcherRepository
+from ting.adapters.postgres_memory_imports import PostgresMemoryImportRepository
 from ting.adapters.postgres_notification_subscriptions import (
     PostgresNotificationSubscriptionRepository,
 )
@@ -86,6 +90,7 @@ from ting.api.dispatcher import create_dispatcher_router, resolve_dispatcher_rep
 from ting.api.dispatcher import resolve_event_bus as dispatcher_resolve_event_bus
 from ting.api.events import create_events_router, resolve_event_bus
 from ting.api.health import create_health_router
+from ting.api.memory_imports import create_memory_imports_router
 from ting.api.phases import create_saga_phases_router
 from ting.api.research import create_research_router, resolve_workflow_campaign_repo
 from ting.api.run_recovery import create_run_recovery_router
@@ -137,6 +142,7 @@ from ting.domain.services.dispatch_service import (
     DispatchService,
 )
 from ting.domain.services.gate_notifications import GateNotifier
+from ting.domain.services.memory_imports import MemoryImportService
 from ting.domain.services.notification import NotificationService
 from ting.domain.services.resource_authorization import (
     AuthorizedCampaignRepository,
@@ -720,6 +726,8 @@ def create_app(
     app.include_router(create_agent_card_router(settings.a2a))
     app.include_router(create_a2a_router())
     app.include_router(create_research_router())
+    if settings.memory_imports.enabled:
+        app.include_router(create_memory_imports_router())
     if settings.workflow_execution.enabled:
         app.include_router(create_workflow_executions_router())
         if settings.workflow_execution.delivery.enabled:
@@ -972,6 +980,7 @@ def create_app(
             app.dependency_overrides[resolve_a2a_launch_repo] = _resolve_a2a_launch_repo
 
             workflow_execution_worker = None
+            memory_import_worker: MemoryImportWorker | None = None
             attested_review_projector = None
             # Work history is read-only and remains available when execution
             # workers are disabled. The base ledger is migrated independently
@@ -1441,6 +1450,38 @@ def create_app(
             app.state.workflow_campaign_projector = workflow_campaign_projector
             await workflow_campaign_projector.start()
 
+            if settings.memory_imports.enabled:
+                memory_imports = settings.memory_imports
+                # Configured-but-impossible is fatal: HttpMemorySourceGateway refuses an empty
+                # gateway_url, and the credential adapter is built here, not on first use.
+                memory_import_service = MemoryImportService(
+                    repository=PostgresMemoryImportRepository(pool),
+                    connections=app.state.tracker_factory,
+                    gateway=HttpMemorySourceGateway(
+                        base_url=memory_imports.gateway_url,
+                        auth=_create_http_auth_adapter(memory_imports.gateway_auth),
+                        timeout_seconds=memory_imports.gateway_timeout_seconds,
+                    ),
+                    compiler=WorkflowCompileLauncher(
+                        workflows=workflow_repo,
+                        campaigns=workflow_campaign_repo,
+                        runs=lambda: app.state.workflow_runs,
+                        volundr_factory=app.state.volundr_factory,
+                        persona_source=persona_source,
+                    ),
+                )
+                app.state.memory_import_service = memory_import_service
+                memory_import_worker = MemoryImportWorker(
+                    service=memory_import_service,
+                    interval_seconds=memory_imports.poll_seconds,
+                )
+                await memory_import_worker.start()
+                logger.info(
+                    "Memory imports: running every %.0fs against %s",
+                    memory_imports.poll_seconds,
+                    memory_imports.gateway_url,
+                )
+
             # Wire Sleipnir bridge (sleipnir_bus already created above; bridge needs event_bus)
             ting_sleipnir_bridge = None
             if sleipnir_bus is not None:
@@ -1647,6 +1688,8 @@ def create_app(
             if ting_sleipnir_bridge is not None:
                 await ting_sleipnir_bridge.stop()
             await workflow_campaign_projector.stop()
+            if memory_import_worker is not None:
+                await memory_import_worker.stop()
             if a2a_push_dispatcher is not None:
                 await a2a_push_dispatcher.stop()
             if workflow_execution_worker is not None:

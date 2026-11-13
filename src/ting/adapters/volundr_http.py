@@ -943,6 +943,7 @@ class VolundrHTTPAdapter(VolundrPort):
                 id=str(data["id"]),
                 name=str(data["name"]),
                 instance_id=await self._project_host_id(client, headers),
+                tenant_id=str(data.get("tenant_id") or ""),
             )
 
     async def list_member_project_ids(
@@ -957,6 +958,24 @@ class VolundrHTTPAdapter(VolundrPort):
             resp = await client.get(f"{self._base_url}{FORGE_PROJECTS_PATH}", headers=headers)
             resp.raise_for_status()
             return [str(project["id"]) for project in resp.json()]
+
+    async def get_project_role(
+        self,
+        project_id: str,
+        *,
+        auth_token: str | None = None,
+        principal: Principal | None = None,
+    ) -> str | None:
+        headers = self._headers(auth_token, principal)
+        client = await self._client(timeout=self._timeout)
+        async with client:
+            resp = await client.get(
+                f"{self._base_url}{FORGE_PROJECTS_PATH}/{project_id}/role", headers=headers
+            )
+            if resp.status_code == 404:
+                return None
+            resp.raise_for_status()
+            return str(resp.json()["role"])
 
     async def ensure_project(
         self,
@@ -990,6 +1009,7 @@ class VolundrHTTPAdapter(VolundrPort):
                 id=str(data["id"]),
                 name=str(data["name"]),
                 instance_id=await self._project_host_id(client, headers),
+                tenant_id=str(data.get("tenant_id") or ""),
             )
 
     async def session_project(

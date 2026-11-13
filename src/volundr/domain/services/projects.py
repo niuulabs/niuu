@@ -39,6 +39,9 @@ from volundr.domain.services.session import SessionService
 #: Sentinel for "leave this membership field as it is".
 UNCHANGED = object()
 
+#: The project setting only an owner changes through ``update``.
+MEMORY_WRITE_PREFIXES_KEY = "memory_write_prefixes"
+
 _ROLE_GUIDANCE = {
     "coordinator": (
         "You coordinate this project. Keep the user's objective, decisions and open "
@@ -191,9 +194,21 @@ class ProjectService:
 
     async def update(self, project_id: UUID, changes: dict, revision: int, principal):
         project = await self.get(project_id, principal, ProjectRole.CONTRIBUTOR)
-        allowed = {"name", "description", "brief", "status", "workspace_path", "repo_url"}
+        allowed = {
+            "name",
+            "description",
+            "brief",
+            "status",
+            "workspace_path",
+            "repo_url",
+            MEMORY_WRITE_PREFIXES_KEY,
+        }
         if changes.keys() - allowed:
             raise ValueError("Project identity is immutable; update presentation or repository")
+        if MEMORY_WRITE_PREFIXES_KEY in changes:
+            # What a session may write straight into the project's memory is a setting of the
+            # project, like its members: only an owner changes it.
+            project = await self.get(project_id, principal, ProjectRole.OWNER)
         changes = dict(changes)
         if "repo_url" in changes and not changes["repo_url"] and changes.get("workspace_path"):
             raise ValueError("Detaching the repository also removes its checkout")

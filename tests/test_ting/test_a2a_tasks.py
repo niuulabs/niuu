@@ -3050,7 +3050,8 @@ def _mimir_workflow(root: Path) -> WorkflowDefinition:
                     "resourceType": "mimir",
                     "bindingMode": "registry",
                     "mount_name": "local",
-                    "path": str(root),
+                    "adapter": "tests.support.directory_mimir.DirectoryMimirAdapter",
+                    "kwargs": {"root": str(root)},
                 },
                 {
                     "id": "stage-1",

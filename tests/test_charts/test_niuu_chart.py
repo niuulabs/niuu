@@ -49,6 +49,11 @@ class TestValuesDefaults:
 
         assert session_route["service"] == "volundr"
 
+    def test_mimir_is_off_until_it_is_given_a_backend(self, values_yaml: dict) -> None:
+        """Mímir has no default store, so no Mímir instance is enabled by default."""
+        for alias in ("mimir-shared", "mimir-kanuck", "mimir-research"):
+            assert values_yaml[alias]["enabled"] is False
+
 
 class TestIngressTemplate:
     """Tests for ingress backend resolution."""

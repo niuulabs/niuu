@@ -3,7 +3,7 @@
  *
  * Sections:
  *   1. Mount picker — "all mounts" + per-mount rows with status dots
- *   2. Quick filters — Errors / Flagged / Low confidence
+ *   2. Quick filters — Flagged / Low confidence
  *
  * Navigation tabs live in the topbar (plugin descriptor `tabs` array).
  */
@@ -14,7 +14,6 @@ import type { PluginCtx } from '@niuulabs/plugin-sdk';
 import { useActiveMount } from '../application/useActiveMount';
 import { useMimirMounts } from './useMimirMounts';
 import { useMimirPages } from './useMimirPages';
-import { useLint } from '../application/useLint';
 import { MOUNT_DOT_STATE } from './mimir.constants';
 import './MimirSubnav.css';
 import { accessScopeLabel } from '../domain/access-scope';
@@ -43,15 +42,15 @@ export function MimirSubnav({ ctx }: MimirSubnavProps) {
 
   const { data: mounts = [] } = useMimirMounts();
   const { data: pages = [] } = useMimirPages(mountName ? { mountName } : undefined);
-  const { summary: lintSummary } = useLint(mountName);
 
-  const errorCount = lintSummary.error;
   const flaggedCount = pages.filter((p) => p.flagged).length;
   const lowConfidenceCount = pages.filter((p) => p.confidence === 'low').length;
 
   // The Memory scene owns its own mount scoping, colour-by, and ask bar —
   // nothing here applies to it. Registry routes still get the subnav.
   if (pathname === '/mimir') return null;
+  // Search and Review are one calm job each; mounts and filters do not apply to them.
+  if (pathname === '/mimir/search' || pathname === '/mimir/review') return null;
 
   if (subnavCollapsed) {
     return (
@@ -90,15 +89,6 @@ export function MimirSubnav({ ctx }: MimirSubnavProps) {
             </button>
           ))}
           <div className="mm-subnav-collapsed-sep" />
-          <button
-            type="button"
-            className="mm-subnav-collapsed-item"
-            onClick={() => navigate({ to: '/mimir/registry/health' })}
-            aria-label={`Lint errors ${errorCount}`}
-            title={`Errors ${errorCount}`}
-          >
-            !
-          </button>
           <button
             type="button"
             className="mm-subnav-collapsed-item"
@@ -178,18 +168,6 @@ export function MimirSubnav({ ctx }: MimirSubnavProps) {
       {/* ── Quick filters ─────────────────────────────────────────── */}
       <div className="mm-subnav-block">
         <div className="mm-subnav-label">Quick filters</div>
-        <button
-          type="button"
-          className="mm-subnav-btn"
-          onClick={() => navigate({ to: '/mimir/registry/health' })}
-          aria-label={`${errorCount} lint errors`}
-        >
-          <span className="mm-subnav-btn__glyph mm-subnav-btn__glyph--err" aria-hidden>
-            ●
-          </span>
-          <span className="mm-subnav-btn__label">Errors</span>
-          <span className="mm-subnav-btn__count mm-subnav-btn__count--red">{errorCount}</span>
-        </button>
         <button
           type="button"
           className="mm-subnav-btn"

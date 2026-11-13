@@ -18,7 +18,6 @@ from sleipnir.domain.catalog import (
     github_pr_merged,
     github_pr_opened,
     github_push_main,
-    mimir_page_written,
     ravn_session_ended,
     ravn_session_started,
     ravn_task_completed,
@@ -257,23 +256,6 @@ def test_bifrost_budget_degraded_zero_cap_returns_zero_pct():
         source="bifrost",
     )
     assert evt.payload["pct_consumed"] == pytest.approx(0.0)
-
-
-# ---------------------------------------------------------------------------
-# mimir.page.written
-# ---------------------------------------------------------------------------
-
-
-def test_mimir_page_written_fields():
-    evt = mimir_page_written(
-        page_path="technical/ravn/agent.md",
-        category="technical",
-        author="ravn",
-        source="mimir:markdown",
-    )
-    assert evt.event_type == registry.MIMIR_PAGE_WRITTEN
-    assert evt.urgency == pytest.approx(0.1)
-    assert "technical/ravn/agent.md" in evt.summary
 
 
 # ---------------------------------------------------------------------------

@@ -4,8 +4,8 @@
 
 1. explicit constructor arguments (the ``serve`` CLI flags)
 2. ``MIMIR__``-prefixed environment variables with ``__`` nesting, e.g.
-   ``MIMIR__EMBEDDING_MODEL=all-MiniLM-L6-v2``,
-   ``MIMIR__RANKING__TITLE_MATCH_BOOST=1.5``, ``MIMIR__EVAL_CAPTURE=false``
+   ``MIMIR__BACKEND='{"adapter": "mimir.adapters.gbrain.GBrainMimirAdapter", ...}'``,
+   ``MIMIR__EVAL_CAPTURE=false``
 3. a YAML config file: ``$MIMIR_CONFIG`` if set, else ``./mimir.yaml`` or
    ``/etc/mimir/config.yaml``
 
@@ -19,7 +19,7 @@ import os
 from pathlib import Path as _Path
 from typing import Any
 
-from pydantic import AliasChoices, BaseModel, Field
+from pydantic import AliasChoices, BaseModel, Field, field_validator
 from pydantic_settings import (
     BaseSettings,
     PydanticBaseSettingsSource,
@@ -42,115 +42,6 @@ def _config_paths() -> list[_Path]:
 
 
 CONFIG_PATHS = _config_paths()
-
-
-class RankingConfig(BaseModel):
-    """Tunable weights for the post-retrieval ranking layer (NIU-1057/1058/1062).
-
-    All boosts are multiplicative on the base retrieval score. Every value
-    here exists so nothing is hardcoded in business logic; defaults are the
-    eval-validated starting points.
-    """
-
-    enabled: bool = Field(default=True, description="Apply domain ranking boosts to search.")
-    overfetch_factor: int = Field(
-        default=4,
-        description="Candidates fetched from the search port per requested result.",
-    )
-    recency_half_life_days: float = Field(
-        default=90.0,
-        description="Page score halves every N days since last update.",
-    )
-    recency_floor: float = Field(
-        default=0.5,
-        description="Minimum recency factor so old-but-relevant pages still surface.",
-    )
-    title_match_boost: float = Field(
-        default=1.25,
-        description="Boost when all query tokens appear in the page title.",
-    )
-    confidence_boosts: dict[str, float] = Field(
-        default={},
-        description=(
-            "Multiplier per frontmatter confidence level. Defaults to empty "
-            "(neutral): the NIU-1057 hybrid ablation measured the "
-            "high=1.15/low=0.85 preset at -7.0 pts P@5 — high-confidence "
-            "pages crowded out correct answers. Opt in per deployment."
-        ),
-    )
-    page_type_weights: dict[str, float] = Field(
-        default={"directive": 1.1, "decision": 1.1},
-        description="Multiplier per page type; unlisted types get 1.0.",
-    )
-    backlink_alpha: float = Field(
-        default=0.0,
-        description=(
-            "Backlink centrality boost strength: 1 + alpha*log1p(backlinks). "
-            "Defaults to neutral: the NIU-1057 hybrid ablation measured "
-            "alpha=0.1 at -4.6 pts P@5 (hub pages crowd out answers) and "
-            "+0.0 in FTS-only mode. Opt in per deployment."
-        ),
-    )
-    zone_weights: dict[str, float] = Field(
-        default={"timeline": 0.9},
-        description=(
-            "Chunk-level zone multipliers by section (hierarchical recall, "
-            "NIU-1062): compiled-truth chunks default to 1.0, timeline "
-            "evidence is slightly demoted."
-        ),
-    )
-    graph_injection_base: float = Field(
-        default=0.3,
-        description=(
-            "Base score for pages injected by the relational arm (entity "
-            "match + 1-hop neighbors) when retrieval missed them entirely."
-        ),
-    )
-    graph_neighbor_boost: float = Field(
-        default=1.0,
-        description=(
-            "Boost for retrieved pages that are 1-hop from a query-matched "
-            "entity. Defaults to neutral: the NIU-1057 ablation showed 1.2 "
-            "cost MRR -0.049 with no P@5 gain on the golden set."
-        ),
-    )
-    graph_entity_boost: float = Field(
-        default=1.5,
-        description="Boost for a page whose entity is named in the query.",
-    )
-
-
-class EvidenceConfig(BaseModel):
-    """Thresholds for evidence-counted beliefs (NIU-1062).
-
-    Deterministic — every value here drives the zero-LLM evidence pass that
-    computes proof counts and freshness trends for compiled-truth facts.
-    """
-
-    min_token_overlap: int = Field(
-        default=2,
-        description="Significant tokens a timeline entry must share with a fact to support it.",
-    )
-    stale_after_days: float = Field(
-        default=90.0,
-        description="No supporting evidence newer than this → trend 'stale'.",
-    )
-    weakening_after_days: float = Field(
-        default=60.0,
-        description="No supporting evidence newer than this → trend 'weakening'.",
-    )
-    strengthening_min_proofs: int = Field(
-        default=3,
-        description="Fresh facts with at least this many proofs trend 'strengthening'.",
-    )
-    consolidate_on_ingest: bool = Field(
-        default=True,
-        description=(
-            "Run write-time scoped consolidation (the 'micro-dream') after "
-            "every source ingest: bearing pages get their evidence recomputed "
-            "immediately instead of waiting for the nightly dream cycle."
-        ),
-    )
 
 
 class LiveActivityConfig(BaseModel):
@@ -240,6 +131,141 @@ class MimirFactsConfig(BaseModel):
     )
 
 
+class MemoryGatewayConfig(BaseModel):
+    """The memory gateway (docs/design/memory): sessions' ``memory`` tools over their layers,
+    the context pack, the people routes for search, proposals and promotions, and retention.
+
+    Off unless ``enabled``. When enabled, every setting below is checked at startup:
+    a system that cannot be built, a tenant naming a system that does not exist, a
+    system lacking a capability its layers need, or a missing service
+    credential stops the service.
+    """
+
+    enabled: bool = Field(
+        default=False,
+        description=(
+            "Serve the memory routes (/memory/tools, /memory/context-pack, /memory/proposals, "
+            "/memory/promotions, /memory/search, /memory/graph) on the Mímir API prefixes, and "
+            "sweep expired layers."
+        ),
+    )
+    forge_base_url: str = Field(
+        default="",
+        description=(
+            "Forge's base URL. The gateway asks Forge who each session is on every call "
+            "(GET /api/v1/forge/sessions/{id}/memory-context) with the session's own "
+            "credential. Required when enabled."
+        ),
+    )
+    forge_timeout_seconds: float = Field(
+        default=10.0,
+        gt=0,
+        description="Timeout of each memory-context call to Forge; a timeout is a 401.",
+    )
+    systems: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description=(
+            "Memory systems, each a dynamic adapter with a gateway-local `name`: "
+            "{name: acme-brain, adapter: mimir.backends.gbrain.GBrainBackend, mcp_url: ..., "
+            "api_token_file: ..., signing_key_file: ...}. `name` is not passed to the "
+            "constructor; the other keys are."
+        ),
+    )
+    tenants: dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "Tenant id -> the name of the system that holds that org's layers (one memory "
+            "system per org). A session whose tenant is not listed is refused, naming this "
+            "setting."
+        ),
+    )
+    default_result_count: int = Field(
+        default=10,
+        ge=1,
+        description=(
+            "How many changes the change feed (the context pack's changes since the owner's "
+            "previous session) asks of a memory system per call. A page size, not a cap: the "
+            "feed is read until it has no more."
+        ),
+    )
+    service_auth: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "How the gateway authenticates as a service, to Forge's "
+            "POST /api/v1/forge/memory/ended (the retention sweep): a dynamic "
+            "niuu.ports.http_auth.HttpAuthPort adapter, e.g. {adapter: "
+            "niuu.adapters.outbound.http_auth.WorkloadIdentityBearerTokenAuthAdapter, "
+            "audiences: [forge]} on a cluster, or {adapter: "
+            "niuu.adapters.outbound.http_auth.NoAuthHeaderAdapter} in mini mode without auth. "
+            "Required when enabled."
+        ),
+    )
+    connector_service_subjects: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Workload subjects (the actor, `act.sub`, of a verified workload-identity token) "
+            "that may write connector sources through POST {base}/memory/sources, e.g. "
+            "[ting]. Empty means no caller is a connector: where Mímir's identity adapter "
+            "verifies callers the route answers 403 naming this setting. With the allow-all "
+            "identity of local mini mode nothing verifies callers, so the local caller passes "
+            "(still never with a session or scoped credential)."
+        ),
+    )
+    retention_days: float = Field(
+        default=14,
+        ge=0,
+        description=(
+            "Days a run or session layer outlives its run or session (design decision "
+            "2026-11-12), after which the retention sweep deletes it. A layer whose session "
+            "or run Forge no longer knows is deleted at once."
+        ),
+    )
+    retention_sweep_seconds: float = Field(
+        default=3600.0,
+        gt=0,
+        description=(
+            "Seconds between retention sweeps. A failed sweep is logged at error, counted "
+            "(memory.retention_sweep on the degraded counter) and tried again after this long."
+        ),
+    )
+    graph_cache_seconds: float = Field(
+        default=30.0,
+        ge=0,
+        description=(
+            "How stale the knowledge graph (GET /memory/graph) may be: a graph built for an org "
+            "and a set of layers is served again for this many seconds before it is rebuilt "
+            "from the memory system. 0 keeps nothing and rebuilds on every request."
+        ),
+    )
+    graph_concurrency: int = Field(
+        default=8,
+        ge=1,
+        description=(
+            "Reads against the memory system in flight at once while one knowledge graph is "
+            "built (page, timeline and source reads). Bounded by what the memory system's "
+            "endpoint serves in parallel; builds are slower, never wrong, with a lower value."
+        ),
+    )
+    org_admin_roles: list[str] = Field(
+        default_factory=lambda: ["volundr:admin"],
+        min_length=1,
+        description=(
+            "Roles of a person's login that make them an org admin, who decides proposals "
+            "to the org layer."
+        ),
+    )
+
+    @field_validator("connector_service_subjects")
+    @classmethod
+    def _subjects_named(cls, subjects: list[str]) -> list[str]:
+        if any(not subject.strip() for subject in subjects):
+            raise ValueError(
+                "memory.connector_service_subjects has a blank entry: name each connector "
+                "service's workload subject (e.g. ting) or leave the list out"
+            )
+        return [subject.strip() for subject in subjects]
+
+
 class MimirServiceConfig(BaseSettings):
     """Configuration for a Mímir service instance (standalone or plugin).
 
@@ -270,9 +296,24 @@ class MimirServiceConfig(BaseSettings):
             file_secret_settings,
         )
 
+    backend: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "The store this service serves, as a dynamic adapter: the fully-qualified "
+            "niuu.ports.mimir.MimirPort class under 'adapter' and its constructor "
+            "arguments as the other keys, e.g. {adapter: "
+            "mimir.adapters.gbrain.GBrainMimirAdapter, mcp_url: http://localhost:3131/mcp}. "
+            "Required: there is no default store, and a service without one fails at "
+            "startup naming this setting."
+        ),
+    )
     path: str = Field(
         default="~/.ravn/mimir",
-        description="Root directory for the Mímir knowledge base.",
+        description=(
+            "Directory for the service's own state: the mount registry "
+            "(<path>/.mimir-registry.json) and eval captures (<path>/evals/). "
+            "It holds no knowledge; that lives in `backend`."
+        ),
     )
     host: str = Field(
         default="0.0.0.0",
@@ -348,35 +389,6 @@ class MimirServiceConfig(BaseSettings):
             "None = a local mount."
         ),
     )
-    search_db: str | None = Field(
-        default=None,
-        description=(
-            "Path to the SQLite database for the hybrid search index. "
-            "Defaults to <path>/search.db when None."
-        ),
-    )
-    embedding_model: str | None = Field(
-        default=None,
-        description=(
-            "Embedding model for semantic search. With embedding_base_url set "
-            "this is the model name sent to that endpoint (e.g. "
-            "'Qwen/Qwen3-Embedding-0.6B'); without it, a sentence-transformers "
-            "model loaded in-process (e.g. 'all-MiniLM-L6-v2'). "
-            "Null means FTS-only, which is a deliberate choice, not a fallback."
-        ),
-    )
-    embedding_base_url: str = Field(
-        default="",
-        description=(
-            "OpenAI-compatible /v1 base URL serving embeddings (vLLM, TGI, "
-            "Ollama, OpenAI). Preferred over loading a model in-process: it "
-            "needs only httpx, so no heavy dependency in the image."
-        ),
-    )
-    embedding_api_key: str = Field(
-        default="",
-        description="Bearer token for embedding_base_url. Empty for unauthenticated servers.",
-    )
     eval_capture: bool = Field(
         default=True,
         description=(
@@ -397,13 +409,9 @@ class MimirServiceConfig(BaseSettings):
             "and the backend cannot be built, startup fails."
         ),
     )
-    ranking: RankingConfig = Field(
-        default_factory=RankingConfig,
-        description="Post-retrieval ranking boosts (NIU-1057/1058/1062).",
-    )
-    evidence: EvidenceConfig = Field(
-        default_factory=EvidenceConfig,
-        description="Evidence-counted belief thresholds (NIU-1062).",
+    memory: MemoryGatewayConfig = Field(
+        default_factory=MemoryGatewayConfig,
+        description="The memory gateway: layered memory tools for Forge sessions.",
     )
     live_activity: LiveActivityConfig = Field(
         default_factory=LiveActivityConfig,

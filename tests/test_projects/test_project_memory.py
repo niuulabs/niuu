@@ -100,7 +100,7 @@ class Registry(MemoryMountDirectory):
         self.owners: list[str] = []
 
     def put(self, entry_id, *, tenant="acme", **fields):
-        fields.setdefault("path", f"/mimir/{entry_id}")
+        fields.setdefault("url", f"https://mimir.example/{entry_id}")
         self.entries[entry_id] = (tenant, RegistryTarget(id=entry_id, name=entry_id, **fields))
 
     async def resolve(self, entry_id, *, tenant_id, owner_id):
@@ -126,8 +126,11 @@ class Specs(LaunchSpecProvider):
         return next((s for s in self.specs.values() if s.is_default), None)
 
 
+GATEWAY_URL = "http://127.0.0.1:8080/api/v1/mimir"
+
+
 class World:
-    def __init__(self, *specs: LaunchSpec) -> None:
+    def __init__(self, *specs: LaunchSpec, gateway: bool = False) -> None:
         self.users = MemoryUsers()
         for name in ("alice", "bob", "carol", "dave"):
             self.users.seed(name, "acme", name=name.title())
@@ -135,8 +138,10 @@ class World:
         self.repository = MemoryMounts()
         self.registry = Registry()
         self.registry.put("team-notes")
-        self.registry.put("playbook", url="https://mimir.example/m", path="")
-        self.resolver = ProjectMemoryResolver(self.repository, self.registry)
+        self.registry.put("playbook", url="https://mimir.example/m")
+        self.resolver = ProjectMemoryResolver(
+            self.repository, self.registry, gateway_holds_limits=gateway
+        )
         self.pods = MockPodManager()
         self.sessions = SessionService(
             InMemorySessionRepository(),
@@ -144,7 +149,10 @@ class World:
             authorization=CedarAuthorizationAdapter(),
             validate_repos=False,
             provisioning_initial_delay=0,
-            contributors=[SessionMCPContributor(), PromptContributor()],
+            contributors=[
+                SessionMCPContributor(memory_gateway_url=GATEWAY_URL if gateway else ""),
+                PromptContributor(),
+            ],
             launch_spec_provider=Specs(*specs),
             project_memory=self.resolver,
         )
@@ -177,7 +185,7 @@ class World:
             ALICE,
             name=name,
             registry_entry_id=entry,
-            access=fields.pop("access", MemoryAccess.READ),
+            access=fields.pop("access", MemoryAccess.READ_WRITE),
             **fields,
         )
 
@@ -210,15 +218,21 @@ async def world():
     return w
 
 
+@pytest.fixture
+async def gateway_world():
+    """A Forge given the memory gateway (memory.gateway_url), which holds the limits."""
+    w = World(gateway=True)
+    await w.setup()
+    return w
+
+
 # --- who may do what --------------------------------------------------------------------
 
 
 async def test_owner_adds_and_every_member_lists(world):
-    added = await world.mount(
-        "notes", access=MemoryAccess.READ_WRITE, write_prefixes=("project/", "entity/")
-    )
+    added = await world.mount("notes")
     assert added.added_by == "alice"
-    assert added.write_prefixes == ("project/", "entity/")
+    assert added.access is MemoryAccess.READ_WRITE and added.write_prefixes == ()
     for member in (ALICE, BOB, CAROL):
         assert [m.name for m in await world.service.list(world.project.id, member)] == ["notes"]
 
@@ -268,7 +282,7 @@ async def test_a_name_is_taken_once_per_project(world):
 
 async def test_access_and_prefixes_must_agree(world):
     with pytest.raises(ValueError, match="no write prefixes"):
-        await world.mount(write_prefixes=("project/",))
+        await world.mount(access=MemoryAccess.READ, write_prefixes=("project/",))
     with pytest.raises(ValueError, match="relative page path"):
         await world.mount(access=MemoryAccess.READ_WRITE, write_prefixes=("../x",))
     with pytest.raises(ValueError, match="relative page path"):
@@ -280,13 +294,13 @@ async def test_access_and_prefixes_must_agree(world):
 async def test_a_mount_needs_a_registry_entry_its_org_can_reach(world):
     world.registry.put("other-org", tenant="globex")
     world.registry.put("off", enabled=False)
-    world.registry.put("nowhere", path="", url="")
+    world.registry.put("nowhere", url="")
     world.registry.put("shared-global", tenant="")
     for entry, why in (
         ("missing", "does not exist or is not reachable"),
         ("other-org", "does not exist or is not reachable"),
         ("off", "disabled"),
-        ("nowhere", "no url, adapter or path"),
+        ("nowhere", "no url or adapter"),
     ):
         with pytest.raises(MemoryMountUnavailableError, match=why) as raised:
             await world.mount("notes", entry=entry)
@@ -298,10 +312,10 @@ async def test_a_mount_needs_a_registry_entry_its_org_can_reach(world):
 async def test_change_and_remove(world):
     pid = world.project.id
     await world.mount()
-    changed = await world.service.change(
-        pid, ALICE, "notes", access=MemoryAccess.READ_WRITE, write_prefixes=("project/",)
-    )
-    assert changed.access is MemoryAccess.READ_WRITE
+    with pytest.raises(MemoryMountUnenforceableError, match="'notes'"):
+        await world.service.change(
+            pid, ALICE, "notes", access=MemoryAccess.READ_WRITE, write_prefixes=("project/",)
+        )
     open_access = await world.service.change(pid, ALICE, "notes", access=MemoryAccess.READ_WRITE)
     assert open_access.write_prefixes == () and not open_access.restricts
     with pytest.raises(MemoryMountNotFoundError):
@@ -320,7 +334,7 @@ async def test_change_loses_to_a_mount_removed_meanwhile(world, monkeypatch):
 
     monkeypatch.setattr(world.repository, "update", gone)
     with pytest.raises(MemoryMountNotFoundError):
-        await world.service.change(world.project.id, ALICE, "notes", access=MemoryAccess.READ)
+        await world.service.change(world.project.id, ALICE, "notes", access=MemoryAccess.READ_WRITE)
 
 
 # --- routes ------------------------------------------------------------------------------
@@ -342,11 +356,11 @@ async def client(world):
 async def test_routes_map_roles_and_errors(world, client):
     base = f"/projects/{world.project.id}/memory"
     owner = {"x-user": "alice"}
-    body = {"name": "notes", "registry_entry_id": "team-notes"}
+    body = {"name": "notes", "registry_entry_id": "team-notes", "access": "read_write"}
 
     created = await client.post(base, json=body, headers=owner)
     assert created.status_code == 201
-    assert created.json()["added_by"] == "alice" and created.json()["access"] == "read"
+    assert created.json()["added_by"] == "alice" and created.json()["access"] == "read_write"
 
     assert (await client.post(base, json=body, headers=owner)).status_code == 409
     assert (await client.post(base, json=body, headers={"x-user": "bob"})).status_code == 403
@@ -364,12 +378,18 @@ async def test_routes_map_roles_and_errors(world, client):
     assert [m["name"] for m in listed.json()] == ["notes"]
     assert (await client.get(base, headers={"x-user": "dave"})).status_code == 404
 
-    change = {"access": "read_write", "write_prefixes": ["project/"]}
+    restricted = {"access": "read_write", "write_prefixes": ["project/"]}
+    refused_limit = await client.patch(f"{base}/notes", json=restricted, headers=owner)
+    assert refused_limit.status_code == 422 and "memory gateway" in refused_limit.json()["detail"]
+    read_only = await client.patch(f"{base}/notes", json={"access": "read"}, headers=owner)
+    assert read_only.status_code == 422 and "memory gateway" in read_only.json()["detail"]
+
+    change = {"access": "read_write", "write_prefixes": []}
     assert (
         await client.patch(f"{base}/notes", json=change, headers={"x-user": "carol"})
     ).status_code == 403
     patched = await client.patch(f"{base}/notes", json=change, headers=owner)
-    assert patched.status_code == 200 and patched.json()["write_prefixes"] == ["project/"]
+    assert patched.status_code == 200 and patched.json()["write_prefixes"] == []
     assert (await client.patch(f"{base}/ghost", json=change, headers=owner)).status_code == 404
 
     assert (await client.delete(f"{base}/notes", headers={"x-user": "bob"})).status_code == 403
@@ -384,28 +404,15 @@ WIKI = with_memory_instructions("", facts=False)
 FACTS = with_memory_instructions("", facts=True)
 
 
-async def test_a_session_gets_its_mounts_with_the_limits_held_and_wiki_instructions(world):
+async def test_a_session_gets_its_mounts_and_wiki_instructions(world):
     await world.mount("notes")
-    await world.mount(
-        "scratch", entry="team-notes", access=MemoryAccess.READ_WRITE, write_prefixes=("a/", "b/")
-    )
-    await world.mount("book", entry="playbook", access=MemoryAccess.READ_WRITE)
+    await world.mount("book", entry="playbook")
     started = await world.launch()
     assert started.status in (SessionStatus.STARTING, SessionStatus.RUNNING)
 
     servers = world.servers()
-    assert set(servers) == {"mimir-notes", "mimir-scratch", "mimir-book"}
-    assert servers["mimir-notes"]["args"] == [
-        "-m",
-        "mimir",
-        "mcp",
-        "--path",
-        "/mimir/team-notes",
-        "--name",
-        "notes",
-        "--read-only",
-    ]
-    assert servers["mimir-scratch"]["args"][-4:] == ["--write-prefix", "a/", "--write-prefix", "b/"]
+    assert set(servers) == {"mimir-notes", "mimir-book"}
+    assert servers["mimir-notes"]["url"] == "https://mimir.example/team-notes"
     assert servers["mimir-book"]["url"] == "https://mimir.example/m"
 
     prompt = world.last_spec().values["session"]["systemPrompt"]
@@ -416,9 +423,9 @@ async def test_a_session_gets_its_mounts_with_the_limits_held_and_wiki_instructi
 
 
 async def test_a_mount_that_offers_the_fact_tools_gets_the_fact_instructions(world):
-    world.registry.put("hub", url="https://hub.example", path="", facts=True)
+    world.registry.put("hub", url="https://hub.example", facts=True)
     await world.mount("notes")
-    await world.mount("hub", entry="hub", access=MemoryAccess.READ_WRITE)
+    await world.mount("hub", entry="hub")
     await world.launch()
     prompt = world.last_spec().values["session"]["systemPrompt"]
     assert FACTS in prompt and WIKI not in prompt
@@ -434,23 +441,29 @@ async def test_instructions_follow_the_prompt_the_session_was_given(world):
     assert prompt.startswith("Review the diff.\n\n" + WIKI)
 
 
-async def test_limits_that_cannot_be_held_are_refused_when_adding_and_changing(world):
-    with pytest.raises(MemoryMountUnenforceableError, match="'book'.*cannot hold that limit"):
-        await world.mount("book", entry="playbook")
+@pytest.mark.parametrize("entry", ["team-notes", "playbook"])
+async def test_limits_are_refused_for_every_target_when_adding_and_changing(world, entry):
+    with pytest.raises(MemoryMountUnenforceableError, match="'book'.*memory gateway"):
+        await world.mount("book", entry=entry, access=MemoryAccess.READ)
+    with pytest.raises(MemoryMountUnenforceableError, match="'book'.*read_write and no prefixes"):
+        await world.mount("book", entry=entry, write_prefixes=("a/",))
+    await world.mount("book", entry=entry)
     with pytest.raises(MemoryMountUnenforceableError, match="'book'"):
-        await world.mount(
-            "book", entry="playbook", access=MemoryAccess.READ_WRITE, write_prefixes=("a/",)
-        )
-    await world.mount("book", entry="playbook", access=MemoryAccess.READ_WRITE)
-    with pytest.raises(MemoryMountUnenforceableError):
         await world.service.change(world.project.id, ALICE, "book", access=MemoryAccess.READ)
 
 
-async def test_an_entry_that_changed_under_a_limited_mount_fails_the_launch(world):
-    await world.mount("notes")
-    world.registry.put("team-notes", path="", url="https://moved.example")
+async def test_a_limited_mount_stored_earlier_fails_the_launch(world):
+    await world.repository.add(
+        ProjectMemoryMount(
+            project_id=world.project.id,
+            name="notes",
+            registry_entry_id="team-notes",
+            access=MemoryAccess.READ,
+        )
+    )
     with pytest.raises(MemoryMountUnenforceableError, match="'notes'"):
         await world.forge.create_and_start_session(world.create(), principal=ALICE)
+    assert world.pods.start_calls == []
 
 
 async def test_the_owner_the_registry_is_asked_for_is_the_sessions_owner(world):
@@ -502,7 +515,7 @@ async def test_a_restart_picks_up_what_the_project_holds_now(world):
     await world.mount("notes")
     first = await world.launch()
     await world.service.remove(world.project.id, ALICE, "notes")
-    await world.mount("later", entry="playbook", access=MemoryAccess.READ_WRITE)
+    await world.mount("later", entry="playbook")
     stored = await world.sessions.get_session(first.id)
     await world.sessions._repository.update(
         stored.model_copy(update={"status": SessionStatus.STOPPED})
@@ -536,7 +549,9 @@ async def test_removing_every_mount_leaves_a_restart_with_only_its_own_memory(wo
 async def test_a_session_that_sets_its_own_mimir_adds_to_the_projects(world):
     await world.mount("notes")
     await world.launch(
-        workload_config={"mimir": {"instances": [{"name": "mine", "path": "/mimir/mine"}]}}
+        workload_config={
+            "mimir": {"instances": [{"name": "mine", "url": "https://m.example/mimir/mine"}]}
+        }
     )
     assert set(world.servers()) == {"mimir-notes", "mimir-mine"}
 
@@ -550,7 +565,9 @@ async def test_a_session_may_repeat_a_project_mount_but_not_redefine_it(world):
     )
     assert list(world.servers()) == ["mimir-notes"]
 
-    clash = {"mimir": {"instances": [{"name": "notes", "path": "/mimir/elsewhere"}]}}
+    clash = {
+        "mimir": {"instances": [{"name": "notes", "url": "https://m.example/mimir/elsewhere"}]}
+    }
     with pytest.raises(MemoryMountClashError, match="'notes'.*project.*session"):
         await world.forge.create_and_start_session(
             world.create(workload_config=clash), principal=ALICE
@@ -561,12 +578,16 @@ async def test_a_launch_spec_adds_mounts_and_cannot_redefine_the_projects():
     spec = LaunchSpec(
         name="deep",
         workload_config={
-            "mimir": {"instances": [{"name": "spec-wide", "path": "/mimir/spec-wide"}]}
+            "mimir": {
+                "instances": [{"name": "spec-wide", "url": "https://m.example/mimir/spec-wide"}]
+            }
         },
     )
     clashing = LaunchSpec(
         name="clash",
-        workload_config={"mimir": {"instances": [{"name": "notes", "path": "/mimir/elsewhere"}]}},
+        workload_config={
+            "mimir": {"instances": [{"name": "notes", "url": "https://m.example/mimir/elsewhere"}]}
+        },
     )
     world = World(spec, clashing)
     await world.setup()
@@ -588,7 +609,7 @@ async def test_the_default_spec_of_a_workload_type_adds_mounts_too():
         workload_type="pipeline",
         workload_config={
             "mimir_hosted_url": "https://spec.example",
-            "mimir": {"instances": [{"name": "spec-wide", "path": "/m"}]},
+            "mimir": {"instances": [{"name": "spec-wide", "url": "https://m.example/m"}]},
         },
     )
     world = World(default)
@@ -604,7 +625,12 @@ async def test_session_routes_answer_a_bad_mount_with_a_4xx_naming_it(world):
     world.registry.put("team-notes", tenant="")
     open_project = await world.projects.register(ForgeProject(name="Open"), None)
     await world.repository.add(
-        ProjectMemoryMount(project_id=open_project.id, name="notes", registry_entry_id="team-notes")
+        ProjectMemoryMount(
+            project_id=open_project.id,
+            name="notes",
+            registry_entry_id="team-notes",
+            access=MemoryAccess.READ_WRITE,
+        )
     )
     coordination = SessionCoordination(project_id=open_project.id)
     app = FastAPI()
@@ -618,7 +644,9 @@ async def test_session_routes_answer_a_bad_mount_with_a_4xx_naming_it(world):
     data = SessionCreate(name="task", model="test", coordination=coordination).model_dump(
         mode="json"
     )
-    clash = {"mimir": {"instances": [{"name": "notes", "path": "/mimir/elsewhere"}]}}
+    clash = {
+        "mimir": {"instances": [{"name": "notes", "url": "https://m.example/mimir/elsewhere"}]}
+    }
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url="http://t") as http:
         clashed = await http.post("/api/v1/forge/sessions", json={**data, "workload_config": clash})
         assert clashed.status_code == 409, clashed.text
@@ -697,7 +725,12 @@ async def test_hosted_members_get_the_mounts_when_their_unit_starts(world):
 def _project(*names, entry="team-notes"):
     return ProjectMemoryRefs(
         [
-            {"mount_name": n, "registry_entry_id": entry, "path": f"/m/{n}", "source": "project"}
+            {
+                "mount_name": n,
+                "registry_entry_id": entry,
+                "url": f"https://m.example/{n}",
+                "source": "project",
+            }
             for n in names
         ],
         [
@@ -708,26 +741,31 @@ def _project(*names, entry="team-notes"):
 
 
 def test_merge_keeps_every_source_and_tags_what_it_derives():
-    spec = {"registry_refs": [{"mount_name": "s", "path": "/s"}], "hosted_url": "https://spec"}
+    spec = {
+        "registry_refs": [{"mount_name": "s", "url": "https://m.example/s"}],
+        "hosted_url": "https://spec",
+    }
     merged = merge_memory(
-        {"instances": [{"name": "i", "path": "/i"}], "default_mounts": ["i"]},
+        {"instances": [{"name": "i", "url": "https://m.example/i"}], "default_mounts": ["i"]},
         spec,
         _project("p"),
     )
     assert [r["mount_name"] for r in merged["registry_refs"]] == ["p", "s"]
     assert merged["registry_refs"][1]["source"] == "launch_spec"
-    assert merged["instances"] == [{"name": "i", "path": "/i"}]
+    assert merged["instances"] == [{"name": "i", "url": "https://m.example/i"}]
     assert merged["hosted_url"] == "https://spec"  # the spec's, since the session set none
     assert merged["default_mounts"] == ["i"]
     assert has_derived(merged) and not has_derived(without_derived(merged))
     assert without_derived(merged) == {
-        "instances": [{"name": "i", "path": "/i"}],
+        "instances": [{"name": "i", "url": "https://m.example/i"}],
         "default_mounts": ["i"],
     }
 
 
 def test_merge_is_stable_when_applied_to_its_own_output():
-    first = merge_memory({"instances": [{"name": "i", "path": "/i"}]}, None, _project("p"))
+    first = merge_memory(
+        {"instances": [{"name": "i", "url": "https://m.example/i"}]}, None, _project("p")
+    )
     assert merge_memory(first, None, _project("p")) == first
 
 
@@ -890,3 +928,77 @@ def test_only_mounts_that_say_so_offer_the_fact_tools():
     assert offers_facts({"registry_refs": [{"facts": True}]})
     assert offers_facts({"instances": [{"name": "a", "url": "u", "facts": True}]})
     assert not offers_facts({"ephemeral_locals": [{"facts": True}]})
+
+
+# --- with the memory gateway: it holds the limits ---------------------------------------
+
+
+@pytest.mark.parametrize("entry", ["team-notes", "playbook"])
+async def test_with_the_gateway_limits_are_accepted_when_adding_and_changing(gateway_world, entry):
+    world = gateway_world
+    read_only = await world.mount("book", entry=entry, access=MemoryAccess.READ)
+    assert read_only.access is MemoryAccess.READ and read_only.restricts
+    prefixed = await world.mount("pages", entry=entry, write_prefixes=("a/",))
+    assert prefixed.write_prefixes == ("a/",)
+    changed = await world.service.change(
+        world.project.id, ALICE, "book", access=MemoryAccess.READ_WRITE, write_prefixes=("b/",)
+    )
+    assert changed.write_prefixes == ("b/",)
+
+
+async def test_with_the_gateway_a_limited_mount_launches_and_carries_its_limit(gateway_world):
+    world = gateway_world
+    await world.mount("notes", access=MemoryAccess.READ)
+    await world.mount("pages", entry="playbook", write_prefixes=("a/",))
+
+    started = await world.launch()
+
+    config = (await world.sessions.get_session(started.id)).workload_config["mimir"]
+    assert {b["mount_name"]: (b["access"], b["write_prefixes"]) for b in config["bindings"]} == {
+        "notes": ("read", []),
+        "pages": ("read_write", ["a/"]),
+    }
+    assert {r["mount_name"]: r["registry_entry_id"] for r in config["registry_refs"]} == {
+        "notes": "team-notes",
+        "pages": "playbook",
+    }
+
+
+async def test_with_the_gateway_no_per_mount_server_and_no_mimir_instructions(gateway_world):
+    world = gateway_world
+    await world.mount("notes")
+    await world.mount("pages", entry="playbook", access=MemoryAccess.READ)
+
+    await world.launch(system_prompt="Review the diff.")
+
+    assert world.servers() == {}
+    spec = world.last_spec()
+    assert "mcpServers" not in spec.values
+    prompt = spec.values["session"]["systemPrompt"]
+    assert prompt.startswith("Review the diff.")
+    assert WIKI not in prompt and FACTS not in prompt
+
+
+async def test_with_the_gateway_a_mount_it_could_not_open_still_fails_the_launch(gateway_world):
+    world = gateway_world
+    await world.mount("notes")
+
+    started = await world.forge.create_and_start_session(
+        world.create(workload_config={"mimir": {"registry_refs": [{"mount_name": "x"}]}}),
+        principal=ALICE,
+    )
+    await asyncio.gather(*world.sessions._provisioning_tasks.values())
+
+    failed = await world.sessions.get_session(started.id)
+    assert failed.status is SessionStatus.FAILED
+    assert "registry_refs[1] (x)" in failed.error and "registry_entry_id" in failed.error
+    assert world.pods.start_calls == []
+
+
+async def test_without_the_gateway_the_launch_is_unchanged(world):
+    """The switch is memory.gateway_url alone: a Forge without it keeps its refusals and servers."""
+    await world.mount("notes")
+    await world.launch()
+    assert list(world.servers()) == ["mimir-notes"]
+    with pytest.raises(MemoryMountUnenforceableError):
+        await world.mount("book", access=MemoryAccess.READ)

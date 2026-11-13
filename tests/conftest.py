@@ -185,6 +185,16 @@ class InMemorySessionRepository(SessionRepository):
             and s.tenant_id == tenant_id
         ]
 
+    async def list_by_workflow_runs(self, run_ids: list[str]) -> list[Session]:
+        return sorted(
+            (
+                s
+                for s in self._sessions.values()
+                if s.workload_config.get("workflow_run_id") in run_ids
+            ),
+            key=lambda s: s.created_at,
+        )
+
     async def update(self, session: Session) -> Session:
         current = self._sessions[session.id]
         config = dict(session.workload_config)

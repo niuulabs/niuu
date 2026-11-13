@@ -1,10 +1,12 @@
-"""The Forge MCP server over stdio, forwarding every tool to the session's broker.
+"""The built-in MCP servers over stdio, forwarding every tool to the session's broker.
 
-An agent CLI (Claude Code, Codex, Grok) spawns this process for the built-in
-``forge`` MCP server. It speaks MCP JSON-RPC 2.0 over newline-delimited stdio and
-forwards ``tools/list`` / ``tools/call`` to the broker's loopback routes
-(``/api/forge-mcp/tools``), authenticating with the broker's per-start secret read
-from ``--token-file``. It holds no Forge credential of its own.
+An agent CLI (Claude Code, Codex, Grok) spawns this process for a built-in MCP server:
+``forge`` (the default) or, with ``--server memory``, ``memory``. It speaks MCP
+JSON-RPC 2.0 over newline-delimited stdio and forwards ``tools/list`` / ``tools/call``
+to the broker's loopback routes (``/api/forge-mcp/tools`` or ``/api/memory-mcp/tools``),
+authenticating with the broker's per-start secret read from ``--token-file``. It holds
+no Forge or gateway credential of its own. A :class:`ServerProfile` carries what differs
+between the servers (name, route, where the ``initialize`` instructions come from).
 
 Why hand-rolled rather than the ``mcp`` SDK: this process starts once per agent
 CLI (and per restart), so it must come up fast and must never write anything to
@@ -27,6 +29,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 from typing import IO, Any
 
 from niuu.question_standard import QUESTION_STANDARD
@@ -44,6 +47,7 @@ INVALID_PARAMS = -32602
 INTERNAL_ERROR = -32603
 
 TOOLS_PATH = "/api/forge-mcp/tools"
+MEMORY_TOOLS_PATH = "/api/memory-mcp/tools"
 SERVER_NAME = "forge"
 SERVER_VERSION = "1.0.0"
 SERVER_INSTRUCTIONS = (
@@ -59,6 +63,41 @@ SERVER_INSTRUCTIONS = (
 _ERROR_BODY_CHARS = 500
 
 
+@dataclass(frozen=True)
+class ServerProfile:
+    """What differs between the built-in servers this process can be."""
+
+    name: str
+    title: str
+    tools_path: str
+    #: Fixed ``initialize`` instructions; ``None`` takes them from the broker's tool
+    #: listing (the memory gateway owns its own), and a listing without them fails
+    #: ``initialize`` rather than serving a server with no instructions.
+    instructions: str | None
+    #: What a failed broker call is called in the tool error the model reads.
+    broker_label: str
+    thread_prefix: str
+
+
+FORGE_PROFILE = ServerProfile(
+    name=SERVER_NAME,
+    title="Forge",
+    tools_path=TOOLS_PATH,
+    instructions=SERVER_INSTRUCTIONS,
+    broker_label="Forge broker",
+    thread_prefix="forge-mcp",
+)
+MEMORY_PROFILE = ServerProfile(
+    name="memory",
+    title="Memory",
+    tools_path=MEMORY_TOOLS_PATH,
+    instructions=None,
+    broker_label="memory broker",
+    thread_prefix="memory-mcp",
+)
+PROFILES = {profile.name: profile for profile in (FORGE_PROFILE, MEMORY_PROFILE)}
+
+
 class BrokerError(Exception):
     """The broker could not be reached or refused the call."""
 
@@ -72,12 +111,20 @@ class UnknownToolError(BrokerError):
 
 
 class BrokerClient:
-    """Calls the broker's loopback Forge MCP routes."""
+    """Calls the broker's loopback MCP routes for one built-in server."""
 
-    def __init__(self, base_url: str, token_file: str, timeout_s: float) -> None:
+    def __init__(
+        self,
+        base_url: str,
+        token_file: str,
+        timeout_s: float,
+        *,
+        tools_path: str = TOOLS_PATH,
+    ) -> None:
         self._base_url = base_url.rstrip("/")
         self._token_file = token_file
         self._timeout_s = timeout_s
+        self._tools_path = tools_path
 
     def _authorization(self) -> str:
         # Re-read per call: the file is tiny and always holds the live broker's secret.
@@ -112,15 +159,26 @@ class BrokerClient:
         except ValueError as exc:
             raise BrokerError(f"broker sent invalid JSON: {exc}") from exc
 
-    def list_tools(self) -> list[dict[str, Any]]:
-        body = self._request("GET", TOOLS_PATH)
-        tools = body.get("tools") if isinstance(body, dict) else None
-        if not isinstance(tools, list):
+    def tool_listing(self) -> dict[str, Any]:
+        body = self._request("GET", self._tools_path)
+        if not isinstance(body, dict) or not isinstance(body.get("tools"), list):
             raise BrokerError("broker tool list is malformed")
-        return tools
+        return body
+
+    def list_tools(self) -> list[dict[str, Any]]:
+        return self.tool_listing()["tools"]
+
+    def instructions(self) -> str:
+        """The instructions the broker's listing carries (the memory gateway's)."""
+        text = self.tool_listing().get("instructions")
+        if not isinstance(text, str) or not text.strip():
+            raise BrokerError("the broker's tool listing carries no instructions")
+        return text
 
     def call_tool(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-        body = self._request("POST", f"{TOOLS_PATH}/{urllib.parse.quote(name, safe='')}", arguments)
+        body = self._request(
+            "POST", f"{self._tools_path}/{urllib.parse.quote(name, safe='')}", arguments
+        )
         if not isinstance(body, dict):
             raise BrokerError("broker tool result is malformed")
         return body
@@ -150,13 +208,15 @@ class StdioServer:
         stdin: IO[bytes],
         stdout: IO[bytes],
         max_concurrency: int,
+        profile: ServerProfile = FORGE_PROFILE,
     ) -> None:
         self._client = client
+        self._profile = profile
         self._stdin = stdin
         self._stdout = stdout
         self._write_lock = threading.Lock()
         self._executor = ThreadPoolExecutor(
-            max_workers=max_concurrency, thread_name_prefix="forge-mcp"
+            max_workers=max_concurrency, thread_name_prefix=profile.thread_prefix
         )
 
     # -- output
@@ -206,11 +266,20 @@ class StdioServer:
 
     def _dispatch(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
         if method == "initialize":
+            profile = self._profile
             return {
                 "protocolVersion": negotiate_protocol_version(params.get("protocolVersion")),
                 "capabilities": {"tools": {"listChanged": False}},
-                "serverInfo": {"name": SERVER_NAME, "title": "Forge", "version": SERVER_VERSION},
-                "instructions": SERVER_INSTRUCTIONS,
+                "serverInfo": {
+                    "name": profile.name,
+                    "title": profile.title,
+                    "version": SERVER_VERSION,
+                },
+                "instructions": (
+                    profile.instructions
+                    if profile.instructions is not None
+                    else self._client.instructions()
+                ),
             }
         if method == "ping":
             return {}
@@ -233,10 +302,8 @@ class StdioServer:
             raise JsonRpcError(INVALID_PARAMS, f"unknown tool: {name}") from None
         except BrokerError as exc:
             # A failed call is a tool result the model can read, not a protocol failure.
-            return {
-                "content": [{"type": "text", "text": f"The Forge broker call failed: {exc}"}],
-                "isError": True,
-            }
+            text = f"The {self._profile.broker_label} call failed: {exc}"
+            return {"content": [{"type": "text", "text": text}], "isError": True}
 
     def _respond(self, message: object) -> None:
         response = self._handle(message)
@@ -274,10 +341,16 @@ class StdioServer:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="skuld.forge_mcp", description=__doc__.split("\n")[0])
+    parser.add_argument(
+        "--server",
+        choices=sorted(PROFILES),
+        default=FORGE_PROFILE.name,
+        help="which built-in MCP server to be (the broker passes it for 'memory')",
+    )
     parser.add_argument("--broker-url", required=True, help="http://127.0.0.1:<broker port>")
     parser.add_argument("--token-file", required=True, help="the broker's 0600 loopback token")
     # No defaults: the broker passes its configured values
-    # (forge_mcp.broker_request_timeout_s / forge_mcp.stdio_max_concurrency).
+    # (forge_mcp.* or memory.* broker_request_timeout_s / stdio_max_concurrency).
     parser.add_argument("--timeout", type=float, required=True, help="seconds per broker call")
     parser.add_argument(
         "--max-concurrency", type=int, required=True, help="tool calls served in parallel"
@@ -289,11 +362,13 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     # stdout carries protocol frames only; diagnostics go to stderr.
     logging.basicConfig(stream=sys.stderr, level=logging.WARNING)
+    profile = PROFILES[args.server]
     server = StdioServer(
-        BrokerClient(args.broker_url, args.token_file, args.timeout),
+        BrokerClient(args.broker_url, args.token_file, args.timeout, tools_path=profile.tools_path),
         stdin=sys.stdin.buffer,
         stdout=sys.stdout.buffer,
         max_concurrency=args.max_concurrency,
+        profile=profile,
     )
     server.serve()
     return 0

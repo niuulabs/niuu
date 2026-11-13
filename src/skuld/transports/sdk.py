@@ -745,7 +745,6 @@ class SDKTransport(CLITransport):
         tools = self._session_tools
         _, shim_env = ensure_codex_tool_shims(
             self.workspace_dir,
-            mcp_servers=self._raw_mcp_servers,
             session_env=tools.env if tools else None,
         )
         if shim_env:

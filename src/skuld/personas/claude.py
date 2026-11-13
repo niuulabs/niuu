@@ -66,7 +66,6 @@ _SESSION_COMMANDS: tuple[str, ...] = (
     "mimir_search",
     "mimir_read",
     "mimir_read_source",
-    "mimir_related",
     "mimir_list",
     "mimir_write",
     "mimir_ingest",

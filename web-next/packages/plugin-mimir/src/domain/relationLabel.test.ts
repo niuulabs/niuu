@@ -6,9 +6,10 @@ describe('relationLabel', () => {
     expect(relationLabel('depends_on')).toBe('depends on');
     expect(relationLabel('explains')).toBe('explains');
     expect(relationLabel('disagrees_with')).toBe('disagrees with');
+    expect(relationLabel('planned in')).toBe('planned in');
   });
 
-  it.each(['wikilink', 'link', 'shared_source', 'related_entity'])(
+  it.each(['wikilink', 'link', 'shared_source', 'related_entity', 'mentions'])(
     'has no label for %s',
     (type) => {
       expect(relationLabel(type)).toBeNull();

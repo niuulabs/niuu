@@ -24,23 +24,18 @@ from datetime import UTC, datetime
 from pathlib import Path
 from time import monotonic
 from typing import Any
-from urllib.parse import quote
 
 import httpx
 
 from mimir.domain import MimirAuth
 from mimir.exceptions import MimirConfigurationError
 from niuu.domain.mimir import (
-    LintIssue,
-    MimirLintReport,
     MimirMountSummary,
     MimirPage,
     MimirPageMeta,
     MimirQueryResult,
     MimirSource,
     MimirSourceMeta,
-    ThreadOwnershipError,
-    ThreadState,
 )
 from niuu.memory_telemetry import (
     RESULT_ERROR,
@@ -368,36 +363,6 @@ class HttpMimirAdapter(MimirPort):
             source_count=data["source_count"],
             categories=data.get("categories", []),
             last_write=_parse_optional_datetime(data.get("last_write")),
-            lint_issues=data.get("lint_issues", 0),
-            lint_checked_at=_parse_optional_datetime(data.get("lint_checked_at")),
-        )
-
-    async def lint(self, fix: bool = False) -> MimirLintReport:
-        """GET /mimir/lint or POST /mimir/lint/fix — return health-check report."""
-        if fix:
-            response = await self._request("POST", "/mimir/lint/fix")
-        else:
-            response = await self._request("GET", "/mimir/lint")
-        if response.status_code == 501:
-            # The remote mount has no lint (a gbrain backend behind Mímir). That
-            # is what it is, not a failure: say so in the type the port uses for
-            # it, so an aggregate can report the mount as unsupported.
-            raise NotImplementedError(_error_detail(response))
-        response.raise_for_status()
-        data = response.json()
-        issues = [
-            LintIssue(
-                id=item["id"],
-                severity=item["severity"],
-                message=item["message"],
-                page_path=item["page_path"],
-                auto_fixable=item.get("auto_fixable", False),
-            )
-            for item in data.get("issues", [])
-        ]
-        return MimirLintReport(
-            issues=issues,
-            pages_checked=data.get("pages_checked", 0),
         )
 
     async def read_source(self, source_id: str) -> MimirSource | None:
@@ -440,80 +405,6 @@ class HttpMimirAdapter(MimirPort):
             ingested_at=datetime.fromisoformat(data["ingested_at"]),
         )
 
-    async def get_thread_queue(
-        self,
-        owner_id: str | None = None,
-        limit: int = 50,
-    ) -> list[MimirPage]:
-        """GET /api/threads/queue — return open threads sorted by weight descending."""
-        params: dict[str, Any] = {"limit": limit}
-        if owner_id:
-            params["owner_id"] = owner_id
-        response = await self._request("GET", "/api/threads/queue", params=params)
-        response.raise_for_status()
-        return [_parse_thread_page(p) for p in response.json()]
-
-    async def list_threads(
-        self,
-        state: ThreadState | None = None,
-        limit: int = 100,
-    ) -> list[MimirPage]:
-        """GET /api/threads — list threads, optionally filtered by state."""
-        params: dict[str, Any] = {"limit": limit}
-        if state is not None:
-            params["state"] = state.value
-        response = await self._request("GET", "/api/threads", params=params)
-        response.raise_for_status()
-        return [_parse_thread_page(p) for p in response.json()]
-
-    async def update_thread_state(self, path: str, state: ThreadState) -> None:
-        """PATCH /api/threads/{encoded_path}/state — transition a thread to *state*."""
-        response = await self._request(
-            "PATCH",
-            f"/api/threads/{_encode_path(path)}/state",
-            json={"state": state.value},
-        )
-        if response.status_code == 404:
-            raise FileNotFoundError(f"Mímir thread not found: {path}")
-        response.raise_for_status()
-
-    async def update_thread_weight(
-        self,
-        path: str,
-        weight: float,
-        signals: dict | None = None,
-    ) -> None:
-        """PATCH /api/threads/{encoded_path}/weight — update the weight score for a thread."""
-        payload: dict[str, Any] = {"weight": weight}
-        if signals is not None:
-            payload["signals"] = signals
-        response = await self._request(
-            "PATCH",
-            f"/api/threads/{_encode_path(path)}/weight",
-            json=payload,
-        )
-        if response.status_code == 404:
-            raise FileNotFoundError(f"Mímir thread not found: {path}")
-        response.raise_for_status()
-
-    async def assign_thread_owner(self, path: str, owner_id: str | None) -> None:
-        """POST /api/threads/{encoded_path}/owner — assign or clear the owner of a thread.
-
-        Raises ``ThreadOwnershipError`` if the thread already has a different owner
-        (server returns 409 Conflict).
-        """
-        response = await self._request(
-            "POST",
-            f"/api/threads/{_encode_path(path)}/owner",
-            json={"owner_id": owner_id},
-        )
-        if response.status_code == 409:
-            data = response.json()
-            raise ThreadOwnershipError(path, data["current_owner"])
-        if response.status_code == 404:
-            raise FileNotFoundError(f"Mímir thread not found: {path}")
-        response.raise_for_status()
-
     async def list_sources(self, *, unprocessed_only: bool = False) -> list[MimirSourceMeta]:
         """GET /mimir/sources — list raw sources, optionally unprocessed only."""
         params: dict[str, Any] = {}
@@ -543,38 +434,6 @@ class HttpMimirAdapter(MimirPort):
 # ---------------------------------------------------------------------------
 # Parse helpers
 # ---------------------------------------------------------------------------
-
-
-def _error_detail(response: httpx.Response) -> str:
-    """The remote's own explanation of an error response, or its status line."""
-    try:
-        body = response.json()
-    except ValueError:
-        body = None
-    detail = body.get("detail") if isinstance(body, dict) else None
-    return str(detail) if detail else f"{response.status_code} from {response.request.url}"
-
-
-def _encode_path(path: str) -> str:
-    """URL-encode a thread path for use in a URL segment."""
-    return quote(path, safe="")
-
-
-def _parse_thread_page(data: dict) -> MimirPage:
-    """Parse a thread response dict into a ``MimirPage`` with thread metadata."""
-    state_raw = data.get("state")
-    meta = MimirPageMeta(
-        path=data["path"],
-        title=data["title"],
-        summary=data.get("summary", ""),
-        category=data.get("category", "threads"),
-        updated_at=datetime.fromisoformat(data["updated_at"]),
-        source_ids=data.get("source_ids", []),
-        thread_state=ThreadState(state_raw) if state_raw else None,
-        thread_weight=data.get("weight"),
-        is_thread=True,
-    )
-    return MimirPage(meta=meta, content=data.get("content", ""))
 
 
 def _parse_optional_datetime(raw: str | None) -> datetime | None:

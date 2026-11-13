@@ -11,8 +11,6 @@ import {
   deploymentNameFor,
   mountNameFor,
   requiredDraftError,
-  routingPrefixFor,
-  routingRuleIdFor,
   type RealmDraft,
 } from '../domain/realm';
 import type { RealmSummary } from '../domain/governance';
@@ -35,7 +33,6 @@ export const RECIPE_STEPS: RecipeStep[] = [
   { id: 'project', label: 'set up the project', detailPath: '/volundr' },
   { id: 'realm', label: 'create the workspace', detailPath: '/realms' },
   { id: 'memory', label: 'create workspace memory', detailPath: '/mimir/registry' },
-  { id: 'routing', label: 'route memory writes', detailPath: '/mimir/registry' },
   { id: 'trust', label: 'grant trust', detailPath: '/realms' },
   { id: 'board', label: 'import the tracker board', detailPath: '/ting/work' },
   { id: 'charter', label: 'write the charter to memory', detailPath: '/mimir' },
@@ -165,16 +162,6 @@ export function useCreateRealm() {
           target: draft.mountTarget,
         });
       });
-
-      await step('routing', () =>
-        mimir.mounts.upsertRoutingRule({
-          id: routingRuleIdFor(draft.slug),
-          prefix: routingPrefixFor(draft.slug),
-          mountName,
-          priority: 10,
-          active: true,
-        }),
-      );
 
       await step('trust', async () => {
         await realms.createTrustGrant(draft.slug, {

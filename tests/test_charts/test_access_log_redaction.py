@@ -40,6 +40,11 @@ def _render(chart: str) -> list[dict]:
             "envoy.enabled=true",
             "--set",
             "bifrost.url=http://bifrost.test",
+            # Mímir has no default store; these name one so its chart renders.
+            "--set",
+            "config.backend.mcpUrl=http://gbrain:3131/mcp",
+            "--set",
+            "config.backend.apiTokenSecret.name=gbrain-token",
         ],
         check=True,
         capture_output=True,

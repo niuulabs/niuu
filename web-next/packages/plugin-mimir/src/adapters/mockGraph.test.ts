@@ -123,14 +123,14 @@ describe('generateMockMemoryGraph', () => {
     const graph = generateMockMemoryGraph(baseOptions({ count: 400 }));
     const recognised = new Set<string>([...TYPED_EDGE_KINDS, ...CONTRADICTION_EDGE_KINDS]);
     for (const edge of graph.edges) {
-      expect(recognised.has(edge.type ?? '')).toBe(true);
+      expect(recognised.has(edge.relation ?? '')).toBe(true);
     }
   });
 
   it('includes at least one contradiction edge', () => {
     const graph = generateMockMemoryGraph(baseOptions({ count: 400 }));
     const hasContradiction = graph.edges.some((edge) =>
-      (CONTRADICTION_EDGE_KINDS as readonly string[]).includes(edge.type ?? ''),
+      (CONTRADICTION_EDGE_KINDS as readonly string[]).includes(edge.relation ?? ''),
     );
     expect(hasContradiction).toBe(true);
   });

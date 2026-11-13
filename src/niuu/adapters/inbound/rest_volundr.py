@@ -201,6 +201,22 @@ def _team_integration_operation(method: str, pieces: list[str]) -> bool:
     return False
 
 
+def _project_memory_operation(method: str, pieces: list[str]) -> bool:
+    """Whether ``method`` on ``/projects/{id}/<pieces>`` is a project memory route: the
+    memories it attaches (``memory``, ``memory/<name>``) and the notice that one of its
+    memory proposals was decided (``memory/proposals/<id>/decided``)."""
+    if not pieces or pieces[0] != "memory":
+        return False
+    match pieces[1:]:
+        case []:
+            return method in ("GET", "POST")
+        case ["proposals", proposal_id, "decided"] if proposal_id:
+            return method == "POST"
+        case [name] if name:
+            return method in ("PATCH", "DELETE")
+    return False
+
+
 def _is_session_principal(principal: Principal) -> bool:
     return principal.token_use == FORGE_SESSION_TOKEN_USE
 
@@ -408,6 +424,28 @@ def _ensure_remote_success(response: httpx.Response) -> None:
     if response.status_code < 400:
         return
     raise HTTPException(status_code=response.status_code, detail=_upstream_detail(response)[:1000])
+
+
+def _merge_layer_ends(answers: list[dict[str, Any]]) -> dict[str, Any]:
+    """One answer from what each Forge node said about a session or a workflow run.
+
+    A node that has none of it says ``gone``; the run's sessions may sit on several nodes. It
+    is ``active`` if any node has it active, else ``ended`` at the latest end any node
+    reports, else ``gone``: the memory gateway deletes a layer on ``gone`` and on an end past
+    its retention, so a node that does not know something must never outvote one that does.
+    """
+    if any(answer.get("state") == "active" for answer in answers):
+        return {"state": "active", "ended_at": None}
+    ended = [answer for answer in answers if answer.get("state") == "ended"]
+    if not ended:
+        return {"state": "gone", "ended_at": None}
+    return {
+        "state": "ended",
+        "ended_at": max(
+            (answer["ended_at"] for answer in ended),
+            key=lambda value: datetime.fromisoformat(value),
+        ),
+    }
 
 
 def _ensure_history_success(response: httpx.Response) -> None:
@@ -2128,6 +2166,7 @@ def create_volundr_router(
             ("GET", "members"),
             ("POST", "members"),
             ("GET", "member-candidates"),
+            ("GET", "role"),
         }
         pieces = operation.split("/")
         is_ack = len(pieces) == 3 and pieces[0] == "receipts" and pieces[2] == "ack"
@@ -2143,6 +2182,7 @@ def create_volundr_router(
             or (request.method == "POST" and is_ack)
             or (request.method in ("PATCH", "DELETE") and is_member)
             or _team_integration_operation(request.method, pieces)
+            or _project_memory_operation(request.method, pieces)
         )
         if not known:
             raise HTTPException(404, "Unknown project operation")
@@ -5759,6 +5799,165 @@ def create_volundr_router(
             status_code=upstream.status_code,
             media_type=upstream.headers.get("content-type"),
             headers=headers,
+        )
+
+    @router.get("/sessions/{session_id}/memory-context", operation_id="get_session_memory_context")
+    async def memory_context(
+        request: Request,
+        session_id: str,
+        principal: Principal = Depends(extract_principal),
+    ) -> Response:
+        """A session's memory layers, from the Forge node that owns the session.
+
+        Asked by the memory gateway with the session's own Forge credential. Forge's status
+        and its ``Cache-Control: no-store`` go through unchanged.
+        """
+        instance, _ = await _find_session_owner(
+            service, principal, request, session_id, embedded_app=embedded_forge_app
+        )
+        upstream = await _request_remote(
+            instance,
+            request,
+            method="GET",
+            path=f"/sessions/{session_id}/memory-context",
+            params=None,
+            embedded_app=embedded_forge_app,
+        )
+        headers: dict[str, str] = {}
+        if cache := upstream.headers.get("cache-control"):
+            headers["cache-control"] = cache
+        return Response(
+            content=upstream.content,
+            status_code=upstream.status_code,
+            media_type=upstream.headers.get("content-type"),
+            headers=headers,
+        )
+
+    @router.post(
+        "/sessions/{session_id}/memory/proposals", operation_id="post_session_memory_proposal"
+    )
+    async def memory_proposal_waiting(
+        request: Request,
+        session_id: str,
+        principal: Principal = Depends(extract_principal),
+    ) -> Response:
+        """Tell the deciders of a session's project that its proposal waits, on the Forge
+        node that owns the session. The memory gateway calls it with the session's own
+        credential; Forge's answer goes through unchanged."""
+        instance, _ = await _find_session_owner(
+            service, principal, request, session_id, embedded_app=embedded_forge_app
+        )
+        upstream = await _request_remote(
+            instance,
+            request,
+            method="POST",
+            path=f"/sessions/{session_id}/memory/proposals",
+            json_body=await request.json(),
+            params=None,
+            embedded_app=embedded_forge_app,
+        )
+        return Response(
+            content=upstream.content,
+            status_code=upstream.status_code,
+            media_type=upstream.headers.get("content-type"),
+        )
+
+    @router.get("/memory/runs/{run_id}", operation_id="get_memory_run_owner")
+    async def memory_run_owner(
+        request: Request,
+        run_id: str,
+        principal: Principal = Depends(extract_principal),
+    ) -> Response:
+        """Who owns a workflow run, asked of every Forge node that may hold its sessions.
+
+        The memory gateway asks with the person's own login. A node that has no session of
+        the run (or none the caller owns) answers 404; any other refusal or failure is
+        passed on, never read as "not there". Nodes that know the run give one answer: the
+        owner and the union of the session ids.
+        """
+        instances = await _visible_instances(service, principal)
+        results = await asyncio.gather(
+            *[
+                _request_remote(
+                    instance,
+                    request,
+                    method="GET",
+                    path=f"/memory/runs/{run_id}",
+                    params=None,
+                    embedded_app=embedded_forge_app,
+                )
+                for instance in instances
+            ]
+        )
+        found: list[dict[str, Any]] = []
+        for upstream in results:
+            if upstream.status_code == status.HTTP_404_NOT_FOUND:
+                continue
+            _ensure_remote_success(upstream)
+            found.append(upstream.json())
+        if not found:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, f"Run not found: {run_id}")
+        return JSONResponse(
+            {
+                **found[0],
+                "session_ids": sorted({sid for item in found for sid in item["session_ids"]}),
+            },
+            headers={"cache-control": "no-store"},
+        )
+
+    @router.post("/memory/ended", operation_id="get_memory_layers_ended")
+    async def memory_layers_ended(
+        request: Request,
+        principal: Principal = Depends(extract_principal),
+    ) -> Response:
+        """When sessions and runs ended, asked of every Forge node.
+
+        Only the memory gateway's service credential is admitted, by each node. The gateway
+        deletes a layer once Forge says it is ``gone`` or ended long enough, so the answer is
+        complete or there is none: every visible node must answer, and one that cannot fails
+        the call rather than leaving its sessions to read as ``gone``.
+        """
+        body = await request.body()
+        try:
+            document = json.loads(body) if body else {}
+        except ValueError as exc:
+            raise HTTPException(422, "The request must be valid JSON") from exc
+        if not isinstance(document, dict):
+            raise HTTPException(422, "The request must be a JSON object")
+        instances = await _visible_instances(service, principal)
+        if not instances:
+            raise HTTPException(
+                status.HTTP_503_SERVICE_UNAVAILABLE,
+                "No Forge node is visible to this caller, so nothing can be said about "
+                "sessions or runs",
+            )
+        results = await asyncio.gather(
+            *[
+                _request_remote(
+                    instance,
+                    request,
+                    method="POST",
+                    path="/memory/ended",
+                    json_body=document,
+                    params=None,
+                    embedded_app=embedded_forge_app,
+                )
+                for instance in instances
+            ]
+        )
+        answers: list[dict[str, Any]] = []
+        for upstream in results:
+            _ensure_remote_success(upstream)
+            answers.append(upstream.json())
+        return JSONResponse(
+            {
+                kind: {
+                    key: _merge_layer_ends([answer[kind][key] for answer in answers])
+                    for key in answers[0][kind]
+                }
+                for kind in ("sessions", "runs")
+            },
+            headers={"cache-control": "no-store"},
         )
 
     @router.get("/sessions/{session_id}/logs")

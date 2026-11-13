@@ -13,13 +13,10 @@
 import type { IMimirService } from '../ports';
 import type { Mount } from '@niuulabs/domain';
 import type { Page, PageMeta, SearchResult } from '../domain/page';
-import type { MimirGraph, LiveActivity } from '../domain/api-types';
+import type { MimirGraph, KnowledgeGraph, GraphNode, LiveActivity } from '../domain/api-types';
 import type { Source } from '../domain/source';
 import type { QueryStats } from '../domain/analytics';
-import type { LintReport } from '../domain/lint';
-import type { FactEvidence, RelatedPage } from '../domain/evidence';
 import { toPageMeta } from '../domain/page';
-import { tallySeverity } from '../domain/lint';
 import { encodeNodeId } from '../domain/graphIndex';
 
 export const FAKE_MOUNTS: Mount[] = [
@@ -33,7 +30,6 @@ export const FAKE_MOUNTS: Mount[] = [
     status: 'healthy',
     pages: 3,
     sources: 6,
-    lintIssues: 1,
     lastWrite: '2026-04-19T14:02:00Z',
     embedding: 'all-minilm-l6-v2',
     sizeKb: 512,
@@ -49,7 +45,6 @@ export const FAKE_MOUNTS: Mount[] = [
     status: 'healthy',
     pages: 2,
     sources: 3,
-    lintIssues: 0,
     lastWrite: '2026-04-18T09:00:00Z',
     embedding: 'all-mpnet-base-v2',
     sizeKb: 256,
@@ -198,24 +193,145 @@ export const FAKE_GRAPH: MimirGraph = {
     {
       source: fakeNodeId('platform', '/platform/gateway-routing'),
       target: fakeNodeId('platform', '/platform/cedar-authorization'),
-      type: 'depends_on',
+      relation: 'depends_on',
     },
     {
       source: fakeNodeId('platform', '/platform/gateway-routing'),
       target: fakeNodeId('platform', '/platform/guilds-gateway'),
-      type: 'contradicts',
+      relation: 'contradicts',
     },
     {
       source: fakeNodeId('platform', '/platform/gateway-routing'),
       target: fakeNodeId('shared', '/shared/openbao-policy'),
-      type: 'same_failure',
+      relation: 'same_failure',
     },
     {
       source: fakeNodeId('shared', '/shared/openbao-policy'),
       target: fakeNodeId('shared', '/shared/volundr'),
-      type: 'routes_for',
+      relation: 'routes_for',
     },
   ],
+};
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/** An ISO time `days` before the moment this module loads — keeps "this week" true whenever the tests run. */
+function daysAgo(days: number): string {
+  return new Date(Date.now() - days * DAY_MS).toISOString();
+}
+
+export const BOOKING_LAYER = 'project:booking';
+
+function knowledgeNode(
+  layer: string,
+  path: string,
+  title: string,
+  kind: string,
+  dates: { firstSeen: number; changed: number | null },
+  summary = '',
+): GraphNode {
+  return {
+    id: `${layer}/${path}`,
+    title,
+    category: path.split('/')[0]!,
+    path,
+    kind,
+    summary,
+    mount: layer,
+    layer,
+    updatedAt: daysAgo(dates.changed ?? dates.firstSeen),
+    firstSeen: daysAgo(dates.firstSeen),
+    changedAt: dates.changed === null ? null : daysAgo(dates.changed),
+    confidence: null,
+  };
+}
+
+/** Node ids of the knowledge-graph fixture, named for the tests that use them. */
+export const KG = {
+  cutover: `${BOOKING_LAYER}/projects/booking-cutover`,
+  ines: 'org/people/ines-moreau',
+  lin482: `${BOOKING_LAYER}/sources/lin-482`,
+  lin501: `${BOOKING_LAYER}/sources/lin-501`,
+  apiV2: `${BOOKING_LAYER}/services/booking-api-v2`,
+  legacy: `${BOOKING_LAYER}/services/legacy-booking-api`,
+  freeze: `${BOOKING_LAYER}/decisions/payments-freeze`,
+  runbook: `${BOOKING_LAYER}/runbooks/rollback`,
+  ledger: 'org/pages/payments-ledger',
+  ola: 'org/people/ola-nordmann',
+} as const;
+
+/**
+ * The knowledge graph as `GET /memory/graph` (contract G1) shapes it, after
+ * the adapter's mapping: the booking cut-over decision with its owner,
+ * tickets and services, one change this week, and a page two hops out.
+ */
+export const FAKE_KNOWLEDGE_GRAPH: KnowledgeGraph = {
+  layers: [
+    { id: 'org', name: 'Org' },
+    { id: BOOKING_LAYER, name: 'Booking platform' },
+  ],
+  nodes: [
+    knowledgeNode(
+      BOOKING_LAYER,
+      'projects/booking-cutover',
+      'Booking cut-over',
+      'decision',
+      { firstSeen: 9, changed: 0 },
+      'Bookings move from the legacy API to booking-api v2.',
+    ),
+    knowledgeNode('org', 'people/ines-moreau', 'Ines Moreau', 'person', {
+      firstSeen: 60,
+      changed: null,
+    }),
+    knowledgeNode(BOOKING_LAYER, 'sources/lin-482', 'LIN-482', 'ticket', {
+      firstSeen: 9,
+      changed: null,
+    }),
+    knowledgeNode(BOOKING_LAYER, 'sources/lin-501', 'LIN-501', 'ticket', {
+      firstSeen: 0,
+      changed: null,
+    }),
+    knowledgeNode(BOOKING_LAYER, 'services/booking-api-v2', 'booking-api v2', 'service', {
+      firstSeen: 40,
+      changed: 20,
+    }),
+    knowledgeNode(BOOKING_LAYER, 'services/legacy-booking-api', 'Legacy booking API', 'service', {
+      firstSeen: 90,
+      changed: 30,
+    }),
+    knowledgeNode(BOOKING_LAYER, 'decisions/payments-freeze', 'Payments freeze', 'decision', {
+      firstSeen: 25,
+      changed: 25,
+    }),
+    knowledgeNode(BOOKING_LAYER, 'runbooks/rollback', 'Rollback runbook', 'runbook', {
+      firstSeen: 15,
+      changed: 15,
+    }),
+    knowledgeNode('org', 'pages/payments-ledger', 'Payments ledger', 'page', {
+      firstSeen: 70,
+      changed: 50,
+    }),
+    knowledgeNode('org', 'people/ola-nordmann', 'Ola Nordmann', 'person', {
+      firstSeen: 80,
+      changed: null,
+    }),
+  ],
+  edges: [
+    { source: KG.ines, target: KG.cutover, relation: 'owns', since: daysAgo(30).slice(0, 10) },
+    {
+      source: KG.cutover,
+      target: KG.lin482,
+      relation: 'planned in',
+      since: daysAgo(9).slice(0, 10),
+    },
+    { source: KG.lin501, target: KG.cutover, relation: 'moved', since: daysAgo(0).slice(0, 10) },
+    { source: KG.cutover, target: KG.apiV2, relation: 'changes', since: null },
+    { source: KG.cutover, target: KG.legacy, relation: 'replaces', since: null },
+    { source: KG.cutover, target: KG.freeze, relation: 'waits for', since: null },
+    { source: KG.cutover, target: KG.runbook, relation: 'covered by', since: null },
+    { source: KG.freeze, target: KG.ledger, relation: 'mentions', since: null },
+  ],
+  unresolved: [{ source: KG.cutover, targetSlug: 'projects/old-plan' }],
 };
 
 export const FAKE_SOURCES: Source[] = [
@@ -261,72 +377,13 @@ export const FAKE_LIVE_ACTIVITY: LiveActivity[] = [
   },
 ];
 
-export const FAKE_LINT_REPORT: LintReport = {
-  issues: [
-    {
-      id: 'lint-l02-1',
-      rule: 'L02',
-      severity: 'warn',
-      page: '/platform/guilds-gateway',
-      mount: 'platform',
-      autoFix: false,
-      message: '[CONTRADICTION] disagrees with Gateway routing on ymir',
-    },
-  ],
-  pagesChecked: FAKE_PAGES.length,
-  summary: tallySeverity([]),
-  mounts: [],
-};
-
-const FAKE_RELATED: Record<string, RelatedPage[]> = {
-  '/platform/gateway-routing': [
-    { path: '/platform/cedar-authorization', hop: 1, rel: 'depends_on', direction: 'out' },
-    { path: '/platform/guilds-gateway', hop: 1, rel: null, direction: 'out' },
-    { path: '/shared/openbao-policy', hop: 1, rel: 'same_failure', direction: 'out' },
-    { path: '/shared/volundr', hop: 2, rel: 'routes_for', direction: 'out' },
-  ],
-  '/shared/openbao-policy': [
-    { path: '/platform/gateway-routing', hop: 1, rel: 'same_failure', direction: 'in' },
-    { path: '/shared/volundr', hop: 1, rel: 'routes_for', direction: 'out' },
-  ],
-};
-
-const FAKE_EVIDENCE: Record<string, FactEvidence[]> = {
-  '/platform/gateway-routing': [
-    {
-      fact: 'The route tables live in values-cedar.yaml, which wins over values-niuu.yaml.',
-      proofCount: 4,
-      trend: 'stable',
-      latestSupport: '2026-04-19',
-      supportingDates: ['2026-04-19', '2026-03-20'],
-      sourceProofCount: 2,
-    },
-    {
-      fact: 'Helm replaces lists, so the chart defaults must be repeated.',
-      proofCount: 1,
-      trend: 'new',
-      latestSupport: null,
-      supportingDates: [],
-      sourceProofCount: 0,
-    },
-    {
-      fact: 'Guild has no gateway of its own.',
-      proofCount: 1,
-      trend: 'weakening',
-      latestSupport: '2026-03-05',
-      supportingDates: ['2026-03-05'],
-      sourceProofCount: 1,
-    },
-  ],
-};
-
 export interface FakeMimirOverrides {
   pages?: Page[];
   graph?: MimirGraph;
+  knowledgeGraph?: KnowledgeGraph;
   mounts?: Mount[];
   queryStats?: QueryStats;
   liveActivity?: LiveActivity[];
-  lintReport?: LintReport;
   /** Force ingestUrl/ingestFile to reject, to test the error path. */
   ingestShouldFail?: boolean;
 }
@@ -334,25 +391,16 @@ export interface FakeMimirOverrides {
 export function createFakeMimirService(overrides: FakeMimirOverrides = {}): IMimirService {
   const pages = overrides.pages ?? FAKE_PAGES;
   const graph = overrides.graph ?? FAKE_GRAPH;
+  const knowledgeGraph = overrides.knowledgeGraph ?? FAKE_KNOWLEDGE_GRAPH;
   const mounts = overrides.mounts ?? FAKE_MOUNTS;
   const queryStats = overrides.queryStats ?? FAKE_QUERY_STATS;
   const liveActivity = overrides.liveActivity ?? FAKE_LIVE_ACTIVITY;
-  const lintReport = overrides.lintReport ?? FAKE_LINT_REPORT;
   let sources = [...FAKE_SOURCES];
 
   return {
     mounts: {
       async listMounts() {
         return mounts;
-      },
-      async listRoutingRules() {
-        return [];
-      },
-      async upsertRoutingRule(rule) {
-        return rule;
-      },
-      async deleteRoutingRule() {
-        // no-op in fake
       },
       async getRecentWrites() {
         return [];
@@ -362,12 +410,6 @@ export function createFakeMimirService(overrides: FakeMimirOverrides = {}): IMim
       },
       async getQueryStats() {
         return queryStats;
-      },
-      async getDoctor() {
-        return null;
-      },
-      async runDoctorFixes() {
-        return null;
       },
     },
     pages: {
@@ -463,6 +505,19 @@ export function createFakeMimirService(overrides: FakeMimirOverrides = {}): IMim
           edges: graph.edges.filter((e) => nodeIds.has(e.source) && nodeIds.has(e.target)),
         };
       },
+      async getKnowledgeGraph(options) {
+        const layers = options?.layers ?? [];
+        if (layers.length === 0) return knowledgeGraph;
+        const wanted = new Set(layers);
+        const nodes = knowledgeGraph.nodes.filter((n) => wanted.has(n.layer!));
+        const ids = new Set(nodes.map((n) => n.id));
+        return {
+          layers: knowledgeGraph.layers.filter((l) => wanted.has(l.id)),
+          nodes,
+          edges: knowledgeGraph.edges.filter((e) => ids.has(e.source) && ids.has(e.target)),
+          unresolved: knowledgeGraph.unresolved.filter((u) => ids.has(u.source)),
+        };
+      },
       async listEntities() {
         return [];
       },
@@ -470,31 +525,9 @@ export function createFakeMimirService(overrides: FakeMimirOverrides = {}): IMim
         if (!options?.since) return liveActivity;
         return liveActivity.filter((a) => a.timestamp > options.since!);
       },
-      async getEvidence(path) {
-        return FAKE_EVIDENCE[path] ?? [];
-      },
-      async getRelated(path, depth = 1) {
-        return (FAKE_RELATED[path] ?? []).filter((r) => r.hop <= depth);
-      },
-      async revisePage(request) {
-        const page = pages.find((p) => p.path === request.path);
-        if (!page) throw new Error(`unknown page: ${request.path}`);
-        return page;
-      },
     },
     embeddings: {
       async semanticSearch() {
-        return [];
-      },
-    },
-    lint: {
-      async getLintReport() {
-        return lintReport;
-      },
-      async runAutoFix() {
-        return lintReport;
-      },
-      async getActivityLog() {
         return [];
       },
     },

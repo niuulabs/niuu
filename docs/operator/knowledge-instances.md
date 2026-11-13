@@ -15,10 +15,6 @@ and Ting at the authenticated Mimir gateway with a bound mount name. Native
 connection credentials are never included in those descriptors. Session workload
 identity determines which tenant's mount can be opened.
 
-Mimir instances inherit the deployment host's Envoy JWT profile. Their API and
-MCP endpoints enforce the instance tenant, and a NetworkPolicy admits only the
-Envoy port. Health probes remain available.
-
 gbrain deployments enable `connection.enabled`. At startup, gbrain creates a
 native `read,write` token, retains it on the instance volume, and publishes it
 to the instance's Helm-managed connection Secret. Its service account can only

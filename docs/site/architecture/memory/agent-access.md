@@ -103,7 +103,7 @@ refused. A fact derived from others takes the lowest trust among them.
 
 | Attempt | Answer | Where |
 |---|---|---|
-| Ingest a `tool_output` or `diagnostic` source | `422` over REST, a tool error from `mimir_ingest`, an error from the CLI: "write run output to logs or a thread" | `niuu/domain/mimir.py` (`refuse_operational_source_type`), used by `router.py`, `tools.py`, `__main__.py` |
+| Ingest a `tool_output` or `diagnostic` source | `422` over REST, a tool error from `mimir_ingest`, an error from the CLI: "write run output to logs" | `niuu/domain/mimir.py` (`refuse_operational_source_type`), used by `router.py`, `tools.py`, `__main__.py` |
 | Write to a read-only mount, or outside its prefixes | Tool error naming the mount and what it allows; counted | `adapters/composite.py` |
 | Ingest or lint fix on a prefix-limited mount | Refused: cannot be confined to a path | same |
 | A page path that escapes `wiki/` (`../`) | `PathSecurityError` | `adapters/markdown.py` |

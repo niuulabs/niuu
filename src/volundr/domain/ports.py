@@ -187,6 +187,11 @@ class SessionRepository(ABC):
         """Sessions of *tenant_id* attached to any of the projects, newest first."""
 
     @abstractmethod
+    async def list_by_workflow_runs(self, run_ids: list[str]) -> list[Session]:
+        """Sessions whose ``workload_config.workflow_run_id`` is any of *run_ids*, across
+        tenants, oldest first. Callers scope the result to the caller they answer."""
+
+    @abstractmethod
     async def update(self, session: Session) -> Session:
         """Update an existing session."""
 

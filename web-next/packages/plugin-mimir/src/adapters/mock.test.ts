@@ -46,7 +46,6 @@ describe('createMimirMockAdapter', () => {
         lifecycle: 'registered',
         role: 'shared',
         url: 'https://mimir.example.com',
-        path: '',
         categories: ['decision'],
         authRef: null,
         defaultReadPriority: 5,
@@ -84,36 +83,6 @@ describe('createMimirMockAdapter', () => {
       expect(stats!.total).toBeGreaterThan(0);
       expect(stats!.recent.length).toBeGreaterThan(0);
       expect(stats!.recent.some((entry) => entry.resultCount === 0)).toBe(true);
-    });
-  });
-
-  describe('mounts.getDoctor', () => {
-    it('returns a scored doctor report', async () => {
-      const svc = createMimirMockAdapter();
-      const report = await svc.mounts.getDoctor();
-      expect(report).not.toBeNull();
-      expect(report!.score).toMatch(/^\d+\/\d+$/);
-      expect(['pass', 'warn', 'fail']).toContain(report!.worst);
-      expect(report!.checks.length).toBeGreaterThan(0);
-    });
-
-    it('runDoctorFixes remediates fixable checks and improves the score', async () => {
-      const svc = createMimirMockAdapter();
-      const before = await svc.mounts.getDoctor();
-      const fixableBefore = before!.checks.filter(
-        (check) => check.fixable && check.status !== 'pass',
-      ).length;
-      expect(fixableBefore).toBeGreaterThan(0);
-
-      const after = await svc.mounts.runDoctorFixes();
-      const fixableAfter = after!.checks.filter(
-        (check) => check.fixable && check.status !== 'pass',
-      ).length;
-      expect(fixableAfter).toBe(0);
-
-      const passing = (report: NonNullable<typeof after>) =>
-        report.checks.filter((check) => check.status === 'pass').length;
-      expect(passing(after!)).toBe(passing(before!) + fixableBefore);
     });
   });
 
@@ -255,85 +224,6 @@ describe('createMimirMockAdapter', () => {
     });
   });
 
-  describe('lint.getLintReport', () => {
-    it('returns a report with issues and summary', async () => {
-      const svc = createMimirMockAdapter();
-      const report = await svc.lint.getLintReport();
-      expect(Array.isArray(report.issues)).toBe(true);
-      expect(typeof report.pagesChecked).toBe('number');
-      expect(report.summary).toHaveProperty('error');
-      expect(report.summary).toHaveProperty('warn');
-      expect(report.summary).toHaveProperty('info');
-    });
-
-    it('summary tallies match issue list', async () => {
-      const svc = createMimirMockAdapter();
-      const report = await svc.lint.getLintReport();
-      const manual = {
-        error: report.issues.filter((i) => i.severity === 'error').length,
-        warn: report.issues.filter((i) => i.severity === 'warn').length,
-        info: report.issues.filter((i) => i.severity === 'info').length,
-      };
-      expect(report.summary).toEqual(manual);
-    });
-  });
-
-  describe('lint.runAutoFix', () => {
-    it('removes auto-fixable issues', async () => {
-      const svc = createMimirMockAdapter();
-      const before = await svc.lint.getLintReport();
-      const after = await svc.lint.runAutoFix();
-      const autoFixableCount = before.issues.filter((i) => i.autoFix).length;
-      expect(after.issues.length).toBe(before.issues.length - autoFixableCount);
-    });
-
-    it('only fixes specified issue IDs when provided', async () => {
-      const svc = createMimirMockAdapter();
-      const before = await svc.lint.getLintReport();
-      const autoFixable = before.issues.filter((i) => i.autoFix);
-      if (autoFixable.length === 0) return;
-      const idToFix = autoFixable[0]!.id;
-      const after = await svc.lint.runAutoFix([idToFix]);
-      expect(after.issues.find((i) => i.id === idToFix)).toBeUndefined();
-    });
-  });
-
-  describe('lint.getActivityLog', () => {
-    it('returns activity event records', async () => {
-      const svc = createMimirMockAdapter();
-      const events = await svc.lint.getActivityLog();
-      expect(events.length).toBeGreaterThan(0);
-    });
-
-    it('each event has required fields', async () => {
-      const svc = createMimirMockAdapter();
-      const events = await svc.lint.getActivityLog();
-      for (const e of events) {
-        expect(e).toHaveProperty('id');
-        expect(e).toHaveProperty('timestamp');
-        expect(e).toHaveProperty('kind');
-        expect(e).toHaveProperty('mount');
-        expect(e).toHaveProperty('ravn');
-        expect(e).toHaveProperty('message');
-      }
-    });
-
-    it('includes all expected kind values', async () => {
-      const svc = createMimirMockAdapter();
-      const events = await svc.lint.getActivityLog();
-      const kinds = new Set(events.map((e) => e.kind));
-      expect(kinds.has('write')).toBe(true);
-      expect(kinds.has('ingest')).toBe(true);
-      expect(kinds.has('lint')).toBe(true);
-    });
-
-    it('respects limit parameter', async () => {
-      const svc = createMimirMockAdapter();
-      const events = await svc.lint.getActivityLog(2);
-      expect(events.length).toBeLessThanOrEqual(2);
-    });
-  });
-
   describe('pages.getGraph', () => {
     it('returns a graph with nodes and edges', async () => {
       const svc = createMimirMockAdapter();
@@ -412,7 +302,7 @@ describe('createMimirMockAdapter', () => {
       const svc = createMimirMockAdapter();
       const graph = await svc.pages.getGraph();
       const contradictionTypes = new Set(['contradicts', 'disagrees_with', 'conflicts_with']);
-      expect(graph.edges.some((e) => contradictionTypes.has(e.type ?? ''))).toBe(true);
+      expect(graph.edges.some((e) => contradictionTypes.has(e.relation ?? ''))).toBe(true);
     });
   });
 

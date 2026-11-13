@@ -29,7 +29,6 @@ ALLOWLIST = {
         "niuu/adapters/embedded_postgres.py",
         "NIUU_PG_BIN_DIR",
     ): "embedded PostgreSQL executable discovery",
-    ("mimir/bridge.py", "RAVN_MIMIR_PATH"): "CLI companion executable discovery",
     ("mimir/bridge.py", "RAVN_WORKSPACE_DIR"): "CLI workspace bootstrap",
     (
         "skuld/transports/tmux_interactive.py",

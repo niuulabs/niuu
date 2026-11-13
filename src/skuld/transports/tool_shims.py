@@ -8,28 +8,8 @@ import stat
 import sys
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any
 
 import yaml
-
-
-def _extract_mimir_mount(mcp_servers: list[dict[str, Any]]) -> tuple[str, str] | None:
-    for server in mcp_servers:
-        args = [str(arg) for arg in server.get("args") or []]
-        if len(args) < 5:
-            continue
-        if args[:3] != ["-m", "mimir", "mcp"]:
-            continue
-        path_value = ""
-        name_value = ""
-        for index, arg in enumerate(args):
-            if arg == "--path" and index + 1 < len(args):
-                path_value = args[index + 1]
-            if arg == "--name" and index + 1 < len(args):
-                name_value = args[index + 1]
-        if path_value:
-            return path_value, name_value
-    return None
 
 
 def _ravn_config_has_mimir(config_path: str) -> bool:
@@ -330,7 +310,6 @@ def _install_request_secret_shim(bin_dir: Path) -> None:
 def ensure_codex_tool_shims(
     workspace_dir: str,
     *,
-    mcp_servers: list[dict[str, Any]] | None = None,
     session_env: Mapping[str, str] | None = None,
 ) -> tuple[Path | None, dict[str, str]]:
     """Install the workspace PATH shims and return the env the agent process needs.
@@ -339,8 +318,6 @@ def ensure_codex_tool_shims(
     loopback token file) is merged in, so every transport that installs the shims
     also makes them usable.
     """
-    servers = list(mcp_servers or [])
-    mount = _extract_mimir_mount(servers)
     workspace = Path(workspace_dir).expanduser().resolve()
     bin_dir = workspace / ".skuld-tools" / "bin"
     bin_dir.mkdir(parents=True, exist_ok=True)
@@ -348,7 +325,7 @@ def ensure_codex_tool_shims(
     uv_cache_dir.mkdir(parents=True, exist_ok=True)
     source_root = Path(__file__).resolve().parents[2]
     ravn_config = os.environ.get("RAVN_CONFIG", "").strip()
-    mimir_configured = mount is not None or _ravn_config_has_mimir(ravn_config)
+    mimir_configured = _ravn_config_has_mimir(ravn_config)
     # Engine-agnostic present-file / forge-describe / request-secret commands (claude AND
     # codex sessions).
     _install_present_file_shim(bin_dir)
@@ -401,14 +378,6 @@ def ensure_codex_tool_shims(
                     "list",
                     "List Mimir wiki page paths, optionally under a prefix.",
                 ),
-                "mimir_related": (
-                    "mimir.bridge",
-                    "related",
-                    "Traverse the Mimir wikilink graph from a page and return related "
-                    "pages up to N hops away (--path <wiki path>, --depth 1-3, "
-                    "optional --rel works_at to filter by typed relationship). "
-                    "Use for relationship questions instead of keyword search.",
-                ),
             }
         )
     for command_name, (module_name, subcommand, description) in commands.items():
@@ -441,10 +410,5 @@ def ensure_codex_tool_shims(
     }
     if ravn_config:
         env["RAVN_CONFIG"] = ravn_config
-    if mount is not None:
-        mimir_path, mimir_name = mount
-        env["RAVN_MIMIR_PATH"] = mimir_path
-        if mimir_name:
-            env["RAVN_MIMIR_NAME"] = mimir_name
     env.update(session_env or {})
     return bin_dir, env

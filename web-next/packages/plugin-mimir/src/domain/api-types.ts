@@ -35,23 +35,6 @@ export interface MimirSearchResult {
   category: string;
 }
 
-export type LintSeverity = 'error' | 'warning' | 'info';
-
-export interface LintIssueHttp {
-  id: string;
-  severity: LintSeverity;
-  message: string;
-  pagePath: string;
-  autoFixable: boolean;
-}
-
-export interface MimirLintReport {
-  issues: LintIssueHttp[];
-  pagesChecked: number;
-  issuesFound: boolean;
-  summary: { error: number; warning: number; info: number };
-}
-
 export interface MimirLogEntry {
   raw: string;
   entries: string[];
@@ -82,17 +65,46 @@ export interface GraphNode {
   firstSeen: string;
   /** The page's own confidence frontmatter, or null when the page declares none. */
   confidence: string | null;
+  /** The memory layer that holds the page (`org`, `project:<id>`, a person layer). Knowledge graph only. */
+  layer?: string;
+  /** ISO-8601 time of the page's newest timeline row, or null when it has none. Knowledge graph only. */
+  changedAt?: string | null;
 }
 
 export interface GraphEdge {
   source: string;
   target: string;
-  type?: string;
+  /** The link's verb (`owns`, `replaces`, `depends_on`, `mentions`, `cites`…); absent when untyped. */
+  relation?: string;
+  /** ISO date of the timeline row that introduced the link, or null when undated. Knowledge graph only. */
+  since?: string | null;
 }
 
 export interface MimirGraph {
   nodes: GraphNode[];
   edges: GraphEdge[];
+}
+
+/** A memory layer a person can read, as the knowledge graph names it. */
+export interface GraphLayer {
+  id: string;
+  name: string;
+}
+
+/** A `[[slug]]` link whose target is no page the person can read. */
+export interface UnresolvedLink {
+  source: string;
+  targetSlug: string;
+}
+
+/**
+ * The knowledge graph of every layer a person can read (`GET /memory/graph`):
+ * the same nodes and edges the scene draws, plus the layers they came from
+ * and the links that point at nothing readable.
+ */
+export interface KnowledgeGraph extends MimirGraph {
+  layers: GraphLayer[];
+  unresolved: UnresolvedLink[];
 }
 
 // ---------------------------------------------------------------------------

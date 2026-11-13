@@ -172,9 +172,9 @@ principal for "this one session".
   key file (`forge_mcp.session_tokens`). Enabled with no usable key is fatal at
   startup, never "mint nothing".
 - Its `scopes` are bounded to its own family, `FORGE_SESSION_SCOPES`:
-  `forge:notify`, `forge:session:read` and `forge:session:secret` (ask the session's own
-  owner for a secret and claim it once; supplying or declining a request stays the owner's
-  alone and is closed to every scoped token) for every session, plus
+  `forge:notify`, `forge:session:read`, `forge:memory` and `forge:session:secret` (ask the
+  session's own owner for a secret and claim it once; supplying or declining a request stays
+  the owner's alone and is closed to every scoped token) for every session, plus
   `forge:session:message` / `forge:session:lifecycle` only through an operator
   grant. The family is part of `KNOWN_WORKLOAD_SCOPES` and keyed by
   `SCOPES_BY_TOKEN_USE` (`src/niuu/domain/services/token_scope.py`) — a
@@ -206,6 +206,70 @@ Volundr chart turns `session_tokens` and this projection on wherever Forge has a
 (workload identity with `signingKey.existingSecret`, or `forge_mcp.session_tokens.signing_key_file`);
 enabling them without one fails the render. When adding a NEW Forge route a session broker may call, add it
 to the allow-list and give it a `require_scope(...)` naming a `forge:*` scope.
+
+The memory gateway (the Mímir service, `docs/design/memory/README.md`) is the one
+non-Forge service that accepts this credential, on exactly three routes:
+`GET …/memory/tools`, `POST …/memory/tools/{name}` and `GET …/memory/context-pack`
+(the only routes its identity middleware exempts). Its people routes
+(`GET …/memory/search`, `GET …/memory/review`, `…/memory/proposals…`, `…/memory/promotions`,
+and `…/memory/graph`, the knowledge graph of the layers that person reads) take a person's
+own login through Mímir's identity adapter, refuse any credential carrying
+`workload_session_id` or that `credential_allows_route` denies, and pass the person's
+`Authorization` on to Forge. `memory/search` reads only the layers Forge says the person
+may see (the org, the projects they are on, a named project's attached memories). The
+gateway calls no model: it collates what each memory system's own search returns. Its own service credential
+(`memory.service_auth`) is used only for `POST /api/v1/forge/memory/ended`. It does not
+verify the token itself. It reads the unverified `workload_session_id` only to address
+`GET /api/v1/forge/sessions/{id}/memory-context` (scope `forge:memory`, the session's own
+only), presents the same token there, and treats Forge's 200 as the verification; any
+other answer is a 401. The broker makes these calls; the `memory` stdio server the agent
+runs only reaches the broker's loopback routes, so the credential stays out of the agent.
+Do not admit the credential on any other Mímir route.
+
+Proposal notifications stay in Forge's feed, never a second channel. When an agent's write
+becomes a proposal to a project, the gateway calls
+`POST /api/v1/forge/sessions/{id}/memory/proposals` with that session's own token (scope
+`forge:memory`, `Binding.OWN`, on the session allow-list); Forge tells only the approvers
+and owners of the session's own project and refuses another project. When a person decides
+it, the gateway calls `POST /api/v1/forge/projects/{id}/memory/proposals/{pid}/decided`
+with that person's own login; Forge settles the rows only for an approver or owner of the
+project. A notice that fails is counted as degraded (`memory.proposal_notify`), never
+retried as a second proposal or decision. Org-layer proposals are not announced: Forge
+cannot list an org's admins.
+
+### Exception: the memory gateway's service credential (`memory.gateway_service_subject`)
+
+The memory gateway asks Forge when run and session layers ended
+(`POST /api/v1/forge/memory/ended`) so it can delete them after retention. No person or
+session is behind that call, so it uses the gateway's own workload-identity token: an
+unscoped exchange token whose `act.sub` equals the configured
+`memory.gateway_service_subject`. Forge admits only that token on that route.
+
+- A `forge_session` credential, any scoped token or PAT, a person and any other service
+  get 403. The session allow-list stays closed to the route.
+- Where Forge's identity adapter is allow-all (local mini mode) nothing verifies callers,
+  so the local caller passes, still never with a session or scoped credential.
+- A Forge that verifies callers and has `memory.gateway_url` but no subject fails at
+  startup, and the chart refuses to render.
+- The exchange sets `act` only when the workload differs from the mapped owner, so map
+  the gateway to an owner that is not its own subject.
+- The platform front door asks every visible node and fails if one cannot answer, so an
+  unreachable node never reads as "gone" (which would delete a live layer).
+
+`GET /projects/{id}/role` and `GET /memory/runs/{id}` take a person's own login only;
+they are not scoped-credential routes.
+
+**Connector sources (`memory.connector_service_subjects`).** The memory gateway admits a
+platform service's credential on exactly one more route, `POST …/memory/sources`, for
+connectors such as Ting's Linear import to keep fetched material as immutable
+`tool`-trust sources (author `tool:<connector>`, evidence `url:<origin_url>`) in a project
+or org layer. The credential is an unscoped workload-identity token whose actor
+(`act.sub`) is listed in `memory.connector_service_subjects`; an empty list admits
+nobody. A person, a `forge_session` or other scoped credential and any other service get
+403. A connector credential is refused on the session routes (401) and the people routes
+(403). With the allow-all identity of local mini mode the local caller passes, still
+never with a session or scoped credential. The route is not exempt from Mímir's identity
+middleware.
 
 ### Exception: mesh sender attestation (`mesh_peer` certificates)
 

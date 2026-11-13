@@ -194,6 +194,18 @@ data:
         enabled: {{ .Values.workflowSteps.stuckDetection.enabled | toJson }}
         sweep_interval_seconds: {{ .Values.workflowSteps.stuckDetection.sweepIntervalSeconds }}
 
+    {{- if and .Values.memoryImports.enabled (not .Values.memoryImports.gatewayUrl) }}
+    {{- fail "memoryImports.enabled: true needs memoryImports.gatewayUrl, the Mimir API prefix (for example http://mimir:8080/api/v1/mimir)" }}
+    {{- end }}
+    memory_imports:
+      enabled: {{ .Values.memoryImports.enabled | toJson }}
+      gateway_url: {{ .Values.memoryImports.gatewayUrl | quote }}
+      gateway_auth:
+        adapter: {{ .Values.memoryImports.gatewayAuth.adapter | quote }}
+        kwargs: {{ .Values.memoryImports.gatewayAuth.kwargs | default dict | toJson }}
+      gateway_timeout_seconds: {{ .Values.memoryImports.gatewayTimeoutSeconds }}
+      poll_seconds: {{ .Values.memoryImports.pollSeconds }}
+
     workflow_execution:
       enabled: {{ .Values.workflowExecution.enabled }}
       gateway_adapter: {{ .Values.workflowExecution.gatewayAdapter | quote }}

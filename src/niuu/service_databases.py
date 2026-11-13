@@ -160,6 +160,33 @@ NIUU_SHARED_BOOTSTRAP_SQL: tuple[str, ...] = (
     CREATE INDEX IF NOT EXISTS idx_integration_connections_owner
         ON integration_connections(owner_id, integration_type);
     """,
+    # 000121: team integrations a project owns, and who used them.
+    "ALTER TABLE integration_connections ADD COLUMN IF NOT EXISTS project_id UUID;",
+    """
+    ALTER TABLE integration_connections
+        ADD COLUMN IF NOT EXISTS connected_by TEXT NOT NULL DEFAULT '';
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_integration_connections_project
+        ON integration_connections(project_id) WHERE project_id IS NOT NULL;
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS integration_usage (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        connection_id UUID NOT NULL,
+        project_id UUID NOT NULL,
+        acting_for TEXT NOT NULL DEFAULT '',
+        actor TEXT NOT NULL DEFAULT '',
+        action TEXT NOT NULL,
+        subject TEXT NOT NULL DEFAULT '',
+        session_id TEXT NOT NULL DEFAULT '',
+        occurred_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_integration_usage_project
+        ON integration_usage(project_id, occurred_at DESC);
+    """,
     """
     CREATE TABLE IF NOT EXISTS project_mappings (
         id              UUID PRIMARY KEY,

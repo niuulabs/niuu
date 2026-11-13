@@ -103,8 +103,7 @@ OpenShell's sandbox runtime (v0.1.6 and later)
 (`driver_config.kubernetes.containers.workloads`). Each peer is
 a regular container in the sandbox's workload Pod, from its own image, sharing
 the Pod's localhost, the Forge workspace/home PVC mounts, and an `emptyDir` at
-`/tmp/niuu-mesh` for Unix sockets. Local Mimir volumes are shared too; the
-sandbox policy must allow `/mimir/local` when that capability is configured. The
+`/tmp/niuu-mesh` for Unix sockets. The
 driver makes each peer's entrypoint OpenShell's subordinate runtime
 (`openshell-sandbox peer`), which applies the sandbox's Landlock, seccomp and
 network mediation to the peer's command, so peers add no isolation boundary

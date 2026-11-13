@@ -167,13 +167,6 @@ class BifrostBudgetDegradedPayload:
 
 
 @dataclass(frozen=True)
-class MimirPageWrittenPayload:
-    page_path: str
-    category: str
-    author: str
-
-
-@dataclass(frozen=True)
 class GitHubPrOpenedPayload:
     repo: str
     branch: str
@@ -299,7 +292,6 @@ class RoomContextSnapshotRecordedPayload:
     judgment_refs: list[str]
     action_refs: list[str]
     participant_ids: list[str]
-    transcript_targets: list[str]
 
 
 @dataclass(frozen=True)
@@ -684,33 +676,6 @@ def bifrost_budget_degraded(
         domain="infrastructure",
         timestamp=datetime.now(UTC),
         correlation_id=correlation_id or tenant_id,
-    )
-
-
-def mimir_page_written(
-    *,
-    page_path: str,
-    category: str,
-    author: str,
-    source: str,
-    correlation_id: str | None = None,
-) -> SleipnirEvent:
-    """Emit when the Mimir adapter writes (creates or updates) a wiki page."""
-    return SleipnirEvent(
-        event_type=registry.MIMIR_PAGE_WRITTEN,
-        source=source,
-        payload=dataclasses.asdict(
-            MimirPageWrittenPayload(
-                page_path=page_path,
-                category=category,
-                author=author,
-            )
-        ),
-        summary=f"Mimir page written: {page_path} by {author}",
-        urgency=0.1,
-        domain="code",
-        timestamp=datetime.now(UTC),
-        correlation_id=correlation_id,
     )
 
 
@@ -1159,7 +1124,6 @@ def room_context_snapshot_recorded(
     judgment_refs: list[str],
     action_refs: list[str],
     participant_ids: list[str],
-    transcript_targets: list[str],
     source: str,
     correlation_id: str | None = None,
     causation_id: str | None = None,
@@ -1176,7 +1140,6 @@ def room_context_snapshot_recorded(
             judgment_refs=judgment_refs,
             action_refs=action_refs,
             participant_ids=participant_ids,
-            transcript_targets=transcript_targets,
         )
     )
     return SleipnirEvent(

@@ -98,6 +98,11 @@ FORGE_SESSION_LIFECYCLE_SCOPE = "forge:session:lifecycle"
 #: Obtain (and renew) the session's mesh certificate: the one Forge route a session
 #: credential has for it, ``POST /sessions/{id}/mesh-identity`` (own session only).
 FORGE_MESH_IDENTITY_SCOPE = "forge:mesh:identity"
+#: Ask what the session's memory layers are (owner, org, project, run, the project's write
+#: prefixes): the one Forge route the memory gateway calls with the session's own
+#: credential, ``GET /sessions/{id}/memory-context`` (own session only). Granted to every
+#: session; it reads nothing the session does not already know about itself.
+FORGE_MEMORY_SCOPE = "forge:memory"
 
 #: Ring the token's own owner's phone with a resident's ``call.request`` (a VoIP push
 #: from the Guild push gateway). It reaches no other owner, so any workload mapping may
@@ -156,6 +161,7 @@ FORGE_SESSION_SCOPES: frozenset[str] = frozenset(
         FORGE_SESSION_MESSAGE_SCOPE,
         FORGE_SESSION_LIFECYCLE_SCOPE,
         FORGE_MESH_IDENTITY_SCOPE,
+        FORGE_MEMORY_SCOPE,
     }
 )
 
@@ -494,6 +500,7 @@ def require_scope(scope: str, *alternatives: str) -> Callable[..., Awaitable[Non
 
 __all__ = [
     "EXCHANGE_GRANTABLE_SCOPES",
+    "FORGE_MEMORY_SCOPE",
     "FORGE_MESH_IDENTITY_SCOPE",
     "FORGE_NOTIFY_SCOPE",
     "FORGE_PUSH_CALL_SCOPE",

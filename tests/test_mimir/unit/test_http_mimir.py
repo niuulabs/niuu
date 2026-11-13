@@ -17,10 +17,7 @@ from mimir.adapters.http import HttpMimirAdapter
 from mimir.domain import MimirAuth
 from mimir.exceptions import MimirConfigurationError
 from niuu.domain.mimir import (
-    MimirLintReport,
     MimirSource,
-    ThreadOwnershipError,
-    ThreadState,
     compute_content_hash,
 )
 
@@ -284,66 +281,6 @@ async def test_list_pages_with_category(adapter: HttpMimirAdapter) -> None:
 
 
 # ---------------------------------------------------------------------------
-# HttpMimirAdapter.lint
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-@respx.mock
-async def test_lint_returns_report(adapter: HttpMimirAdapter) -> None:
-    respx.get("http://mimir.test/mimir/lint").mock(
-        return_value=Response(
-            200,
-            json={
-                "issues": [
-                    {
-                        "id": "L01",
-                        "severity": "warning",
-                        "message": "orphan page",
-                        "page_path": "a.md",
-                        "auto_fixable": False,
-                    },
-                    {
-                        "id": "L04",
-                        "severity": "info",
-                        "message": "concept gap: concept-x",
-                        "page_path": "",
-                        "auto_fixable": False,
-                    },
-                ],
-                "pages_checked": 5,
-                "issues_found": True,
-                "summary": {"error": 0, "warning": 1, "info": 1},
-            },
-        )
-    )
-    report = await adapter.lint()
-    assert isinstance(report, MimirLintReport)
-    assert any(i.id == "L01" and i.page_path == "a.md" for i in report.issues)
-    assert any(i.id == "L04" and "concept-x" in i.message for i in report.issues)
-    assert report.pages_checked == 5
-
-
-@pytest.mark.asyncio
-@respx.mock
-async def test_lint_on_a_mount_without_lint_is_not_implemented(adapter: HttpMimirAdapter) -> None:
-    """A remote 501 is the mount saying it has no lint, which an aggregate reports."""
-    respx.get("http://mimir.test/mimir/lint").mock(
-        return_value=Response(501, json={"detail": "gbrain has no equivalent for lint."})
-    )
-    with pytest.raises(NotImplementedError, match="gbrain has no equivalent for lint"):
-        await adapter.lint()
-
-
-@pytest.mark.asyncio
-@respx.mock
-async def test_lint_501_without_a_detail_names_the_status(adapter: HttpMimirAdapter) -> None:
-    respx.get("http://mimir.test/mimir/lint").mock(return_value=Response(501, text="nope"))
-    with pytest.raises(NotImplementedError, match="501 from http://mimir.test/mimir/lint"):
-        await adapter.lint()
-
-
-# ---------------------------------------------------------------------------
 # HttpMimirAdapter — auth header
 # ---------------------------------------------------------------------------
 
@@ -527,253 +464,6 @@ class _FakeTimeModule:
 
 
 # ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-_NOW = datetime.now(UTC).isoformat()
-
-
-def _thread_json(
-    path: str = "threads/my-thread",
-    state: str = "open",
-    weight: float = 0.75,
-) -> dict:
-    return {
-        "path": path,
-        "title": "My Thread",
-        "summary": "A test thread.",
-        "category": "threads",
-        "updated_at": _NOW,
-        "state": state,
-        "weight": weight,
-        "source_ids": [],
-        "content": "",
-    }
-
-
-# ---------------------------------------------------------------------------
-# HttpMimirAdapter — get_thread_queue (NIU-561)
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-@respx.mock
-async def test_get_thread_queue_returns_pages(adapter: HttpMimirAdapter) -> None:
-    respx.get("http://mimir.test/api/threads/queue").mock(
-        return_value=Response(200, json=[_thread_json()])
-    )
-    pages = await adapter.get_thread_queue()
-    assert len(pages) == 1
-    assert pages[0].meta.path == "threads/my-thread"
-    assert pages[0].meta.is_thread is True
-    assert pages[0].meta.thread_state == ThreadState.open
-    assert pages[0].meta.thread_weight == 0.75
-
-
-@pytest.mark.asyncio
-@respx.mock
-async def test_get_thread_queue_sends_limit(adapter: HttpMimirAdapter) -> None:
-    route = respx.get("http://mimir.test/api/threads/queue").mock(
-        return_value=Response(200, json=[])
-    )
-    await adapter.get_thread_queue(limit=10)
-    assert route.called
-    assert "limit=10" in str(route.calls[0].request.url)
-
-
-@pytest.mark.asyncio
-@respx.mock
-async def test_get_thread_queue_sends_owner_id(adapter: HttpMimirAdapter) -> None:
-    route = respx.get("http://mimir.test/api/threads/queue").mock(
-        return_value=Response(200, json=[])
-    )
-    await adapter.get_thread_queue(owner_id="ravn-1", limit=5)
-    assert "owner_id=ravn-1" in str(route.calls[0].request.url)
-
-
-@pytest.mark.asyncio
-@respx.mock
-async def test_get_thread_queue_omits_owner_id_when_none(adapter: HttpMimirAdapter) -> None:
-    route = respx.get("http://mimir.test/api/threads/queue").mock(
-        return_value=Response(200, json=[])
-    )
-    await adapter.get_thread_queue(owner_id=None)
-    assert "owner_id" not in str(route.calls[0].request.url)
-
-
-@pytest.mark.asyncio
-@respx.mock
-async def test_get_thread_queue_returns_empty_list(adapter: HttpMimirAdapter) -> None:
-    respx.get("http://mimir.test/api/threads/queue").mock(return_value=Response(200, json=[]))
-    pages = await adapter.get_thread_queue()
-    assert pages == []
-
-
-# ---------------------------------------------------------------------------
-# HttpMimirAdapter — list_threads (NIU-561)
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-@respx.mock
-async def test_list_threads_returns_pages(adapter: HttpMimirAdapter) -> None:
-    respx.get("http://mimir.test/api/threads").mock(
-        return_value=Response(200, json=[_thread_json(state="pulling")])
-    )
-    pages = await adapter.list_threads()
-    assert len(pages) == 1
-    assert pages[0].meta.thread_state == ThreadState.pulling
-    assert pages[0].meta.is_thread is True
-
-
-@pytest.mark.asyncio
-@respx.mock
-async def test_list_threads_sends_state_filter(adapter: HttpMimirAdapter) -> None:
-    route = respx.get("http://mimir.test/api/threads").mock(return_value=Response(200, json=[]))
-    await adapter.list_threads(state=ThreadState.open)
-    assert "state=open" in str(route.calls[0].request.url)
-
-
-@pytest.mark.asyncio
-@respx.mock
-async def test_list_threads_sends_limit(adapter: HttpMimirAdapter) -> None:
-    route = respx.get("http://mimir.test/api/threads").mock(return_value=Response(200, json=[]))
-    await adapter.list_threads(limit=25)
-    assert "limit=25" in str(route.calls[0].request.url)
-
-
-@pytest.mark.asyncio
-@respx.mock
-async def test_list_threads_omits_state_when_none(adapter: HttpMimirAdapter) -> None:
-    route = respx.get("http://mimir.test/api/threads").mock(return_value=Response(200, json=[]))
-    await adapter.list_threads(state=None)
-    assert "state" not in str(route.calls[0].request.url)
-
-
-# ---------------------------------------------------------------------------
-# HttpMimirAdapter — update_thread_state (NIU-561)
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-@respx.mock
-async def test_update_thread_state_sends_patch(adapter: HttpMimirAdapter) -> None:
-    route = respx.patch("http://mimir.test/api/threads/threads%2Fmy-thread/state").mock(
-        return_value=Response(200, json={"state": "pulling"})
-    )
-    await adapter.update_thread_state("threads/my-thread", ThreadState.pulling)
-    assert route.called
-
-
-@pytest.mark.asyncio
-@respx.mock
-async def test_update_thread_state_raises_file_not_found_on_404(
-    adapter: HttpMimirAdapter,
-) -> None:
-    respx.patch("http://mimir.test/api/threads/threads%2Fmissing/state").mock(
-        return_value=Response(404)
-    )
-    with pytest.raises(FileNotFoundError, match="threads/missing"):
-        await adapter.update_thread_state("threads/missing", ThreadState.closed)
-
-
-# ---------------------------------------------------------------------------
-# HttpMimirAdapter — update_thread_weight (NIU-561)
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-@respx.mock
-async def test_update_thread_weight_sends_patch(adapter: HttpMimirAdapter) -> None:
-    route = respx.patch("http://mimir.test/api/threads/threads%2Fmy-thread/weight").mock(
-        return_value=Response(200, json={"weight": 0.9})
-    )
-    await adapter.update_thread_weight("threads/my-thread", 0.9)
-    assert route.called
-
-
-@pytest.mark.asyncio
-@respx.mock
-async def test_update_thread_weight_sends_signals(adapter: HttpMimirAdapter) -> None:
-    import json as _json
-
-    route = respx.patch("http://mimir.test/api/threads/threads%2Fmy-thread/weight").mock(
-        return_value=Response(200, json={"weight": 0.8})
-    )
-    await adapter.update_thread_weight("threads/my-thread", 0.8, signals={"mention_count": 3.0})
-    assert route.called
-    body = _json.loads(route.calls[0].request.content)
-    assert body["signals"] == {"mention_count": 3.0}
-
-
-@pytest.mark.asyncio
-@respx.mock
-async def test_update_thread_weight_raises_file_not_found_on_404(
-    adapter: HttpMimirAdapter,
-) -> None:
-    respx.patch("http://mimir.test/api/threads/threads%2Fmissing/weight").mock(
-        return_value=Response(404)
-    )
-    with pytest.raises(FileNotFoundError, match="threads/missing"):
-        await adapter.update_thread_weight("threads/missing", 0.5)
-
-
-# ---------------------------------------------------------------------------
-# HttpMimirAdapter — assign_thread_owner (NIU-561)
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-@respx.mock
-async def test_assign_thread_owner_sends_post(adapter: HttpMimirAdapter) -> None:
-    route = respx.post("http://mimir.test/api/threads/threads%2Fmy-thread/owner").mock(
-        return_value=Response(200, json={"owner_id": "ravn-1"})
-    )
-    await adapter.assign_thread_owner("threads/my-thread", "ravn-1")
-    assert route.called
-
-
-@pytest.mark.asyncio
-@respx.mock
-async def test_assign_thread_owner_clears_owner(adapter: HttpMimirAdapter) -> None:
-    import json as _json
-
-    route = respx.post("http://mimir.test/api/threads/threads%2Fmy-thread/owner").mock(
-        return_value=Response(200, json={"owner_id": None})
-    )
-    await adapter.assign_thread_owner("threads/my-thread", None)
-    assert route.called
-    body = _json.loads(route.calls[0].request.content)
-    assert body["owner_id"] is None
-
-
-@pytest.mark.asyncio
-@respx.mock
-async def test_assign_thread_owner_raises_ownership_error_on_409(
-    adapter: HttpMimirAdapter,
-) -> None:
-    respx.post("http://mimir.test/api/threads/threads%2Fmy-thread/owner").mock(
-        return_value=Response(409, json={"current_owner": "ravn-2"})
-    )
-    with pytest.raises(ThreadOwnershipError) as exc_info:
-        await adapter.assign_thread_owner("threads/my-thread", "ravn-1")
-    assert exc_info.value.path == "threads/my-thread"
-    assert exc_info.value.current_owner == "ravn-2"
-
-
-@pytest.mark.asyncio
-@respx.mock
-async def test_assign_thread_owner_raises_file_not_found_on_404(
-    adapter: HttpMimirAdapter,
-) -> None:
-    respx.post("http://mimir.test/api/threads/threads%2Fmissing/owner").mock(
-        return_value=Response(404)
-    )
-    with pytest.raises(FileNotFoundError, match="threads/missing"):
-        await adapter.assign_thread_owner("threads/missing", "ravn-1")
-
-
-# ---------------------------------------------------------------------------
 # HttpMimirAdapter — aclose
 # ---------------------------------------------------------------------------
 
@@ -803,8 +493,6 @@ async def test_summarize_parses_the_summary_endpoint(adapter: HttpMimirAdapter) 
                 "source_count": 282,
                 "categories": ["research", "technical"],
                 "last_write": "2026-08-06T20:53:29+00:00",
-                "lint_issues": 7,
-                "lint_checked_at": "2026-08-06T18:00:00+00:00",
             },
         )
     )
@@ -815,14 +503,12 @@ async def test_summarize_parses_the_summary_endpoint(adapter: HttpMimirAdapter) 
     assert summary.source_count == 282
     assert summary.categories == ["research", "technical"]
     assert summary.last_write is not None
-    assert summary.lint_issues == 7
-    assert summary.lint_checked_at is not None
 
 
 @pytest.mark.asyncio
 @respx.mock
 async def test_summarize_tolerates_empty_timestamps(adapter: HttpMimirAdapter) -> None:
-    """A never-linted, never-written mount reports empty strings, not nulls."""
+    """A never-written mount reports an empty string, not null."""
     respx.get("http://mimir.test/mimir/summary").mock(
         return_value=Response(
             200,
@@ -831,8 +517,6 @@ async def test_summarize_tolerates_empty_timestamps(adapter: HttpMimirAdapter) -
                 "source_count": 0,
                 "categories": [],
                 "last_write": "",
-                "lint_issues": 0,
-                "lint_checked_at": "",
             },
         )
     )
@@ -840,7 +524,6 @@ async def test_summarize_tolerates_empty_timestamps(adapter: HttpMimirAdapter) -
     summary = await adapter.summarize()
 
     assert summary.last_write is None
-    assert summary.lint_checked_at is None
 
 
 @pytest.mark.asyncio
