@@ -287,6 +287,14 @@ export {
   buildTingAuditLogHttpAdapter,
 } from './adapters/http';
 
+// Memory imports: a project's tickets brought into its memory
+export {
+  buildMemoryImportsHttpAdapter,
+  createMockMemoryImportsService,
+} from './adapters/memoryImports';
+export { MEMORY_IMPORTS_SERVICE_KEY } from './ports';
+export type { IMemoryImportsService, MemoryImport } from './ports';
+
 // Port interfaces + request/response types
 export type {
   ITingService,

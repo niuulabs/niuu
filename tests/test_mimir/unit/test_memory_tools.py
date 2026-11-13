@@ -144,8 +144,13 @@ class TestArguments:
             ("memory_propose", {"layer": "org", "change": {}, "evidence": [URL]}, "change.action"),
             (
                 "memory_propose",
-                {"layer": "org", "change": {"action": "remember"}, "evidence": []},
+                {"layer": "org", "change": {"action": "remember"}, "evidence": [], "why": "w"},
                 "needs evidence",
+            ),
+            (
+                "memory_propose",
+                {"layer": "org", "change": {"action": "remember"}, "evidence": [URL]},
+                "why is required",
             ),
             ("memory_retire", {"fact": "1@l/org/x", "reason": " "}, "must not be empty"),
             ("memory_add_timeline", {"ref": "p", "entry": "a\nb", "evidence": [URL]}, "one line"),
@@ -248,6 +253,7 @@ class TestResults:
             layer="org",
             change={"action": "write_page", "ref": "handbook/oncall", "compiled_truth": "x"},
             evidence=[URL],
+            why="On-call moved to a weekly rota.",
         )
         structured = result["structuredContent"]
         assert structured["written"] is False

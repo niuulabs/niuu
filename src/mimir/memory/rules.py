@@ -110,55 +110,63 @@ def under_prefixes(slug: str, prefixes: tuple[str, ...]) -> bool:
     return any(prefix and path.startswith(prefix) for prefix in map(normalize_prefix, prefixes))
 
 
-@dataclass(frozen=True)
-class SessionView:
-    """A session as the gateway sees it: who it is and its layers, nearest first."""
+@dataclass(frozen=True, kw_only=True)
+class LayerView:
+    """Layers someone reads, nearest first, and the memory system holding the org's own.
 
-    context: SessionMemoryContext
+    A session's view (:class:`SessionView`) also writes; a person's reading view
+    (:meth:`for_reader`) only reads: the gateway's write paths take a session's view.
+    """
+
+    tenant_id: str
     system: str
     layers: tuple[Layer, ...]
+    attachments: tuple[Attachment, ...] = ()
+    #: Who holds these layers, in refusals ("this session", "you").
+    holder: str = "you"
 
     @classmethod
-    def of(cls, context: SessionMemoryContext, system: str) -> SessionView:
-        layers = [Layer(LayerKind.SESSION, context.session_id)]
-        if context.workflow_run_id:
-            layers.append(Layer(LayerKind.RUN, context.workflow_run_id.lower()))
-        if context.project_id:
-            layers.append(Layer(LayerKind.PROJECT, context.project_id))
-        names: set[str] = set()
-        for attachment in context.attached:
-            if attachment.name in names:
-                raise MemoryValidationError(
-                    f"Forge named attached memory {attachment.name!r} twice for session "
-                    f"{context.session_id}; each attachment needs its own name"
-                )
-            names.add(attachment.name)
-            layers.append(Layer(LayerKind.ATTACHED, attachment.name))
+    def for_reader(
+        cls,
+        *,
+        tenant_id: str,
+        system: str,
+        project_ids: tuple[str, ...],
+        attachments: tuple[Attachment, ...] = (),
+    ) -> LayerView:
+        """A person's reading view: the projects named, their attachments, and the org."""
+        layers = [Layer(LayerKind.PROJECT, project_id.lower()) for project_id in project_ids]
+        layers.extend(_attached_layers(attachments, "you"))
         layers.append(Layer(LayerKind.ORG))
-        return cls(context=context, system=system, layers=tuple(layers))
+        return cls(
+            tenant_id=tenant_id, system=system, layers=tuple(layers), attachments=attachments
+        )
 
     def attachment(self, layer: Layer) -> Attachment:
-        """The attachment behind an attached layer of this session."""
-        for attachment in self.context.attached:
+        """The attachment behind an attached layer of this view."""
+        for attachment in self.attachments:
             if attachment.name == layer.key:
                 return attachment
-        raise MemoryValidationError(f"{layer.id} is not one of this session's attachments")
-
-    @property
-    def caller(self) -> FactCaller:
-        """Sessions are agents (design section 3): the trust never comes from the request."""
-        return FactCaller(FactAuthor(AuthorKind.AGENT, f"session:{self.context.session_id}"))
+        raise MemoryValidationError(f"{layer.id} is not one of {self._whose} attachments")
 
     @property
     def namespaces(self) -> tuple[str, ...]:
         return tuple(layer.namespace for layer in self.layers)
 
+    @property
+    def _whose(self) -> str:
+        return "your" if self.holder == "you" else f"{self.holder}'s"
+
+    @property
+    def _possessive(self) -> str:
+        return "your" if self.holder == "you" else "its"
+
     def layer(self, name: str | None) -> Layer:
-        """The session's layer *name* names (default: the session layer).
+        """The layer *name* names (default: the session layer).
 
         Accepts ``session``, ``run``, ``project`` and ``org`` and full ids
         (``project:<id>``, ``attached:<name>``); an attached layer is named in full.
-        A layer the session does not have is a counted refusal.
+        A layer the view does not have is a counted refusal.
         """
         wanted = (name or LayerKind.SESSION.value).strip().lower()
         for layer in self.layers:
@@ -173,11 +181,42 @@ class SessionView:
         have = ", ".join(layer.id for layer in self.layers)
         raise refuse(
             Rule.LAYER_NOT_IN_SESSION,
-            f"this session has no layer {wanted!r}; its layers are {have}",
+            f"{self.holder} {'have' if self.holder == 'you' else 'has'} no layer {wanted!r}; "
+            f"{self._possessive} layers are {have}",
         )
 
     def layer_of_namespace(self, namespace: str) -> Layer | None:
         return next((layer for layer in self.layers if layer.namespace == namespace), None)
+
+
+@dataclass(frozen=True, kw_only=True)
+class SessionView(LayerView):
+    """A session as the gateway sees it: who it is and its layers, nearest first."""
+
+    context: SessionMemoryContext
+    holder: str = "this session"
+
+    @classmethod
+    def of(cls, context: SessionMemoryContext, system: str) -> SessionView:
+        layers = [Layer(LayerKind.SESSION, context.session_id)]
+        if context.workflow_run_id:
+            layers.append(Layer(LayerKind.RUN, context.workflow_run_id.lower()))
+        if context.project_id:
+            layers.append(Layer(LayerKind.PROJECT, context.project_id))
+        layers.extend(_attached_layers(context.attached, f"session {context.session_id}"))
+        layers.append(Layer(LayerKind.ORG))
+        return cls(
+            context=context,
+            tenant_id=context.tenant_id,
+            system=system,
+            layers=tuple(layers),
+            attachments=context.attached,
+        )
+
+    @property
+    def caller(self) -> FactCaller:
+        """Sessions are agents (design section 3): the trust never comes from the request."""
+        return FactCaller(FactAuthor(AuthorKind.AGENT, f"session:{self.context.session_id}"))
 
     def decide(self, layer: Layer, action: ChangeAction, slug: str | None = None) -> Decision:
         """Whether an agent's *action* on *layer* is written or becomes a proposal.
@@ -239,3 +278,17 @@ class SessionView:
             Rule.ATTACHED_WRITE_PREFIXES,
             f"{layer.id} takes page writes only under its write prefixes ({allowed or 'none set'})",
         )
+
+
+def _attached_layers(attachments: tuple[Attachment, ...], whose: str) -> list[Layer]:
+    names: set[str] = set()
+    layers = []
+    for attachment in attachments:
+        if attachment.name in names:
+            raise MemoryValidationError(
+                f"Forge named attached memory {attachment.name!r} twice for {whose}; each "
+                "attachment needs its own name"
+            )
+        names.add(attachment.name)
+        layers.append(Layer(LayerKind.ATTACHED, attachment.name))
+    return layers

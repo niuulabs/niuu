@@ -11,6 +11,12 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
+
+from mimir.memory.models import Attachment
+
+if TYPE_CHECKING:
+    from mimir.memory.person_layers import ReadableLayer
 
 
 @dataclass(frozen=True)
@@ -60,6 +66,15 @@ class PeopleDirectory(ABC):
     @abstractmethod
     async def project_role(self, project_id: str, person: Person) -> str:
         """``viewer``, ``contributor``, ``approver`` or ``owner`` (a tenant admin is owner)."""
+
+    @abstractmethod
+    async def readable_layers(self, person: Person) -> list[ReadableLayer]:
+        """The org layer and the layer of every project the person is on, each named
+        (:func:`mimir.memory.person_layers.readable_layers`)."""
+
+    @abstractmethod
+    async def project_attachments(self, project_id: str, person: Person) -> tuple[Attachment, ...]:
+        """The memories the project attaches (its mounts), with the access each allows."""
 
     @abstractmethod
     async def session_owner(self, session_id: str, person: Person) -> Owned:

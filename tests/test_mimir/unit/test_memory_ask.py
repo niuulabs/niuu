@@ -16,6 +16,7 @@ from mimir.memory.gateway import MemoryGateway
 from mimir.memory.models import Attribution, Evidence, PageWrite
 from mimir.memory.systems import MemorySystems
 from mimir.memory.tools import MemoryTools
+from mimir.ports.answer_model import ModelCaller
 from niuu.cap_telemetry import OutputTruncatedError, cap_hit_counts, reset_cap_hits
 from niuu.domain.mimir_facts import TrustLevel
 from tests.test_mimir.unit.memory_fakes import (
@@ -110,7 +111,10 @@ class TestAsk:
         )
         token = session_token()
         answer = await _answers(gateway).ask(
-            session, "who owns the booking cut-over?", layers=None, credential=token
+            session,
+            "who owns the booking cut-over?",
+            layers=None,
+            caller=ModelCaller.session(token),
         )
         assert answer.answer == "Ines owns the booking cut-over."
         assert answer.citations == ((PROJECT, "people/ines"),)
@@ -132,7 +136,9 @@ class TestAsk:
         )
         before = {n for n, _ in brain.calls if n in ("put_page", "remember", "add_timeline_entry")}
         writes = len([1 for n, _ in brain.calls if n in before])
-        await _answers(gateway).ask(session, "booking cut-over", layers=None, credential="t")
+        await _answers(gateway).ask(
+            session, "booking cut-over", layers=None, caller=ModelCaller.session("t")
+        )
         assert len([1 for n, _ in brain.calls if n in before]) == writes
 
     async def test_a_cut_off_answer_raises_naming_the_knob_and_is_counted(
@@ -145,7 +151,9 @@ class TestAsk:
             return_value=_reply({"answer": "Ines"}, stop_reason="max_tokens")
         )
         with pytest.raises(OutputTruncatedError, match="memory.answer_model"):
-            await _answers(gateway).ask(session, "booking cut-over", layers=None, credential="t")
+            await _answers(gateway).ask(
+                session, "booking cut-over", layers=None, caller=ModelCaller.session("t")
+            )
         assert cap_hit_counts()["memory.answer_model"] == 1
 
     async def test_a_citation_outside_the_retrieved_set_is_refused(self, services, gateway) -> None:
@@ -162,7 +170,9 @@ class TestAsk:
             )
         )
         with pytest.raises(AnswerRefusedError, match="org:people/marc"):
-            await _answers(gateway).ask(session, "booking cut-over", layers=None, credential="t")
+            await _answers(gateway).ask(
+                session, "booking cut-over", layers=None, caller=ModelCaller.session("t")
+            )
         assert cap_hit_counts()["memory.ask.citations"] == 1
 
     @pytest.mark.parametrize(
@@ -186,7 +196,9 @@ class TestAsk:
             )
         )
         with pytest.raises(AnswerRefusedError):
-            await _answers(gateway).ask(session, "booking cut-over", layers=None, credential="t")
+            await _answers(gateway).ask(
+                session, "booking cut-over", layers=None, caller=ModelCaller.session("t")
+            )
 
     async def test_nothing_retrieved_answers_with_a_gap_and_no_model_call(
         self, services, gateway
@@ -194,7 +206,9 @@ class TestAsk:
         _, router = services
         call = router.post(f"{BIFROST}/v1/messages")
         session = await gateway.open(context())
-        answer = await _answers(gateway).ask(session, "zebra", layers=None, credential="t")
+        answer = await _answers(gateway).ask(
+            session, "zebra", layers=None, caller=ModelCaller.session("t")
+        )
         assert answer.answer == "" and answer.citations == ()
         assert "Nothing in your layers" in answer.gaps[0]
         assert not call.called
@@ -210,7 +224,7 @@ class TestAsk:
             )
         )
         answer = await _answers(gateway, retrieval_count=2).ask(
-            session, "booking cut-over", layers=None, credential="t"
+            session, "booking cut-over", layers=None, caller=ModelCaller.session("t")
         )
         assert "the owner is not recorded" in answer.gaps
         assert any("memory.ask_retrieval_count" in gap for gap in answer.gaps)
@@ -229,7 +243,9 @@ class TestAsk:
                 }
             )
         )
-        answer = await _answers(gateway).ask(session, "p99 budget", layers=None, credential="t")
+        answer = await _answers(gateway).ask(
+            session, "p99 budget", layers=None, caller=ModelCaller.session("t")
+        )
         assert any(gap.startswith("Disagreement:") for gap in answer.gaps)
 
     async def test_the_tool_answers_and_reports_a_cut_off_as_a_tool_error(

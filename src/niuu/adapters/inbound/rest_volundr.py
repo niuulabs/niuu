@@ -201,6 +201,22 @@ def _team_integration_operation(method: str, pieces: list[str]) -> bool:
     return False
 
 
+def _project_memory_operation(method: str, pieces: list[str]) -> bool:
+    """Whether ``method`` on ``/projects/{id}/<pieces>`` is a project memory route: the
+    memories it attaches (``memory``, ``memory/<name>``) and the notice that one of its
+    memory proposals was decided (``memory/proposals/<id>/decided``)."""
+    if not pieces or pieces[0] != "memory":
+        return False
+    match pieces[1:]:
+        case []:
+            return method in ("GET", "POST")
+        case ["proposals", proposal_id, "decided"] if proposal_id:
+            return method == "POST"
+        case [name] if name:
+            return method in ("PATCH", "DELETE")
+    return False
+
+
 def _is_session_principal(principal: Principal) -> bool:
     return principal.token_use == FORGE_SESSION_TOKEN_USE
 
@@ -2166,6 +2182,7 @@ def create_volundr_router(
             or (request.method == "POST" and is_ack)
             or (request.method in ("PATCH", "DELETE") and is_member)
             or _team_integration_operation(request.method, pieces)
+            or _project_memory_operation(request.method, pieces)
         )
         if not known:
             raise HTTPException(404, "Unknown project operation")
@@ -5814,6 +5831,35 @@ def create_volundr_router(
             status_code=upstream.status_code,
             media_type=upstream.headers.get("content-type"),
             headers=headers,
+        )
+
+    @router.post(
+        "/sessions/{session_id}/memory/proposals", operation_id="post_session_memory_proposal"
+    )
+    async def memory_proposal_waiting(
+        request: Request,
+        session_id: str,
+        principal: Principal = Depends(extract_principal),
+    ) -> Response:
+        """Tell the deciders of a session's project that its proposal waits, on the Forge
+        node that owns the session. The memory gateway calls it with the session's own
+        credential; Forge's answer goes through unchanged."""
+        instance, _ = await _find_session_owner(
+            service, principal, request, session_id, embedded_app=embedded_forge_app
+        )
+        upstream = await _request_remote(
+            instance,
+            request,
+            method="POST",
+            path=f"/sessions/{session_id}/memory/proposals",
+            json_body=await request.json(),
+            params=None,
+            embedded_app=embedded_forge_app,
+        )
+        return Response(
+            content=upstream.content,
+            status_code=upstream.status_code,
+            media_type=upstream.headers.get("content-type"),
         )
 
     @router.get("/memory/runs/{run_id}", operation_id="get_memory_run_owner")

@@ -34,6 +34,12 @@ describe('MimirTopbar', () => {
     expect(container).toBeEmptyDOMElement();
   });
 
+  it.each(['/mimir/ask', '/mimir/review'])('renders nothing on %s, one calm job', (path) => {
+    currentPathname = path;
+    const { container } = wrap();
+    expect(container).toBeEmptyDOMElement();
+  });
+
   it('renders the mount label', () => {
     wrap();
     expect(screen.getByText('mount')).toBeInTheDocument();

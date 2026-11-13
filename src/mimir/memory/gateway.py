@@ -31,6 +31,7 @@ from datetime import UTC, date, datetime
 from typing import Any
 
 from mimir.memory.models import (
+    Attachment,
     Attribution,
     ChangeAction,
     ChangeSet,
@@ -57,6 +58,7 @@ from mimir.memory.models import (
 )
 from mimir.memory.rules import (
     Decision,
+    LayerView,
     Rule,
     SessionView,
     Verdict,
@@ -261,12 +263,25 @@ def page_disagreements(pages: Sequence[LabelledPage]) -> list[Disagreement]:
 
 @dataclass(frozen=True)
 class Session:
-    """One call's resolved session: its view, the org's system holding its own layers,
-    and the store behind each attached layer."""
+    """One call's resolved layers: its view, the org's system holding its own layers,
+    and the store behind each attached layer.
 
-    view: SessionView
+    A session's call has a :class:`SessionView` and may write; a person reading (the
+    people ask route) has a reading view and only reads: :attr:`agent` refuses it.
+    """
+
+    view: LayerView
     backend: MemoryBackend
     attached: Mapping[Layer, MemoryBackend] = field(default_factory=dict)
+
+    @property
+    def agent(self) -> SessionView:
+        """The session's view, for writes and session-only reads (the context pack)."""
+        if not isinstance(self.view, SessionView):
+            raise MemoryValidationError(
+                "a person's reading view only reads; writes come from a session's agent"
+            )
+        return self.view
 
     @property
     def layers(self) -> tuple[Layer, ...]:
@@ -334,7 +349,31 @@ class MemoryGateway:
         Raises TenantNotConfiguredError when the session's org has no system.
         """
         system, backend = self._systems.for_tenant(context.tenant_id)
-        view = SessionView.of(context, system)
+        return await self._open_view(SessionView.of(context, system), backend)
+
+    async def open_reader(
+        self,
+        tenant_id: str,
+        *,
+        project_ids: Sequence[str],
+        attachments: Sequence[Attachment] = (),
+    ) -> Session:
+        """A person's reading view: *project_ids*, the attachments named, and the org.
+
+        The caller has already checked with Forge that the person may read each project.
+        Raises TenantNotConfiguredError when the org has no system.
+        """
+        system, backend = self._systems.for_tenant(tenant_id)
+        view = LayerView.for_reader(
+            tenant_id=tenant_id,
+            system=system,
+            project_ids=tuple(project_ids),
+            attachments=tuple(attachments),
+        )
+        return await self._open_view(view, backend)
+
+    async def _open_view(self, view: LayerView, backend: MemoryBackend) -> Session:
+        system = view.system
         attached: dict[Layer, MemoryBackend] = {}
         for layer in view.layers:
             if layer.kind is LayerKind.ATTACHED:
@@ -343,14 +382,14 @@ class MemoryGateway:
             await self._place(system, backend, layer.kind, layer.namespace)
         return Session(view=view, backend=backend, attached=attached)
 
-    def _open_attached(self, view: SessionView, layer: Layer) -> MemoryBackend:
+    def _open_attached(self, view: LayerView, layer: Layer) -> MemoryBackend:
         attachment = view.attachment(layer)
         if self._attached is None:
             raise LayerUnavailableError(
                 f"{layer.id} cannot be opened: this gateway has no registry of attached memories"
             )
         try:
-            store = self._attached.open(view.context.tenant_id, attachment, layer.namespace)
+            store = self._attached.open(view.tenant_id, attachment, layer.namespace)
         except AttachedMemoryError as exc:
             raise LayerUnavailableError(f"{layer.id} cannot be opened: {exc}") from exc
         require_capabilities(layer.id, store, LayerKind.ATTACHED)
@@ -693,6 +732,7 @@ class MemoryGateway:
         evidence: Sequence[str],
         url: str | None = None,
         layer: str | None = None,
+        why: str = "",
     ) -> WriteOutcome:
         if kind in OPERATIONAL_SOURCE_TYPES:
             raise refuse(
@@ -715,17 +755,17 @@ class MemoryGateway:
             )
         source = NewSource(title=title, content=content, kind=source_kind, origin_url=url)
         target = session.view.layer(layer)
-        decision = session.view.decide(target, ChangeAction.ADD_SOURCE)
+        decision = session.agent.decide(target, ChangeAction.ADD_SOURCE)
         if decision.verdict is Verdict.PROPOSE:
             change = {"title": title, "content": content, "kind": kind, "url": url}
             return await self._propose(
-                session, target, ChangeAction.ADD_SOURCE, change, cited, decision
+                session, target, ChangeAction.ADD_SOURCE, change, cited, decision, why=why
             )
         record, new = await self._guard(
             [target.namespace],
             session.view.system,
             session.backend.put_source(
-                target.namespace, source, self._attribution(session.view.caller, cited)
+                target.namespace, source, self._attribution(session.agent.caller, cited)
             ),
             "written",
         )
@@ -747,13 +787,14 @@ class MemoryGateway:
         page_type: str = "",
         evidence: Sequence[str] = (),
         layer: str | None = None,
+        why: str = "",
     ) -> WriteOutcome:
         cited = Evidence.parse_all(list(evidence))
         page = PageWrite(
             compiled_truth=compiled_truth, title=title, page_type=page_type, evidence=cited
         )
         target = session.view.layer(layer)
-        decision = session.view.decide(target, ChangeAction.WRITE_PAGE, ref)
+        decision = session.agent.decide(target, ChangeAction.WRITE_PAGE, ref)
         if decision.verdict is Verdict.WRITE:
             decision = await self._page_rewrite_decision(session, target, ref, decision)
         if decision.verdict is Verdict.PROPOSE:
@@ -765,7 +806,7 @@ class MemoryGateway:
                 "type": page_type,
             }
             return await self._propose(
-                session, target, ChangeAction.WRITE_PAGE, change, cited, decision
+                session, target, ChangeAction.WRITE_PAGE, change, cited, decision, why=why
             )
         system, backend = session.store(target)
         record = await self._guard(
@@ -775,7 +816,7 @@ class MemoryGateway:
                 target.namespace,
                 ref,
                 page,
-                self._attribution(session.view.caller, cited),
+                self._attribution(session.agent.caller, cited),
                 expected_revision=expected_revision or None,
             ),
             "written",
@@ -804,7 +845,7 @@ class MemoryGateway:
         except RecordNotFoundError:
             return decision
         current_trust = current.attribution.trust
-        if current_trust <= session.view.caller.trust:
+        if current_trust <= session.agent.caller.trust:
             return decision
         return Decision(
             Verdict.PROPOSE,
@@ -823,24 +864,25 @@ class MemoryGateway:
         on: date | None = None,
         detail: str = "",
         layer: str | None = None,
+        why: str = "",
     ) -> WriteOutcome:
         cited = Evidence.parse_all(list(evidence))
         row = NewTimelineRow(
             on=on or datetime.now(UTC).date(), summary=entry, evidence=cited, detail=detail
         )
         target = session.view.layer(layer)
-        decision = session.view.decide(target, ChangeAction.ADD_TIMELINE, ref)
+        decision = session.agent.decide(target, ChangeAction.ADD_TIMELINE, ref)
         if decision.verdict is Verdict.PROPOSE:
             change = {"ref": ref, "entry": entry, "date": row.on.isoformat(), "detail": detail}
             return await self._propose(
-                session, target, ChangeAction.ADD_TIMELINE, change, cited, decision
+                session, target, ChangeAction.ADD_TIMELINE, change, cited, decision, why=why
             )
         system, backend = session.store(target)
         await self._guard(
             [target.namespace],
             system,
             backend.append_timeline(
-                target.namespace, ref, row, self._attribution(session.view.caller, cited)
+                target.namespace, ref, row, self._attribution(session.agent.caller, cited)
             ),
             "written",
         )
@@ -861,6 +903,7 @@ class MemoryGateway:
         valid_until: datetime | None = None,
         replaces: Sequence[str] = (),
         layer: str | None = None,
+        why: str = "",
     ) -> WriteOutcome:
         cited = Evidence.parse_all(list(evidence))
         try:
@@ -877,7 +920,7 @@ class MemoryGateway:
             replaces=tuple(replaces),
         )
         target = session.view.layer(layer)
-        decision = session.view.decide(target, ChangeAction.REMEMBER)
+        decision = session.agent.decide(target, ChangeAction.REMEMBER)
         replaced = [await self._fact_in(session, fact_id) for fact_id in draft.replaces]
         for layer_of, old in replaced:
             if layer_of != target:
@@ -886,7 +929,7 @@ class MemoryGateway:
                     f"fact {old.id} is in {layer_of.id}, not {target.id}; a fact replaces only "
                     "facts of its own layer. Propose the change to that layer instead",
                 )
-            if old.trust > session.view.caller.trust and decision.verdict is Verdict.WRITE:
+            if old.trust > session.agent.caller.trust and decision.verdict is Verdict.WRITE:
                 decision = Decision(
                     Verdict.PROPOSE,
                     Rule.LOWER_TRUST_PROPOSES,
@@ -901,9 +944,9 @@ class MemoryGateway:
                 "replaces": list(draft.replaces),
             }
             return await self._propose(
-                session, target, ChangeAction.REMEMBER, change, cited, decision
+                session, target, ChangeAction.REMEMBER, change, cited, decision, why=why
             )
-        caller = session.view.caller
+        caller = session.agent.caller
         new = NewFact(draft=draft, author=caller.author, trust=derive_trust(caller, []))
         outcome = await self._guard(
             [target.namespace],
@@ -957,8 +1000,8 @@ class MemoryGateway:
                 summary=f"Fact {fact_id} in {layer.id} was already retired ({fact.retired.why}).",
                 record={"fact_id": fact_id, "retired": True},
             )
-        decision = session.view.decide(layer, ChangeAction.RETIRE)
-        caller = session.view.caller
+        decision = session.agent.decide(layer, ChangeAction.RETIRE)
+        caller = session.agent.caller
         if decision.verdict is Verdict.WRITE and fact.trust > caller.trust:
             decision = Decision(
                 Verdict.PROPOSE,
@@ -973,6 +1016,7 @@ class MemoryGateway:
                 {"fact": fact_id, "reason": reason},
                 (Evidence.parse(f"fact:{fact_id}"),),
                 decision,
+                why=reason,
             )
         await self._guard(
             [layer.namespace],
@@ -994,6 +1038,7 @@ class MemoryGateway:
         action: str,
         change: dict[str, Any],
         evidence: Sequence[str],
+        why: str = "",
     ) -> WriteOutcome:
         target = session.view.layer(layer)
         try:
@@ -1004,7 +1049,7 @@ class MemoryGateway:
                 f"unknown change {action!r}; use one of {actions}"
             ) from None
         slug = change.get("ref") if isinstance(change.get("ref"), str) else None
-        decision = session.view.decide(target, change_action, slug)
+        decision = session.agent.decide(target, change_action, slug)
         if decision.verdict is Verdict.WRITE:
             raise refuse(
                 Rule.PROPOSAL_NOT_NEEDED,
@@ -1014,7 +1059,12 @@ class MemoryGateway:
         cited = Evidence.parse_all(list(evidence))
         if not cited:
             raise MemoryValidationError("a proposal needs evidence for its owner to check")
-        return await self._propose(session, target, change_action, change, cited, decision)
+        if not why.strip():
+            raise MemoryValidationError(
+                "a proposal needs a why: say in plain words what changed and why it is worth "
+                "keeping, so its owner can decide in one read"
+            )
+        return await self._propose(session, target, change_action, change, cited, decision, why=why)
 
     # -- proposals -------------------------------------------------------
 
@@ -1026,8 +1076,10 @@ class MemoryGateway:
         change: dict[str, Any],
         evidence: tuple[Evidence, ...],
         decision: Decision,
+        *,
+        why: str = "",
     ) -> WriteOutcome:
-        caller = session.view.caller
+        caller = session.agent.caller
         proposal = Proposal(
             id=f"p-{uuid.uuid4().hex}",
             target_layer=target.id,
@@ -1036,12 +1088,13 @@ class MemoryGateway:
             change=change,
             evidence=evidence,
             proposer=caller.author.ref,
-            proposer_session=session.view.context.session_id,
-            session_owner=session.view.context.owner_id,
+            proposer_session=session.agent.context.session_id,
+            session_owner=session.agent.context.owner_id,
             trust=caller.trust,
             reason=f"{decision.rule.value}: {decision.reason}",
             approver=approver_of(target),
             created_at=datetime.now(UTC),
+            why=why.strip(),
         )
         await write_proposal(
             session.backend, session.view.system, target, proposal, caller, self._place
@@ -1094,6 +1147,8 @@ def _proposal_json(proposal: Proposal) -> dict[str, Any]:
         "approver": proposal.approver,
         "created_at": proposal.created_at.isoformat(),
     }
+    if proposal.why:
+        data["why"] = proposal.why
     if proposal.promoted_from:
         data["promoted_from"] = proposal.promoted_from
     if proposal.status is not ProposalStatus.PENDING:
@@ -1228,6 +1283,7 @@ def proposal_from_page(page: PageRecord) -> Proposal:
         decided_at=datetime.fromisoformat(decided_at) if decided_at else None,
         decision=str(data.get("decision") or ""),
         applied=str(data.get("applied") or ""),
+        why=str(data.get("why") or ""),
     )
 
 

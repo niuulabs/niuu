@@ -25,7 +25,22 @@ disagreement, and appended a timeline row citing the source and the ticket's URL
 re-run stored nothing new. That run found the compile agent rewriting an operator's page
 under a write prefix; a lower trust now proposes such a rewrite. GitHub and Slack
 connectors, a real Linear install, and scheduling beyond the import's own polling are
-not built. Step 4 is not built.
+not built.
+
+Step 4 has started with the everyday screens (mockups agreed 2026-11-12): **Ask**
+(`/mimir/ask`, the people route `POST …/memory/ask` over the org, the person's projects
+and a named project's attached memories, charged to the person through Bifröst),
+**Review** (`/mimir/review`, `GET …/memory/review`: one proposal at a time with what the
+layer says now, what it would say, the proposer's `why` and its sources resolved), and the
+project's **Memory settings** (attached memories, write prefixes, the Linear import). The
+agent proposes what its session learned (`memory_propose` needs a `why`; the instructions
+make keeping it the agent's job, so no Skuld nudge at session end), and Forge tells the
+project's approvers and owners in its own feed, settled when one decides. Proven live in
+mini mode against a local gbrain: two Claude Code sessions wrote a project decision and
+proposed two pages; the owner got a feed item linking to Review, kept one and discarded
+the other (the item settled), and Ask answered from the project page through Bifröst. The
+Linear switch was not run against a real project Linear connection; person and resident
+layers are not built.
 
 Step 3 decisions: connectors run in Ting (the only service that reads a project's team
 integrations with the project's credential, recording each use) and write through the

@@ -8,6 +8,8 @@ import { RegistryWorkspace } from './ui/RegistryWorkspace';
 import { MimirSubnav } from './ui/MimirSubnav';
 import { MimirTopbar } from './ui/MimirTopbar';
 import { validateMemoryViewSearch } from './application/memoryViewSearch';
+import { AskPage } from './ui/everyday/AskPage';
+import { ReviewPage } from './ui/everyday/ReviewPage';
 
 /** A legacy route's `search.mount`, if any — everything else is dropped. */
 function legacySearch(search: unknown): { mount?: string } {
@@ -30,6 +32,8 @@ export const mimirPlugin = definePlugin({
   // (Explore/Focus/Ask/Replay) is its home.
   tabs: [
     { id: 'memory', label: 'Explore', path: '/mimir' },
+    { id: 'ask', label: 'Ask', path: '/mimir/ask' },
+    { id: 'review', label: 'Review', path: '/mimir/review' },
     { id: 'registry', label: 'Library', path: '/mimir/registry' },
   ],
   routes: (rootRoute) => [
@@ -63,19 +67,9 @@ export const mimirPlugin = definePlugin({
       path: '/mimir/analytics',
       component: RegistryWorkspace,
     }),
-    // Asking a question is now answered inline in the Memory scene — carry
-    // both q and mount across, everything else the flat page used stays put.
-    createRoute({
-      getParentRoute: () => rootRoute,
-      path: '/mimir/ask',
-      beforeLoad: ({ location }) => {
-        const search = location.search as Record<string, unknown>;
-        throw redirect({
-          to: '/mimir',
-          search: { ...legacySearch(search), q: search.q } as never,
-        });
-      },
-    }),
+    // Ask what the team knows, and keep or discard what agents propose.
+    createRoute({ getParentRoute: () => rootRoute, path: '/mimir/ask', component: AskPage }),
+    createRoute({ getParentRoute: () => rootRoute, path: '/mimir/review', component: ReviewPage }),
     // Legacy tabs — Pages/Sources/Search/Graph/Ingest/Entities, and the retired
     // Health/Lint/Doctor — are all the one Memory scene now; only the mount scope still carries over.
     ...[
@@ -101,6 +95,20 @@ export const mimirPlugin = definePlugin({
 });
 
 export { createMimirMockAdapter } from './adapters/mock';
+export {
+  buildMemoryGatewayHttpAdapter,
+  createMemoryGatewayMockAdapter,
+} from './adapters/memoryGateway';
+export { MEMORY_GATEWAY_SERVICE_KEY, type IMemoryGatewayService } from './ports/IMemoryGateway';
+export type {
+  MemoryAnswer,
+  MemoryProposal,
+  MemoryReview,
+  MemorySource,
+  ReviewSource,
+} from './domain/memoryGateway';
+export { AskPage } from './ui/everyday/AskPage';
+export { ReviewPage } from './ui/everyday/ReviewPage';
 export { buildMimirHttpAdapter } from './adapters/http';
 export type {
   IMimirService,

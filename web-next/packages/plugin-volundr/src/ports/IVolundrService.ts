@@ -51,6 +51,7 @@ import type {
   TeamCatalogEntry,
   TeamIntegration,
   TeamIntegrationUsagePage,
+  ProjectMemoryMount,
   TeamRoute,
   TeamRouteChange,
   TeamRouteEvent,
@@ -308,6 +309,14 @@ export interface IVolundrService {
     route: TeamRouteChange,
   ): Promise<TeamRoute>;
   removeTeamRoute(project: ForgeProject, event: TeamRouteEvent): Promise<void>;
+  /** The memories the project also reads (its mounts); every member may list them. */
+  getProjectMemoryMounts(project: ForgeProject): Promise<ProjectMemoryMount[]>;
+  /** Owners attach a registered memory to the project. */
+  addProjectMemoryMount(
+    project: ForgeProject,
+    mount: { name: string; registryEntryId: string; access: 'read' | 'read_write' },
+  ): Promise<ProjectMemoryMount>;
+  removeProjectMemoryMount(project: ForgeProject, name: string): Promise<void>;
   /** Uses of the team's connections, newest first; `before` pages to older ones. */
   getTeamIntegrationUsage(
     project: ForgeProject,

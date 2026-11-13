@@ -311,10 +311,22 @@ class TestWrites:
             action="remember",
             change={"fact": "x", "about": "y", "kind": "fact"},
             evidence=[URL],
+            why="The handbook says so.",
         )
         assert outcome.proposal is not None and outcome.layer.id == "org"
+        assert outcome.proposal.why == "The handbook says so."
+        with pytest.raises(MemoryValidationError, match="needs a why"):
+            await gateway.propose(
+                session,
+                layer="org",
+                action="remember",
+                change={"fact": "x", "about": "y", "kind": "fact"},
+                evidence=[URL],
+            )
         with pytest.raises(MemoryValidationError, match="unknown change"):
-            await gateway.propose(session, layer="org", action="delete", change={}, evidence=[URL])
+            await gateway.propose(
+                session, layer="org", action="delete", change={}, evidence=[URL], why="w"
+            )
 
     async def test_writing_another_projects_layer_is_refused(self, gateway, session) -> None:
         with pytest.raises(RuleRefusalError) as caught:

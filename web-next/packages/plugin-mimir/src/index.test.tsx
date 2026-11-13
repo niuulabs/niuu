@@ -3,6 +3,8 @@ import { describe, expect, it } from 'vitest';
 import { mimirPlugin } from './index';
 import { MemoryExploreView } from './ui/memory/MemoryExploreView';
 import { validateMemoryViewSearch } from './application/memoryViewSearch';
+import { AskPage } from './ui/everyday/AskPage';
+import { ReviewPage } from './ui/everyday/ReviewPage';
 
 function routesOf() {
   const rootRoute = createRootRoute();
@@ -35,9 +37,14 @@ describe('mimirPlugin', () => {
     expect(home.options.component).toBe(MemoryExploreView);
   });
 
-  it('has Memory and Registry tabs', () => {
-    expect(mimirPlugin.tabs?.map((t) => t.id)).toEqual(['memory', 'registry']);
-    expect(mimirPlugin.tabs?.map((t) => t.path)).toEqual(['/mimir', '/mimir/registry']);
+  it('has Explore, Ask, Review and Library tabs', () => {
+    expect(mimirPlugin.tabs?.map((t) => t.id)).toEqual(['memory', 'ask', 'review', 'registry']);
+    expect(mimirPlugin.tabs?.map((t) => t.path)).toEqual([
+      '/mimir',
+      '/mimir/ask',
+      '/mimir/review',
+      '/mimir/registry',
+    ]);
   });
 
   it('keeps /mimir/read and the registry/analytics routes live with their real components', () => {
@@ -61,15 +68,9 @@ describe('mimirPlugin', () => {
     }
   });
 
-  it('/mimir/ask redirects to /mimir carrying q and mount, answered inline in the scene now', () => {
-    const redirected = caughtRedirect('/mimir/ask', { q: 'why does it break?', mount: 'platform' });
-    expect(redirected.options.to).toBe('/mimir');
-    expect(redirected.options.search).toEqual({ q: 'why does it break?', mount: 'platform' });
-  });
-
-  it('/mimir/ask redirects without a mount when none was given', () => {
-    const redirected = caughtRedirect('/mimir/ask', { q: 'hello' });
-    expect(redirected.options.search).toEqual({ q: 'hello' });
+  it('serves Ask and Review as their own pages', () => {
+    expect(routeAt('/mimir/ask').options.component).toBe(AskPage);
+    expect(routeAt('/mimir/review').options.component).toBe(ReviewPage);
   });
 
   for (const legacy of [

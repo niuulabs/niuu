@@ -34,6 +34,7 @@ from mimir.memory.models import (
 from mimir.memory.rules import Rule, RuleRefusalError, SessionView, Verdict
 from mimir.memory.systems import MemorySystems
 from mimir.memory.tools import MemoryTools, instructions
+from mimir.ports.answer_model import ModelCaller
 from mimir.ports.attached_memory import AttachedMemories, AttachedMemoryError
 from mimir.ports.memory_backend import MemoryBackend
 from mimir.registry import MimirRegistryEntry, MimirRegistryStore
@@ -448,7 +449,9 @@ class TestAnswersOverAttachedLayers:
                 )
             )
             session = await gateway.open(_context(objective="booking cut-over"))
-            answer = await answers.ask(session, "booking cut-over", layers=None, credential="t")
+            answer = await answers.ask(
+                session, "booking cut-over", layers=None, caller=ModelCaller.session("t")
+            )
             pack = await answers.context_pack(session)
         assert answer.citations == (("attached:vendor", "guides/booking.md"),)
         assert "## guides/booking.md [attached:vendor]" in pack.text

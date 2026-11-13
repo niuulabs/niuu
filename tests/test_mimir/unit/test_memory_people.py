@@ -7,6 +7,7 @@ and GET /sessions/{id}) and the org's gbrain are faked over respx.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import httpx
@@ -16,7 +17,7 @@ from fastapi.testclient import TestClient
 
 from mimir.app import create_app
 from mimir.config import MimirServiceConfig
-from niuu.cap_telemetry import reset_cap_hits
+from niuu.cap_telemetry import cap_hit_counts, degraded_counts, reset_cap_hits
 from tests.test_mimir.unit.memory_fakes import (
     MCP,
     PROJECT_ID,
@@ -33,6 +34,8 @@ PROJECT = f"project:{PROJECT_ID}"
 URL = "url:https://linear.app/acme/LIN-482"
 _BACKEND = {"adapter": "tests.test_mimir.unit.fakes.InMemoryMimirAdapter"}
 ROLE_URL = f"{FORGE}/api/v1/forge/projects/{PROJECT_ID}/role"
+NOTIFY_URL = f"{FORGE}/api/v1/forge/sessions/{SESSION_ID}/memory/proposals"
+DECIDED_URL = rf"{FORGE}/api/v1/forge/projects/{PROJECT_ID}/memory/proposals/p-[0-9a-f]+/decided"
 
 
 @pytest.fixture(autouse=True)
@@ -103,6 +106,10 @@ def forge():
         )
         router.post(f"{FORGE}/api/v1/forge/memory/ended").mock(
             return_value=httpx.Response(200, json={"sessions": {}, "runs": {}})
+        )
+        router.post(NOTIFY_URL, name="notify").mock(return_value=httpx.Response(201, json={}))
+        router.post(url__regex=DECIDED_URL, name="decided").mock(
+            return_value=httpx.Response(200, json={})
         )
         yield brain, router
 
@@ -469,3 +476,376 @@ class TestStartup:
         with TestClient(create_app(settings)) as client:
             tools = client.get("/mimir/memory/tools", headers=_session()).json()["tools"]
         assert "memory_ask" not in [t["name"] for t in tools]
+
+
+PROJECTS_URL = f"{FORGE}/api/v1/forge/projects"
+MOUNTS_URL = f"{FORGE}/api/v1/forge/projects/{PROJECT_ID}/memory"
+
+
+def _projects(router, *, mounts: list[dict] | None = None) -> None:
+    router.get(PROJECTS_URL).mock(
+        return_value=httpx.Response(
+            200,
+            json=[
+                {"id": PROJECT_ID, "name": "Booking platform", "status": "active"},
+            ],
+        )
+    )
+    router.get(MOUNTS_URL).mock(return_value=httpx.Response(200, json=mounts or []))
+
+
+def _bifrost(router, answer: dict) -> respx.Route:
+    return router.post(f"{BIFROST}/v1/messages").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "content": [{"type": "text", "text": json.dumps(answer)}],
+                "stop_reason": "end_turn",
+            },
+        )
+    )
+
+
+def _write_project_page(client) -> None:
+    result = _tool(
+        client,
+        "memory_write_page",
+        ref="decisions/booking-cutover",
+        title="Booking cut-over",
+        compiled_truth="The cut-over is the weekend of 12 December. Ines Moreau decides.",
+        evidence=[URL],
+        layer="project",
+    )
+    assert result["written"] is True, result
+
+
+class TestPersonAsk:
+    def test_a_person_asks_over_their_projects_and_the_org_charged_to_them(
+        self, tmp_path, forge
+    ) -> None:
+        _, router = forge
+        _role(router, "contributor")
+        _projects(router)
+        call = _bifrost(
+            router,
+            {
+                "answer": "The cut-over is the weekend of 12 December. Ines Moreau decides.",
+                "citations": [{"layer": PROJECT, "ref": "decisions/booking-cutover"}],
+                "gaps": ["Nobody has confirmed the date yet."],
+            },
+        )
+        with _client(tmp_path) as client:
+            _write_project_page(client)
+            response = client.post(
+                "/mimir/memory/ask",
+                json={"question": "When is the booking cut-over?"},
+                headers={"Authorization": "Bearer person-login"},
+            )
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert body["answer"].startswith("The cut-over is the weekend of 12 December.")
+        assert body["gaps"] == ["Nobody has confirmed the date yet."]
+        assert body["sources"] == [
+            {
+                "layer": PROJECT,
+                "layer_name": "Booking platform",
+                "ref": "decisions/booking-cutover",
+                "kind": "page",
+                "title": "Booking cut-over",
+                "url": None,
+            }
+        ]
+        sent = call.calls.last.request
+        assert sent.headers["authorization"] == "Bearer person-login"
+        assert sent.headers["x-agent-id"] == "ines" and sent.headers["x-tenant-id"] == "acme"
+
+    def test_a_project_ask_reads_that_project_and_its_attached_memories(
+        self, tmp_path, forge
+    ) -> None:
+        _, router = forge
+        role = _role(router, "viewer")
+        _projects(router)
+        mounts = router.get(MOUNTS_URL).mock(return_value=httpx.Response(200, json=[]))
+        _bifrost(router, {"answer": "", "citations": [], "gaps": ["Not known."]})
+        with _client(tmp_path) as client:
+            _write_project_page(client)
+            response = client.post(
+                "/mimir/memory/ask",
+                json={"question": "booking cut-over", "project_id": PROJECT_ID},
+            )
+        assert response.status_code == 200, response.text
+        assert role.called and mounts.called
+        assert response.json()["sources"] == []
+
+    def test_a_project_the_person_is_not_on_is_not_found(self, tmp_path, forge) -> None:
+        _, router = forge
+        _role(router, None)
+        _projects(router)
+        with _client(tmp_path) as client:
+            response = client.post(
+                "/mimir/memory/ask", json={"question": "x", "project_id": PROJECT_ID}
+            )
+        assert response.status_code == 404
+
+    def test_nothing_found_makes_no_model_call(self, tmp_path, forge) -> None:
+        _, router = forge
+        _projects(router)
+        call = router.post(f"{BIFROST}/v1/messages")
+        with _client(tmp_path) as client:
+            response = client.post("/mimir/memory/ask", json={"question": "zebra"})
+        assert response.status_code == 200, response.text
+        assert response.json()["answer"] == ""
+        assert "Nothing in your layers" in response.json()["gaps"][0]
+        assert not call.called
+
+    @pytest.mark.parametrize(
+        ("body", "status"), [({}, 422), ({"question": "x", "project_id": 3}, 422)]
+    )
+    def test_a_malformed_question_is_refused(self, tmp_path, forge, body, status) -> None:
+        with _client(tmp_path) as client:
+            response = client.post("/mimir/memory/ask", json=body)
+        assert response.status_code == status
+
+    def test_a_session_credential_is_refused(self, tmp_path, forge) -> None:
+        with _client(tmp_path) as client:
+            response = client.post("/mimir/memory/ask", json={"question": "x"}, headers=_session())
+        assert response.status_code == 403
+
+    def test_a_failed_answer_call_is_a_bad_gateway(self, tmp_path, forge) -> None:
+        _, router = forge
+        _role(router, "owner")
+        _projects(router)
+        router.post(f"{BIFROST}/v1/messages").mock(return_value=httpx.Response(500, text="down"))
+        with _client(tmp_path) as client:
+            _write_project_page(client)
+            response = client.post("/mimir/memory/ask", json={"question": "booking cut-over"})
+        assert response.status_code == 502
+        assert "down" in response.json()["detail"]
+
+
+class TestReview:
+    def _propose(self, client, why: str = "The payments freeze moved a week.") -> str:
+        result = _tool(
+            client,
+            "memory_propose",
+            layer="project",
+            change={
+                "action": "write_page",
+                "ref": "services/booking-cutover",
+                "title": "The booking cut-over date",
+                "compiled_truth": "The cut-over is the weekend of 12 December.",
+            },
+            evidence=[URL],
+            why=why,
+        )
+        return result["proposal"]["id"]
+
+    def test_an_approver_reviews_what_it_says_now_and_would_say(self, tmp_path, forge) -> None:
+        _, router = forge
+        _role(router, "approver")
+        _projects(router)
+        with _client(tmp_path) as client:
+            # What the project says now: an earlier proposal, approved.
+            first = _propose_page(client)
+            client.post(f"/mimir/memory/proposals/{first}/approve", json={"layer": PROJECT})
+            write = _tool(
+                client,
+                "memory_write_page",
+                ref="services/booking-api",
+                title="Booking API budget",
+                compiled_truth="The p99 budget is 250 ms.",
+                evidence=[URL],
+                layer="project",
+                why="The SLO review lowered it, says LIN-482.",
+            )
+            response = client.get("/mimir/memory/review")
+        assert write["written"] is False, write
+        assert response.status_code == 200, response.text
+        [item] = response.json()["proposals"]
+        assert item["layer"] == PROJECT and item["layer_name"] == "Booking platform"
+        assert item["title"] == "Booking API budget"
+        assert item["now"] == "The p99 budget is 300 ms."
+        assert item["would"] == "The p99 budget is 250 ms."
+        assert item["why"] == "The SLO review lowered it, says LIN-482."
+        assert item["by"] == "agent"
+        assert item["sources"] == [
+            {
+                "ref": URL,
+                "kind": "url",
+                "title": None,
+                "url": "https://linear.app/acme/LIN-482",
+                "kept": True,
+            }
+        ]
+        assert response.json()["more"] == []
+
+    def test_a_cited_source_is_resolved_to_its_title_and_origin(self, tmp_path, forge) -> None:
+        _, router = forge
+        _role(router, "owner")
+        _projects(router)
+        with _client(tmp_path) as client:
+            source = _tool(
+                client,
+                "memory_add_source",
+                title="LIN-482 moved",
+                content="The freeze moved a week.",
+                kind="ticket",
+                url="https://linear.app/acme/LIN-482",
+            )
+            result = _tool(
+                client,
+                "memory_propose",
+                layer="project",
+                change={"action": "remember", "fact": "x", "about": "y", "kind": "fact"},
+                evidence=[f"source:{source['source_id']}", "tool_call:abc"],
+                why="It was decided.",
+            )
+            response = client.get("/mimir/memory/review", params={"layer": PROJECT})
+        [item] = response.json()["proposals"]
+        assert item["id"] == result["proposal"]["id"]
+        assert item["now"] is None and item["would"] == "x" and item["title"] == "Y"
+        assert item["sources"][0]["title"] == "LIN-482 moved"
+        assert item["sources"][0]["url"] == "https://linear.app/acme/LIN-482"
+        assert item["sources"][1] == {
+            "ref": "tool_call:abc",
+            "kind": "tool_call",
+            "title": None,
+            "url": None,
+            "kept": True,
+        }
+
+    def test_only_the_layers_the_person_decides_are_reviewed(self, tmp_path, forge) -> None:
+        _, router = forge
+        _role(router, "contributor")
+        _projects(router)
+        with _client(tmp_path) as client:
+            self._propose(client)
+            response = client.get("/mimir/memory/review")
+            one = client.get("/mimir/memory/review", params={"layer": PROJECT})
+        assert response.status_code == 200 and response.json()["proposals"] == []
+        assert one.status_code == 403
+
+    def test_an_org_admin_reviews_the_org(self, tmp_path, forge) -> None:
+        _, router = forge
+        _role(router, "viewer")
+        _projects(router)
+        with _client(tmp_path, roles=["volundr:admin"]) as client:
+            _tool(
+                client,
+                "memory_propose",
+                layer="org",
+                change={"action": "remember", "fact": "x", "about": "y", "kind": "fact"},
+                evidence=[URL],
+                why="w",
+            )
+            response = client.get("/mimir/memory/review")
+        [item] = response.json()["proposals"]
+        assert item["layer"] == "org" and item["layer_name"] == "the org"
+
+    def test_a_full_layer_is_named_and_counted(self, tmp_path, forge) -> None:
+        _, router = forge
+        _role(router, "owner")
+        _projects(router)
+        with _client(tmp_path) as client:
+            self._propose(client)
+            self._propose(client)
+            response = client.get("/mimir/memory/review", params={"limit": 1})
+            bad = client.get("/mimir/memory/review", params={"limit": 0})
+        assert response.json()["more"] == [PROJECT]
+        assert len(response.json()["proposals"]) == 1
+        assert cap_hit_counts()["memory.default_result_count"] >= 1
+        assert bad.status_code == 422
+
+
+class TestProposalNotifications:
+    def test_a_project_proposal_tells_its_deciders_through_forge(self, tmp_path, forge) -> None:
+        _, router = forge
+        with _client(tmp_path) as client:
+            result = _tool(
+                client,
+                "memory_propose",
+                layer="project",
+                change={"action": "remember", "fact": "x", "about": "booking-api", "kind": "fact"},
+                evidence=[URL],
+                why="The budget changed.",
+            )
+        assert result["notified"] is True
+        sent = router.routes["notify"].calls.last.request
+        assert sent.headers["authorization"] == f"Bearer {session_token()}"
+        assert json.loads(sent.content) == {
+            "proposal_id": result["proposal"]["id"],
+            "project_id": PROJECT_ID,
+            "title": "Booking api",
+            "why": "The budget changed.",
+        }
+
+    def test_an_org_proposal_is_not_announced(self, tmp_path, forge) -> None:
+        _, router = forge
+        with _client(tmp_path) as client:
+            result = _tool(
+                client,
+                "memory_propose",
+                layer="org",
+                change={"action": "remember", "fact": "x", "about": "y", "kind": "fact"},
+                evidence=[URL],
+                why="w",
+            )
+        assert "notified" not in result
+        assert not router.routes["notify"].called
+
+    def test_a_failed_announcement_keeps_the_proposal_and_is_degraded(
+        self, tmp_path, forge
+    ) -> None:
+        _, router = forge
+        router.routes["notify"].mock(return_value=httpx.Response(503, text="feed down"))
+        _role(router, "owner")
+        with _client(tmp_path) as client:
+            response = client.post(
+                "/mimir/memory/tools/memory_propose",
+                headers=_session(),
+                json={
+                    "layer": "project",
+                    "change": {"action": "remember", "fact": "x", "about": "y", "kind": "fact"},
+                    "evidence": [URL],
+                    "why": "w",
+                },
+            )
+            pending = client.get("/mimir/memory/proposals", params={"layer": PROJECT}).json()
+        result = response.json()
+        assert result["isError"] is False
+        assert result["structuredContent"]["notified"] is False
+        assert "approvers were not told" in result["content"][0]["text"]
+        assert degraded_counts()["memory.proposal_notify"] == 1
+        assert len(pending["proposals"]) == 1
+
+    @pytest.mark.parametrize(("verb", "outcome"), [("approve", "kept"), ("reject", "discarded")])
+    def test_deciding_settles_the_notifications(self, tmp_path, forge, verb, outcome) -> None:
+        _, router = forge
+        _role(router, "owner")
+        with _client(tmp_path) as client:
+            proposal_id = _propose_page(client)
+            response = client.post(
+                f"/mimir/memory/proposals/{proposal_id}/{verb}",
+                json={"layer": PROJECT, "reason": "Discarded on the Review page"},
+                headers={"Authorization": "Bearer person-login"},
+            )
+        assert response.status_code == 200, response.text
+        assert "notice" not in response.json()
+        sent = router.routes["decided"].calls.last.request
+        assert sent.url.path.endswith(f"/{proposal_id}/decided")
+        assert sent.headers["authorization"] == "Bearer person-login"
+        assert json.loads(sent.content) == {"outcome": outcome}
+
+    def test_a_failed_settlement_keeps_the_decision_and_is_degraded(self, tmp_path, forge) -> None:
+        _, router = forge
+        router.routes["decided"].mock(return_value=httpx.Response(500, text="no"))
+        _role(router, "owner")
+        with _client(tmp_path) as client:
+            proposal_id = _propose_page(client)
+            response = client.post(
+                f"/mimir/memory/proposals/{proposal_id}/approve", json={"layer": PROJECT}
+            )
+        assert response.status_code == 200, response.text
+        assert response.json()["proposal"]["status"] == "approved"
+        assert "were not settled" in response.json()["notice"]
+        assert degraded_counts()["memory.proposal_notify"] == 1
