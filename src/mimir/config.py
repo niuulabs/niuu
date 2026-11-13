@@ -19,7 +19,7 @@ import os
 from pathlib import Path as _Path
 from typing import Any
 
-from pydantic import AliasChoices, BaseModel, Field
+from pydantic import AliasChoices, BaseModel, Field, field_validator
 from pydantic_settings import (
     BaseSettings,
     PydanticBaseSettingsSource,
@@ -200,6 +200,17 @@ class MemoryGatewayConfig(BaseModel):
             "Required when enabled."
         ),
     )
+    connector_service_subjects: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Workload subjects (the actor, `act.sub`, of a verified workload-identity token) "
+            "that may write connector sources through POST {base}/memory/sources, e.g. "
+            "[ting]. Empty means no caller is a connector: where Mímir's identity adapter "
+            "verifies callers the route answers 403 naming this setting. With the allow-all "
+            "identity of local mini mode nothing verifies callers, so the local caller passes "
+            "(still never with a session or scoped credential)."
+        ),
+    )
     bifrost_url: str = Field(
         default="",
         description=(
@@ -286,6 +297,16 @@ class MemoryGatewayConfig(BaseModel):
             "to the org layer."
         ),
     )
+
+    @field_validator("connector_service_subjects")
+    @classmethod
+    def _subjects_named(cls, subjects: list[str]) -> list[str]:
+        if any(not subject.strip() for subject in subjects):
+            raise ValueError(
+                "memory.connector_service_subjects has a blank entry: name each connector "
+                "service's workload subject (e.g. ting) or leave the list out"
+            )
+        return [subject.strip() for subject in subjects]
 
 
 class MimirServiceConfig(BaseSettings):

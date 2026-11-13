@@ -360,6 +360,10 @@ config:
     # -- Roles that make a person an org admin (decides org proposals).
     # Empty = the service default ([volundr:admin]).
     orgAdminRoles: []
+    # -- Workload subjects (the `act.sub` of a verified workload-identity token) that may
+    # write connector sources through POST /memory/sources, e.g. [ting]. Empty = no caller
+    # is a connector, and the route answers 403 naming this setting.
+    connectorServiceSubjects: []
 
 # Optional dynamic Flux deployment adapter configuration. Disabled by default.
 # Supply namespace, source_name, chart_versions, images and cluster in this map.

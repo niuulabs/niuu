@@ -76,6 +76,7 @@ def test_an_enabled_gateway_renders_its_systems_tenants_and_secret_mounts(
                 "retentionDays": 7,
                 "retentionSweepSeconds": 600,
                 "orgAdminRoles": ["admin"],
+                "connectorServiceSubjects": ["ting"],
             },
         )
     )
@@ -86,6 +87,7 @@ def test_an_enabled_gateway_renders_its_systems_tenants_and_secret_mounts(
     assert memory["context_pack_share"] == 0.1
     assert (memory["retention_days"], memory["retention_sweep_seconds"]) == (7, 600)
     assert memory["org_admin_roles"] == ["admin"]
+    assert memory["connector_service_subjects"] == ["ting"]
     assert memory["forge_base_url"] == "http://volundr:8080"
     assert memory["forge_timeout_seconds"] == 5
     assert memory["default_result_count"] == 20
@@ -103,6 +105,7 @@ def test_an_enabled_gateway_renders_its_systems_tenants_and_secret_mounts(
     ]
     parsed = MimirServiceConfig(memory=memory)
     assert parsed.memory.enabled and parsed.memory.tenants == {"acme": "acme-brain"}
+    assert parsed.memory.connector_service_subjects == ["ting"]
     deployment = next(d for d in docs if d["kind"] == "Deployment")
     pod = deployment["spec"]["template"]["spec"]
     volume = next(v for v in pod["volumes"] if v["name"] == "memory-system-0")

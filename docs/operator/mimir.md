@@ -259,12 +259,14 @@ memory:
   retention_days: 14
   retention_sweep_seconds: 3600
   org_admin_roles: [volundr:admin]
+  connector_service_subjects: [ting]         # who may write connector sources
 ```
 
 In the chart these come from `config.memory` (`forgeBaseUrl`, `systems[]` with
 `mcpUrl`, `apiTokenSecret`, `signingKeySecret`, `tenants`, `serviceAuth`,
 `bifrostUrl`, `answerModel`, `askEnabled`, `contextPackShare`, `retentionDays`,
-`retentionSweepSeconds`, `orgAdminRoles` and the optional timeouts); each
+`retentionSweepSeconds`, `orgAdminRoles`, `connectorServiceSubjects` and the optional
+timeouts); each
 system's two secrets are mounted under `/etc/mimir-memory/<name>/`. The chart
 renders `serviceAuth` as given and does not project a ServiceAccount token, so
 mount whatever the chosen adapter reads. In mini mode without auth use
@@ -327,6 +329,26 @@ credential is a 403. Forge is asked with the person's own `Authorization`.
 
 Decided proposals move from `l/_proposals/<layer>/` to `l/_decided/<layer>/` and
 stay there, so the evidence reference resolves.
+
+**Connector route.** `POST {base}/memory/sources` lets an import service (Ting's
+Linear import) keep what it fetched as an immutable source. Only a platform
+service credential is admitted: a verified workload-identity token, unscoped,
+whose actor (`act.sub`) is one of `memory.connector_service_subjects` (empty
+admits nobody and the 403 names the setting). People, session credentials,
+scoped tokens and other services get 403, and a connector credential is
+refused on the session and people routes. With the allow-all identity of local
+mini mode nothing verifies callers, so the local caller passes, still never
+with a session or scoped credential. The body is `{tenant_id, layer, connector,
+external_id, title, content, kind, origin_url, fetched_at, upstream_updated_at}`
+(all required; the two times are ISO 8601). `layer` is `project:<id>` or `org`,
+anything else is a 400, and the org must be in `memory.tenants` (503 naming it
+otherwise). The source is written at `tool` trust, author `tool:<connector>`,
+evidence `url:<origin_url>`. A source is named by its content, so the same
+content already in that layer answers `new: false` and a ticket that changed
+(a new comment) is a new source beside the old one. The answer is
+`{"source_id", "layer", "new"}`. Each write is logged and counted as
+`memory.connector.sources{connector,new}`; `external_id` and the two times are
+logged, not stored.
 
 **Attached layers.** Each attachment Forge names (`registry_entry_id`) is opened
 from this gateway's own mount registry for the session's org: an entry of that

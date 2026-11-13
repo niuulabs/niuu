@@ -241,6 +241,18 @@ unscoped exchange token whose `act.sub` equals the configured
 `GET /projects/{id}/role` and `GET /memory/runs/{id}` take a person's own login only;
 they are not scoped-credential routes.
 
+**Connector sources (`memory.connector_service_subjects`).** The memory gateway admits a
+platform service's credential on exactly one more route, `POST …/memory/sources`, for
+connectors such as Ting's Linear import to keep fetched material as immutable
+`tool`-trust sources (author `tool:<connector>`, evidence `url:<origin_url>`) in a project
+or org layer. The credential is an unscoped workload-identity token whose actor
+(`act.sub`) is listed in `memory.connector_service_subjects`; an empty list admits
+nobody. A person, a `forge_session` or other scoped credential and any other service get
+403. A connector credential is refused on the session routes (401) and the people routes
+(403). With the allow-all identity of local mini mode the local caller passes, still
+never with a session or scoped credential. The route is not exempt from Mímir's identity
+middleware.
+
 ### Exception: Forge session credentials at Bifröst (`forge:model`)
 
 Bifröst accepts a `forge_session` credential carrying `forge:model` (every session has it)

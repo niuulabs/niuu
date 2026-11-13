@@ -16,6 +16,15 @@ The app's ``enforce_identity`` middleware skips exactly these routes
 identity adapter (in mini mode without auth, the configured dev principal). A
 scoped credential (a session's, a workload's) is refused on them. Forge is asked
 about the person's roles and ownership with their own ``Authorization`` header.
+
+**Connector route** — ``POST {base}/memory/sources`` (contract C11) — takes only a
+platform service credential: a verified workload-identity token whose actor
+(``act.sub``) is one of ``memory.connector_service_subjects``, the way Forge admits the
+memory gateway's own service credential. A person, a session credential, any scoped
+credential and any other service are refused (403). With the allow-all identity of local
+mini mode nothing verifies callers, so the local caller passes, still never with a
+session or scoped credential. Its body names the org (``tenant_id``), so a service
+speaks for any org this Mímir serves.
 """
 
 from __future__ import annotations
@@ -24,12 +33,15 @@ import asyncio
 import contextlib
 import logging
 import re
+from collections.abc import Sequence
+from datetime import datetime
 from typing import Any
 
 import jwt
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 
+from identity.adapters.http_auth import presented_actor
 from mimir.memory.answers import ContextPackError, MemoryAnswers
 from mimir.memory.curation import Curation, CurationRefusedError, DecisionError
 from mimir.memory.gateway import LayerUnavailableError, MemoryGateway, Session
@@ -54,7 +66,7 @@ from mimir.ports.people_directory import (
 from mimir.ports.session_directory import SessionDirectory, SessionNotConfirmedError
 from niuu.domain.mimir_facts import FactError
 from niuu.domain.services.forge_session_token import SESSION_ID_CLAIM
-from niuu.domain.services.token_scope import credential_allows_route
+from niuu.domain.services.token_scope import credential_allows_route, scoped_credential_claims
 from niuu.ports.identity import HeaderAuthenticationPort, InvalidTokenError
 
 logger = logging.getLogger(__name__)
@@ -145,6 +157,39 @@ async def _json(request: Request) -> dict[str, Any]:
     return body
 
 
+#: What a connector's source write must carry (contract C11); all are text but the times.
+_CONNECTOR_TEXT = (
+    "tenant_id",
+    "layer",
+    "connector",
+    "external_id",
+    "title",
+    "content",
+    "kind",
+    "origin_url",
+)
+_CONNECTOR_TIMES = ("fetched_at", "upstream_updated_at")
+
+
+def _connector_fields(body: dict[str, Any]) -> dict[str, Any]:
+    """The connector body's fields, each required; a bad one is a 400 naming it."""
+    fields: dict[str, Any] = {}
+    for name in _CONNECTOR_TEXT:
+        value = body.get(name)
+        if not isinstance(value, str) or not value.strip():
+            raise HTTPException(status_code=400, detail=f"{name} is required (a non-empty string)")
+        fields[name] = value if name == "content" else value.strip()
+    for name in _CONNECTOR_TIMES:
+        value = body.get(name)
+        try:
+            fields[name] = datetime.fromisoformat(value) if isinstance(value, str) else None
+        except ValueError:
+            fields[name] = None
+        if fields[name] is None:
+            raise HTTPException(status_code=400, detail=f"{name} is required (an ISO 8601 time)")
+    return fields
+
+
 class MemoryRouter:
     """Args:
     gateway: the memory gateway.
@@ -156,6 +201,10 @@ class MemoryRouter:
     identity: Mímir's identity adapter, for the people routes.
     sweeper: the retention sweep, started with :meth:`start`.
     attached: the attached-memory stores, closed with the router.
+    connector_subjects: the workload subjects that may write connector sources
+        (``memory.connector_service_subjects``).
+    allow_all_identity: Mímir's identity adapter is the allow-all one (local mini mode), so
+        nothing verifies callers and the connector route admits the local caller.
     """
 
     def __init__(
@@ -170,6 +219,8 @@ class MemoryRouter:
         identity: HeaderAuthenticationPort | None = None,
         sweeper: RetentionSweeper | None = None,
         attached: AttachedMemories | None = None,
+        connector_subjects: Sequence[str] = (),
+        allow_all_identity: bool = False,
     ) -> None:
         self._gateway = gateway
         self._directory = directory
@@ -182,6 +233,8 @@ class MemoryRouter:
         self._sweep_task: asyncio.Task[None] | None = None
         self._tools = MemoryTools(gateway, answers)
         self._tenant_id = tenant_id
+        self._connector_subjects = frozenset(connector_subjects)
+        self._allow_all_identity = allow_all_identity
 
     # -- sessions --------------------------------------------------------
 
@@ -230,6 +283,12 @@ class MemoryRouter:
             raise HTTPException(status_code=401, detail="a person's login is required") from exc
         if principal.token_use or principal.bound_session_id:
             raise HTTPException(status_code=403, detail="these routes take a person's own login")
+        if presented_actor(request) in self._connector_subjects:
+            raise HTTPException(
+                status_code=403,
+                detail="these routes take a person's own login, not a connector's service "
+                "credential",
+            )
         if not principal.tenant_id:
             raise HTTPException(status_code=403, detail="an authenticated org is required")
         if self._tenant_id and principal.tenant_id != self._tenant_id:
@@ -241,6 +300,54 @@ class MemoryRouter:
             tenant_id=principal.tenant_id,
             roles=tuple(principal.roles),
             authorization=header,
+        )
+
+    # -- connectors ------------------------------------------------------
+
+    async def _connector(self, request: Request) -> None:
+        """Admit only a platform service credential named in the connector subjects.
+
+        The identity adapter verifies the bearer; the credential is a connector's when it
+        is an unscoped workload-identity token whose actor (``act.sub``) is configured.
+        """
+        header = request.headers.get("authorization", "")
+        scheme, _, token = header.partition(" ")
+        token = token.strip() if scheme.lower() == "bearer" else ""
+        if token:
+            claims = _claims(token) or {}
+            if (
+                SESSION_ID_CLAIM in claims
+                or scoped_credential_claims(token) is not None
+                or not credential_allows_route(token, request.method, request.url.path)
+            ):
+                raise self._not_a_connector()
+        if self._identity is None:
+            raise HTTPException(status_code=503, detail="this gateway serves no connector routes")
+        try:
+            principal = await self._identity.validate_headers(dict(request.headers))
+        except InvalidTokenError as exc:
+            raise HTTPException(
+                status_code=401, detail="a connector service credential is required"
+            ) from exc
+        if principal.token_use or principal.scopes or principal.bound_session_id:
+            raise self._not_a_connector()
+        if self._allow_all_identity:
+            return
+        if not self._connector_subjects:
+            raise HTTPException(
+                status_code=403,
+                detail="this gateway admits no connector: set memory.connector_service_subjects",
+            )
+        if presented_actor(request) not in self._connector_subjects:
+            raise self._not_a_connector()
+
+    @staticmethod
+    def _not_a_connector() -> HTTPException:
+        return HTTPException(
+            status_code=403,
+            detail="this route answers only to a connector's service credential "
+            "(memory.connector_service_subjects), not to a person, a session or another "
+            "scoped credential",
         )
 
     def _curator(self) -> Curation:
@@ -321,6 +428,28 @@ class MemoryRouter:
                 "budget_tokens": pack.budget_tokens,
                 "used_tokens": pack.used_tokens,
                 "omitted": list(pack.omitted),
+            }
+
+        @router.post("/memory/sources")
+        async def connector_source(request: Request) -> dict[str, Any]:
+            await self._connector(request)
+            fields = _connector_fields(await _json(request))
+            if self._tenant_id and fields["tenant_id"] != self._tenant_id:
+                raise HTTPException(
+                    status_code=403, detail="Knowledge instance belongs to a different tenant"
+                )
+            try:
+                imported = await self._gateway.import_source(**fields)
+            except MemoryValidationError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+            except TenantNotConfiguredError as exc:
+                raise HTTPException(status_code=503, detail=str(exc)) from exc
+            except MemoryStoreError as exc:
+                raise HTTPException(status_code=502, detail=str(exc)) from exc
+            return {
+                "source_id": imported.source_id,
+                "layer": imported.layer.id,
+                "new": imported.new,
             }
 
         @router.get("/memory/proposals")

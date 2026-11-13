@@ -147,7 +147,7 @@ def create_app(config: MimirServiceConfig) -> FastAPI:
             config.facts.trust.role_levels, config.facts.trust.scope_levels
         )
     memory_router = _build_memory_router(
-        config, registry_store=registry_store, identity=identity_adapter
+        config, registry_store=registry_store, identity=identity_adapter, auth_mode=auth_mode
     )
     mcp_server = MimirMcpServer(
         adapter=adapter,
@@ -402,6 +402,7 @@ def _build_memory_router(
     *,
     registry_store: MimirRegistryStore,
     identity: HeaderAuthenticationPort,
+    auth_mode: str,
 ) -> MemoryRouter | None:
     """The memory gateway's routes, or None when ``memory.enabled`` is off.
 
@@ -479,4 +480,6 @@ def _build_memory_router(
         identity=identity,
         sweeper=sweeper,
         attached=attached,
+        connector_subjects=memory.connector_service_subjects,
+        allow_all_identity=auth_mode == "none",
     )

@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import uuid
 from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -35,6 +36,7 @@ from mimir.memory.models import (
     ChangeSet,
     EntityLayer,
     Evidence,
+    EvidenceKind,
     HitKind,
     Layer,
     LayerKind,
@@ -66,7 +68,9 @@ from mimir.ports.attached_memory import AttachedMemories, AttachedMemoryError
 from mimir.ports.memory_backend import Capability, MemoryBackend, require_capabilities
 from niuu.domain.mimir import OPERATIONAL_SOURCE_TYPES
 from niuu.domain.mimir_facts import (
+    AuthorKind,
     Fact,
+    FactAuthor,
     FactBackendError,
     FactCaller,
     FactDraft,
@@ -76,10 +80,19 @@ from niuu.domain.mimir_facts import (
     TrustLevel,
     derive_trust,
 )
+from niuu.observability import get_observability
 
 logger = logging.getLogger(__name__)
 
 _PROPOSAL_TYPE = "niuu-proposal"
+
+#: Counter of connector sources (attributes ``connector`` and ``new``): one per accepted write.
+CONNECTOR_SOURCES = "memory.connector.sources"
+#: A connector's name becomes the author ``tool:<connector>``; it is a name, not free text.
+_CONNECTOR = re.compile(r"^[a-z][a-z0-9_-]*$")
+#: The layers a connector imports into (design section 9: a project's or the org's own
+#: integrations). Run, session and attached layers are never imported into.
+CONNECTOR_LAYER_KINDS: frozenset[LayerKind] = frozenset({LayerKind.PROJECT, LayerKind.ORG})
 
 
 class LayerUnavailableError(MemoryStoreError):
@@ -148,6 +161,15 @@ class RecallResult:
     facts: tuple[LabelledFact, ...]
     disagreements: tuple[Disagreement, ...]
     omitted: tuple[Omission, ...]
+
+
+@dataclass(frozen=True)
+class ImportedSource:
+    """What a connector's source write came to: the source and whether it was new."""
+
+    source_id: str
+    layer: Layer
+    new: bool
 
 
 @dataclass(frozen=True)
@@ -580,6 +602,84 @@ class MemoryGateway:
                     )
                 cursor = batch.cursor
         return found
+
+    # -- connectors ------------------------------------------------------
+
+    async def import_source(
+        self,
+        *,
+        tenant_id: str,
+        layer: str,
+        connector: str,
+        external_id: str,
+        title: str,
+        content: str,
+        kind: str,
+        origin_url: str,
+        fetched_at: datetime,
+        upstream_updated_at: datetime,
+    ) -> ImportedSource:
+        """Keep what a connector fetched as one immutable source of a project or org layer.
+
+        The write is at ``tool`` trust by ``tool:<connector>``, citing ``url:<origin_url>``.
+        The caller's identity was settled at the route; nothing here trusts the body for
+        trust. A source is named by its content, so the same content already in the layer is
+        ``new=False`` and changed content (a ticket with a new comment) is a new source.
+
+        Raises:
+            MemoryValidationError: the layer is not a project or org layer, the connector is
+                not a name, or the source is malformed.
+            TenantNotConfiguredError: the org has no memory system.
+            LayerUnavailableError: the layer could not be prepared or written.
+        """
+        target = Layer.parse(layer)
+        if target.kind not in CONNECTOR_LAYER_KINDS:
+            allowed = ", ".join(sorted(k.value for k in CONNECTOR_LAYER_KINDS))
+            raise MemoryValidationError(
+                f"a connector imports into a project or the org layer ({allowed}), "
+                f"not {target.id!r}"
+            )
+        if not _CONNECTOR.fullmatch(connector):
+            raise MemoryValidationError(
+                f"connector {connector!r} is not a name: use lowercase letters, digits, '_' "
+                "and '-', e.g. linear"
+            )
+        try:
+            source_kind = SourceKind(kind)
+        except ValueError:
+            kinds = ", ".join(k.value for k in SourceKind)
+            raise MemoryValidationError(
+                f"unknown source kind {kind!r}; use one of {kinds}"
+            ) from None
+        cited = (Evidence(EvidenceKind.URL, origin_url),)
+        source = NewSource(title=title, content=content, kind=source_kind, origin_url=origin_url)
+        system, backend = self._systems.for_tenant(tenant_id)
+        await self._place(system, backend, target.kind, target.namespace)
+        caller = FactCaller(FactAuthor(AuthorKind.TOOL, connector))
+        record, new = await self._guard(
+            [target.namespace],
+            system,
+            backend.put_source(target.namespace, source, self._attribution(caller, cited)),
+            "written",
+        )
+        logger.info(
+            "memory: %s source %s in %s of org %s (connector %s, %s, upstream updated %s, "
+            "fetched %s)",
+            "stored" if new else "already held",
+            record.id,
+            target.id,
+            tenant_id,
+            connector,
+            external_id,
+            upstream_updated_at.isoformat(),
+            fetched_at.isoformat(),
+        )
+        get_observability().count(
+            CONNECTOR_SOURCES,
+            attributes={"connector": connector, "new": new},
+            description="Sources connectors wrote, by connector and whether they were new.",
+        )
+        return ImportedSource(source_id=record.id, layer=target, new=new)
 
     # -- writes ----------------------------------------------------------
 
