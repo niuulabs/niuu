@@ -186,3 +186,90 @@ def test_a_named_signing_key_is_not_created_by_the_chart(tmp_path: Path) -> None
         **_STEP2,
     }
     assert _signing_secrets(_docs(_helm(tmp_path, memory))) == []
+
+
+_PROVISIONING = {
+    "enabled": True,
+    "namespace": "memory",
+    "sourceName": "niuu",
+    "sourceNamespace": "knowledge",
+    "chartVersion": "2.0.0-dev.610",
+    "image": "ghcr.io/niuulabs/gbrain:dev-1@sha256:ab",
+    "cluster": "ymir",
+    "storageClass": "harvester-data",
+    "values": {"postgres": {"instances": 1}},
+    "retryAfterSeconds": 60,
+    "backend": {"timeout_seconds": 20},
+}
+
+
+def test_provisioning_renders_the_flux_target_its_rbac_and_the_token_mount(
+    tmp_path: Path,
+) -> None:
+    docs = _docs(
+        _helm(
+            tmp_path,
+            {
+                "enabled": True,
+                "forgeBaseUrl": "http://volundr:8080",
+                "provisioning": _PROVISIONING,
+                **_STEP2,
+            },
+        )
+    )
+    memory = _config(docs)["memory"]
+    assert memory["systems"] == []
+    assert memory["provisioning"] == {
+        "deployment": {
+            "adapter": "mimir.adapters.flux.FluxKnowledgeDeploymentAdapter",
+            "namespace": "memory",
+            "source_name": "niuu",
+            "source_namespace": "knowledge",
+            "chart_versions": {"gbrain": "2.0.0-dev.610"},
+            "images": {"gbrain": "ghcr.io/niuulabs/gbrain:dev-1@sha256:ab"},
+            "cluster": "ymir",
+            "storage_class": "harvester-data",
+            "memory_values": {"postgres": {"instances": 1}},
+        },
+        "retry_after_seconds": 60,
+        "backend": {"timeout_seconds": 20},
+    }
+    parsed = MimirServiceConfig(memory=memory)
+    assert parsed.memory.provisioning.retry_after_seconds == 60
+    role = next(d for d in docs if d["kind"] == "Role" and "memory" in d["metadata"]["name"])
+    assert role["metadata"]["namespace"] == "memory"
+    assert {(tuple(r["resources"]), tuple(r["verbs"])) for r in role["rules"]} == {
+        (("helmreleases",), ("get", "list", "create")),
+        (("secrets",), ("get", "create")),
+        (("services",), ("get",)),
+    }
+    binding = next(
+        d for d in docs if d["kind"] == "RoleBinding" and "memory" in d["metadata"]["name"]
+    )
+    assert binding["subjects"][0]["name"] == "release-mimir"
+    pod = next(d for d in docs if d["kind"] == "Deployment")["spec"]["template"]["spec"]
+    assert pod["automountServiceAccountToken"] is True
+
+
+def test_without_provisioning_no_rbac_and_no_token(tmp_path: Path) -> None:
+    docs = _docs(
+        _helm(
+            tmp_path,
+            {"enabled": True, "forgeBaseUrl": "http://f", "systems": [_SYSTEM], **_STEP2},
+        )
+    )
+    assert "provisioning" not in _config(docs)["memory"]
+    assert not [d for d in docs if d["kind"] == "Role"]
+    pod = next(d for d in docs if d["kind"] == "Deployment")["spec"]["template"]["spec"]
+    assert "automountServiceAccountToken" not in pod
+
+
+@pytest.mark.parametrize("missing", ["namespace", "sourceName", "chartVersion", "image"])
+def test_provisioning_needs_its_target(tmp_path: Path, missing: str) -> None:
+    provisioning = {k: v for k, v in _PROVISIONING.items() if k != missing}
+    rendered = _helm(
+        tmp_path,
+        {"enabled": True, "forgeBaseUrl": "http://f", "provisioning": provisioning, **_STEP2},
+    )
+    assert rendered.returncode != 0
+    assert f"config.memory.provisioning.{missing} is required" in rendered.stderr

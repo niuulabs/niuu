@@ -36,6 +36,13 @@ spec:
     spec:
       {{- include "mimir.imagePullSecrets" . | nindent 6 }}
       serviceAccountName: {{ include "mimir.serviceAccountName" . }}
+      {{- with .Values.config.memory }}
+      {{- if and .enabled .provisioning .provisioning.enabled }}
+      # Provisioning memory systems asks the Kubernetes API as this ServiceAccount
+      # (memory-provisioning-rbac.yaml); its token is mounted only then.
+      automountServiceAccountToken: true
+      {{- end }}
+      {{- end }}
       {{- with .Values.podSecurityContext }}
       securityContext:
         {{- toYaml . | nindent 8 }}
