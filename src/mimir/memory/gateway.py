@@ -754,6 +754,8 @@ class MemoryGateway:
         )
         target = session.view.layer(layer)
         decision = session.view.decide(target, ChangeAction.WRITE_PAGE, ref)
+        if decision.verdict is Verdict.WRITE:
+            decision = await self._page_rewrite_decision(session, target, ref, decision)
         if decision.verdict is Verdict.PROPOSE:
             change = {
                 "ref": ref,
@@ -782,6 +784,33 @@ class MemoryGateway:
             layer=target,
             summary=f"Wrote page {ref} in layer {target.id} (revision {record.revision}).",
             record={"ref": ref, "revision": record.revision},
+        )
+
+    async def _page_rewrite_decision(
+        self, session: Session, target: Layer, ref: str, decision: Decision
+    ) -> Decision:
+        """Trust rule 3 for pages: a rewrite never replaces a higher-level page.
+
+        Rewriting a page's compiled truth replaces the record, so a caller below the
+        current page's trust proposes the rewrite instead; the layer's owner approves it at
+        ``operator`` level. A new page, or one at or below the caller's trust, is written.
+        Timeline rows only add, so they are not affected.
+        """
+        if target.kind is LayerKind.ATTACHED:
+            return decision
+        _system, backend = session.store(target)
+        try:
+            current = await backend.get_page(target.namespace, ref)
+        except RecordNotFoundError:
+            return decision
+        current_trust = current.attribution.trust
+        if current_trust <= session.view.caller.trust:
+            return decision
+        return Decision(
+            Verdict.PROPOSE,
+            Rule.LOWER_TRUST_PROPOSES,
+            f"page {ref} in {target.id} is {current_trust.label}-level; a lower level never "
+            "replaces it, so the rewrite is proposed to the layer's owners",
         )
 
     async def add_timeline(

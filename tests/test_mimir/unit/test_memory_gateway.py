@@ -187,6 +187,42 @@ class TestWrites:
         assert page.attribution.trust is TrustLevel.AGENT
         assert page.attribution.author == f"agent:session:{SESSION_ID}"
 
+    async def test_rewriting_a_higher_trust_page_under_a_prefix_is_proposed(
+        self, brain, gateway, session
+    ) -> None:
+        """Trust rule 3, seen live: an agent's compile rewrote an operator's page."""
+        await _seed(session, "project", "decisions/drop-queue", "An owner wrote this.")
+
+        outcome = await gateway.write_page(
+            session,
+            "decisions/drop-queue",
+            compiled_truth="An owner wrote this. And the agent's addition.",
+            expected_revision=None,
+            evidence=[URL],
+            layer="project",
+        )
+
+        assert outcome.proposal is not None
+        assert outcome.proposal.reason.startswith("lower_trust_proposes")
+        page = await session.backend.get_page(PROJECT_NS, "decisions/drop-queue")
+        assert page.attribution.trust is TrustLevel.OPERATOR
+        assert page.compiled_truth.strip() == "An owner wrote this."
+
+    async def test_rewriting_an_agent_page_under_a_prefix_is_written(
+        self, brain, gateway, session
+    ) -> None:
+        revision = None
+        for text in ("First take.", "First take. Second take."):
+            outcome = await gateway.write_page(
+                session,
+                "decisions/drop-queue",
+                compiled_truth=text,
+                expected_revision=revision,
+                layer="project",
+            )
+            assert outcome.proposal is None
+            revision = outcome.record["revision"]
+
     async def test_a_project_page_outside_the_prefixes_becomes_a_proposal(
         self, brain, gateway, session
     ) -> None:

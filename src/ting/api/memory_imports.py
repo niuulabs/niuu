@@ -127,8 +127,12 @@ async def _require_project_owner(
     principal: Principal,
     bearer_token: str | None,
     volundr_factory: VolundrFactory,
-) -> None:
-    """Refuse unless the caller owns the project on one of their Forges."""
+) -> str:
+    """Refuse unless the caller owns the project on one of their Forges.
+
+    Returns the project's org as that Forge names it: an import writes into the memory of
+    the project's org, never into whatever org the caller's own login carries.
+    """
     forges = await volundr_factory.for_principal(principal)
     if not forges:
         raise HTTPException(
@@ -155,6 +159,24 @@ async def _require_project_owner(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Only a project owner manages the project's memory imports",
         )
+    try:
+        project = await forge.get_project(
+            str(project_id), auth_token=bearer_token, principal=principal
+        )
+    except httpx.HTTPError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Forge could not read project {project_id}: {exc}",
+        ) from exc
+    if project is None or not project.tenant_id:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=(
+                f"Forge did not name the org of project {project_id}, so the import cannot "
+                "know whose memory to write into"
+            ),
+        )
+    return project.tenant_id
 
 
 def create_memory_imports_router() -> APIRouter:
@@ -181,11 +203,13 @@ def create_memory_imports_router() -> APIRouter:
         volundr_factory: VolundrFactory = Depends(resolve_volundr_factory),
         service: MemoryImportService = Depends(resolve_memory_import_service),
     ) -> MemoryImportResponse:
-        await _require_project_owner(body.project_id, principal, bearer_token, volundr_factory)
+        tenant_id = await _require_project_owner(
+            body.project_id, principal, bearer_token, volundr_factory
+        )
         try:
             record = await service.create(
                 project_id=body.project_id,
-                tenant_id=principal.tenant_id,
+                tenant_id=tenant_id,
                 owner_id=principal.user_id,
                 connector=body.connector,
                 connection_id=body.connection_id,

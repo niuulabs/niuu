@@ -17,6 +17,7 @@ from ting.adapters.inbound.auth import extract_principal
 from ting.api.dispatch import resolve_volundr_factory
 from ting.api.memory_imports import create_memory_imports_router
 from ting.domain.memory_imports import ImportConnectionError
+from ting.ports.volundr import ForgeProjectRef
 
 PERSON = Principal(user_id="jozef", email="j@niuu.test", tenant_id="default", roles=[])
 OTHER_PROJECT = UUID("22222222-2222-4222-8222-222222222222")
@@ -27,6 +28,15 @@ class FakeForge:
     roles: dict[str, str] = field(default_factory=dict)
     error: Exception | None = None
     asked: list[tuple[str, str | None]] = field(default_factory=list)
+    #: The org Forge names for its projects; the import must take this, not the caller's.
+    project_tenant: str = "acme"
+
+    async def get_project(self, project_id, *, auth_token=None, principal=None):  # noqa: ANN001
+        if project_id not in self.roles:
+            return None
+        return ForgeProjectRef(
+            id=project_id, name="Booking", instance_id="forge-a", tenant_id=self.project_tenant
+        )
 
     async def get_project_role(self, project_id, *, auth_token=None, principal=None):  # noqa: ANN001
         self.asked.append((project_id, principal.user_id if principal else None))
@@ -271,3 +281,20 @@ def test_the_routes_say_when_imports_are_not_enabled() -> None:
 
     assert response.status_code == 503
     assert "memory_imports.enabled" in response.json()["detail"]
+
+
+def test_the_import_writes_into_the_projects_org_not_the_callers(api: Api) -> None:
+    response = api.client.post("/api/v1/ting/memory/imports", json=api.body())
+
+    assert response.status_code == 201
+    assert [r.tenant_id for r in api.harness.repository.records.values()] == ["acme"]
+
+
+def test_a_project_whose_forge_names_no_org_is_refused(api: Api) -> None:
+    api.forge.project_tenant = ""
+
+    response = api.client.post("/api/v1/ting/memory/imports", json=api.body())
+
+    assert response.status_code == 502
+    assert "did not name the org" in response.json()["detail"]
+    assert not api.harness.repository.records

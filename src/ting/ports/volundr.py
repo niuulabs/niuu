@@ -42,6 +42,9 @@ class ForgeProjectRef:
     id: str
     name: str
     instance_id: str
+    #: The org the project belongs to, as Forge answers it; empty when the caller's Forge
+    #: answer does not name one (fakes and older Forges).
+    tenant_id: str = ""
 
 
 @dataclass(frozen=True)

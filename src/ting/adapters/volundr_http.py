@@ -943,6 +943,7 @@ class VolundrHTTPAdapter(VolundrPort):
                 id=str(data["id"]),
                 name=str(data["name"]),
                 instance_id=await self._project_host_id(client, headers),
+                tenant_id=str(data.get("tenant_id") or ""),
             )
 
     async def list_member_project_ids(
@@ -1008,6 +1009,7 @@ class VolundrHTTPAdapter(VolundrPort):
                 id=str(data["id"]),
                 name=str(data["name"]),
                 instance_id=await self._project_host_id(client, headers),
+                tenant_id=str(data.get("tenant_id") or ""),
             )
 
     async def session_project(
