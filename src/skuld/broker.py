@@ -26,6 +26,7 @@ from typing import Any
 import httpx
 from fastapi import WebSocket, WebSocketDisconnect  # noqa: F401
 
+from niuu.cap_telemetry import record_degraded
 from niuu.domain.conversation_timeline import TIMELINE_KEY, project_timeline, stamp_parts, timeline
 from niuu.domain.logging import LoggingConfig
 from niuu.domain.message_author import AUTHOR_KEY, MessageAuthor
@@ -539,6 +540,8 @@ class Broker(
             if not isinstance(self._ws_authorization, AuthorizationPort):
                 raise TypeError("WebSocket authorization must implement AuthorizationPort")
 
+        #: The session voice channel (``skuld.voice``), built at startup when enabled.
+        self._voice_channel = None
         self._room_role_resolver = None
         if self._settings.ws_auth.room_role_source == "remote":
             from skuld.room_role_port import RoomRoleResolverPort
@@ -4954,6 +4957,7 @@ class Broker(
                 and not self._settings.room.enabled
                 and not self._settings.workflow_steps.enabled
                 and not self._settings.peer_inbox.enabled
+                and not self._settings.voice.enabled
             )
             or not self.volundr_api_url
             or not self._settings.event_log_enabled
@@ -4982,6 +4986,7 @@ class Broker(
                 ) from exc
             if self._settings.peer_inbox.enabled:
                 self._refuse_peer_messages_after_failed_restore(exc)
+            self._voice_history_unrestored(exc)
             logger.warning(
                 "Durable history hydration skipped for session %s; preserving local cache: %s",
                 self.session_id,
@@ -5027,6 +5032,36 @@ class Broker(
         self._restore_durable_mesh_follows(frames)
         self._restore_durable_room_members(frames)
         self._restore_durable_authors(frames)
+        self._restore_durable_voice_calls(frames)
+
+    def _start_voice_channel(self) -> None:
+        """Build the voice channel (fatal when enabled and it cannot serve)."""
+        if not self._settings.voice.enabled:
+            return
+        from skuld.voice.broker_session import build_voice_channel
+
+        self._voice_channel = build_voice_channel(self)
+
+    def _restore_durable_voice_calls(self, frames: list) -> None:
+        """Fold the session's recorded voice calls back into the channel's call list."""
+        if self._voice_channel is None:
+            return
+        restored = self._voice_channel.calls.restore(frames)
+        if restored:
+            logger.info("Restored %d voice call record frame(s) from durable history", restored)
+
+    def _voice_history_unrestored(self, exc: Exception) -> None:
+        """The call list could not be restored: say so on the channel, loudly."""
+        if self._voice_channel is None:
+            return
+        reason = f"{type(exc).__name__}: {exc}"
+        self._voice_channel.history_unavailable = reason
+        record_degraded(
+            "skuld.voice.history",
+            f"session {self.session_id}: the voice call list could not be restored from the "
+            f"durable event log ({reason}); call history answers 503 until the session restarts, "
+            "new calls are still recorded",
+        )
 
     def _restore_durable_room_members(self, frames: list) -> None:
         """Work out who holds a seat from another session, by their latest join or leave."""
