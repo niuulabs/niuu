@@ -287,6 +287,14 @@ describe('NewSessionPage — a team', () => {
     return view;
   }
 
+  it('opens on the team launch when it is asked for one', () => {
+    setSearch({ mode: 'team' });
+    renderPage();
+
+    expect(screen.getByRole('button', { name: 'A team' })).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByTestId('new-team-members')).toBeInTheDocument();
+  });
+
   it('offers the two ways in and leaves the single-agent page as it was', () => {
     renderPage();
     expect(screen.getByRole('button', { name: 'One agent' })).toHaveAttribute(

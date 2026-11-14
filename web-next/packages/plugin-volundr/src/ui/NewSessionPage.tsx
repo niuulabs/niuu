@@ -59,6 +59,8 @@ type RepoCatalogService = {
 };
 
 interface NewSessionSearch {
+  /** `team` opens the page on the team launch. */
+  mode?: string;
   repo?: string;
   branch?: string;
   persona?: string;
@@ -114,7 +116,9 @@ export function NewSessionPage() {
   const [personaName, setPersonaName] = useState(() => readParam(search.persona));
   const [definitionKey, setDefinitionKey] = useState('');
   const [wizardOpen, setWizardOpen] = useState(false);
-  const [mode, setMode] = useState<LaunchMode>('one');
+  const [mode, setMode] = useState<LaunchMode>(() =>
+    readParam(search.mode) === 'team' ? 'team' : 'one',
+  );
   const [agents, setAgents] = useState<TeamAgentDraft[]>(initialTeamAgents);
   const [taskTo, setTaskTo] = useState<SessionTeamTaskTo>('lead');
   const [invitees, setInvitees] = useState<TeamInvitee[]>([]);
