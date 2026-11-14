@@ -194,5 +194,6 @@ unit (see skuld.memberValues). Every line is indented four spaces, to sit under 
       environment_id: {{ .Values.room.environmentId | default .Values.mesh.realmId | quote }}
       realm_room: {{ .Values.room.realmRoom | toJson }}
       routed: {{ .Values.room.routed | toJson }}
+      untargeted_delivery: {{ .Values.room.untargetedDelivery | toJson }}
     {{- end }}
 {{- end }}

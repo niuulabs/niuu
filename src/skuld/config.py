@@ -246,6 +246,19 @@ class RoomConfig(BaseModel):
             "competes with the room's ravns for the same chat frames."
         ),
     )
+    untargeted_delivery: Literal["refuse", "everyone"] = Field(
+        default="refuse",
+        description=(
+            "What a declared-routed room (``routed``) does with a browser message that names "
+            "no participant when ``default_target_peer_id`` is unset. ``refuse``: it goes to "
+            "the room's sole ravn, and with two or more ravns it is refused with an error "
+            "telling the sender to address one. ``everyone``: it is delivered as a directed "
+            "message to every agent in the room (every participant that is neither a person, "
+            "a workflow, nor this host itself, so the harness sessions of a team count); a "
+            "room with no agent refuses it with an error. Has no effect on a room that is "
+            "not ``routed``."
+        ),
+    )
     presence_sweep_interval_s: float = Field(
         default=30.0,
         description=(

@@ -124,7 +124,7 @@ class TestPostingOverTheMesh:
         }
         # The host acted for the session the mesh certified, not one the message named.
         host.broker.handle_session_room_message.assert_awaited_once_with(
-            "session-member", "huddle-1", "hi all"
+            "session-member", "huddle-1", "hi all", caller_peer_id="member"
         )
         member.host._client.post_room_message.assert_not_awaited()
 
@@ -226,7 +226,9 @@ class TestTheHostsRpc:
         )
 
         assert answer == {"status": "accepted", "message_id": "m-1"}
-        host.broker.handle_session_room_message.assert_awaited_once_with("real-session", "r", "x")
+        host.broker.handle_session_room_message.assert_awaited_once_with(
+            "real-session", "r", "x", caller_peer_id="p"
+        )
 
     @pytest.mark.parametrize("body", [{"room_id": 3, "content": "x"}, {"room_id": "r"}])
     async def test_it_refuses_a_malformed_post(self, flock, body) -> None:

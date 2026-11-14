@@ -678,6 +678,11 @@ room:
   # -- The session runs no agent of its own: it only hosts the room (room.routed). A
   # workflow run's room session is one.
   routed: false
+  # -- What a routed room does with a browser message that names no participant
+  # (room.untargeted_delivery). `refuse`: it goes to the room's sole ravn, and two or more
+  # are refused with an error. `everyone`: it is delivered to every agent in the room (a
+  # team's room); a room with no agent refuses it.
+  untargetedDelivery: refuse
 
 # Mesh configuration for session-local agent flocks. Every value below is a key of Skuld's
 # `mesh` settings (skuld.config.MeshConfig), rendered into the broker's config file. A value

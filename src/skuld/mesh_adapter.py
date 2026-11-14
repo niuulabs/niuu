@@ -25,6 +25,7 @@ from collections.abc import Awaitable, Callable, Mapping, Sequence
 from datetime import UTC, datetime
 from typing import Any, Protocol, runtime_checkable
 
+from niuu.domain.peer_envelope import RelayedSpeech, build_relayed_message
 from niuu.domain.peer_message import (
     PEER_MESSAGE_FRAME,
     PeerAddress,
@@ -53,8 +54,18 @@ from sleipnir.ports.events import SleipnirSubscriber
 
 logger = logging.getLogger("skuld.mesh_adapter")
 
+#: The mesh RPC a room's host sends a member session to say something to it (a directed
+#: message). Its payload is ``{"content", "metadata": {"session_id", "room_id", "delivery_id"}}``.
+DIRECTED_MESSAGE_RPC_TYPE = "directed_message"
+
 #: A broker-side answer to one mesh RPC ``type`` a mesh peer may send.
 RpcHandler = Callable[[dict], Awaitable[dict]]
+
+
+def _refused(error: str) -> dict:
+    """The answer to an RPC that was refused; the sender raises it."""
+    logger.error("mesh adapter: directed message refused: %s", error)
+    return {"status": "refused", "error": error}
 
 
 class PeerMessageReceiver(Protocol):
@@ -348,6 +359,9 @@ class SkuldMeshAdapter:
         if msg_type == PEER_MESSAGE_FRAME:
             return await self._handle_peer_message(message)
 
+        if msg_type == DIRECTED_MESSAGE_RPC_TYPE:
+            return await self._handle_directed_message(message)
+
         if msg_type == "work_request":
             return await self._handle_work_request(message)
 
@@ -365,6 +379,59 @@ class SkuldMeshAdapter:
             logger.error("mesh adapter: malformed peer message refused: %s", exc)
             return {"status": "refused", "error": str(exc)}
         return await self._accept(envelope, verified=self._verified_sender(message))
+
+    async def _handle_directed_message(self, message: dict) -> dict:
+        """A room host says something to this member session: it becomes a user turn.
+
+        The host sends it over the mesh as ``directed_message``; here it is wrapped as the
+        envelope Forge would have stamped for a relayed room message (the host speaks and
+        relays it, the reply route is the room) and taken into the peer inbox, so it reaches
+        the harness at the next turn boundary. Anything malformed is refused with the reason
+        and the sender raises it; nothing is accepted on a guess.
+        """
+        content = message.get("content")
+        metadata = message.get("metadata")
+        if not isinstance(content, str) or not content.strip():
+            return _refused("a directed message needs text content")
+        if not isinstance(metadata, Mapping):
+            return _refused("a directed message needs a metadata object")
+        room_id = metadata.get("room_id")
+        delivery_id = metadata.get("delivery_id")
+        claimed_host = metadata.get("session_id")
+        for name, value in (
+            ("room_id", room_id),
+            ("delivery_id", delivery_id),
+            ("session_id", claimed_host),
+        ):
+            if not isinstance(value, str) or not value.strip():
+                return _refused(f"a directed message needs metadata.{name} (the room's host)")
+        verified = self._verified_sender(message)
+        if verified is not None and verified.session_id != claimed_host:
+            return _refused(
+                f"the directed message says it is from session {claimed_host!r}, but the mesh "
+                f"verified {verified.session_id or verified.peer_id!r}"
+            )
+        peer = self.peers().get(verified.peer_id) if verified is not None else None
+        host = PeerAddress(
+            kind=PeerKind.SESSION,
+            id=claimed_host,
+            name=peer.display_name if peer is not None else "",
+        )
+        try:
+            envelope = build_relayed_message(
+                relayed_by=host,
+                recipient=PeerAddress(kind=PeerKind.SESSION, id=self._session_id),
+                speech=RelayedSpeech(
+                    speaker=host,
+                    room_id=room_id,
+                    reply=ReplyRoute(kind=ReplyKind.ROOM, target=host.id),
+                ),
+                content=content,
+                request_id=delivery_id,
+            )
+        except PeerMessageError as exc:
+            return _refused(str(exc))
+        return await self._accept(envelope, verified=verified)
 
     def _verified_sender(self, carrier: Any) -> SenderIdentity | None:
         """Who the mesh verified sent this message, when this deployment verifies senders.
