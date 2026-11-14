@@ -2322,8 +2322,13 @@ class ForgeMcpToolbox:
                     return ToolResult.error(
                         f"reply: message {args.message_id} names a room route but no room"
                     )
-                answer = await self._client.post_room_message(
-                    route.target, room_id=original.room_id, content=args.content
+                # Said in the room as room_post says it: straight to the host over the mesh
+                # when the mesh verifies senders, through Forge otherwise.
+                answer = await self._host.post_room_message(
+                    original.room_id,
+                    args.content,
+                    host_session_id=route.target,
+                    request_id=request_id,
                 )
             case ReplyKind.MESH:
                 try:

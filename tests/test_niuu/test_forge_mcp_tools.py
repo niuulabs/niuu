@@ -1536,7 +1536,11 @@ class TestReply:
         result = await toolbox.call("reply", {"message_id": "m-3", "content": "agreed"})
 
         assert not result.is_error and result.structured["via"] == "room"
-        assert client.calls == [("post_room_message", (PEER, "huddle-1", "agreed"))]
+        # The same path room_post takes, so a mesh member's answer reaches its host.
+        assert host.room_posts == [
+            {"room_id": "huddle-1", "content": "agreed", "host_session_id": PEER}
+        ]
+        assert client.calls == []
 
     async def test_a_message_with_no_reply_route_is_refused_with_the_reason(self) -> None:
         toolbox, client, host = _toolbox(ForgeMcpGrant.MESSAGE)
