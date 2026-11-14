@@ -5,12 +5,12 @@ description: Reads the new sources of a project's memory and brings the pages th
   citing each source on the page's timeline. It only adds, so nothing is retired or removed, and a write
   the project's rules turn into a proposal is reported as one. Ting starts it after an import brought
   new sources, with their ids in the launch context.
-version: 1.0.0
+version: 1.0.1
 persona_dependencies:
   memory-compiler:
     id: memory-compiler
-    revision: content-d730269acab7c68d
-    digest: sha256:d730269acab7c68d1dac04697f4b9239960ff169ae5e20568ca53cf09d0c6dd6
+    revision: content-2611654fbe95425c
+    digest: sha256:2611654fbe95425ce5077640ae5bbe5932580a8a451dcf86b5a88a50aa953ab6
     path: personas/memory-compiler.yaml
 graph:
   tags:
