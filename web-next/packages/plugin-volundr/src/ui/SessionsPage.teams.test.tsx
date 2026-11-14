@@ -15,6 +15,7 @@ import {
 import type { ISessionStore } from '../ports/ISessionStore';
 import type { Session } from '../domain/session';
 import type { SessionMembers } from '../models/volundr.model';
+import { LIVE_REFETCH_MS } from './hooks/useSessionStore';
 
 const navigate = vi.fn();
 let routeSessionId = 'team';
@@ -260,6 +261,41 @@ describe('SessionsPage — a team in the list', () => {
     expect(screen.queryByTestId('session-agent-m1')).toBeNull();
     // The summary stays on the folded row.
     expect(screen.getByTestId('session-unit-team')).toBeInTheDocument();
+  });
+
+  it('re-reads who is in a running team, so someone arriving shows as online', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const asked: string[] = [];
+      routeSessionId = 'solo';
+      renderPage(sessions(), MEMBERS, { onMembers: (id) => asked.push(id) });
+      await screen.findByTestId('session-agent-m1');
+      expect(asked).toEqual(['team']);
+
+      await vi.advanceTimersByTimeAsync(LIVE_REFETCH_MS);
+
+      await waitFor(() => expect(asked).toEqual(['team', 'team']));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('reads a stopped team’s members once', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const asked: string[] = [];
+      routeSessionId = 'solo';
+      renderPage([team({ state: 'terminated' }), ...sessions().slice(1)], MEMBERS, {
+        onMembers: (id) => asked.push(id),
+      });
+      await screen.findByTestId('session-agent-m1');
+
+      await vi.advanceTimersByTimeAsync(LIVE_REFETCH_MS * 2);
+
+      expect(asked).toEqual(['team']);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('counts a team with only its owner in it as "you", and as one person to a participant', async () => {

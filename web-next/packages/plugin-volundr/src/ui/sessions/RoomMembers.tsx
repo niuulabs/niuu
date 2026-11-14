@@ -15,6 +15,7 @@ import { getDefinitionRune } from '../launchWizardModel';
 import { errorText } from '../errorText';
 import { MemberAvatar, memberColor } from '../MemberAvatar';
 import { sessionPeopleKey, useViewerIdentity } from '../hooks/useSessionPeople';
+import { LIVE_REFETCH_MS } from '../hooks/useSessionStore';
 import { SESSION_STATE_LABELS } from './presentation';
 import './RoomMembers.css';
 
@@ -213,13 +214,24 @@ function personStatus(person: SessionMemberPerson): string | undefined {
   return person.online ? 'Online' : 'Offline';
 }
 
-/** Who is in a session's room: its agents and people, from the host. */
-export function useSessionMembers(sessionId: string, instanceId: string | undefined) {
+/** States in which nobody comes or goes any more, so the members are read once. */
+const SETTLED_STATES: ReadonlySet<SessionState> = new Set(['terminated', 'archived', 'failed']);
+
+/**
+ * Who is in a session's room: its agents and people, from the host. While the session runs,
+ * people come and go and agents change state, so it is re-read at the live views' cadence.
+ */
+export function useSessionMembers(
+  sessionId: string,
+  instanceId: string | undefined,
+  { live }: { live: boolean },
+) {
   const volundr = useService<IVolundrService>('volundr');
   return useQuery({
     // Under the session's people, so inviting or removing someone refreshes it.
     queryKey: [...sessionPeopleKey(sessionId), 'members'] as const,
     queryFn: ({ signal }) => volundr.getSessionMembers(sessionId, { instanceId, signal }),
+    refetchInterval: live ? LIVE_REFETCH_MS : false,
   });
 }
 
@@ -247,7 +259,9 @@ export function SessionMembersList({
   selectedId: string | null;
   onSelectSession: (id: string) => void;
 }) {
-  const members = useSessionMembers(session.id, session.clusterId);
+  const members = useSessionMembers(session.id, session.clusterId, {
+    live: !SETTLED_STATES.has(session.state),
+  });
   const identity = useViewerIdentity();
 
   if (members.isPending || identity.isPending) {
