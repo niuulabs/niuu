@@ -57,7 +57,7 @@ resource**:
 
 | Resource | Real bound | Consequence |
 |---|---|---|
-| Model output tokens | The model's context window and the request timeout | Omit `max_tokens` (send none) where the API allows it; where it is required (Anthropic), derive it from the model catalog's limit, never a literal |
+| Model output tokens | The model's context window and the request timeout | Omit `max_tokens` (send none) where the API allows it; where it is required (Anthropic), ask the vendor for the model's output limit (Bifröst's Anthropic adapter reads `max_tokens` from the Models API, `GET /v1/models/{id}`, and raises when it cannot), never a literal. The Bifröst catalog stores no limits. Where an operator must size a call for a model only they know (the Switchyard judge), make the knob required, with no default |
 | Turns / iterations / attempts | A wall-clock deadline, a budget the operator set, or a decision the agent makes | Bound by that; a count is only acceptable when retrying is pointless past it, and exhausting it raises |
 | Retries | Whether a retry can change the outcome | Never retry an identical request that failed deterministically (truncation, validation); retry only transient failures |
 | Lengths / excerpts | A downstream hard limit (prompt budget, column size, Telegram message size) | Use that limit; when you truncate, say so in the output and count it |
@@ -91,9 +91,11 @@ counter, metric name or log format:
 - **A path that must continue** because raising would lose more, such as an
   operator reply that could not be saved: `record_degraded(path, message)`.
 
-These log at error and count on `ravn.cap.hits` / `ravn.degraded`. The
-resident health snapshot carries them as `cap_hits_total`, `cap_hits.<knob>`,
-`degraded_total` and `degraded.<path>`. `knob` is the config path the
+These log at error and count on `ravn.cap.hits` / `ravn.degraded`.
+`health_counts()` shapes them as `cap_hits_total`, `cap_hits.<knob>`,
+`degraded_total` and `degraded.<path>` (plus `retries_*`); Forge, Skuld,
+Bifröst, Ting and the Niuu host serve that on `GET /health` under `caps`. A new
+service's health route serves it too. `knob` is the config path the
 operator would change. Limits and decisions are listed in
 `docs/operator/limits.md`; add a row when you add or keep a cap.
 

@@ -145,106 +145,83 @@ class TestProviderRouting:
         assert fake.complete_calls[0][1] == "gpt-4o-mini"
 
 
-class TestFailoverStrategy:
+def _two_providers(strategy: RoutingStrategy = RoutingStrategy.DIRECT) -> BifrostConfig:
+    return BifrostConfig(
+        providers={
+            "openai": ProviderConfig(models=["gpt-4o"]),
+            "backup": ProviderConfig(models=["gpt-4o"]),
+        },
+        routing_strategy=strategy,
+    )
+
+
+class TestOneProviderPerRequest:
+    """A request is served by the selected provider alone; its error is the answer."""
+
+    def test_direct_is_the_default_strategy(self):
+        assert BifrostConfig().routing_strategy == RoutingStrategy.DIRECT
+
     @pytest.mark.asyncio
-    async def test_failover_on_http_503(self):
-        cfg = BifrostConfig(
-            providers={
-                "openai": ProviderConfig(models=["gpt-4o"]),
-                "backup": ProviderConfig(models=["gpt-4o"]),
-            },
-            routing_strategy=RoutingStrategy.FAILOVER,
-        )
-        router = ModelRouter(cfg)
-        primary = FakeProvider(raises=_http_error(503))
+    @pytest.mark.parametrize("status", [401, 429, 503])
+    async def test_http_error_names_provider_and_never_reaches_the_backup(self, status):
+        router = ModelRouter(_two_providers())
+        primary = FakeProvider(raises=_http_error(status))
         backup = FakeProvider()
         router._adapters["openai"] = primary
         router._adapters["backup"] = backup
 
-        req = _make_request(model="gpt-4o")
-        result = await router.complete(req)
-        assert result.content[0].text == "OK"
-        assert len(backup.complete_calls) == 1
+        with pytest.raises(RouterError, match=f"Provider 'openai' failed.*HTTP {status}") as info:
+            await router.complete(_make_request(model="gpt-4o"))
+        assert isinstance(info.value.__cause__, httpx.HTTPStatusError)
+        assert len(primary.complete_calls) == 1
+        assert backup.complete_calls == []
 
     @pytest.mark.asyncio
-    async def test_failover_not_triggered_on_non_retryable_http_error(self):
-        cfg = BifrostConfig(
-            providers={
-                "openai": ProviderConfig(models=["gpt-4o"]),
-                "backup": ProviderConfig(models=["gpt-4o"]),
-            },
-            routing_strategy=RoutingStrategy.FAILOVER,
-        )
-        router = ModelRouter(cfg)
-        primary = FakeProvider(raises=_http_error(401))
+    async def test_provider_error_names_provider_and_never_reaches_the_backup(self):
+        router = ModelRouter(_two_providers())
+        primary = FakeProvider(raises=ProviderError("down"))
         backup = FakeProvider()
         router._adapters["openai"] = primary
         router._adapters["backup"] = backup
 
-        req = _make_request(model="gpt-4o")
-        with pytest.raises(httpx.HTTPStatusError):
-            await router.complete(req)
-        assert len(backup.complete_calls) == 0
+        with pytest.raises(RouterError, match="Provider 'openai' failed for model 'gpt-4o': down"):
+            await router.complete(_make_request(model="gpt-4o"))
+        assert backup.complete_calls == []
 
     @pytest.mark.asyncio
-    async def test_direct_strategy_no_failover(self):
-        cfg = BifrostConfig(
-            providers={
-                "openai": ProviderConfig(models=["gpt-4o"]),
-                "backup": ProviderConfig(models=["gpt-4o"]),
-            },
-            routing_strategy=RoutingStrategy.DIRECT,
-        )
-        router = ModelRouter(cfg)
-        primary = FakeProvider(raises=_http_error(503))
+    async def test_stream_provider_error_never_reaches_the_backup(self):
+        router = ModelRouter(_two_providers())
         backup = FakeProvider()
-        router._adapters["openai"] = primary
-        router._adapters["backup"] = backup
-
-        req = _make_request(model="gpt-4o")
-        with pytest.raises(RouterError):
-            await router.complete(req)
-        assert len(backup.complete_calls) == 0
-
-    @pytest.mark.asyncio
-    async def test_all_providers_fail_raises_router_error(self):
-        cfg = BifrostConfig(
-            providers={
-                "openai": ProviderConfig(models=["gpt-4o"]),
-                "backup": ProviderConfig(models=["gpt-4o"]),
-            },
-            routing_strategy=RoutingStrategy.FAILOVER,
-        )
-        router = ModelRouter(cfg)
-        exc = _http_error(503)
-        router._adapters["openai"] = FakeProvider(raises=exc)
-        router._adapters["backup"] = FakeProvider(raises=exc)
-
-        req = _make_request(model="gpt-4o")
-        with pytest.raises(RouterError, match="All providers failed"):
-            await router.complete(req)
-
-    @pytest.mark.asyncio
-    async def test_failover_on_provider_error(self):
-        cfg = BifrostConfig(
-            providers={
-                "openai": ProviderConfig(models=["gpt-4o"]),
-                "backup": ProviderConfig(models=["gpt-4o"]),
-            },
-            routing_strategy=RoutingStrategy.FAILOVER,
-        )
-        router = ModelRouter(cfg)
         router._adapters["openai"] = FakeProvider(raises=ProviderError("down"))
-        router._adapters["backup"] = FakeProvider()
+        router._adapters["backup"] = backup
 
-        req = _make_request(model="gpt-4o")
-        result = await router.complete(req)
-        assert result.content[0].text == "OK"
+        with pytest.raises(RouterError, match="Provider 'openai' failed for model 'gpt-4o'"):
+            async for _ in router.stream(_make_request(model="gpt-4o")):
+                pass
+        assert backup.stream_calls == []
+
+    @pytest.mark.asyncio
+    async def test_stream_http_error_never_reaches_the_backup(self):
+        router = ModelRouter(_two_providers())
+        backup = FakeProvider()
+        router._adapters["openai"] = FakeProvider(raises=_http_error(503))
+        router._adapters["backup"] = backup
+
+        with pytest.raises(RouterError, match="Provider 'openai' failed.*HTTP 503"):
+            async for _ in router.stream(_make_request(model="gpt-4o")):
+                pass
+        assert backup.stream_calls == []
+
+    @pytest.mark.asyncio
+    async def test_routed_request_carries_exactly_one_target(self):
+        router = ModelRouter(_two_providers())
+        routed = await router.route(_make_request(model="gpt-4o"))
+        assert routed.target == ("openai", "gpt-4o")
 
 
 class TestCostOptimisedStrategy:
     @pytest.mark.asyncio
-    async def test_cheapest_provider_tried_first(self):
+    async def test_cheapest_provider_is_selected(self):
         cfg = BifrostConfig(
             providers={
                 "expensive": ProviderConfig(models=["gpt-4o"], cost_per_token=10.0),
@@ -265,7 +242,7 @@ class TestCostOptimisedStrategy:
         assert len(expensive.complete_calls) == 0
 
     @pytest.mark.asyncio
-    async def test_falls_back_to_next_cheapest_on_failure(self):
+    async def test_cheapest_failure_is_the_answer(self):
         cfg = BifrostConfig(
             providers={
                 "expensive": ProviderConfig(models=["gpt-4o"], cost_per_token=10.0),
@@ -274,12 +251,13 @@ class TestCostOptimisedStrategy:
             routing_strategy=RoutingStrategy.COST_OPTIMISED,
         )
         router = ModelRouter(cfg)
+        expensive = FakeProvider()
         router._adapters["cheap"] = FakeProvider(raises=_http_error(503))
-        router._adapters["expensive"] = FakeProvider()
+        router._adapters["expensive"] = expensive
 
-        req = _make_request(model="gpt-4o")
-        result = await router.complete(req)
-        assert result.content[0].text == "OK"
+        with pytest.raises(RouterError, match="Provider 'cheap' failed"):
+            await router.complete(_make_request(model="gpt-4o"))
+        assert expensive.complete_calls == []
 
     @pytest.mark.asyncio
     async def test_equal_cost_preserves_config_order(self):
@@ -298,7 +276,7 @@ class TestCostOptimisedStrategy:
 
         req = _make_request(model="gpt-4o")
         await router.complete(req)
-        # Python's sort is stable; first should be tried first since costs are equal.
+        # Equal costs: config order decides, so the first provider is selected.
         assert len(first.complete_calls) == 1
         assert len(second.complete_calls) == 0
 
@@ -351,7 +329,7 @@ class TestRoundRobinStrategy:
         assert len(b.complete_calls) == 2
 
     @pytest.mark.asyncio
-    async def test_falls_back_to_next_on_failure(self):
+    async def test_failure_of_the_selected_provider_is_the_answer(self):
         cfg = BifrostConfig(
             providers={
                 "a": ProviderConfig(models=["gpt-4o"]),
@@ -360,18 +338,23 @@ class TestRoundRobinStrategy:
             routing_strategy=RoutingStrategy.ROUND_ROBIN,
         )
         router = ModelRouter(cfg)
+        b = FakeProvider()
         router._adapters["a"] = FakeProvider(raises=_http_error(503))
-        router._adapters["b"] = FakeProvider()
+        router._adapters["b"] = b
 
         req = _make_request(model="gpt-4o")
-        # First request starts at 'a', fails, falls back to 'b'.
-        result = await router.complete(req)
-        assert result.content[0].text == "OK"
+        # The first request is rotated to 'a'; it fails and 'b' is not tried.
+        with pytest.raises(RouterError, match="Provider 'a' failed"):
+            await router.complete(req)
+        assert b.complete_calls == []
+        # The next request is rotated to 'b'.
+        await router.complete(req)
+        assert len(b.complete_calls) == 1
 
 
 class TestLatencyOptimisedStrategy:
     @pytest.mark.asyncio
-    async def test_fastest_provider_tried_first(self):
+    async def test_fastest_provider_is_selected(self):
         cfg = BifrostConfig(
             providers={
                 "slow": ProviderConfig(models=["gpt-4o"]),
@@ -406,7 +389,7 @@ class TestLatencyOptimisedStrategy:
         )
         router = ModelRouter(cfg)
         router._latency_ewma["known"] = 0.5
-        # "unknown" has no EWMA data — should be tried after "known".
+        # "unknown" has no EWMA data — ranks after "known".
 
         unknown = FakeProvider()
         known = FakeProvider()
@@ -435,7 +418,7 @@ class TestLatencyOptimisedStrategy:
         assert router._latency_ewma["a"] >= 0.0
 
     @pytest.mark.asyncio
-    async def test_falls_back_to_next_on_failure(self):
+    async def test_failure_of_the_fastest_provider_is_the_answer(self):
         cfg = BifrostConfig(
             providers={
                 "fast": ProviderConfig(models=["gpt-4o"]),
@@ -446,12 +429,14 @@ class TestLatencyOptimisedStrategy:
         router = ModelRouter(cfg)
         router._latency_ewma["fast"] = 0.1
         router._latency_ewma["slow"] = 2.0
+        slow = FakeProvider()
         router._adapters["fast"] = FakeProvider(raises=_http_error(503))
-        router._adapters["slow"] = FakeProvider()
+        router._adapters["slow"] = slow
 
-        req = _make_request(model="gpt-4o")
-        result = await router.complete(req)
-        assert result.content[0].text == "OK"
+        with pytest.raises(RouterError, match="Provider 'fast' failed"):
+            await router.complete(_make_request(model="gpt-4o"))
+        assert slow.complete_calls == []
+        assert "fast" not in router._latency_ewma or router._latency_ewma["fast"] == 0.1
 
     @pytest.mark.asyncio
     async def test_ewma_update_on_successive_calls(self):
@@ -470,7 +455,7 @@ class TestLatencyOptimisedStrategy:
         assert router._latency_ewma["a"] < 1.0
 
 
-class TestBuildCandidatesDefaultCase:
+class TestSelectTargetDefaultCase:
     def test_unknown_strategy_raises_value_error(self):
         """The match default case must raise ValueError, not silently return None."""
         cfg = BifrostConfig(providers={"a": ProviderConfig(models=["gpt-4o"])})
@@ -480,7 +465,7 @@ class TestBuildCandidatesDefaultCase:
         object.__setattr__(cfg, "routing_strategy", "__invalid__")
 
         with pytest.raises(ValueError, match="Unknown routing strategy"):
-            router._build_candidates("gpt-4o")
+            router._select_target("gpt-4o")
 
 
 class TestStreamingRouter:
@@ -495,25 +480,6 @@ class TestStreamingRouter:
         req_stream = req.model_copy(update={"stream": True})
         chunks = []
         async for chunk in router.stream(req_stream):
-            chunks.append(chunk)
-        assert chunks == ["data: test\n\n"]
-
-    @pytest.mark.asyncio
-    async def test_stream_failover_on_provider_error(self):
-        cfg = BifrostConfig(
-            providers={
-                "openai": ProviderConfig(models=["gpt-4o"]),
-                "backup": ProviderConfig(models=["gpt-4o"]),
-            },
-            routing_strategy=RoutingStrategy.FAILOVER,
-        )
-        router = ModelRouter(cfg)
-        router._adapters["openai"] = FakeProvider(raises=ProviderError("down"))
-        router._adapters["backup"] = FakeProvider()
-
-        req = _make_request(model="gpt-4o")
-        chunks = []
-        async for chunk in router.stream(req):
             chunks.append(chunk)
         assert chunks == ["data: test\n\n"]
 

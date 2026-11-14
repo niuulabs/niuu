@@ -10,6 +10,7 @@ import json
 from datetime import UTC, datetime
 from pathlib import Path
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -354,6 +355,25 @@ class TestIngestTool:
         result = json.loads(result_content[0]["text"])
         assert result["source_id"].startswith("src_")
         assert isinstance(result["pages_updated"], list)
+
+    @pytest.mark.parametrize("source_type", ["tool_output", "diagnostic"])
+    def test_ingest_refuses_operational_sources(self, tmp_path: Path, source_type: str) -> None:
+        """The MCP tool refuses what REST /ingest refuses with a 422; nothing is stored."""
+        client = _make_client(tmp_path)
+        resp = client.post(
+            "/mcp",
+            json=_jsonrpc(
+                "tools/call",
+                {
+                    "name": "mimir_ingest",
+                    "arguments": {"content": "probe output", "source_type": source_type},
+                },
+            ),
+        )
+        result = resp.json()["result"]
+        assert result["isError"] is True
+        assert f"Refusing to ingest source_type {source_type!r}" in result["content"][0]["text"]
+        assert not list((tmp_path / "mimir").rglob("raw/*.json"))
 
     def test_ingest_with_title_and_url(self, tmp_path: Path) -> None:
         client = _make_client(tmp_path)

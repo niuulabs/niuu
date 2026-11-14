@@ -85,10 +85,19 @@ class CollaborationRoom:
         clock: Clock | None = None,
         recorded_at: RecordedAt | None = None,
         presence_sweep_interval_s: float = 0.0,
+        agent_heartbeat_ttl_s: float,
+        peer_heartbeat_ttl_s: float,
+        join_heartbeat_ttl_s: float,
     ) -> None:
         colors = tuple(participant_colors)
         if not colors:
             raise ValueError("participant_colors must not be empty")
+        # How long each kind of participant may go without a heartbeat before the
+        # presence sweep shows it as away. The room's owner supplies them from its
+        # configuration (Skuld: room.*_heartbeat_ttl_s); 0 never marks it away.
+        self._agent_heartbeat_ttl_s = agent_heartbeat_ttl_s
+        self._peer_heartbeat_ttl_s = peer_heartbeat_ttl_s
+        self._join_heartbeat_ttl_s = join_heartbeat_ttl_s
         self._environment_id = environment_id
         self._broadcast = broadcast or _discard_event
         self._publish = publish or _discard_presence
@@ -182,10 +191,15 @@ class CollaborationRoom:
         surfaces: Iterable[str] | None = None,
         wakefulness: str = "unknown",
         attention_state: str = "available",
-        heartbeat_ttl_s: float = 90.0,
+        heartbeat_ttl_s: float | None = None,
         room_ids: Iterable[str] | None = None,
     ) -> Participant:
-        """Register or reconnect an agent participant."""
+        """Register or reconnect an agent participant.
+
+        ``heartbeat_ttl_s`` defaults to the room's ``agent_heartbeat_ttl_s``.
+        """
+        if heartbeat_ttl_s is None:
+            heartbeat_ttl_s = self._agent_heartbeat_ttl_s
         subscriptions = tuple(subscribes_to or ())
         emitted = tuple(emits or ())
         tool_names = tuple(tools or ())
@@ -251,10 +265,15 @@ class CollaborationRoom:
         surfaces: Iterable[str] | None = None,
         wakefulness: str = "watching",
         attention_state: str = "available",
-        heartbeat_ttl_s: float = 90.0,
+        heartbeat_ttl_s: float | None = None,
         room_ids: Iterable[str] | None = None,
     ) -> Participant:
-        """Register a discovered participant without assuming its transport."""
+        """Register a discovered participant without assuming its transport.
+
+        ``heartbeat_ttl_s`` defaults to the room's ``peer_heartbeat_ttl_s``.
+        """
+        if heartbeat_ttl_s is None:
+            heartbeat_ttl_s = self._peer_heartbeat_ttl_s
         existing = self._participants.get(peer_id)
         if existing is not None:
             return existing
@@ -294,7 +313,7 @@ class CollaborationRoom:
         room_id: str = "",
         capabilities: Iterable[str] | None = None,
         surfaces: Iterable[str] | None = None,
-        heartbeat_ttl_s: float = 300.0,
+        heartbeat_ttl_s: float | None = None,
         participant_type: str = "human",
         session_id: str = "",
         subscribes_to: Iterable[str] | None = None,
@@ -307,6 +326,8 @@ class CollaborationRoom:
         a person may do in a session (answer a gate, a permission prompt) is their
         session room role, checked where the request arrives (``niuu.room_access``).
         """
+        if heartbeat_ttl_s is None:
+            heartbeat_ttl_s = self._join_heartbeat_ttl_s
         participant_id = participant_id.strip()
         if not participant_id:
             raise ValueError("participant_id is required")
@@ -541,14 +562,6 @@ class CollaborationRoom:
             )
         )
         return message
-
-    def replay_huddle(self, room_id: str, *, from_sequence: int = 0) -> list[dict[str, Any]]:
-        """Return ordered room events after a sequence for late joiners."""
-        return [
-            dict(event)
-            for event in self._room_event_log.get(room_id, [])
-            if int(event.get("sequence", 0)) > from_sequence
-        ]
 
     def _append_huddle_event(self, room_id: str, event: dict[str, Any]) -> dict[str, Any]:
         self._room_sequence += 1

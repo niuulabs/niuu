@@ -16,6 +16,7 @@ from switchyard.libsy import (
 from bifrost.adapters.switchyard import SwitchyardSelection
 from bifrost.ports.selection import ModelCall
 from bifrost.translation.models import AnthropicRequest, Message, TextBlock
+from niuu.cap_telemetry import OutputTruncatedError, record_cap_hit
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +33,7 @@ class Route(BaseModel):
     targets: list[str] = Field(min_length=1)
     judge: str | None = None
     prompt: str | None = None
-    max_tokens: int = Field(default=512, gt=0)
+    max_tokens: int | None = Field(default=None, gt=0)
 
     @model_validator(mode="after")
     def validate_classifier(self):
@@ -42,6 +43,13 @@ class Route(BaseModel):
             raise ValueError("Classifier routes require both judge and prompt")
         if self.prompt is not None and not self.prompt.strip():
             raise ValueError("Classifier prompt must not be empty")
+        if self.judge is not None and self.max_tokens is None:
+            raise ValueError(
+                "Classifier routes require max_tokens (routes.<name>.max_tokens): the "
+                "judge model's answer, reasoning included, must fit in it"
+            )
+        if self.judge is None and self.max_tokens is not None:
+            raise ValueError("max_tokens applies to the judge; set it only on classifier routes")
         return self
 
 
@@ -183,6 +191,7 @@ class SwitchyardModelSelection(SwitchyardSelection):
             },
         )
         started = time.perf_counter()
+        judged: str | None = None
         async for step in self._routes[request.model].run_stream(normalized):
             if isinstance(step, Step.CallModel):
                 call = step.call
@@ -204,6 +213,15 @@ class SwitchyardModelSelection(SwitchyardSelection):
                 )
                 judge_request._response_format = native["output"]["response_format"]
                 response = await call_model(judge.provider, judge.model, judge_request)
+                if response.stop_reason == "max_tokens":
+                    knob = f"bifrost.selection.routes.{request.model}.max_tokens"
+                    message = (
+                        f"route {request.model!r}: the judge's answer was cut off at "
+                        f"{knob}={route.max_tokens}; raise it so the judge's answer "
+                        "(reasoning included) fits"
+                    )
+                    record_cap_hit(knob=knob, message=message)
+                    raise OutputTruncatedError(knob=knob, message=message)
                 answer = "".join(b.text for b in response.content if isinstance(b, TextBlock))
                 choice = json.loads(answer)
                 if (
@@ -214,6 +232,7 @@ class SwitchyardModelSelection(SwitchyardSelection):
                     raise ValueError("Classifier returned an invalid target")
                 if response.stop_reason not in {"end_turn", "stop_sequence"}:
                     raise ValueError("Classifier response did not finish successfully")
+                judged = choice["target"]
                 call.respond(
                     LlmResponse.Agg(
                         {
@@ -234,6 +253,11 @@ class SwitchyardModelSelection(SwitchyardSelection):
             name = step.outcome.selected_model_ids[0]
             if name not in route.targets:
                 raise RuntimeError("Switchyard selected a target outside the route")
+            if route.judge is not None and name != judged:
+                raise RuntimeError(
+                    f"Switchyard chose {name} without the judge's answer; refusing its "
+                    "default target"
+                )
             target = self.targets[name]
             logger.info(
                 "switchyard route=%s target=%s provider=%s model=%s latency_ms=%.3f outcome_id=%s",

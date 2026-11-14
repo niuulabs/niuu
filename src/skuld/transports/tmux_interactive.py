@@ -35,6 +35,7 @@ from niuu.build_info import build_info
 from niuu.domain.reasoning import MODEL_EFFORTS, preferred_effort, validate_effort
 from niuu.ports.cli import CLITransport, TransportCapabilities
 from skuld.agent_usage import AgentUsageTracker
+from skuld.claude_auth import ClaudeAuthMode
 from skuld.claude_permission import (
     DEFAULT_CLAUDE_PERMISSION_MODE,
     resolve_claude_permission_mode,
@@ -311,8 +312,12 @@ class TmuxInteractiveTransport(CLITransport):
         workspace_trust_settle_s: float = 1.0,
         workspace_trust_max_attempts: int = 3,
         claude_tool_policy: ClaudeToolPolicy | None = None,
+        claude_auth: ClaudeAuthMode = "subscription",
+        claude_oauth_token_file: str | None = None,
+        tmux_remote_control: bool = True,
     ) -> None:
         super().__init__()
+        self._claude_oauth_token_file = claude_oauth_token_file
         self.workspace_dir = workspace_dir
         self._session_tools = session_tools
         self._model = model
@@ -478,14 +483,9 @@ class TmuxInteractiveTransport(CLITransport):
         # control plane while the native tmux path is hardened. Requires subscription auth:
         # the API-key path can't register a session to the account (it blocks on the
         # interactive "use this API key?" chooser), so force it off under
-        # SKULD__CLAUDE_AUTH=api_key. Toggle with SKULD__TMUX_REMOTE_CONTROL=0/1.
-        self._claude_auth_mode = (
-            os.environ.get("SKULD__CLAUDE_AUTH", "subscription").strip().lower()
-        )
-        self._remote_control = (
-            self._bool_env("SKULD__TMUX_REMOTE_CONTROL", True)
-            and self._claude_auth_mode != "api_key"
-        )
+        # claude_auth=api_key. Toggle with the tmux_remote_control setting.
+        self._claude_auth_mode = claude_auth
+        self._remote_control = tmux_remote_control and claude_auth != "api_key"
 
         # Append the steering/task-tracking guidance to Claude's system prompt (on by default) so a
         # steerable session keeps a live task plan the client can surface + steer against.
@@ -3855,6 +3855,8 @@ class TmuxInteractiveTransport(CLITransport):
 
     def _spawn_env(self) -> dict[str, str]:
         env = claude_spawn_env(
+            claude_auth=self._claude_auth_mode,
+            claude_oauth_token_file=self._claude_oauth_token_file,
             gateway_url=self._model_gateway_url,
             gateway_token=self._model_gateway_token,
         )

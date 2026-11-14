@@ -30,8 +30,6 @@ ALLOWLIST = {
         "NIUU_PG_BIN_DIR",
     ): "embedded PostgreSQL executable discovery",
     ("mimir/bridge.py", "RAVN_WORKSPACE_DIR"): "CLI workspace bootstrap",
-    ("skuld/transports/claude_env.py", "SKULD__CLAUDE_AUTH"): "child auth environment filtering",
-    ("skuld/transports/tmux_interactive.py", "SKULD__CLAUDE_AUTH"): "tmux child auth filtering",
     (
         "skuld/transports/tmux_interactive.py",
         "SKULD__SESSION__NAME",

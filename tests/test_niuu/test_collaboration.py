@@ -11,11 +11,39 @@ from niuu.collaboration import CollaborationRoom
 
 
 def _room(**kwargs) -> CollaborationRoom:
+    ttls = {
+        "agent_heartbeat_ttl_s": 90.0,
+        "peer_heartbeat_ttl_s": 90.0,
+        "join_heartbeat_ttl_s": 300.0,
+    }
     return CollaborationRoom(
         participant_colors=("p1", "p2"),
         environment_id="cluster-a",
-        **kwargs,
+        **{**ttls, **kwargs},
     )
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_ttls_come_from_the_room_configuration() -> None:
+    """No participant kind has a hard-coded heartbeat TTL: the room's owner sets each."""
+    room = _room(agent_heartbeat_ttl_s=11.0, peer_heartbeat_ttl_s=22.0, join_heartbeat_ttl_s=33.0)
+    agent = await room.register_agent("agent-1", "coder")
+    peer = await room.register_peer("peer-1", "reviewer")
+    person = await room.join_environment(
+        "person-1", display_name="Person", environment_id="cluster-a"
+    )
+    assert (agent.heartbeat_ttl_s, peer.heartbeat_ttl_s, person.heartbeat_ttl_s) == (
+        11.0,
+        22.0,
+        33.0,
+    )
+    explicit = await room.register_agent("agent-2", "coder", heartbeat_ttl_s=0.0)
+    assert explicit.heartbeat_ttl_s == 0.0
+
+
+def test_room_requires_its_heartbeat_ttls() -> None:
+    with pytest.raises(TypeError, match="heartbeat_ttl_s"):
+        CollaborationRoom(participant_colors=("p1",), environment_id="cluster-a")
 
 
 @pytest.mark.asyncio
@@ -87,8 +115,8 @@ async def test_room_records_and_replays_huddle_without_transport_dependencies() 
     )
     closed = await room.close_environment_huddle(room_id="incident-1")
 
-    replay = room.replay_huddle("incident-1")
-    assert [event["sequence"] for event in replay] == list(range(1, len(replay) + 1))
+    recorded = room._room_event_log["incident-1"]
+    assert [event["sequence"] for event in recorded] == list(range(1, len(recorded) + 1))
     assert "## ravn-1\nInvestigating" in room.build_huddle_transcript("incident-1")
     assert closed["transcriptRef"] == "huddles/cluster-a/incident-1.md"
     transcript_event = next(

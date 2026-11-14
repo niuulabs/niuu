@@ -11,7 +11,7 @@ from typing import Any
 
 from niuu.domain.outcome import parse_outcome_block
 from niuu.utils import import_class
-from skuld.channels import TelegramChannel
+from skuld.channels import TelegramChannel, TelegramChannelError
 from skuld.conversation_models import CHRONICLE_SUMMARY_PROMPT, SUMMARY_TIMEOUT_SECONDS
 from skuld.event_log import FORGE_SESSIONS_PATH
 from sleipnir.domain.catalog import ravn_session_ended
@@ -414,36 +414,61 @@ class ChronicleMixin:
             logger.warning("Failed to write workspace archive", exc_info=True)
 
     async def _init_telegram_channel(self) -> None:
-        """Initialize and register a Telegram channel if configured."""
+        """Initialize and register the Telegram channel when it is configured.
+
+        With ``telegram.enabled`` every failure is fatal: the operator asked for a Telegram
+        channel and a session without one would run unreachable from the chat. Every failure
+        is raised as ``TelegramChannelError`` with the cause chained.
+        """
         tg_config = self._settings.telegram
         if not tg_config.enabled:
             return
 
         bot_token, chat_id = await self._resolve_telegram_credentials()
         if not bot_token or not chat_id:
-            logger.warning("Telegram enabled but bot_token or chat_id missing, skipping")
-            return
-
-        try:
-            channel = TelegramChannel(
-                bot_token=bot_token,
-                chat_id=chat_id,
-                notify_only=tg_config.notify_only,
-                topic_mode=tg_config.topic_mode,
-                message_thread_id=tg_config.message_thread_id,
-                topic_name=self._build_telegram_topic_name(),
-                on_message=self._dispatch_browser_message,
+            missing = " and ".join(
+                name
+                for name, value in (
+                    ("telegram.bot_token", bot_token),
+                    ("telegram.chat_id", chat_id),
+                )
+                if not value
             )
+            raise TelegramChannelError(
+                f"telegram.enabled is true but {missing} is not set; set it directly, "
+                "set telegram.credential_name to a credential holding bot_token and chat_id, "
+                "or set telegram.enabled: false"
+            )
+
+        channel = TelegramChannel(
+            bot_token=bot_token,
+            chat_id=chat_id,
+            notify_only=tg_config.notify_only,
+            topic_mode=tg_config.topic_mode,
+            message_thread_id=tg_config.message_thread_id,
+            topic_name=self._build_telegram_topic_name(),
+            on_message=self._dispatch_browser_message,
+        )
+        try:
             await channel.start()
-            self._channels.add(channel)
-            logger.info("Telegram channel initialized for chat %s", tg_config.chat_id)
-        except RuntimeError:
-            logger.warning("python-telegram-bot not installed, Telegram channel disabled")
-        except Exception:
-            logger.warning("Failed to initialize Telegram channel", exc_info=True)
+        except TelegramChannelError:
+            raise
+        except Exception as exc:
+            raise TelegramChannelError(
+                f"Telegram channel for chat {chat_id} failed to start: {exc}. "
+                "Check that telegram.bot_token is valid and the bot can reach the Telegram API, "
+                "or set telegram.enabled: false"
+            ) from exc
+        self._channels.add(channel)
+        logger.info("Telegram channel initialized for chat %s", chat_id)
 
     async def _resolve_telegram_credentials(self) -> tuple[str, str]:
-        """Resolve Telegram credentials from direct config or the shared credential store."""
+        """Resolve Telegram credentials from direct config or the shared credential store.
+
+        Direct ``bot_token``/``chat_id`` win. A configured ``credential_name`` that cannot be
+        read, or that holds no entry, raises; an unconfigured one returns what the config has
+        so the caller can name what is missing.
+        """
         tg_config = self._settings.telegram
         bot_token = tg_config.bot_token.strip()
         chat_id = tg_config.chat_id.strip()
@@ -462,23 +487,22 @@ class ChronicleMixin:
                 tg_config.credential_owner_id,
                 credential_name,
             )
-        except Exception:
-            logger.warning(
-                "Failed to resolve Telegram credential %r from %s",
-                credential_name,
-                tg_config.credential_store_adapter,
-                exc_info=True,
-            )
-            return bot_token, chat_id
+        except Exception as exc:
+            raise TelegramChannelError(
+                f"Could not read Telegram credential {credential_name!r} from "
+                f"{tg_config.credential_store_adapter}: {exc}. Fix "
+                "telegram.credential_store_adapter / telegram.credential_store_kwargs, "
+                "or set telegram.bot_token and telegram.chat_id directly"
+            ) from exc
 
         if not values:
-            logger.warning(
-                "Telegram credential %r not found for %s/%s",
-                credential_name,
-                tg_config.credential_owner_type,
-                tg_config.credential_owner_id,
+            raise TelegramChannelError(
+                f"Telegram credential {credential_name!r} was not found for "
+                f"{tg_config.credential_owner_type}/{tg_config.credential_owner_id}; create it "
+                "with bot_token and chat_id, fix telegram.credential_name / "
+                "telegram.credential_owner_id, or set telegram.bot_token and telegram.chat_id "
+                "directly"
             )
-            return bot_token, chat_id
 
         return (
             bot_token or str(values.get("bot_token") or values.get("token") or "").strip(),

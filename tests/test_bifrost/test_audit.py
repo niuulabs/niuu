@@ -333,13 +333,14 @@ class TestLoadAdapter:
 
 
 # ---------------------------------------------------------------------------
-# Streaming failover on HTTP errors (router.py:145-168)
+# Streaming: the selected provider's error is the answer
 # ---------------------------------------------------------------------------
 
 
 class FakeProvider(ProviderPort):
     def __init__(self, raises: Exception | None = None):
         self._raises = raises
+        self.stream_calls = 0
 
     async def complete(self, request: AnthropicRequest, model: str) -> AnthropicResponse:
         if self._raises:
@@ -347,73 +348,54 @@ class FakeProvider(ProviderPort):
         return _make_response()
 
     async def stream(self, request: AnthropicRequest, model: str) -> AsyncIterator[str]:
+        self.stream_calls += 1
         if self._raises:
             raise self._raises
         yield "data: ok\n\n"
 
 
-class TestStreamingFailover:
-    """Audit: stream() failover mirrors complete() failover behaviour."""
+class TestStreamingOneProvider:
+    """Audit: stream() serves from one provider, like complete()."""
 
-    @pytest.mark.asyncio
-    async def test_stream_failover_on_http_503(self):
+    @staticmethod
+    def _router() -> ModelRouter:
         cfg = BifrostConfig(
             providers={
                 "openai": ProviderConfig(models=["gpt-4o"]),
                 "backup": ProviderConfig(models=["gpt-4o"]),
             },
-            routing_strategy=RoutingStrategy.FAILOVER,
+            routing_strategy=RoutingStrategy.DIRECT,
         )
-        router = ModelRouter(cfg)
+        return ModelRouter(cfg)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("status", [400, 503])
+    async def test_stream_http_error_is_raised_and_backup_never_called(self, status):
+        router = self._router()
         mock_resp = MagicMock()
-        mock_resp.status_code = 503
+        mock_resp.status_code = status
+        backup = FakeProvider()
         router._adapters["openai"] = FakeProvider(
             raises=httpx.HTTPStatusError("fail", request=MagicMock(), response=mock_resp)
         )
-        router._adapters["backup"] = FakeProvider()
+        router._adapters["backup"] = backup
 
-        chunks = []
-        async for chunk in router.stream(_make_request()):
-            chunks.append(chunk)
-        assert chunks == ["data: ok\n\n"]
-
-    @pytest.mark.asyncio
-    async def test_stream_non_retryable_http_error_is_raised(self):
-        cfg = BifrostConfig(
-            providers={
-                "openai": ProviderConfig(models=["gpt-4o"]),
-                "backup": ProviderConfig(models=["gpt-4o"]),
-            },
-            routing_strategy=RoutingStrategy.FAILOVER,
-        )
-        router = ModelRouter(cfg)
-        mock_resp = MagicMock()
-        mock_resp.status_code = 400
-        router._adapters["openai"] = FakeProvider(
-            raises=httpx.HTTPStatusError("bad req", request=MagicMock(), response=mock_resp)
-        )
-        router._adapters["backup"] = FakeProvider()
-
-        with pytest.raises(httpx.HTTPStatusError):
+        with pytest.raises(RouterError, match=f"Provider 'openai' failed.*HTTP {status}"):
             async for _ in router.stream(_make_request()):
                 pass
+        assert backup.stream_calls == 0
 
     @pytest.mark.asyncio
-    async def test_stream_all_providers_fail_raises_router_error(self):
-        cfg = BifrostConfig(
-            providers={
-                "openai": ProviderConfig(models=["gpt-4o"]),
-                "backup": ProviderConfig(models=["gpt-4o"]),
-            },
-            routing_strategy=RoutingStrategy.FAILOVER,
-        )
-        router = ModelRouter(cfg)
+    async def test_stream_provider_error_is_raised_and_backup_never_called(self):
+        router = self._router()
+        backup = FakeProvider()
         router._adapters["openai"] = FakeProvider(raises=ProviderError("down"))
-        router._adapters["backup"] = FakeProvider(raises=ProviderError("also down"))
+        router._adapters["backup"] = backup
 
-        with pytest.raises(RouterError, match="All providers failed"):
+        with pytest.raises(RouterError, match="Provider 'openai' failed for model 'gpt-4o'"):
             async for _ in router.stream(_make_request()):
                 pass
+        assert backup.stream_calls == 0
 
 
 # ---------------------------------------------------------------------------

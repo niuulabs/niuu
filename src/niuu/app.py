@@ -15,6 +15,7 @@ from fastapi.openapi.utils import get_openapi
 from starlette.responses import JSONResponse, Response
 from starlette.types import ASGIApp, Receive, Scope, Send
 
+from niuu.cap_telemetry import health_counts
 from niuu.config import CorsConfig, NiuuSettings
 from niuu.cors import apply_cors_middleware
 from niuu.ports.plugin import APIRouteDomain, Service
@@ -651,6 +652,7 @@ def build_root_app(
                 "status": "degraded" if startup_failures else "ok",
                 **identity,
                 "failed_plugins": sorted(startup_failures),
+                "caps": health_counts(),
             },
             status_code=503 if startup_failures else 200,
         )

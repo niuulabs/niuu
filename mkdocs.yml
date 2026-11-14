@@ -61,6 +61,57 @@ nav:
       - Inspect workflows and runs: get-started/workflows-and-teams-step.md
       - Discovery and topology: get-started/shared-discovery-and-topology.md
       - Build a review for a workflow: get-started/build-a-review.md
+  - Architecture:
+      - Overview: architecture/index.md
+      - Stack map:
+          - Services and channels: architecture/stack/services.md
+          - One request end to end: architecture/stack/request-flow.md
+          - Product and implementation names: architecture/stack/names.md
+      - Design principles:
+          - Overview: architecture/design/index.md
+          - Layers and boundaries: architecture/design/layers.md
+          - Config and adapters: architecture/design/config-and-adapters.md
+          - Fail loud: architecture/design/fail-loud.md
+      - Forge:
+          - Overview: architecture/forge/index.md
+          - Where sessions run: architecture/forge/where-sessions-run.md
+          - Workspaces and projects: architecture/forge/workspaces-and-projects.md
+          - State and history: architecture/forge/state-and-history.md
+      - Skuld:
+          - Overview: architecture/skuld/index.md
+          - Runtimes: architecture/skuld/runtimes.md
+          - Message path: architecture/skuld/message-path.md
+          - Channels and tools: architecture/skuld/channels-and-tools.md
+      - Workflows:
+          - Overview: architecture/workflows/index.md
+          - Runs, gates and reviews: architecture/workflows/runs.md
+          - Trackers and projects: architecture/workflows/trackers-and-projects.md
+          - Personas: architecture/workflows/personas.md
+      - Security:
+          - Trust model: architecture/security/index.md
+          - Credentials: architecture/security/credentials.md
+          - Machine identities: architecture/security/machine-identities.md
+          - Isolation and secrets: architecture/security/isolation-and-secrets.md
+      - Communication:
+          - Overview: architecture/communication/index.md
+          - Sleipnir events: architecture/communication/sleipnir.md
+          - Collaboration rooms: architecture/communication/rooms.md
+          - Mesh and A2A: architecture/communication/mesh-and-a2a.md
+      - Models:
+          - Overview: architecture/models/index.md
+          - Catalog: architecture/models/catalog.md
+          - Connections: architecture/models/connections.md
+          - Routing: architecture/models/routing.md
+      - Memory:
+          - Overview: architecture/memory/index.md
+          - Retrieval: architecture/memory/retrieval.md
+          - Mounts and tenants: architecture/memory/mounts-and-tenants.md
+          - Agent access: architecture/memory/agent-access.md
+      - Deployment modes:
+          - Overview: architecture/deployment/index.md
+          - Single host: architecture/deployment/single-host.md
+          - Joined machines: architecture/deployment/joined-machines.md
+          - Kubernetes: architecture/deployment/kubernetes.md
   - Understand Niuu:
       - Architecture and composability: concepts/platform-model.md
       - Toward an operating system: concepts/operating-system.md
@@ -102,7 +153,11 @@ markdown_extensions:
   - attr_list
   - md_in_html
   - pymdownx.details
-  - pymdownx.superfences
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
   - pymdownx.highlight:
       anchor_linenums: true
   - pymdownx.inlinehilite

@@ -3,6 +3,7 @@
 import asyncio
 import logging
 
+from niuu.cap_telemetry import record_degraded
 from volundr.domain.models import SessionEvent
 from volundr.domain.ports import EventSink
 
@@ -13,7 +14,9 @@ class EventIngestionService:
     """Receives raw session events and fans them out to all registered sinks.
 
     Sink failures are isolated — a failing RabbitMQ connection doesn't
-    block DB persistence.
+    block DB persistence. Each failure is a degraded path, logged at error and
+    counted (``degraded.event_pipeline.sink.<name>`` on the health snapshot),
+    never silent.
     """
 
     def __init__(self, sinks: list[EventSink]):
@@ -27,11 +30,9 @@ class EventIngestionService:
         )
         for sink, result in zip(self._sinks, results):
             if isinstance(result, Exception):
-                logger.error(
-                    "Sink %s failed for event %s: %s",
-                    sink.sink_name,
-                    event.id,
-                    result,
+                record_degraded(
+                    f"event_pipeline.sink.{sink.sink_name}",
+                    f"sink {sink.sink_name} failed for event {event.id}: {result}",
                 )
 
     async def ingest_batch(self, events: list[SessionEvent]) -> None:
@@ -44,11 +45,9 @@ class EventIngestionService:
         )
         for sink, result in zip(self._sinks, results):
             if isinstance(result, Exception):
-                logger.error(
-                    "Sink %s failed for batch of %d events: %s",
-                    sink.sink_name,
-                    len(events),
-                    result,
+                record_degraded(
+                    f"event_pipeline.sink.{sink.sink_name}",
+                    f"sink {sink.sink_name} failed for a batch of {len(events)} events: {result}",
                 )
 
     async def flush_all(self) -> None:

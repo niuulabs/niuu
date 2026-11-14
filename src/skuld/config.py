@@ -32,6 +32,7 @@ from niuu.domain.observability import ObservabilityConfig
 from niuu.forge_mcp.models import ForgeMcpGrant
 from niuu.mesh.config import DEFAULT_RPC_REPLY_CACHE_SIZE, MeshAttestationConfig, MeshNatsConfig
 from personas.archived import reject_archived_persona
+from skuld.claude_auth import ClaudeAuthMode
 from skuld.claude_permission import DEFAULT_CLAUDE_PERMISSION_MODE
 
 
@@ -253,6 +254,32 @@ class RoomConfig(BaseModel):
             "disables the check."
         ),
     )
+    agent_heartbeat_ttl_s: float = Field(
+        default=90.0,
+        ge=0,
+        description=(
+            "Seconds an agent registered in the room may go without a heartbeat (and "
+            "without a live WebSocket) before the presence sweep shows it as away. "
+            "Bounded by how often agents heartbeat. 0 never marks agents away."
+        ),
+    )
+    peer_heartbeat_ttl_s: float = Field(
+        default=90.0,
+        ge=0,
+        description=(
+            "Seconds a participant discovered over the mesh may go without a heartbeat "
+            "before it is shown as away. 0 never marks them away."
+        ),
+    )
+    join_heartbeat_ttl_s: float = Field(
+        default=300.0,
+        ge=0,
+        description=(
+            "Seconds a person, or an agent of another session, that joined the room may "
+            "go without a heartbeat before it is shown as away. Longer than the agent "
+            "TTL because a browser tab heartbeats less often. 0 never marks them away."
+        ),
+    )
     realm_room: bool = Field(
         default=False,
         description=(
@@ -263,6 +290,9 @@ class RoomConfig(BaseModel):
             "agent: its replies stay its own turns and are not copied into the room."
         ),
     )
+
+
+TelegramTopicMode = Literal["shared_chat", "fixed_topic", "topic_per_session"]
 
 
 class TelegramConfig(BaseModel):
@@ -292,8 +322,25 @@ class TelegramConfig(BaseModel):
         default_factory=lambda: {"base_dir": "~/.niuu/credentials"}
     )
     notify_only: bool = Field(default=False)
-    topic_mode: str = Field(default="topic_per_session")
+    topic_mode: TelegramTopicMode = Field(
+        default="topic_per_session",
+        description=(
+            "Where messages go: shared_chat (the whole chat), fixed_topic (the topic named by "
+            "message_thread_id, which is then required) or topic_per_session (a forum topic "
+            "created for the session; the bot must be able to manage topics). The mode is "
+            "never replaced by another when it cannot be honoured: the session fails to start."
+        ),
+    )
     message_thread_id: int | None = Field(default=None)
+
+    @model_validator(mode="after")
+    def _fixed_topic_needs_thread(self) -> Self:
+        if self.enabled and self.topic_mode == "fixed_topic" and self.message_thread_id is None:
+            raise ValueError(
+                "telegram.topic_mode is 'fixed_topic' but telegram.message_thread_id is not "
+                "set; set telegram.message_thread_id, or set telegram.topic_mode: shared_chat"
+            )
+        return self
 
 
 class SkuldSessionConfig(BaseModel):
@@ -1437,6 +1484,33 @@ class SkuldSettings(BaseSettings):
             "(auto, bypassPermissions or acceptEdits)."
         ),
     )
+    claude_auth: ClaudeAuthMode = Field(
+        default="subscription",
+        description=(
+            "How Claude sessions sign in: 'subscription' uses the host's claude.ai login and "
+            "strips ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN from the child env; 'api_key' "
+            "keeps the platform API key. Any other value is refused at startup. Deploys "
+            "override it with SKULD__CLAUDE_AUTH."
+        ),
+    )
+    claude_oauth_token_file: str | None = Field(
+        default=None,
+        description=(
+            "Absolute path of an owner-only 0400 file holding a Claude OAuth token for direct "
+            "subscription inference. Requires claude_auth 'subscription', no model gateway "
+            "and no ambient Anthropic credentials; a conflict or an invalid file refuses the "
+            "launch. Deploys override it with SKULD__CLAUDE_OAUTH_TOKEN_FILE."
+        ),
+    )
+    tmux_remote_control: bool = Field(
+        default=True,
+        description=(
+            "Claude tmux sessions also register with the host's claude.ai login (Remote "
+            "Control) so the Anthropic apps can drive them in parallel. Always off under "
+            "claude_auth 'api_key', which cannot register a session. Deploys override it with "
+            "SKULD__TMUX_REMOTE_CONTROL."
+        ),
+    )
     # Default ON: Claude tmux sessions launch with agent teams (--teammate-mode
     # tmux) so a session can spin up a team of agents. Only the tmux transport
     # consumes this; other transports ignore it. Override with SKULD__AGENT_TEAMS=0.
@@ -1527,7 +1601,16 @@ class SkuldSettings(BaseSettings):
     )
     event_log_batch_size: int = Field(default=100)
     event_log_flush_interval_ms: int = Field(default=500)
-    event_log_max_buffer: int = Field(default=50_000)
+    event_log_max_buffer: int = Field(
+        default=50_000,
+        gt=0,
+        description=(
+            "Most unflushed event-log frames the broker holds in memory while Forge "
+            "does not accept a flush. Bounded by the broker's memory. Past it the oldest "
+            "frames are dropped, replaced by one log_gap row, and the hit is counted "
+            "(cap_hits.event_log_max_buffer on /health)."
+        ),
+    )
     # Native-session recovery restores the durable transcript before the CLI
     # starts, so reconnect snapshots include the imported conversation prefix.
     history_hydration_enabled: bool = Field(default=True)

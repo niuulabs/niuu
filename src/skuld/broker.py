@@ -835,27 +835,35 @@ class Broker(
         return None
 
     def _save_conversation_history(self) -> None:
-        """Persist conversation history to disk."""
+        """Persist conversation history to disk; a write that fails raises.
+
+        The file is what the broker reloads on restart. A failed write used to be a
+        warning, so the session kept running while its history on disk stopped
+        moving, and a restart brought back an older conversation with no sign of
+        what was lost.
+        """
         path = self._conversation_history_path()
-        try:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            turns = [asdict(t) for t in self._conversation_turns]
-            turns = project_timeline(turns, self.session_id)
-            data = {"turns": turns, "projection_revision": projection_revision(turns)}
-            path.write_text(json.dumps(data, indent=2), encoding="utf-8")
-        except Exception:
-            logger.warning("Failed to save conversation history to %s", path, exc_info=True)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        turns = [asdict(t) for t in self._conversation_turns]
+        turns = project_timeline(turns, self.session_id)
+        data = {"turns": turns, "projection_revision": projection_revision(turns)}
+        path.write_text(json.dumps(data, indent=2), encoding="utf-8")
 
     def _append_turn(self, turn: ConversationTurn) -> dict | None:
-        """Append a turn and persist to disk; return its durable-log entry (if logging)."""
+        """Append a turn and persist it; return its durable-log entry (if logging).
+
+        The turn reaches the durable event log first, so a failed write of the local
+        history file (which raises) cannot also cost the turn its durable record.
+        """
         self._conversation_turns.append(turn)
-        self._save_conversation_history()
-        return self._enqueue_event_log(
+        entry = self._enqueue_event_log(
             {
                 "type": "conversation.turn",
                 "turn": asdict(turn),
             }
         )
+        self._save_conversation_history()
+        return entry
 
     def _serialize_in_progress_turn(self) -> dict | None:
         """Reconstruct the in-flight assistant turn as a turn-shaped dict (or None when idle).

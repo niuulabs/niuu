@@ -47,7 +47,11 @@ from mimir.fact_tools import FACT_TOOLS, run_fact_tool
 from mimir.facts import FactCallerResolver, FactService
 from mimir.live_activity import LiveActivityRecorder
 from mimir.router import WRITE_ROLES
-from niuu.domain.mimir import MimirSource, compute_content_hash
+from niuu.domain.mimir import (
+    MimirSource,
+    compute_content_hash,
+    refuse_operational_source_type,
+)
 from niuu.domain.mimir_facts import FactCaller, FactError, TrustError
 from niuu.domain.tenancy import DEFAULT_PLATFORM_TENANT_ID
 from niuu.ports.identity import HeaderAuthenticationPort, InvalidTokenError
@@ -178,7 +182,8 @@ _TOOLS: list[dict[str, Any]] = [
                     "type": "string",
                     "description": (
                         "Source kind: 'document', 'url', 'conversation', or 'code' "
-                        "(default: 'document')"
+                        "(default: 'document'). 'tool_output' and 'diagnostic' are refused: "
+                        "Mímir holds knowledge, not records of your own activity"
                     ),
                     "default": "document",
                 },
@@ -674,6 +679,11 @@ class MimirMcpServer:
         )
         source_type: str = args.get("source_type") or "document"
         origin_url: str | None = args.get("origin_url")
+        try:
+            refuse_operational_source_type(source_type)
+        except ValueError as exc:
+            # A tool error the model reads, the same refusal REST answers with 422.
+            raise MimirWriteRefusedError(str(exc)) from exc
 
         content_hash = compute_content_hash(content)
         source_id = "src_" + content_hash[:16]

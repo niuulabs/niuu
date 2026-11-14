@@ -18,11 +18,20 @@ from typing import Any
 from niuu.ports.plugin import Service, ServicePlugin, TUIPageSpec
 from niuu.utils import import_class
 
-__all__ = ["Service", "ServicePlugin", "TUIPageSpec", "PluginRegistry"]
+__all__ = ["PluginLoadError", "PluginRegistry", "Service", "ServicePlugin", "TUIPageSpec"]
 
 logger = logging.getLogger(__name__)
 
 ENTRY_POINT_GROUP = "niuu.plugins"
+
+
+class PluginLoadError(RuntimeError):
+    """An installed or configured plugin could not be loaded.
+
+    A plugin that fails to load is never skipped: the platform would start
+    without one of its services and nothing would say so. Disable it in
+    ``plugins.enabled`` (an operator decision), or fix what it needs.
+    """
 
 
 class PluginRegistry:
@@ -71,20 +80,32 @@ class PluginRegistry:
             return None
         return self._plugins.get(name)
 
-    def discover_entry_points(self) -> None:
-        """Discover plugins from the niuu.plugins entry point group."""
+    def discover_entry_points(self, disabled: set[str] | frozenset[str] = frozenset()) -> None:
+        """Discover plugins from the niuu.plugins entry point group.
+
+        Entry points named in *disabled* (``plugins.enabled: {name: false}``)
+        are not loaded at all. Any other entry point that fails to load raises
+        :class:`PluginLoadError`.
+        """
         eps = importlib.metadata.entry_points()
         if hasattr(eps, "select"):
             group = eps.select(group=ENTRY_POINT_GROUP)
         else:
             group = eps.get(ENTRY_POINT_GROUP, [])
         for ep in group:
+            if ep.name in disabled:
+                logger.debug("plugin %s disabled in config; not loading it", ep.name)
+                continue
             try:
                 plugin_cls = ep.load()
                 plugin = plugin_cls()
-                self.register(plugin)
-            except Exception:
-                logger.exception("failed to load plugin from entry point: %s", ep.name)
+            except Exception as exc:
+                raise PluginLoadError(
+                    f"plugin {ep.name!r} (entry point {ep.value!r}) failed to load: {exc}. "
+                    f"Fix its installation, or set plugins.enabled.{ep.name}: false to run "
+                    "without it"
+                ) from exc
+            self.register(plugin)
 
     def discover_config(self, plugin_configs: list[dict[str, Any]]) -> None:
         """Discover plugins from config YAML (dynamic adapter pattern).
@@ -95,15 +116,20 @@ class PluginRegistry:
         for cfg in plugin_configs:
             adapter_path = cfg.get("adapter")
             if not adapter_path:
-                logger.warning("plugin config missing 'adapter' key: %s", cfg)
-                continue
+                raise PluginLoadError(
+                    f"plugins.extra entry has no 'adapter' key: {cfg!r}. Give it the "
+                    "fully-qualified plugin class path, or remove the entry"
+                )
+            kwargs = {k: v for k, v in cfg.items() if k != "adapter"}
             try:
                 cls = import_class(adapter_path)
-                kwargs = {k: v for k, v in cfg.items() if k != "adapter"}
                 plugin = cls(**kwargs)
-                self.register(plugin)
-            except Exception:
-                logger.exception("failed to load plugin from config: %s", adapter_path)
+            except Exception as exc:
+                raise PluginLoadError(
+                    f"plugin {adapter_path!r} from plugins.extra failed to load: {exc}. "
+                    "Fix the class path or its arguments, or remove the entry"
+                ) from exc
+            self.register(plugin)
 
     def apply_config(self, enabled_plugins: dict[str, bool] | None = None) -> None:
         """Apply enabled/disabled config to registered plugins."""

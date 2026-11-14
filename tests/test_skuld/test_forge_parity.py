@@ -30,7 +30,7 @@ Tiers / how to run::
     uv run pytest tests/test_skuld/test_forge_parity.py -p no:cacheprovider -q
 
     # real-tmux tier (adds the tmux_interactive cells)
-    SKULD__TMUX_REMOTE_CONTROL=0 uv run pytest -m integration \
+    uv run pytest -m integration \
         tests/test_skuld/test_forge_parity.py -p no:cacheprovider -q -rs
 
 DRIFT NOTES (documented, NOT papered over)

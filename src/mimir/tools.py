@@ -27,7 +27,12 @@ from mimir.exceptions import MimirUnavailableError
 from mimir.fact_tools import FACT_TOOLS, FactToolSpec, run_fact_tool
 from mimir.facts import FactService
 from mimir.file_security import PathSecurityError, resolve_safe
-from niuu.domain.mimir import MimirSource, compute_content_hash, compute_source_id
+from niuu.domain.mimir import (
+    MimirSource,
+    compute_content_hash,
+    compute_source_id,
+    refuse_operational_source_type,
+)
 from niuu.domain.mimir_facts import FactCaller, FactError
 from niuu.domain.tool import ToolResult
 from niuu.ports.mimir import MimirPort
@@ -207,6 +212,10 @@ class MimirIngestTool(ToolPort):
             return ToolResult(tool_call_id="", content="content is required", is_error=True)
         if not title:
             return ToolResult(tool_call_id="", content="title is required", is_error=True)
+        try:
+            refuse_operational_source_type(source_type)
+        except ValueError as exc:
+            return ToolResult(tool_call_id="", content=str(exc), is_error=True)
 
         source = MimirSource(
             source_id=compute_source_id(content),

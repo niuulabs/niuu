@@ -77,7 +77,7 @@ home:
         doc: operations/kubernetes-deployment/
       - id: models
         name: Models
-        line: Route by cost, latency or failover, with budgets and rules.
+        line: Route by cost or latency, with budgets and rules.
         uses: Anthropic, OpenAI, any OpenAI-compatible endpoint, Ollama
         products: AI models
         doc: concepts/model-routing/

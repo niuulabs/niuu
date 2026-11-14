@@ -119,6 +119,8 @@ async def test_default_none_mode_path_end_to_end_contributor_to_transport() -> N
         assert settings.model_gateway.token == OPEN_GATEWAY_TOKEN
 
         spawn_env = claude_spawn_env(
+            claude_auth=settings.claude_auth,
+            claude_oauth_token_file=settings.claude_oauth_token_file,
             gateway_url=settings.model_gateway.url,
             gateway_token=settings.model_gateway.token,
         )  # must not raise

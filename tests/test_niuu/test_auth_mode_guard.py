@@ -64,14 +64,11 @@ def _authorization_settings(*, adapter: str, auth_mode: str) -> SimpleNamespace:
 
 
 class TestGetAuthMode:
-    def test_missing_attribute_defaults_to_envoy_for_unmigrated_packages(self) -> None:
-        """Packages this round did not touch (guild, credentials, ...) have no
-        auth_mode field yet; they must keep working unchanged rather than
-        crash every co-hosted service. Völundr and Ting (the packages this
-        round DOES touch) always declare a real auth_mode field, so this
-        fallback is never actually exercised for them — see _get_auth_mode's
-        docstring for the full reasoning."""
-        assert _get_auth_mode(SimpleNamespace()) == "envoy"
+    def test_settings_without_auth_mode_are_refused(self) -> None:
+        """A settings model with no auth_mode is a wiring mistake: guessing
+        envoy would trust x-auth-* headers on a host with no Envoy."""
+        with pytest.raises(ValueError, match="has no auth_mode field"):
+            _get_auth_mode(SimpleNamespace())
 
     def test_unknown_value_raises(self) -> None:
         with pytest.raises(ValueError, match="Unknown auth_mode"):

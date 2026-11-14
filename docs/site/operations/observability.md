@@ -74,7 +74,7 @@ A single W3C trace id follows one piece of work end to end:
 2. **Bifröst** — once the gateway's own FastAPI app is instrumented
    (`niuu.observability.instrument_fastapi_app`), the inbound completion
    request is a child span carrying `gen_ai.*` attributes: requested
-   model/alias, chosen provider, `bifrost.failover_attempts`,
+   model/alias, chosen provider,
    `bifrost.cache_hit`, and token usage (`src/bifrost/router.py`).
 3. **Völundr → Skuld → Claude Code** — Völundr's `CoreSessionContributor`
    (`src/volundr/adapters/outbound/contributors/core.py`) carries the trace

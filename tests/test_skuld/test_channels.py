@@ -12,6 +12,7 @@ from skuld.channels import (
     ChannelRegistry,
     MessageChannel,
     TelegramChannel,
+    TelegramChannelError,
     WebSocketChannel,
     format_telegram_event,
     render_telegram_html,
@@ -1506,11 +1507,19 @@ class TestTelegramChannelMocked:
         ch_mod.HAS_TELEGRAM = True
         ch_mod.InlineKeyboardMarkup = MagicMock()
         ch_mod.InlineKeyboardButton = MagicMock()
-        channel._bot.send_message = AsyncMock(side_effect=Exception("API fail"))
+        cause = Exception("API fail")
+        channel._bot.send_message = AsyncMock(side_effect=cause)
         try:
-            await channel.send_permission_request("req-4", "Bash", {"command": "rm -rf /"})
+            with pytest.raises(TelegramChannelError) as excinfo:
+                await channel.send_permission_request("req-4", "Bash", {"command": "rm -rf /"})
         finally:
             ch_mod.HAS_TELEGRAM = orig_has
+
+        message = str(excinfo.value)
+        assert "req-4" in message
+        assert "API fail" in message
+        assert "telegram.chat_id" in message
+        assert excinfo.value.__cause__ is cause
 
     @pytest.mark.asyncio
     async def test_close_with_application(self, channel):
@@ -1609,8 +1618,58 @@ class TestTelegramChannelMocked:
             )
             assert channel._message_thread_id == 321
 
+    def test_fixed_topic_without_thread_id_is_refused(self):
+        with patch("skuld.channels.HAS_TELEGRAM", True):
+            with pytest.raises(TelegramChannelError) as excinfo:
+                TelegramChannel(
+                    bot_token="token",
+                    chat_id="12345",
+                    notify_only=True,
+                    topic_mode="fixed_topic",
+                )
+
+        message = str(excinfo.value)
+        assert "fixed_topic" in message
+        assert "telegram.message_thread_id" in message
+        assert "telegram.topic_mode: shared_chat" in message
+
+    def test_unknown_topic_mode_is_refused(self):
+        with patch("skuld.channels.HAS_TELEGRAM", True):
+            with pytest.raises(TelegramChannelError) as excinfo:
+                TelegramChannel(bot_token="token", chat_id="12345", topic_mode="per_chat")
+
+        message = str(excinfo.value)
+        assert "'per_chat'" in message
+        assert "shared_chat, fixed_topic, topic_per_session" in message
+
+    def test_missing_library_is_a_channel_error_with_the_remedy(self):
+        with patch("skuld.channels.HAS_TELEGRAM", False):
+            with pytest.raises(TelegramChannelError) as excinfo:
+                TelegramChannel(bot_token="token", chat_id="12345")
+
+        assert "pip install" in str(excinfo.value)
+        assert "telegram.enabled: false" in str(excinfo.value)
+
     @pytest.mark.asyncio
-    async def test_start_fixed_topic_without_thread_falls_back(self):
+    async def test_explicit_shared_chat_creates_no_topic(self):
+        with patch("skuld.channels.HAS_TELEGRAM", True), patch("skuld.channels.Bot") as bot_cls:
+            bot = AsyncMock()
+            bot_cls.return_value = bot
+
+            channel = TelegramChannel(
+                bot_token="token",
+                chat_id="12345",
+                notify_only=True,
+                topic_mode="shared_chat",
+            )
+            await channel.start()
+
+            assert channel._topic_mode == "shared_chat"
+            assert channel._message_thread_id is None
+            bot.create_forum_topic.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_fixed_topic_with_thread_id_posts_into_it(self):
         with patch("skuld.channels.HAS_TELEGRAM", True), patch("skuld.channels.Bot") as bot_cls:
             bot = AsyncMock()
             bot_cls.return_value = bot
@@ -1620,12 +1679,59 @@ class TestTelegramChannelMocked:
                 chat_id="12345",
                 notify_only=True,
                 topic_mode="fixed_topic",
+                message_thread_id=77,
             )
-
             await channel.start()
 
-            assert channel._topic_mode == "shared_chat"
+            assert channel._topic_mode == "fixed_topic"
+            assert channel._message_thread_id == 77
             bot.create_forum_topic.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_topic_creation_without_thread_id_is_fatal(self):
+        with patch("skuld.channels.HAS_TELEGRAM", True), patch("skuld.channels.Bot") as bot_cls:
+            bot = AsyncMock()
+            bot.create_forum_topic = AsyncMock(return_value=MagicMock(message_thread_id=None))
+            bot_cls.return_value = bot
+
+            channel = TelegramChannel(
+                bot_token="token",
+                chat_id="12345",
+                notify_only=True,
+                topic_mode="topic_per_session",
+            )
+            with pytest.raises(TelegramChannelError) as excinfo:
+                await channel.start()
+
+        message = str(excinfo.value)
+        assert "no message_thread_id" in message
+        assert "topic_per_session" in message
+        assert "telegram.topic_mode: shared_chat" in message
+        assert channel._topic_mode == "topic_per_session"
+
+    @pytest.mark.asyncio
+    async def test_topic_creation_failure_is_fatal_and_chained(self):
+        with patch("skuld.channels.HAS_TELEGRAM", True), patch("skuld.channels.Bot") as bot_cls:
+            bot = AsyncMock()
+            cause = RuntimeError("Not enough rights to create a topic")
+            bot.create_forum_topic = AsyncMock(side_effect=cause)
+            bot_cls.return_value = bot
+
+            channel = TelegramChannel(
+                bot_token="token",
+                chat_id="12345",
+                notify_only=True,
+                topic_mode="topic_per_session",
+            )
+            with pytest.raises(TelegramChannelError) as excinfo:
+                await channel.start()
+
+        message = str(excinfo.value)
+        assert "Not enough rights to create a topic" in message
+        assert "administrator" in message
+        assert "telegram.topic_mode: shared_chat" in message
+        assert excinfo.value.__cause__ is cause
+        assert channel._topic_mode == "topic_per_session"
 
     @pytest.mark.asyncio
     async def test_scheduled_flush(self, channel):

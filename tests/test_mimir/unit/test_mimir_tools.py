@@ -124,7 +124,7 @@ async def test_mimir_ingest_tool_emits_source_ingested_event(tmp_path: Path) -> 
     tool = MimirIngestTool(adapter, event_emitter=event_emitter)
 
     result = await tool.execute(
-        {"content": "Some content.", "title": "My Source", "source_type": "tool_output"}
+        {"content": "Some content.", "title": "My Source", "source_type": "research"}
     )
 
     assert not result.is_error
@@ -133,7 +133,27 @@ async def test_mimir_ingest_tool_emits_source_ingested_event(tmp_path: Path) -> 
     assert event_type == "mimir.source.ingested"
     assert fields["source_id"].startswith("src_")
     assert fields["source_title"] == "My Source"
-    assert fields["source_type"] == "tool_output"
+    assert fields["source_type"] == "research"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("source_type", ["tool_output", "diagnostic"])
+async def test_mimir_ingest_tool_refuses_operational_sources(
+    tmp_path: Path, source_type: str
+) -> None:
+    """The agent tool refuses what REST /ingest refuses with a 422: nothing is stored."""
+    adapter = _make_adapter(tmp_path)
+    event_emitter = AsyncMock()
+    tool = MimirIngestTool(adapter, event_emitter=event_emitter)
+
+    result = await tool.execute(
+        {"content": "probe output", "title": "Run log", "source_type": source_type}
+    )
+
+    assert result.is_error
+    assert f"Refusing to ingest source_type {source_type!r}" in result.content
+    assert await adapter.list_sources() == []
+    event_emitter.assert_not_awaited()
 
 
 @pytest.mark.asyncio

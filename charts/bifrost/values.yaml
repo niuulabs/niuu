@@ -374,7 +374,10 @@ externalSecrets:
 # ConfigMap that is mounted at /etc/bifrost/bifrost.yaml.
 # See examples/bifrost.yaml in the repository for all available options.
 config:
-  routing_strategy: failover
+  # -- Each request is served by exactly one provider; there is no fallback to
+  # another when it fails. One of direct, cost_optimised, round_robin,
+  # latency_optimised (failover was removed and is refused at load).
+  routing_strategy: direct
   # -- Seconds SIGTERM lets in-flight requests (streamed model answers
   # included) finish before the rest are cancelled. Bounded by the Envoy
   # sidecar's upstreamTimeout (300s): it ends any request earlier than this, so

@@ -32,6 +32,7 @@ from bifrost.ports.rules import RuleEnginePort
 from bifrost.ports.usage_store import UsageStore
 from bifrost.pricing import ModelPricing, load_pricing_from_yaml
 from bifrost.router import ModelRouter
+from niuu.cap_telemetry import health_counts
 from niuu.domain.services.pat_validator import PATValidator
 from niuu.utils import import_class
 
@@ -373,7 +374,7 @@ def create_app(config: BifrostConfig) -> FastAPI:
     @app.get("/health")
     @app.get("/api/v1/bifrost/health", include_in_schema=False)
     async def health() -> dict:
-        return {"status": "ok"}
+        return {"status": "ok", "caps": health_counts()}
 
     api_router = create_router(
         config=config,

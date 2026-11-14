@@ -7,6 +7,7 @@ lazy-start its own CLI transport.
 
 from __future__ import annotations
 
+import tempfile
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -18,7 +19,8 @@ from skuld.config import SkuldSettings
 
 def _resident_broker(default_target: str = "flock-product-steward") -> Broker:
     settings = SkuldSettings(
-        session={"id": "resident-session"},
+        # A writable workspace: the broker's history file write raises when it fails.
+        session={"id": "resident-session", "workspace_dir": tempfile.mkdtemp()},
         transport="subprocess",
         room={"enabled": True, "default_target_peer_id": default_target},
     )

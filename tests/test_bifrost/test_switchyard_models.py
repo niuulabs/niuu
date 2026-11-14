@@ -7,6 +7,7 @@ import httpx
 import pytest
 import respx
 from fastapi.testclient import TestClient
+from switchyard.libsy import Step
 
 pytest.importorskip("switchyard.libsy")
 
@@ -15,7 +16,14 @@ from bifrost.adapters.switchyard_models import SwitchyardModelSelection, _denorm
 from bifrost.app import create_app
 from bifrost.config import BifrostConfig, ProviderConfig
 from bifrost.router import ModelRouter
-from bifrost.translation.models import AnthropicRequest, Message
+from bifrost.translation.models import (
+    AnthropicRequest,
+    AnthropicResponse,
+    Message,
+    TextBlock,
+    UsageInfo,
+)
+from niuu import cap_telemetry
 
 
 def config(classifier=True):
@@ -36,6 +44,7 @@ def config(classifier=True):
                     **(
                         {
                             "judge": "judge",
+                            "max_tokens": 512,
                             "prompt": "Choose fast for simple tasks and best for complex tasks.",
                         }
                         if classifier
@@ -298,3 +307,149 @@ async def test_random_can_choose_two_models_at_one_endpoint():
         for _ in range(30)
     ]
     assert set(choices) == {"small", "large"}
+
+
+def _selector(classifier: bool, **route_overrides) -> SwitchyardModelSelection:
+    spec = config(classifier).selection
+    spec["routes"]["auto"].update(route_overrides)
+    return SwitchyardModelSelection(**{k: v for k, v in spec.items() if k != "adapter"})
+
+
+def _request() -> AnthropicRequest:
+    return AnthropicRequest(model="auto", messages=[Message(role="user", content="Hi")])
+
+
+def _judge_answer(text: str, stop_reason: str = "end_turn") -> AnthropicResponse:
+    return AnthropicResponse(
+        id="judge-answer",
+        content=[TextBlock(text=text)],
+        model="judge",
+        stop_reason=stop_reason,
+        usage=UsageInfo(input_tokens=10, output_tokens=5),
+    )
+
+
+def test_classifier_route_without_max_tokens_is_refused():
+    spec = config().selection
+    del spec["routes"]["auto"]["max_tokens"]
+    with pytest.raises(ValueError, match=r"routes\.<name>\.max_tokens"):
+        SwitchyardModelSelection(**{k: v for k, v in spec.items() if k != "adapter"})
+
+
+def test_max_tokens_on_a_route_without_a_judge_is_refused():
+    spec = config(False).selection
+    spec["routes"]["auto"]["max_tokens"] = 64
+    with pytest.raises(ValueError, match="only on classifier routes"):
+        SwitchyardModelSelection(**{k: v for k, v in spec.items() if k != "adapter"})
+
+
+def test_max_tokens_must_be_positive():
+    with pytest.raises(ValueError, match="greater than 0"):
+        _selector(True, max_tokens=0)
+
+
+async def test_judge_answer_cut_off_at_max_tokens_is_a_counted_cap_hit():
+    from niuu.cap_telemetry import OutputTruncatedError
+
+    knob = "bifrost.selection.routes.auto.max_tokens"
+    cap_telemetry.reset_cap_hits()
+    selector = _selector(True)
+
+    async def call_model(provider, model, judge):
+        # A cut-off answer: invalid JSON, so only the cap check can report it.
+        return _judge_answer('{"target": "be', stop_reason="max_tokens")
+
+    with pytest.raises(OutputTruncatedError, match=knob) as info:
+        await selector.route(_request(), call_model)
+    assert info.value.knob == knob
+    assert "raise" in str(info.value)
+    assert cap_telemetry.cap_hit_counts()[knob] == 1
+
+
+async def test_judge_answer_cut_off_returns_502_through_the_gateway():
+    knob = "bifrost.selection.routes.auto.max_tokens"
+    cap_telemetry.reset_cap_hits()
+    with respx.mock:
+        upstream = respx.post("https://vllm.test/v1/chat/completions").mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "id": "test",
+                    "model": "judge",
+                    "choices": [
+                        {
+                            "message": {"role": "assistant", "content": '{"target":'},
+                            "finish_reason": "length",
+                        }
+                    ],
+                    "usage": {"prompt_tokens": 10, "completion_tokens": 5},
+                },
+            )
+        )
+        with TestClient(create_app(config())) as client:
+            response = client.post(
+                "/v1/chat/completions",
+                json={"model": "auto", "messages": [{"role": "user", "content": "Hi"}]},
+            )
+            assert response.status_code == 502
+        assert upstream.call_count == 1
+    assert cap_telemetry.cap_hit_counts()[knob] == 1
+
+
+async def _foreign_done(target: str) -> Step.Done:
+    """A real ``Step.Done`` selecting *target*, produced by a route with no judge."""
+    spec = config(False).selection
+    spec["targets"]["fast"]["weight"] = 1 if target == "fast" else 0
+    spec["targets"]["best"]["weight"] = 1 if target == "best" else 0
+    other = SwitchyardModelSelection(**{k: v for k, v in spec.items() if k != "adapter"})
+    messages = {"messages": [{"role": "user", "content": [{"type": "text", "text": "Hi"}]}]}
+    async for step in other._routes["auto"].run_stream(messages):
+        if isinstance(step, Step.Done):
+            return step
+    raise AssertionError("the weighted route produced no Done step")
+
+
+async def test_done_without_a_judge_answer_is_refused():
+    selector = _selector(True)
+    done = await _foreign_done("fast")
+
+    async def run_stream(_messages):
+        yield done
+
+    async def call_model(provider, model, judge):
+        raise AssertionError("the judge must not be called")
+
+    selector._routes["auto"] = type("Route", (), {"run_stream": staticmethod(run_stream)})()
+    with pytest.raises(RuntimeError, match="chose fast without the judge's answer"):
+        await selector.route(_request(), call_model)
+
+
+async def test_done_that_differs_from_the_judge_choice_is_refused():
+    selector = _selector(True)
+    real = selector._routes["auto"]
+    done = await _foreign_done("fast")
+
+    class DefaultingRoute:
+        async def run_stream(self, messages):
+            async for step in real.run_stream(messages):
+                if isinstance(step, Step.CallModel):
+                    yield step
+                    # Switchyard finishes with its default instead of the judge's choice.
+                    yield done
+                    return
+
+    async def call_model(provider, model, judge):
+        return _judge_answer('{"target":"best"}')
+
+    selector._routes["auto"] = DefaultingRoute()
+    with pytest.raises(RuntimeError, match="chose fast without the judge's answer"):
+        await selector.route(_request(), call_model)
+
+
+async def test_done_matching_the_judge_choice_selects_that_target():
+    selector = _selector(True)
+
+    async def call_model(provider, model, judge):
+        return _judge_answer('{"target":"best"}')
+
+    assert await selector.route(_request(), call_model) == ("vllm", "large")

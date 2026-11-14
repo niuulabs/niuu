@@ -11,7 +11,11 @@ from ting.adapters.workflow_bundle import WorkflowBundleCodec
 from ting.adapters.workflow_source_files import FilesystemWorkflowSourceReader
 from ting.domain.services.workflow_authoring import compile_workflow
 from ting.domain.services.workflow_sharing import plan_workflow_import
-from ting.domain.workflow_document import load_workflow_document, workflow_document_revision
+from ting.domain.workflow_document import (
+    load_workflow_document,
+    validate_workflow_graph,
+    workflow_document_revision,
+)
 from ting.workflow_authoring import create_workflow_commands, starter_sources
 
 
@@ -21,6 +25,16 @@ class SourceReader:
 
     def read(self, path):
         return yaml.safe_dump(self.sources[path])
+
+
+def test_starter_graph_passes_the_graph_validator():
+    """The bundled starter's review -> draft loop is a declared rework edge, so the
+    validator every saved workflow goes through accepts it."""
+    sources = starter_sources(name="Editorial review", model="test-model")
+    graph = sources["workflow.yaml"]["graph"]
+    validate_workflow_graph(graph)
+    revise = next(edge for edge in graph["edges"] if edge["id"] == "revise")
+    assert revise["rework"] is True
 
 
 def test_build_is_repeatable_and_source_change_invalidates_pin():

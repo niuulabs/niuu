@@ -158,6 +158,22 @@ class MimirQueryResult:
 OPERATIONAL_SOURCE_TYPES: frozenset[str] = frozenset({"tool_output", "diagnostic"})
 
 
+def refuse_operational_source_type(source_type: str) -> None:
+    """Raise if *source_type* records system activity, which no page will synthesise.
+
+    The one check every ingest path makes (REST ``/ingest``, the ``mimir_ingest``
+    agent tool, ``python -m mimir ingest``), so an agent or a script cannot store
+    what the API refuses.
+    """
+    if source_type not in OPERATIONAL_SOURCE_TYPES:
+        return
+    raise ValueError(
+        f"Refusing to ingest source_type {source_type!r}: it records system activity, "
+        "not knowledge, so nothing will ever synthesise it into a page and it would sit "
+        "unprocessed forever. Write run output to logs instead."
+    )
+
+
 @dataclass
 class MimirSourceMeta:
     """Lightweight metadata for a raw source — used by list_sources()."""

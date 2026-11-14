@@ -17,6 +17,7 @@ from niuu.adapters.cli.runtime import (
     stop_subprocess as _stop_process,
 )
 from niuu.ports.cli import CLITransport, TransportCapabilities
+from skuld.claude_auth import ClaudeAuthMode
 from skuld.claude_permission import (
     DEFAULT_CLAUDE_PERMISSION_MODE,
     resolve_claude_permission_mode,
@@ -72,8 +73,12 @@ class SubprocessTransport(CLITransport):
         read_only_mcp_only: bool = False,
         allowed_mcp_tools: list[str] | None = None,
         claude_tool_policy: ClaudeToolPolicy | None = None,
+        claude_auth: ClaudeAuthMode = "subscription",
+        claude_oauth_token_file: str | None = None,
     ) -> None:
         super().__init__()
+        self._claude_auth = claude_auth
+        self._claude_oauth_token_file = claude_oauth_token_file
         self.workspace_dir = workspace_dir
         self._session_tools = session_tools
         self._model = model
@@ -203,7 +208,10 @@ class SubprocessTransport(CLITransport):
         logger.info("Running Claude CLI (session=%s)", self._session_id)
         logger.debug("Claude CLI command: %s", " ".join(cmd))
 
-        env = claude_spawn_env()  # subscription auth by default (SKULD__CLAUDE_AUTH)
+        env = claude_spawn_env(
+            claude_auth=self._claude_auth,
+            claude_oauth_token_file=self._claude_oauth_token_file,
+        )
         if self._agent_teams:
             env["CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS"] = "1"
         _, shim_env = ensure_codex_tool_shims(

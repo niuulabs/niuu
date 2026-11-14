@@ -13,7 +13,7 @@ import re
 from abc import ABC, abstractmethod
 from collections.abc import Iterable
 from datetime import datetime
-from typing import Any, Literal
+from typing import Any, get_args
 
 from fastapi import WebSocketDisconnect
 
@@ -21,6 +21,7 @@ from niuu.domain.history_control import history_gap
 from niuu.domain.message_author import MessageAuthor
 from niuu.domain.outcome import parse_outcome_block
 from niuu.observability import get_observability
+from skuld.config import TelegramTopicMode
 from skuld.live_frames import prepare_live_frame
 
 logger = logging.getLogger("skuld.channels")
@@ -36,7 +37,14 @@ TELEGRAM_OUTCOME_SUMMARY_MAX_LENGTH = 450
 TELEGRAM_OUTCOME_DETAIL_MAX_LENGTH = 220
 TELEGRAM_OUTCOME_LIST_LIMIT = 2
 
-TelegramTopicMode = Literal["shared_chat", "fixed_topic", "topic_per_session"]
+
+class TelegramChannelError(RuntimeError):
+    """A configured Telegram channel cannot work.
+
+    Raised for a missing dependency, an impossible topic configuration, a topic
+    that cannot be created and a permission prompt that could not be delivered.
+    The message names the setting to change; nothing degrades to another mode.
+    """
 
 
 def _is_expected_ws_disconnect(exc: Exception) -> bool:
@@ -1223,9 +1231,21 @@ class TelegramChannel(MessageChannel):
         on_message: object | None = None,
     ) -> None:
         if not HAS_TELEGRAM:
-            raise RuntimeError(
-                "python-telegram-bot is not installed. "
-                "Install it with: pip install 'python-telegram-bot>=21.0'"
+            raise TelegramChannelError(
+                "python-telegram-bot is not installed but telegram.enabled is true. "
+                "Install it with: pip install 'python-telegram-bot>=21.0', "
+                "or set telegram.enabled: false"
+            )
+        if topic_mode not in get_args(TelegramTopicMode):
+            raise TelegramChannelError(
+                f"Unknown telegram.topic_mode {topic_mode!r}; set it to one of "
+                f"{', '.join(get_args(TelegramTopicMode))}"
+            )
+        if topic_mode == "fixed_topic" and message_thread_id is None:
+            raise TelegramChannelError(
+                "telegram.topic_mode is 'fixed_topic' but telegram.message_thread_id is not set; "
+                "set telegram.message_thread_id to the topic's thread id, or set "
+                "telegram.topic_mode: shared_chat explicitly to post into the whole chat"
             )
 
         self._bot_token = bot_token
@@ -1540,41 +1560,33 @@ class TelegramChannel(MessageChannel):
                 ]
             ]
         )
+        kwargs = {
+            "chat_id": self._chat_id,
+            "text": text,
+            "reply_markup": keyboard,
+        }
+        if self._message_thread_id is not None:
+            kwargs["message_thread_id"] = self._message_thread_id
         try:
-            kwargs = {
-                "chat_id": self._chat_id,
-                "text": text,
-                "reply_markup": keyboard,
-            }
-            if self._message_thread_id is not None:
-                kwargs["message_thread_id"] = self._message_thread_id
             await self._bot.send_message(**kwargs)
-        except Exception:
-            logger.warning("Failed to send permission request to Telegram", exc_info=True)
+        except Exception as exc:
+            raise TelegramChannelError(
+                f"Could not deliver the permission request {request_id!r} for {tool_name!r} to "
+                f"Telegram chat {self._chat_id}: {exc}. The operator never saw the prompt; "
+                "check that the bot is still a member of the chat and that "
+                "telegram.bot_token and telegram.chat_id are valid"
+            ) from exc
 
     async def _ensure_topic_target(self) -> None:
-        """Resolve the effective Telegram topic target for this session."""
+        """Resolve the effective Telegram topic target for this session.
+
+        The topic mode is the operator's decision and never degrades: a mode that cannot
+        be honoured raises with the setting to change.
+        """
         if not self._bot:
             return
 
-        if self._topic_mode == "shared_chat":
-            return
-
-        if self._topic_mode == "fixed_topic":
-            if self._message_thread_id is None:
-                logger.warning(
-                    "Telegram fixed_topic mode selected without message_thread_id; "
-                    "falling back to shared chat"
-                )
-                self._topic_mode = "shared_chat"
-            return
-
-        if self._topic_mode != "topic_per_session":
-            logger.warning(
-                "Unknown Telegram topic mode %r; falling back to shared chat",
-                self._topic_mode,
-            )
-            self._topic_mode = "shared_chat"
+        if self._topic_mode in ("shared_chat", "fixed_topic"):
             return
 
         if self._message_thread_id is not None:
@@ -1585,30 +1597,32 @@ class TelegramChannel(MessageChannel):
                 chat_id=self._chat_id,
                 name=self._topic_name or "Volundr session",
             )
-            thread_id = getattr(topic, "message_thread_id", None)
-            if thread_id is None:
-                logger.warning(
-                    "Telegram topic creation returned no message_thread_id; "
-                    "falling back to shared chat"
-                )
-                self._topic_mode = "shared_chat"
-                return
-            self._message_thread_id = int(thread_id)
-            logger.info(
-                (
-                    "Telegram topic created for session "
-                    "(chat_id=%s, message_thread_id=%s, topic_name=%s)"
-                ),
-                self._chat_id,
-                self._message_thread_id,
-                self._topic_name,
+        except Exception as exc:
+            raise TelegramChannelError(
+                f"Could not create a Telegram topic for this session in chat {self._chat_id} "
+                f"(telegram.topic_mode is 'topic_per_session'): {exc}. Make the bot an "
+                "administrator with the manage-topics right in a forum chat, or set "
+                "telegram.message_thread_id (with telegram.topic_mode: fixed_topic), or set "
+                "telegram.topic_mode: shared_chat explicitly"
+            ) from exc
+        thread_id = getattr(topic, "message_thread_id", None)
+        if thread_id is None:
+            raise TelegramChannelError(
+                f"Telegram created a topic in chat {self._chat_id} but returned no "
+                "message_thread_id (telegram.topic_mode is 'topic_per_session'); check that the "
+                "chat is a forum chat and the bot may manage topics, or set "
+                "telegram.topic_mode: shared_chat explicitly"
             )
-        except Exception:
-            logger.warning(
-                "Failed to create Telegram session topic; falling back to shared chat",
-                exc_info=True,
-            )
-            self._topic_mode = "shared_chat"
+        self._message_thread_id = int(thread_id)
+        logger.info(
+            (
+                "Telegram topic created for session "
+                "(chat_id=%s, message_thread_id=%s, topic_name=%s)"
+            ),
+            self._chat_id,
+            self._message_thread_id,
+            self._topic_name,
+        )
 
     async def close(self) -> None:
         """Stop the Telegram bot and clean up."""

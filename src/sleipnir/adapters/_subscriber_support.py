@@ -27,12 +27,15 @@ from abc import ABC, abstractmethod
 from collections.abc import Callable
 from contextlib import suppress
 
+from niuu.cap_telemetry import record_cap_hit
 from sleipnir.domain.events import SleipnirEvent, match_event_type
 from sleipnir.ports.events import EventHandler, Subscription
 
 #: Default depth of each subscriber's ring buffer (events).
 #: All adapters use this value so the behaviour is consistent across transports.
 DEFAULT_RING_BUFFER_DEPTH = 1000
+#: The config path an operator changes when a subscriber's buffer overflows.
+RING_BUFFER_DEPTH_KNOB = "sleipnir.ring_buffer_depth"
 
 
 class Delivery(ABC):
@@ -110,14 +113,14 @@ async def enqueue_with_overflow(
     queue: asyncio.Queue[SleipnirEvent],
     event: SleipnirEvent,
     ring_buffer_depth: int,
-    log: logging.Logger,
 ) -> bool:
     """Put *event* on *queue*, dropping the oldest entry on overflow.
 
     Only for broker-less transports, whose publishers must never block on a
     slow subscriber and which have no broker to push back on.  When the queue
-    is full the oldest event is dequeued and discarded; a ``WARNING`` is logged
-    with the dropped event's id and type.  Returns ``True`` when an event was
+    is full the oldest event is dequeued and discarded, and the drop is a cap
+    hit on ``sleipnir.ring_buffer_depth`` (error log with the dropped event's id
+    and type, counted on the health snapshot).  Returns ``True`` when an event was
     dropped so callers can surface sustained backpressure through their stats.
     Broker-backed transports must use a blocking ``await queue.put(...)`` so
     that a full queue withholds acknowledgements instead of losing events.
@@ -128,11 +131,12 @@ async def enqueue_with_overflow(
             dropped = queue.get_nowait()
             queue.task_done()
             overflowed = True
-            log.warning(
-                "Ring buffer overflow (depth=%d): dropped event %s (%s)",
-                ring_buffer_depth,
-                dropped.event_id,
-                dropped.event_type,
+            record_cap_hit(
+                RING_BUFFER_DEPTH_KNOB,
+                f"Ring buffer overflow (depth={ring_buffer_depth}): dropped event "
+                f"{dropped.event_id} ({dropped.event_type}) because its subscriber is not "
+                f"keeping up; raise {RING_BUFFER_DEPTH_KNOB}, speed up the handler, or use a "
+                "broker-backed transport that can push back",
             )
     await queue.put(event)
     return overflowed
@@ -217,4 +221,4 @@ async def dispatch_to_subscriptions(
             continue
         if not any(match_event_type(p, event.event_type) for p in sub.patterns):
             continue
-        await enqueue_with_overflow(sub._queue, event, ring_buffer_depth, log)
+        await enqueue_with_overflow(sub._queue, event, ring_buffer_depth)

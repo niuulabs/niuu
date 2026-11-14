@@ -101,7 +101,7 @@ class TestPerModelRoutingStrategy:
                 "a": ProviderConfig(models=["m1"]),
                 "b": ProviderConfig(models=["m1"]),
             },
-            routing_strategy=RoutingStrategy.FAILOVER,
+            routing_strategy=RoutingStrategy.LATENCY_OPTIMISED,
             model_routing_strategies={"m1": RoutingStrategy.ROUND_ROBIN},
         )
         assert cfg.routing_strategy_for_model("m1") == RoutingStrategy.ROUND_ROBIN
@@ -110,7 +110,7 @@ class TestPerModelRoutingStrategy:
         cfg = BifrostConfig(
             providers={"a": ProviderConfig(models=["canonical-model"])},
             aliases={"fast": "canonical-model"},
-            routing_strategy=RoutingStrategy.FAILOVER,
+            routing_strategy=RoutingStrategy.LATENCY_OPTIMISED,
             model_routing_strategies={"canonical-model": RoutingStrategy.DIRECT},
         )
         # Lookup via alias → resolves to canonical → matches override
@@ -120,7 +120,7 @@ class TestPerModelRoutingStrategy:
         cfg = BifrostConfig(
             providers={"a": ProviderConfig(models=["real-model"])},
             aliases={"cheap": "real-model"},
-            routing_strategy=RoutingStrategy.FAILOVER,
+            routing_strategy=RoutingStrategy.LATENCY_OPTIMISED,
             model_routing_strategies={"cheap": RoutingStrategy.COST_OPTIMISED},
         )
         assert cfg.routing_strategy_for_model("cheap") == RoutingStrategy.COST_OPTIMISED
@@ -146,13 +146,12 @@ class TestPerModelRoutingStrategy:
         )
         router = ModelRouter(cfg)
         # m1 with round_robin: two providers available
-        candidates_m1 = router._build_candidates("m1")
-        assert len(candidates_m1) == 2  # both a and b serve m1, rotated
+        first = router._select_target("m1")
+        second = router._select_target("m1")
+        assert [first, second] == [("a", "m1"), ("b", "m1")]  # one provider per request, rotated
 
         # m2 with direct (global): only a serves m2
-        candidates_m2 = router._build_candidates("m2")
-        assert len(candidates_m2) == 1
-        assert candidates_m2[0][0] == "a"
+        assert router._select_target("m2") == ("a", "m2")
 
 
 # ---------------------------------------------------------------------------

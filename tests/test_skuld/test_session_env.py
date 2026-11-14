@@ -92,8 +92,7 @@ class TestClassifier:
 
 class TestClaudeEnv:
     def test_subscription_mode(self, broker_env: None, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("SKULD__CLAUDE_AUTH", "subscription")
-        env = claude_spawn_env()
+        env = claude_spawn_env(claude_auth="subscription", claude_oauth_token_file=None)
         _assert_scrubbed(env, claude=True)
         assert "ANTHROPIC_API_KEY" not in env
         assert env["CLAUDE_CODE_OAUTH_TOKEN"] == "test-only-oauth"
@@ -101,8 +100,7 @@ class TestClaudeEnv:
     def test_api_key_mode_keeps_engine_auth(
         self, broker_env: None, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setenv("SKULD__CLAUDE_AUTH", "api_key")
-        env = claude_spawn_env()
+        env = claude_spawn_env(claude_auth="api_key", claude_oauth_token_file=None)
         _assert_scrubbed(env)
         assert env["ANTHROPIC_API_KEY"] == "sk-ant"
 
