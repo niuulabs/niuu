@@ -1769,6 +1769,17 @@ def test_a_runs_room_session_runs_no_agent_of_its_own():
 
 
 @pytest.mark.skipif(shutil.which("helm") is None, reason="Helm is required")
+def test_a_teams_agent_is_rendered_conversational():
+    from skuld.config import SkuldSettings
+
+    agent = _rendered_skuld_config("skuld", "--set", "team.conversational=true")
+    ordinary = _rendered_skuld_config("skuld")
+
+    assert SkuldSettings(**agent).session.conversational is True
+    assert SkuldSettings(**ordinary).session.conversational is False
+
+
+@pytest.mark.skipif(shutil.which("helm") is None, reason="Helm is required")
 def test_a_session_is_seated_in_the_rooms_it_is_given_without_hosting_one():
     from skuld.config import SkuldSettings
 

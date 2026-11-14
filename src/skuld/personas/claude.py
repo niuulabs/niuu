@@ -90,7 +90,11 @@ class ClaudeProjector:
         policy = PersonaPolicy.from_definition(persona.id, persona.definition)
         gaps: list[ProjectionGap] = []
         kwargs: dict[str, Any] = {
-            "system_prompt": compose_instructions(persona.definition, context.request_prompt)
+            "system_prompt": compose_instructions(
+                persona.definition,
+                context.request_prompt,
+                outcome_contract=context.outcome_contract,
+            )
         }
         self._check_mode(policy, gaps)
         if policy.mode is PermissionMode.READ_ONLY:

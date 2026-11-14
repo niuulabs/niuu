@@ -187,6 +187,7 @@ class TransportLifecycleMixin:
             node_claude_permission_mode=self._settings.claude_permission_mode,
             node_approval_policy=self._settings.approval_policy,
             node_sandbox=self._settings.sandbox,
+            outcome_contract=not self._settings.session.conversational,
         )
         projection = projector_for(adapter_path).project(persona, context)
         projection.require_playable(persona.id, adapter_path)

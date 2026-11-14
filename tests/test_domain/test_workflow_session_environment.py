@@ -92,6 +92,20 @@ def test_a_teams_member_joins_the_realm_and_shares_its_work_with_no_step_setting
     }
 
 
+def test_a_teams_agent_converses_instead_of_handing_back_an_outcome() -> None:
+    from skuld.config import SkuldSettings
+
+    agent = workflow_session_environment(
+        {"team": {"enabled": True, "conversational": True}, "mesh": {"enabled": True}}
+    )
+    root = workflow_session_environment({"team": {"enabled": True}, "mesh": {"enabled": True}})
+
+    assert agent["SKULD__SESSION__CONVERSATIONAL"] == "true"
+    assert "SKULD__SESSION__CONVERSATIONAL" not in root
+    settings = SkuldSettings.model_validate({"session": {"conversational": True}})
+    assert settings.session.conversational is True
+
+
 def test_a_teams_member_is_seated_in_its_teams_room_from_the_start() -> None:
     from skuld.config import SkuldSettings
 

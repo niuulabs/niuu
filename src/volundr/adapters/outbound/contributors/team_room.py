@@ -104,7 +104,8 @@ class TeamRoomContributor(SessionContributor):
             )
         realm = team_realm(str(session.hosted_by))
         return {
-            TEAM_VALUES_KEY: {"enabled": True},
+            # An agent of a team talks in its room: no outcome contract, no outcome events.
+            TEAM_VALUES_KEY: {"enabled": True, "conversational": True},
             MESH_VALUES_KEY: {
                 "enabled": True,
                 "realmId": realm,

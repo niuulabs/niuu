@@ -246,11 +246,15 @@ class ChronicleMixin:
 
         A workflow step host publishes none: its run's step engine hands the work on, and
         the member's outcome is its step close (shared with the run's room as its verdict
-        and note), not every turn it ends, whatever its persona.
+        and note), not every turn it ends, whatever its persona. A conversational session
+        (a team's agent) publishes none either: it talks in its room.
         """
         if self._mesh_adapter is None:
             return
         if self._settings.workflow_steps.enabled:
+            return
+        if self._settings.session.conversational:
+            # A team's agent talks in its room; its turns are not outcomes to hand on.
             return
 
         from niuu.mesh.events import MeshEvent, MeshEventType

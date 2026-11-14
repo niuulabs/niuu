@@ -423,6 +423,16 @@ class SkuldSessionConfig(BaseModel):
         ),
     )
     initial_prompt: str = Field(default="")
+    conversational: bool = Field(
+        default=False,
+        description=(
+            "The session talks in its room and hands back no structured outcome: its "
+            "persona's outcome contract (the outcome block its produces.schema asks for) is "
+            "left out of its instructions, and it publishes no outcome event after a turn. A "
+            "team's agents are conversational; a workflow member or a session working to a "
+            "contract is not."
+        ),
+    )
     saga_id: str | None = Field(default=None)
     run_id: str | None = Field(default=None)
     resume_session_id: str = Field(

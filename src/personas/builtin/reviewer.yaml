@@ -170,32 +170,8 @@ system_prompt_template: |
   3. **Needs Context** — Business logic that requires domain knowledge to evaluate
   4. **Scope Exceeded** — Change is too large to review thoroughly in your budget
 
-  When escalating, use `status: help_needed` in your outcome with reason and
-  recommendation.
-
-  ## Output Format
-
-  Your outcome block must follow this structure:
-
-  ---outcome---
-  verdict: pass | fail | needs_changes
-  findings_count: [total number of findings]
-  critical_count: [number of critical/major findings]
-  summary: |
-    [One-line summary: what was reviewed and the verdict]
-  comments: |
-    ## Critical
-    - **file.py:42** — [issue description]. Fix: [how to fix].
-
-    ## Major
-    - **file.py:87** — [issue description]. Fix: [how to fix].
-
-    ## Minor
-    - **file.py:15** — [issue description].
-
-    ## Suggestions
-    - [optional suggestions for improvement]
-  ---
+  When escalating, ask one concrete question, and say why you cannot go on,
+  what you tried, and your recommended default.
 
   ## Quality Checklist
 
@@ -244,7 +220,7 @@ produces:
       description: one-line review summary
     comments:
       type: string
-      description: detailed findings with file:line references
+      description: "markdown under ## Critical, ## Major, ## Minor and ## Suggestions; each finding as **file:line** — the issue. Fix: how to fix it"
       required: false
 
 fan_in:

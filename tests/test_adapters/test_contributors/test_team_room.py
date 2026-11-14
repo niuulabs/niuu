@@ -65,7 +65,8 @@ async def test_a_member_joins_the_roots_realm_shares_its_work_and_sits_in_its_ro
     result = await TeamRoomContributor().contribute(_session(hosted_by=ROOT_ID), _member_context())
 
     assert result.values == {
-        "team": {"enabled": True},
+        # A team's agent talks in its room: no persona outcome contract, no outcome events.
+        "team": {"enabled": True, "conversational": True},
         "mesh": {"enabled": True, "realmId": REALM, "shareWork": True},
         # The room's id is the realm's, hosted by the root: the member can speak in it at once.
         "roomSeats": [{"roomId": REALM, "hostSessionId": str(ROOT_ID)}],

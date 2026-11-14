@@ -76,6 +76,10 @@ unit (see skuld.memberValues). Every line is indented four spaces, to sit under 
       {{- if .Values.session.initialPrompt }}
       initial_prompt: {{ .Values.session.initialPrompt | quote }}
       {{- end }}
+      {{- if (.Values.team | default dict).conversational }}
+      # A team's agent: it talks in its room and hands back no persona outcome.
+      conversational: true
+      {{- end }}
 
     mcp_servers: {{ .Values.mcpServers | default list | toJson }}
     transport: {{ .Values.broker.transport | default "sdk" | quote }}

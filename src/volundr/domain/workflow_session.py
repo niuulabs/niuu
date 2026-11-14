@@ -91,7 +91,8 @@ WORKFLOW_ROOM_ENV_NAMES = {
 }
 
 #: Top-level key of the session spec values that marks a session as part of a Forge team
-#: (``values.team``): ``{"enabled": true}``. The skuld chart ignores it; the runtimes that start
+#: (``values.team``): ``{"enabled": true}``, and on a team's agent ``"conversational": true``
+#: (Skuld's ``session.conversational``, which the skuld chart renders too). The runtimes that start
 #: Skuld from the environment read it, because a team has no ``workflowSteps`` but needs the same
 #: mesh realm and room variables a workflow run gets (``workflow_session_environment``).
 TEAM_VALUES_KEY = "team"
@@ -114,10 +115,14 @@ def workflow_session_environment(values: Mapping[str, Any]) -> dict[str, str]:
     gets none of these.
     """
     steps = values.get(WORKFLOW_STEPS_VALUES_KEY)
+    team = values.get(TEAM_VALUES_KEY)
     if isinstance(steps, Mapping):
         environment = _prefixed(steps, WORKFLOW_STEPS_ENV_NAMES, WORKFLOW_STEPS_ENV_PREFIX)
-    elif isinstance(values.get(TEAM_VALUES_KEY), Mapping):
+    elif isinstance(team, Mapping):
         environment = {}
+        if team.get("conversational") is True:
+            # A team's agent talks in its room instead of handing back a persona's outcome.
+            environment["SKULD__SESSION__CONVERSATIONAL"] = "true"
     else:
         return {}
     mesh = values.get("mesh")

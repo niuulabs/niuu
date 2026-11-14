@@ -3101,6 +3101,27 @@ class TestPublishMeshOutcome:
         mock_mesh.publish.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_a_conversational_session_publishes_no_turn_outcome(self, tmp_path):
+        """A team's agent talks in its room; a finished turn is not an outcome to hand on."""
+        settings = SkuldSettings(
+            session={
+                "id": "test-mesh-team-agent",
+                "workspace_dir": str(tmp_path),
+                "conversational": True,
+            },
+        )
+        b = Broker(settings=settings)
+        mock_mesh = AsyncMock()
+        mock_adapter = MagicMock()
+        mock_adapter.peer_id = "peer-4"
+        mock_adapter._mesh = mock_mesh
+        b._mesh_adapter = mock_adapter
+
+        await b._publish_mesh_outcome()
+
+        mock_mesh.publish.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_no_mesh_adapter_returns_early(self, test_broker):
         test_broker._mesh_adapter = None
         # Should not raise
