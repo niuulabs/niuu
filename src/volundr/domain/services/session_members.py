@@ -99,11 +99,14 @@ class SessionMembersService:
         self._participants = participants
         self._room = room
 
-    async def members(self, session_id: UUID, principal: Principal | None) -> SessionMembers:
+    async def members(
+        self, session_id: UUID, principal: Principal | None, *, credential: str | None = None
+    ) -> SessionMembers:
         """The agents and people of *session_id*, for whoever may read the session.
 
         Reading the session or being in its room admits the caller: a person invited to a
-        team sees who else is on it.
+        team sees who else is on it. ``credential`` is the caller's ``Authorization``, which
+        the session's broker checks when its live room is read.
 
         Raises:
             SessionNotFoundError: No such session.
@@ -119,7 +122,7 @@ class SessionMembersService:
         unit = await self._unit_of(session)
         shown = session if unit is None else session.hosted_in(unit)
         agents = await self._agents(shown)
-        people = await self._people(shown)
+        people = await self._people(shown, credential)
         return SessionMembers(agents=agents, people=people)
 
     async def _authorize(self, session: Session, principal: Principal | None) -> None:
@@ -142,13 +145,13 @@ class SessionMembersService:
         hosted = await self._repository.list_hosted(session.id)
         return [_agent(member.hosted_in(session), lead=_is_lead(member)) for member in hosted]
 
-    async def _people(self, session: Session) -> list[PersonMember]:
+    async def _people(self, session: Session, credential: str | None) -> list[PersonMember]:
         grants = await self._participants.list_grants(session)
         user_ids = {grant.user_id for grant in grants}
         if session.owner_id:
             user_ids.add(session.owner_id)
         names = await self._participants.display_names(user_ids)
-        online = await self._online_users(session)
+        online = await self._online_users(session, credential)
         people: list[PersonMember] = []
         if session.owner_id:
             people.append(
@@ -173,7 +176,7 @@ class SessionMembersService:
         )
         return people
 
-    async def _online_users(self, session: Session) -> set[str] | None:
+    async def _online_users(self, session: Session, credential: str | None) -> set[str] | None:
         """The people in the live room; ``None`` while the session is not running.
 
         A person is in it when they have a live browser connection (``connected_people``) or
@@ -182,7 +185,7 @@ class SessionMembersService:
         if session.status != SessionStatus.RUNNING:
             return None
         try:
-            roster = await self._room.read_room(session.id)
+            roster = await self._room.read_room(session.id, credential=credential)
         except Exception as exc:
             raise RoomUnreadableError(session.id, exc) from exc
         seated = {

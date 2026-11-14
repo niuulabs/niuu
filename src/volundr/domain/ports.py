@@ -2385,9 +2385,11 @@ class SessionRoomPort(ABC):
         """Return the current room participants for a live session."""
 
     @abstractmethod
-    async def read_room(self, session_id: UUID) -> RoomRoster:
+    async def read_room(self, session_id: UUID, *, credential: str | None = None) -> RoomRoster:
         """Return the room's seated participants and the people connected to it.
 
+        ``credential`` is the caller's own ``Authorization`` value, presented to the
+        session's broker, which admits the caller as it does any request to the session.
         ``list_room_participants`` is the same read without the connected people, for the
         callers that route to participants only.
         """

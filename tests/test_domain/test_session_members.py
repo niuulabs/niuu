@@ -44,9 +44,11 @@ class FakeRoom:
         self.connected: list[ConnectedPerson] = []
         self.error: Exception | None = None
         self.asked: list[UUID] = []
+        self.credentials: list[str | None] = []
 
-    async def read_room(self, session_id: UUID) -> RoomRoster:
+    async def read_room(self, session_id: UUID, *, credential: str | None = None) -> RoomRoster:
         self.asked.append(session_id)
+        self.credentials.append(credential)
         if self.error is not None:
             raise self.error
         return RoomRoster(participants=list(self.roster), connected_people=list(self.connected))
@@ -318,6 +320,13 @@ class TestOnline:
         members = await service.members(session.id, None)
 
         assert [(p.user_id, p.online) for p in members.people] == [("ada", False)]
+
+    async def test_the_room_is_read_with_the_callers_credential(self, service, repository, room):
+        session = await repository.create(_session(status=SessionStatus.RUNNING))
+
+        await service.members(session.id, None, credential="Bearer ada-token")
+
+        assert room.credentials == ["Bearer ada-token"]
 
     async def test_a_session_that_is_not_running_does_not_ask_the_room(
         self, service, repository, room

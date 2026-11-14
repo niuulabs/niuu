@@ -142,6 +142,20 @@ async def test_read_room_carries_participants_and_connected_people():
 
 
 @respx.mock
+async def test_read_room_presents_the_callers_credential_to_the_broker():
+    # The session's Envoy admits the caller as it does any request to the session.
+    session = _session()
+    route = respx.get(f"http://127.0.0.1:8080/s/{session.id}/api/room/participants").mock(
+        return_value=httpx.Response(200, json={"participants": [], "connected_people": []})
+    )
+    adapter = SkuldRoomAdapter(_FakeSessionRepository(session))
+
+    await adapter.read_room(session.id, credential="Bearer user-token")
+
+    assert route.calls.last.request.headers["authorization"] == "Bearer user-token"
+
+
+@respx.mock
 async def test_read_room_refuses_a_broker_that_reports_no_connected_people():
     session = _session()
     respx.get(f"http://127.0.0.1:8080/s/{session.id}/api/room/participants").mock(
