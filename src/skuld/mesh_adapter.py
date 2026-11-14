@@ -25,6 +25,7 @@ from collections.abc import Awaitable, Callable, Mapping, Sequence
 from datetime import UTC, datetime
 from typing import Any, Protocol, runtime_checkable
 
+from niuu.domain.message_author import AUTHOR_KEY, MessageAuthor
 from niuu.domain.peer_envelope import RelayedSpeech, build_relayed_message
 from niuu.domain.peer_message import (
     PEER_MESSAGE_FRAME,
@@ -40,7 +41,7 @@ from niuu.mesh.events import MeshEvent, MeshEventType
 from niuu.mesh.identity import MeshPeer
 from niuu.mesh.participant import MeshParticipant
 from niuu.ports.mesh import MeshPort
-from skuld.config import MeshConfig
+from skuld.config import MeshConfig, RoomSeat
 from skuld.mesh_topics import IN_REPLY_TO_KEY, inbox_topic
 from skuld.peer_inbox import (
     CHANNEL_MESH,
@@ -55,8 +56,15 @@ from sleipnir.ports.events import SleipnirSubscriber
 logger = logging.getLogger("skuld.mesh_adapter")
 
 #: The mesh RPC a room's host sends a member session to say something to it (a directed
-#: message). Its payload is ``{"content", "metadata": {"session_id", "room_id", "delivery_id"}}``.
+#: message). Its payload is ``{"content", "metadata": {"session_id", "room_id", "delivery_id"}}``,
+#: and, when the host vouches for a person speaking through it, ``author`` (the verified
+#: person, :meth:`~niuu.domain.message_author.MessageAuthor.to_dict`) and ``model_note`` (text
+#: only the model reads, ahead of the message). Both are the host's word about the message, so
+#: a member takes them only from the host of a room it is seated in.
 DIRECTED_MESSAGE_RPC_TYPE = "directed_message"
+
+#: The directed message's top-level key for the model-only note.
+MODEL_NOTE_KEY = "model_note"
 
 #: A broker-side answer to one mesh RPC ``type`` a mesh peer may send.
 RpcHandler = Callable[[dict], Awaitable[dict]]
@@ -78,6 +86,8 @@ class PeerMessageReceiver(Protocol):
         *,
         channel: str | None = None,
         verified: SenderIdentity | None = None,
+        author: MessageAuthor | None = None,
+        model_note: str = "",
     ) -> PeerAcceptance:
         """Hold ``envelope`` for the next turn boundary; raises when it is refused."""
 
@@ -136,8 +146,12 @@ class SkuldMeshAdapter:
         rpc_handlers: Mapping[str, RpcHandler] | None = None,
         consumes_event_types: Sequence[str] | None = None,
         workflow: WorkflowOfferReceiver | None = None,
+        room_seats: Sequence[RoomSeat] = (),
     ) -> None:
         self._participant = participant
+        # The rooms this session is seated in (``room.seats``) and who hosts each: the only
+        # senders whose word about who a directed message is from (its author) is taken.
+        self._room_seats = tuple(room_seats)
         self._rpc_handlers = dict(rpc_handlers or {})
         self._mesh: MeshPort | None = participant.mesh
         self._peer_inbox = peer_inbox
@@ -306,19 +320,29 @@ class SkuldMeshAdapter:
         content: str,
         *,
         metadata: dict[str, Any],
+        author: MessageAuthor | None = None,
+        model_note: str = "",
     ) -> dict[str, Any]:
-        """Deliver operator input without awaiting the recipient's model turn."""
+        """Deliver operator input without awaiting the recipient's model turn.
+
+        ``author`` is the verified person the message is from, when this host vouches for one;
+        ``model_note`` is text only the recipient's model reads, ahead of the message. Neither
+        is on the wire when empty, so a message without them is the message it always was. The
+        recipient takes them only from the host of a room it is seated in, and refuses the
+        message when anyone else sends them.
+        """
         if self._mesh is None:
             return {"status": "error", "error": "Mesh is unavailable"}
-        return await self._mesh.send(
-            target_peer_id,
-            {
-                "type": "directed_message",
-                "content": content,
-                "metadata": metadata,
-            },
-            timeout_s=self._config.rpc_timeout_s,
-        )
+        payload: dict[str, Any] = {
+            "type": DIRECTED_MESSAGE_RPC_TYPE,
+            "content": content,
+            "metadata": metadata,
+        }
+        if author is not None:
+            payload[AUTHOR_KEY] = author.to_dict()
+        if model_note:
+            payload[MODEL_NOTE_KEY] = model_note
+        return await self._mesh.send(target_peer_id, payload, timeout_s=self._config.rpc_timeout_s)
 
     async def send_peer_message(self, target_peer_id: str, message: PeerMessage) -> dict[str, Any]:
         """Send a stamped peer message envelope to a mesh peer and return its answer.
@@ -411,6 +435,10 @@ class SkuldMeshAdapter:
                 f"the directed message says it is from session {claimed_host!r}, but the mesh "
                 f"verified {verified.session_id or verified.peer_id!r}"
             )
+        vouched = self._vouched_by_host(message, room_id, claimed_host, verified)
+        if isinstance(vouched, str):
+            return _refused(vouched)
+        author, model_note = vouched
         peer = self.peers().get(verified.peer_id) if verified is not None else None
         host = PeerAddress(
             kind=PeerKind.SESSION,
@@ -431,7 +459,81 @@ class SkuldMeshAdapter:
             )
         except PeerMessageError as exc:
             return _refused(str(exc))
-        return await self._accept(envelope, verified=verified)
+        return await self._accept(envelope, verified=verified, author=author, model_note=model_note)
+
+    def _vouched_by_host(
+        self,
+        message: Mapping[str, Any],
+        room_id: str,
+        claimed_host: str,
+        verified: SenderIdentity | None,
+    ) -> tuple[MessageAuthor | None, str] | str:
+        """The ``(author, model_note)`` a directed message carries, or why it is refused.
+
+        Who a message is from, and what the model is told about it, are the sender's word, so
+        they are taken only from a sender this session trusts to vouch for people: the host of
+        a room it is seated in (``room.seats``: this room, hosted by this session). When the
+        mesh verifies senders (``mesh.attestation.required``) the host must also have been
+        verified as that session; a claimed host id alone does not vouch.
+
+        From any other sender the two differ. A ``model_note`` is an instruction to the model,
+        so a message carrying one is refused with the reason. An ``author`` is also dropped
+        from the wire by every host that has a verified person (a browser's message to a room
+        member), and a room this session was never seated in (a room learned from what was
+        said in it) is an ordinary case, so a message carrying only an author is delivered
+        without it: the message is not lost, it just is not attributed to a person, and the
+        warning names the sender and the room. A message that carries neither is untouched.
+        """
+        if AUTHOR_KEY not in message and MODEL_NOTE_KEY not in message:
+            return None, ""
+        untrusted = self._vouching_refusal(room_id, claimed_host, verified)
+        if untrusted is not None:
+            sender = verified.peer_id if verified is not None else claimed_host
+            if MODEL_NOTE_KEY in message:
+                logger.warning(
+                    "mesh adapter: %s sent a directed message for room %r carrying a "
+                    "model_note it may not vouch for; refusing it",
+                    sender,
+                    room_id,
+                )
+                return f"the directed message carries a model_note, but {untrusted}"
+            logger.warning(
+                "mesh adapter: %s sent a directed message for room %r carrying an author it "
+                "may not vouch for (%s); delivering it without the author",
+                sender,
+                room_id,
+                untrusted,
+            )
+            return None, ""
+        author: MessageAuthor | None = None
+        if AUTHOR_KEY in message:
+            author = MessageAuthor.from_wire(message[AUTHOR_KEY])
+            if author is None:
+                return "the directed message's author must be {user_id, display_name}"
+        model_note = message.get(MODEL_NOTE_KEY, "")
+        if not isinstance(model_note, str):
+            return "the directed message's model_note must be text"
+        return author, model_note
+
+    def _vouching_refusal(
+        self, room_id: str, claimed_host: str, verified: SenderIdentity | None
+    ) -> str | None:
+        """Why ``claimed_host`` may not vouch for a person in ``room_id``, or ``None`` if it may."""
+        seated = any(
+            seat.room_id == room_id and seat.host_session_id == claimed_host
+            for seat in self._room_seats
+        )
+        if not seated:
+            return (
+                f"{claimed_host!r} is not the host of room {room_id!r} that this session is "
+                "seated in (room.seats)"
+            )
+        if self._config.attestation.required and verified is None:
+            return (
+                f"the mesh did not verify that {claimed_host!r} sent it "
+                "(mesh.attestation.required is on)"
+            )
+        return None
 
     def _verified_sender(self, carrier: Any) -> SenderIdentity | None:
         """Who the mesh verified sent this message, when this deployment verifies senders.
@@ -448,9 +550,18 @@ class SkuldMeshAdapter:
         return SenderIdentity.from_wire(raw)
 
     async def _accept(
-        self, envelope: PeerMessage, *, verified: SenderIdentity | None = None
+        self,
+        envelope: PeerMessage,
+        *,
+        verified: SenderIdentity | None = None,
+        author: MessageAuthor | None = None,
+        model_note: str = "",
     ) -> dict:
-        extra = {} if verified is None else {"verified": verified}
+        extra: dict[str, Any] = {} if verified is None else {"verified": verified}
+        if author is not None:
+            extra[AUTHOR_KEY] = author
+        if model_note:
+            extra[MODEL_NOTE_KEY] = model_note
         try:
             acceptance = await self._peer_inbox.accept_peer_message(
                 envelope, channel=CHANNEL_MESH, **extra
