@@ -11,6 +11,7 @@ from uuid import UUID
 
 from volundr.domain.models import EventType, RealtimeEvent, TimelineResponse
 from volundr.domain.ports import EventBroadcaster
+from volundr.domain.team import TEAM_KEY, TEAM_MEMBER_KEY
 
 if TYPE_CHECKING:
     from niuu.domain.guild_membership import GuildInstance
@@ -308,6 +309,11 @@ class InMemoryEventBroadcaster(EventBroadcaster):
                     if session.coordination is not None
                     else None
                 ),
+                # A unit's members nest under their root, and a team's root and members say
+                # so: dropped here, every update of a member would lift it out of its team.
+                "hosted_by": str(session.hosted_by) if session.hosted_by else None,
+                "team": session.workload_config.get(TEAM_KEY),
+                "team_member": session.workload_config.get(TEAM_MEMBER_KEY),
             },
             timestamp=datetime.now(UTC),
         )

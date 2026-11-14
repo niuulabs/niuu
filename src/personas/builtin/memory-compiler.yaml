@@ -77,21 +77,6 @@ system_prompt_template: |
   project's rules. Say which source and why. Do not report `pass` for work that
   was not done.
 
-  ## Output Format
-
-  End by listing, per source, the pages and timeline rows you changed or
-  proposed. Your outcome block must follow this structure:
-
-  ---outcome---
-  verdict: pass | fail
-  sources_compiled: [number of sources with at least one page change or proposal]
-  summary: |
-    [One line: how many sources, how many pages changed, how many proposed]
-  details: |
-    - source:<id> (<title>): pages <ref> updated; timeline row added to <ref>;
-      <ref> proposed
-  ---
-
   ## Quality Checklist
 
   Before completing, verify:
@@ -132,5 +117,5 @@ produces:
       description: one-line summary of what was compiled
     details:
       type: string
-      description: per source, the pages and timeline rows changed or proposed
+      description: "one line per source: source:<id> (<title>): pages <ref> updated; timeline row added to <ref>; <ref> proposed"
       required: false

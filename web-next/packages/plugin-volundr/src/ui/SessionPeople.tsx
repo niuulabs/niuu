@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { useService } from '@niuulabs/plugin-sdk';
 import { Users } from 'lucide-react';
 import { Popover, PopoverContent, PopoverTrigger, authorInitials } from '@niuulabs/ui';
 import {
@@ -8,18 +9,18 @@ import {
   type SessionParticipant,
   type VolundrSession,
 } from '../models/volundr.model';
+import type { IVolundrService } from '../ports/IVolundrService';
 import { errorText } from './errorText';
+import { CONTROL, CandidatePicker, nameOf } from './CandidatePicker';
 import {
+  sessionPeopleKey,
   useInviteParticipant,
-  useParticipantCandidates,
   useRemoveParticipant,
   useSessionParticipants,
   useSessionProjectPeople,
   useViewerIdentity,
 } from './hooks/useSessionPeople';
 
-const CONTROL =
-  'niuu:rounded-md niuu:border niuu:border-border-subtle niuu:bg-bg-tertiary niuu:px-2 niuu:py-1 niuu:text-sm niuu:text-text-primary';
 const BUTTON =
   'niuu:rounded-md niuu:border niuu:border-border-subtle niuu:bg-bg-secondary niuu:px-2.5 niuu:py-1 niuu:text-xs niuu:font-medium niuu:text-text-primary niuu:disabled:opacity-40';
 const ERROR = 'niuu:text-xs niuu:text-critical-fg';
@@ -71,22 +72,12 @@ function Person({
   );
 }
 
-function nameOf(person: { displayName: string; userId: string; email?: string }): string {
-  return person.displayName || person.email || person.userId;
-}
-
 /** Find someone in the org and invite them into this chat. */
 function InviteSomeone({ session }: { session: VolundrSession }) {
+  const volundr = useService<IVolundrService>('volundr');
   const [query, setQuery] = useState('');
   const [chosen, setChosen] = useState<string | null>(null);
   const [role, setRole] = useState<ParticipantRole>('viewer');
-  const typed = query.trim();
-  const candidates = useParticipantCandidates(
-    session.id,
-    session.instanceId,
-    typed,
-    typed.length > 0 && chosen === null,
-  );
   const invite = useInviteParticipant(session.id, session.instanceId);
 
   return (
@@ -94,18 +85,26 @@ function InviteSomeone({ session }: { session: VolundrSession }) {
       <span className="niuu:text-xs niuu:font-medium niuu:text-text-secondary">
         Invite someone from your org
       </span>
-      <div className="niuu:flex niuu:gap-2">
-        <input
-          aria-label="Find someone in your org"
-          className={`${CONTROL} niuu:min-w-0 niuu:flex-1`}
-          placeholder="Name or email"
-          value={query}
-          onChange={(event) => {
-            setQuery(event.target.value);
-            setChosen(null);
-            invite.reset();
-          }}
-        />
+      <CandidatePicker
+        queryKey={[...sessionPeopleKey(session.id), 'candidates']}
+        fetcher={(typed, signal) =>
+          volundr.getParticipantCandidates(session.id, typed, {
+            instanceId: session.instanceId,
+            signal,
+          })
+        }
+        query={query}
+        onQueryChange={(value) => {
+          setQuery(value);
+          setChosen(null);
+          invite.reset();
+        }}
+        chosen={chosen}
+        onChoose={(person) => {
+          setChosen(person.userId);
+          setQuery(nameOf(person));
+        }}
+      >
         <select
           aria-label="Role for the invitee"
           className={CONTROL}
@@ -137,36 +136,7 @@ function InviteSomeone({ session }: { session: VolundrSession }) {
         >
           {invite.isPending ? 'Inviting…' : 'Invite'}
         </button>
-      </div>
-      {typed && !chosen ? (
-        <ul className="niuu:m-0 niuu:flex niuu:list-none niuu:flex-col niuu:gap-0.5 niuu:p-0">
-          {(candidates.data ?? []).map((person) => (
-            <li key={person.userId}>
-              <button
-                type="button"
-                className="niuu:w-full niuu:rounded-md niuu:px-2 niuu:py-1 niuu:text-left niuu:text-sm niuu:text-text-primary niuu:hover:bg-bg-tertiary"
-                onClick={() => {
-                  setChosen(person.userId);
-                  setQuery(nameOf(person));
-                }}
-              >
-                {nameOf(person)}
-                {person.email && person.displayName ? (
-                  <span className="niuu:ml-2 niuu:text-xs niuu:text-text-muted">
-                    {person.email}
-                  </span>
-                ) : null}
-              </button>
-            </li>
-          ))}
-          {candidates.isSuccess && candidates.data.length === 0 ? (
-            <li className="niuu:px-2 niuu:text-xs niuu:text-text-muted">
-              Nobody else in your org matches.
-            </li>
-          ) : null}
-          {candidates.error ? <li className={ERROR}>{errorText(candidates.error)}</li> : null}
-        </ul>
-      ) : null}
+      </CandidatePicker>
       {invite.error ? <span className={ERROR}>{errorText(invite.error)}</span> : null}
       <p className="niuu:m-0 niuu:text-xs niuu:text-text-muted">{ROLE_HELP}</p>
     </div>

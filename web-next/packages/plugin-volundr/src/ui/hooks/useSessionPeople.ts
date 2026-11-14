@@ -45,22 +45,6 @@ export function useSessionProjectPeople(
   });
 }
 
-/** People of the org to invite, matching what the owner typed. */
-export function useParticipantCandidates(
-  sessionId: string,
-  instanceId: string | undefined,
-  query: string,
-  enabled: boolean,
-) {
-  const volundr = useService<IVolundrService>('volundr');
-  return useQuery({
-    queryKey: [...sessionPeopleKey(sessionId), 'candidates', query] as const,
-    queryFn: ({ signal }) =>
-      volundr.getParticipantCandidates(sessionId, query, { instanceId, signal }),
-    enabled,
-  });
-}
-
 /** What changing a chat's people changes: its list, and the session lists that show it. */
 function useRefreshPeople(sessionId: string) {
   const queryClient = useQueryClient();

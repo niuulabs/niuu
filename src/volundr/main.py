@@ -94,10 +94,13 @@ from volundr.adapters.inbound.rest_resources import (
 from volundr.adapters.inbound.rest_secret_requests import create_secret_requests_router
 from volundr.adapters.inbound.rest_secrets import create_canonical_secrets_router
 from volundr.adapters.inbound.rest_session_log import create_session_log_router
+from volundr.adapters.inbound.rest_session_members import create_session_members_router
 from volundr.adapters.inbound.rest_session_participants import (
     create_session_participants_router,
+    invitations_refused,
 )
 from volundr.adapters.inbound.rest_session_people import create_session_people_router
+from volundr.adapters.inbound.rest_teams import create_teams_router
 from volundr.adapters.inbound.rest_trace import create_trace_router
 from volundr.adapters.inbound.rest_tracker import create_canonical_tracker_router
 from volundr.adapters.inbound.rest_user_storage import create_user_storage_router
@@ -224,7 +227,7 @@ from volundr.domain.services.communication_ingress import CommunicationIngressSe
 from volundr.domain.services.credential import CredentialService
 from volundr.domain.services.credential_enrollment import CredentialEnrollmentService
 from volundr.domain.services.event_ingestion import EventIngestionService
-from volundr.domain.services.forge import catalog_session_definition
+from volundr.domain.services.forge import ForgeService, catalog_session_definition
 from volundr.domain.services.memory_context import MemoryContextService
 from volundr.domain.services.memory_layers import MemoryLayerService
 from volundr.domain.services.mesh_identity import MeshIdentityService
@@ -238,7 +241,9 @@ from volundr.domain.services.resident_runtime import (
 from volundr.domain.services.room_grants import RoomGrantSource
 from volundr.domain.services.secret_requests import SecretRequestService
 from volundr.domain.services.session_events import SessionEventStream
+from volundr.domain.services.session_members import SessionMembersService
 from volundr.domain.services.session_participants import SessionParticipantService
+from volundr.domain.services.team import TeamService
 from volundr.domain.services.telegram_ingress import TelegramIngressService
 from volundr.domain.services.tracker import TrackerService
 from volundr.domain.services.tracker_factory import TrackerFactory
@@ -2051,6 +2056,12 @@ def create_app(
                 )
                 app.state.project_memory_service = project_memory_service
 
+            persona_playability = SkuldPersonaPlayability(
+                definitions=settings.session_definitions,
+                default_definition=settings.default_definition,
+                resolve_definition=partial(catalog_session_definition, pricing_provider),
+            )
+
             # Create and include routers
             forge_router = create_router(
                 session_service,
@@ -2087,11 +2098,7 @@ def create_app(
                 session_participant_service=session_participant_service,
                 presented_file_store=presented_file_store,
                 guild_membership=guild_membership,
-                persona_playability=SkuldPersonaPlayability(
-                    definitions=settings.session_definitions,
-                    default_definition=settings.default_definition,
-                    resolve_definition=partial(catalog_session_definition, pricing_provider),
-                ),
+                persona_playability=persona_playability,
             )
             app.include_router(forge_router)
             app.include_router(
@@ -2486,6 +2493,47 @@ def create_app(
                     runtime_backend=runtime_backend,
                     room_role_source=settings.pod_manager.room_role_source,
                     identity_header_names=settings.identity.kwargs,
+                )
+            )
+            app.include_router(
+                create_teams_router(
+                    TeamService(
+                        ForgeService(
+                            session_service,
+                            stats_service=stats_service,
+                            token_service=token_service,
+                            pricing_provider=pricing_provider,
+                            repo_service=repo_service,
+                            chronicle_service=chronicle_service,
+                            archive_service=archive_service,
+                            project_service=project_service,
+                            session_participant_service=session_participant_service,
+                            persona_playability=persona_playability,
+                        ),
+                        session_participant_service,
+                        runtime_backend=runtime_backend,
+                        invitations_refused=invitations_refused(
+                            runtime_backend, settings.pod_manager.room_role_source
+                        ),
+                        persona_provider=session_persona_provider,
+                    ),
+                    session_participant_service,
+                    server_public_host=settings.server_public_host,
+                    instance_fields=(
+                        guild_membership.instance.fields()
+                        if guild_membership is not None and guild_membership.instance is not None
+                        else None
+                    ),
+                )
+            )
+            app.include_router(
+                create_session_members_router(
+                    SessionMembersService(
+                        repository,
+                        session_service,
+                        session_participant_service,
+                        session_room_port,
+                    )
                 )
             )
             app.include_router(

@@ -1241,6 +1241,7 @@ MESH_VALUES = {
     "transport": "nats",
     "peerId": "reviewer-1",
     "realmId": "flock-a",
+    "displayName": "reviewer",
     "persona": "reviewer",
     "role": "reviewer",
     "description": "Reviews pull requests.",
@@ -1273,6 +1274,7 @@ MESH_KEYS = {
     "transport": "transport",
     "peerId": "peer_id",
     "realmId": "realm_id",
+    "displayName": "display_name",
     "persona": "persona",
     "role": "role",
     "description": "description",
@@ -1766,6 +1768,56 @@ def test_a_runs_room_session_runs_no_agent_of_its_own():
     )
 
     assert SkuldSettings(**config).room.routed is True
+
+
+@pytest.mark.skipif(shutil.which("helm") is None, reason="Helm is required")
+def test_a_teams_agent_is_rendered_conversational():
+    from skuld.config import SkuldSettings
+
+    agent = _rendered_skuld_config("skuld", "--set", "team.conversational=true")
+    ordinary = _rendered_skuld_config("skuld")
+
+    assert SkuldSettings(**agent).session.conversational is True
+    assert SkuldSettings(**ordinary).session.conversational is False
+
+
+@pytest.mark.skipif(shutil.which("helm") is None, reason="Helm is required")
+def test_a_session_is_seated_in_the_rooms_it_is_given_without_hosting_one():
+    from skuld.config import SkuldSettings
+
+    config = _rendered_skuld_config(
+        "skuld",
+        "--set",
+        "roomSeats[0].roomId=team-1",
+        "--set",
+        "roomSeats[0].hostSessionId=root-1",
+    )
+
+    room = SkuldSettings(**config).room
+    assert room.enabled is False
+    assert [(seat.room_id, seat.host_session_id) for seat in room.seats] == [("team-1", "root-1")]
+    assert "room" not in _rendered_skuld_config("skuld")
+
+
+@pytest.mark.skipif(shutil.which("helm") is None, reason="Helm is required")
+def test_a_rooms_untargeted_delivery_is_rendered_and_refuse_by_default():
+    from skuld.config import SkuldSettings
+
+    room = (
+        "--set",
+        "mesh.enabled=true",
+        "--set",
+        "mesh.realmId=team-1",
+        "--set",
+        "room.enabled=true",
+    )
+    everyone = _rendered_skuld_config(
+        "skuld", *room, "--set", "room.routed=true", "--set", "room.untargetedDelivery=everyone"
+    )
+    ordinary = _rendered_skuld_config("skuld", *room)
+
+    assert SkuldSettings(**everyone).room.untargeted_delivery == "everyone"
+    assert SkuldSettings(**ordinary).room.untargeted_delivery == "refuse"
 
 
 @pytest.mark.skipif(shutil.which("helm") is None, reason="Helm is required")

@@ -12,7 +12,9 @@ import httpx
 from volundr.domain.models import (
     CommunicationPlatform,
     CommunicationRouteMode,
+    ConnectedPerson,
     RoomParticipantInfo,
+    RoomRoster,
     SessionCommunicationTarget,
 )
 from volundr.domain.ports import SessionCommunicationPort, SessionRepository, SessionRoomPort
@@ -87,27 +89,19 @@ class SkuldRoomAdapter(SessionRoomPort, SessionCommunicationPort):
 
     async def list_room_participants(self, session_id: UUID) -> list[RoomParticipantInfo]:
         payload = await self._get(session_id, "/api/room/participants")
-        participants = payload.get("participants", []) if isinstance(payload, dict) else []
-        result: list[RoomParticipantInfo] = []
-        for participant in participants:
-            if not isinstance(participant, dict):
-                continue
-            participant_type = participant.get("participant_type")
-            if not participant_type:
-                raise ValueError(
-                    f"Room participant {participant.get('peer_id')!r} reported no "
-                    "participant_type; the session's broker is older than this Forge"
-                )
-            result.append(
-                RoomParticipantInfo(
-                    peer_id=str(participant.get("peer_id") or participant.get("peerId") or ""),
-                    persona=str(participant.get("persona") or ""),
-                    display_name=str(participant.get("display_name") or ""),
-                    participant_type=str(participant_type),
-                    status=str(participant.get("status") or "idle"),
-                )
+        return _parse_participants(payload)
+
+    async def read_room(self, session_id: UUID) -> RoomRoster:
+        payload = await self._get(session_id, "/api/room/participants")
+        if not isinstance(payload, dict) or "connected_people" not in payload:
+            raise ValueError(
+                f"The broker of session {session_id} reported no connected_people; "
+                "it is older than this Forge. Restart the session on a current runtime image."
             )
-        return [participant for participant in result if participant.peer_id]
+        return RoomRoster(
+            participants=_parse_participants(payload),
+            connected_people=_parse_connected_people(payload),
+        )
 
     async def list_communication_targets(
         self,
@@ -193,6 +187,44 @@ class SkuldRoomAdapter(SessionRoomPort, SessionCommunicationPort):
                 (internal.scheme or "http", internal.netloc, parsed.path.rstrip("/"), "", "", "")
             )
         return _SkuldRequestTarget(base_url=base_url, headers={})
+
+
+def _parse_participants(payload: dict) -> list[RoomParticipantInfo]:
+    participants = payload.get("participants", []) if isinstance(payload, dict) else []
+    result: list[RoomParticipantInfo] = []
+    for participant in participants:
+        if not isinstance(participant, dict):
+            continue
+        participant_type = participant.get("participant_type")
+        if not participant_type:
+            raise ValueError(
+                f"Room participant {participant.get('peer_id')!r} reported no "
+                "participant_type; the session's broker is older than this Forge"
+            )
+        result.append(
+            RoomParticipantInfo(
+                peer_id=str(participant.get("peer_id") or participant.get("peerId") or ""),
+                persona=str(participant.get("persona") or ""),
+                display_name=str(participant.get("display_name") or ""),
+                participant_type=str(participant_type),
+                status=str(participant.get("status") or "idle"),
+            )
+        )
+    return [participant for participant in result if participant.peer_id]
+
+
+def _parse_connected_people(payload: dict) -> list[ConnectedPerson]:
+    people: list[ConnectedPerson] = []
+    for person in payload["connected_people"]:
+        user_id = person.get("user_id") if isinstance(person, dict) else None
+        if not user_id:
+            raise ValueError(f"A connected person of the room has no user_id: {person!r}")
+        people.append(
+            ConnectedPerson(
+                user_id=str(user_id), display_name=str(person.get("display_name") or "")
+            )
+        )
+    return people
 
 
 def _normalize_optional_str(value: object) -> str | None:

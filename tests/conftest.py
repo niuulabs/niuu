@@ -417,6 +417,18 @@ class InMemorySessionParticipantRepository(SessionParticipantRepository):
             if p.user_id == user_id and p.status == ParticipantStatus.INVITED
         ]
 
+    async def count_active_for_sessions(self, session_ids, now):
+        counts: dict[UUID, int] = {}
+        for grant in self._grants.values():
+            if grant.session_id not in session_ids:
+                continue
+            if grant.status != ParticipantStatus.ACTIVE:
+                continue
+            if grant.expires_at is not None and grant.expires_at <= now:
+                continue
+            counts[grant.session_id] = counts.get(grant.session_id, 0) + 1
+        return counts
+
     async def candidates(self, session_id, tenant_id, owner_id, query):
         held = {
             p.user_id
@@ -433,6 +445,18 @@ class InMemorySessionParticipantRepository(SessionParticipantRepository):
             if member_of == tenant_id
             and user_id != owner_id
             and user_id not in held
+            and (not needle or needle in name.lower() or needle in email.lower())
+        ]
+
+    async def tenant_people(self, tenant_id, excluded_user_id, query):
+        needle = query.lower()
+        return [
+            ParticipantCandidate(user_id=user_id, display_name=name, email=email)
+            for user_id, name, email, member_of in sorted(
+                self.directory, key=lambda e: (e[1], e[2])
+            )
+            if member_of == tenant_id
+            and user_id != excluded_user_id
             and (not needle or needle in name.lower() or needle in email.lower())
         ]
 

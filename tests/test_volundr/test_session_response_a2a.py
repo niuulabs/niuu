@@ -16,7 +16,7 @@ def test_session_response_exposes_only_explicit_safe_a2a_fields() -> None:
         },
     )
 
-    payload = SessionResponse.from_session(session).model_dump(by_alias=True)
+    payload = SessionResponse.from_session(session, people_count=1).model_dump(by_alias=True)
 
     assert payload["a2aCardUrl"].endswith("agent-card.json")
     assert payload["a2aEndpointUrl"] == "https://agent.example.test/a2a"
@@ -35,7 +35,7 @@ def test_session_response_rejects_credential_bearing_or_non_http_a2a_urls() -> N
         },
     )
 
-    payload = SessionResponse.from_session(session).model_dump(by_alias=True)
+    payload = SessionResponse.from_session(session, people_count=1).model_dump(by_alias=True)
 
     assert payload["a2aCardUrl"] is None
     assert payload["a2aEndpointUrl"] is None

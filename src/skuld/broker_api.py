@@ -1864,8 +1864,16 @@ async def close_room(body: _RoomCloseRequest) -> dict:
 
 @app.get("/api/room/participants")
 async def get_room_participants(environment_id: str | None = Query(default=None)) -> dict:
-    """Return the current participants in the active room session."""
-    return {"participants": broker.get_room_participants(environment_id=environment_id)}
+    """Return the current participants in the active room session.
+
+    ``connected_people`` is apart from ``participants`` on purpose: the verified people with a
+    live browser connection, ``[{"user_id", "display_name"}]``. They are not seated in the
+    room, so nothing that routes to its participants sees them.
+    """
+    return {
+        "participants": broker.get_room_participants(environment_id=environment_id),
+        "connected_people": broker.connected_people(),
+    }
 
 
 class _HelpAnswerRequest(BaseModel):

@@ -737,7 +737,8 @@ class BrokerForgeMcpHost(ForgeMcpHost):
         sender = PeerAddress(
             kind=PeerKind.SESSION,
             id=str(broker.session_id),
-            name=broker._settings.session.name,
+            # Named as it announced itself on the mesh (a team's agent: its role).
+            name=broker._settings.mesh.display_name or broker._settings.session.name,
             node=socket.gethostname(),
         )
         recipient = PeerAddress(kind=PeerKind.MESH_PEER, id=peer)
@@ -852,7 +853,8 @@ class BrokerForgeMcpHost(ForgeMcpHost):
         sender = PeerAddress(
             kind=PeerKind.SESSION,
             id=str(broker.session_id),
-            name=broker._settings.session.name,
+            # Named as it announced itself on the mesh (a team's agent: its role).
+            name=broker._settings.mesh.display_name or broker._settings.session.name,
             node=socket.gethostname(),
         )
         question_id = publication_event_id(adapter.peer_id, "question", request_id)

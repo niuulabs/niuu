@@ -45,6 +45,9 @@ import type {
   ProjectRole,
   ParticipantCandidate,
   ParticipantRole,
+  SessionMembers,
+  StartedTeam,
+  StartTeamRequest,
   SessionParticipant,
   SessionProjectPerson,
   SessionProjectMembership,
@@ -344,6 +347,14 @@ export interface IVolundrService {
     query: string,
     options?: SessionReadOptions,
   ): Promise<ParticipantCandidate[]>;
+  /**
+   * People of the org to invite into a team that does not exist yet: active members other
+   * than the caller, matching what was typed, on the Forge the team will start on.
+   */
+  getTeamInviteCandidates(
+    query: string,
+    options?: SessionReadOptions,
+  ): Promise<ParticipantCandidate[]>;
   /** Invite a person of the org into this chat only (not the whole project). */
   inviteSessionParticipant(
     sessionId: string,
@@ -424,6 +435,13 @@ export interface IVolundrService {
     /** Forge MCP grants for the session; the node's defaults and role grants apply on top. */
     forgeMcp?: ForgeMcpSessionOptions;
   }): Promise<VolundrSession>;
+  /**
+   * Starts a team: a root session that hosts one room and a member session per agent, all
+   * launched together. Forge creates all of it or none of it.
+   */
+  startTeam(request: StartTeamRequest): Promise<StartedTeam>;
+  /** The agents and people in a session's room, for anyone who may read the session. */
+  getSessionMembers(sessionId: string, options?: SessionReadOptions): Promise<SessionMembers>;
   evaluatePermissionAutoApproval(
     sessionId: string,
     request: PermissionAutoApprovalRequest,

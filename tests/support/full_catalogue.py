@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import atexit
 import copy
+import json
 import shutil
 import tempfile
 from collections.abc import Iterator
@@ -129,6 +130,9 @@ class _ReleasedPersonas(FilesystemPersonaAdapter):
         current = self.load_current_portable(persona_id)
         if current is not None and current.revision == revision:
             return current
+        snapshot = _released_snapshot(persona_id, revision)
+        if snapshot is not None:
+            return snapshot
         shipped = super().load_current_portable(persona_id)
         if shipped is None:
             return None
@@ -136,6 +140,21 @@ class _ReleasedPersonas(FilesystemPersonaAdapter):
             _without_later_fields(shipped), RELEASED_BUILTIN_TOOL_LISTS.get(persona_id, {})
         )
         return released if released.revision == revision else None
+
+
+#: Shipped personas exactly as the archived workflows pinned them, for those whose prompt or
+#: outcome schema has since changed (the outcome block moved from the hand-written prompt into
+#: ``produces.schema`` alone), which no field-level undo can rebuild.
+RELEASED_PERSONAS = Path(__file__).parent / "released_personas"
+
+
+def _released_snapshot(persona_id: str, revision: str) -> PortablePersonaDefinition | None:
+    """The released document of ``persona_id`` when it is the one pinned at ``revision``."""
+    path = RELEASED_PERSONAS / f"{persona_id}.json"
+    if not path.is_file():
+        return None
+    document = PortablePersonaDefinition.from_dict(json.loads(path.read_text(encoding="utf-8")))
+    return document if document.revision == revision else None
 
 
 #: Fields the shipped personas gained after the archived workflows pinned them.

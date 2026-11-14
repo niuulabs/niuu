@@ -1258,6 +1258,77 @@ describe('buildServices', () => {
     expect(session.preview).toBeUndefined();
   });
 
+  it("carries a team's root, its members and the people in the room into the list", async () => {
+    const services = buildServices({
+      demoMode: true,
+      theme: 'ice',
+      plugins: {},
+      services: {
+        forge: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/forge' },
+        ting: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/ting' },
+      },
+    } as any);
+    const forgeVolundr = volundrMocks.buildVolundrHttpAdapter.mock.results[0]?.value;
+    forgeVolundr.getSession.mockImplementation(async (id: string) =>
+      id === 'team'
+        ? {
+            id,
+            name: 'team',
+            status: 'running',
+            model: 'm',
+            team: { taskTo: 'lead' },
+            peopleCount: 2,
+            lastActive: 0,
+          }
+        : {
+            id,
+            name: 'member',
+            status: 'running',
+            model: 'm',
+            hostedBy: 'team',
+            teamMember: { lead: true },
+            lastActive: 0,
+          },
+    );
+
+    const store = services.sessionStore as any;
+    await expect(store.getSession('team')).resolves.toMatchObject({
+      team: { taskTo: 'lead' },
+      peopleCount: 2,
+    });
+    await expect(store.getSession('member')).resolves.toMatchObject({
+      hostedBy: 'team',
+      teamMember: { lead: true },
+    });
+    const plain = await store.getSession('team');
+    expect(plain).not.toHaveProperty('hostedBy');
+  });
+
+  it('starts teams and reads their members from the Forge host', async () => {
+    const services = buildServices({
+      demoMode: true,
+      theme: 'ice',
+      plugins: {},
+      services: {
+        forge: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/forge' },
+        ting: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/ting' },
+      },
+    } as any);
+    const forgeVolundr = volundrMocks.buildVolundrHttpAdapter.mock.results[0]?.value;
+    forgeVolundr.startTeam = vi.fn().mockResolvedValue({ session: { id: 'team' }, members: [] });
+    forgeVolundr.getSessionMembers = vi.fn().mockResolvedValue({ agents: [], people: [] });
+    const volundr = services.volundr as any;
+
+    const request = { name: 'n', members: [] };
+    await expect(volundr.startTeam(request)).resolves.toEqual({
+      session: { id: 'team' },
+      members: [],
+    });
+    expect(forgeVolundr.startTeam).toHaveBeenCalledWith(request);
+    await volundr.getSessionMembers('team', { instanceId: 'thor' });
+    expect(forgeVolundr.getSessionMembers).toHaveBeenCalledWith('team', { instanceId: 'thor' });
+  });
+
   it('prefers an explicit filesystem base over the derived Volundr route', () => {
     const services = buildServices({
       demoMode: true,

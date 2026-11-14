@@ -76,6 +76,10 @@ unit (see skuld.memberValues). Every line is indented four spaces, to sit under 
       {{- if .Values.session.initialPrompt }}
       initial_prompt: {{ .Values.session.initialPrompt | quote }}
       {{- end }}
+      {{- if (.Values.team | default dict).conversational }}
+      # A team's agent: it talks in its room and hands back no persona outcome.
+      conversational: true
+      {{- end }}
 
     mcp_servers: {{ .Values.mcpServers | default list | toJson }}
     transport: {{ .Values.broker.transport | default "sdk" | quote }}
@@ -186,13 +190,25 @@ unit (see skuld.memberValues). Every line is indented four spaces, to sit under 
       wait_max_s: {{ .Values.ask.waitMaxS | toJson }}
 
     {{- include "skuld.meshConfig" . | nindent 4 }}
-    {{- if .Values.room.enabled }}
+    {{- if or .Values.room.enabled .Values.roomSeats }}
 
-    # The room this session hosts: its mesh realm's members as workers.
     room:
+      {{- if .Values.room.enabled }}
+      # The room this session hosts: its mesh realm's members as workers.
       enabled: true
       environment_id: {{ .Values.room.environmentId | default .Values.mesh.realmId | quote }}
       realm_room: {{ .Values.room.realmRoom | toJson }}
       routed: {{ .Values.room.routed | toJson }}
+      untargeted_delivery: {{ .Values.room.untargetedDelivery | toJson }}
+      {{- end }}
+      {{- with .Values.roomSeats }}
+      # Rooms of other sessions this session sits in from the start (a team's room).
+      seats:
+        {{- range . }}
+        - room_id: {{ .roomId | quote }}
+          host_session_id: {{ .hostSessionId | quote }}
+          host_node: {{ .hostNode | default "" | quote }}
+        {{- end }}
+      {{- end }}
     {{- end }}
 {{- end }}

@@ -1,4 +1,5 @@
 import { useCallback, useState } from 'react';
+import { isRoomAgent } from '../workers';
 import type { KeyboardEvent } from 'react';
 import type { RoomParticipant, FileEntry } from '../types';
 
@@ -49,6 +50,8 @@ export function useMentionMenu(
   participants: ReadonlyMap<string, RoomParticipant> = new Map(),
   onFetchFiles?: (path: string, apiBase: string) => Promise<FileEntry[]>,
   eventRouting = false,
+  /** The mesh peer of the session whose room this is: it hosts the room, it is not asked. */
+  hostPeerId?: string,
 ): UseMentionMenuReturn {
   const [isOpen, setIsOpen] = useState(false);
   const [items, setItems] = useState<MentionMenuItem[]>([]);
@@ -143,8 +146,9 @@ export function useMentionMenu(
       const queryLower = query.toLowerCase();
       const agentItems: MentionMenuItem[] = Array.from(participants.values())
         // A worker that left the room can no longer be asked.
+        // Every agent working in the room: ravens, and a team's or a run's agent sessions.
         .filter(
-          (participant) => participant.participantType === 'ravn' && participant.status !== 'left',
+          (participant) => isRoomAgent(participant, hostPeerId) && participant.status !== 'left',
         )
         .flatMap((participant): MentionMenuItem[] => {
           if (!eventRouting) return [{ kind: 'agent', participant }];
@@ -171,7 +175,7 @@ export function useMentionMenu(
       // Fetch file entries if a file API is available
       void fetchFiles(query);
     },
-    [eventRouting, participants, fetchFiles],
+    [eventRouting, participants, fetchFiles, hostPeerId],
   );
 
   const handleKeyDown = useCallback(

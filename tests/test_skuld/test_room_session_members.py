@@ -427,3 +427,72 @@ async def test_a_session_message_needs_room_mode(tmp_path):
 
     with pytest.raises(RuntimeError, match="Room mode is not enabled"):
         await broker.handle_session_room_message("worker-session", "huddle-1", "Done")
+
+
+async def _mesh_member(broker, peer_id: str = "member-session", *, room_ids=("team-1",)):
+    return await broker._room_bridge.register_mesh_peer(
+        peer_id,
+        "Reviewer",
+        participant_type="skuld",
+        participant_kind="mesh",
+        environment_id="team-1",
+        room_ids=room_ids,
+    )
+
+
+async def test_a_realm_room_member_on_the_mesh_speaks_in_the_room_as_itself(tmp_path):
+    broker = _room_broker(tmp_path)
+    broker.handle_human_room_message = AsyncMock(return_value="msg-1")
+    await _mesh_member(broker)
+
+    assert await broker.handle_session_room_message("member-session", "team-1", "Done") == "msg-1"
+
+    kwargs = broker.handle_human_room_message.await_args.kwargs
+    assert kwargs["participant_id"] == "member-session"
+    assert kwargs["metadata"]["speaker_session_id"] == "member-session"
+
+
+async def test_a_member_whose_mesh_peer_id_is_not_its_session_id_is_known_by_the_verified_peer(
+    tmp_path,
+):
+    broker = _room_broker(tmp_path)
+    broker.handle_human_room_message = AsyncMock(return_value="msg-1")
+    await _mesh_member(broker, "configured-peer")
+
+    with pytest.raises(PermissionError, match="not a member of room"):
+        await broker.handle_session_room_message("member-session", "team-1", "Done")
+    assert (
+        await broker.handle_session_room_message(
+            "member-session", "team-1", "Done", caller_peer_id="configured-peer"
+        )
+        == "msg-1"
+    )
+
+
+async def test_a_mesh_peer_that_is_not_seated_in_the_room_is_refused(tmp_path):
+    broker = _room_broker(tmp_path)
+    await _mesh_member(broker, room_ids=())
+
+    with pytest.raises(PermissionError, match="not a member of room"):
+        await broker.handle_session_room_message("member-session", "team-1", "Done")
+
+
+async def test_a_room_host_that_runs_no_agent_does_not_say_a_members_post_to_a_transport(tmp_path):
+    broker = _room_broker(tmp_path)
+    broker._settings.room.routed = True
+    broker.handle_human_room_message = AsyncMock(return_value="msg-1")
+    await _mesh_member(broker)
+
+    await broker.handle_session_room_message("member-session", "team-1", "Done")
+
+    assert broker.handle_human_room_message.await_args.kwargs["deliver_to_transport"] is False
+
+
+async def test_a_host_with_its_own_agent_still_says_a_members_post_to_it(tmp_path):
+    broker = _room_broker(tmp_path)
+    broker.handle_human_room_message = AsyncMock(return_value="msg-1")
+    await _mesh_member(broker)
+
+    await broker.handle_session_room_message("member-session", "team-1", "Done")
+
+    assert broker.handle_human_room_message.await_args.kwargs["deliver_to_transport"] is True

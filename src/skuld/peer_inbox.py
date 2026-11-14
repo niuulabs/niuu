@@ -202,7 +202,7 @@ def peer_turn_id(session_id: str, message_ids: list[str]) -> str:
     return str(uuid.uuid5(uuid.NAMESPACE_URL, f"{session_id}:{_PEER_TURN_NAMESPACE}:{batch}"))
 
 
-def render_peer_turn(entries: list[PeerInboxEntry]) -> str:
+def render_peer_turn(entries: list[PeerInboxEntry], *, turns_shown_in_room: str = "") -> str:
     """The text of one turn: each message as the contract renders it, oldest first.
 
     Messages of one thread (a mesh publication and the answers to it) are rendered together
@@ -211,7 +211,7 @@ def render_peer_turn(entries: list[PeerInboxEntry]) -> str:
     is waited for.
     """
     if len(entries) == 1:
-        return render_for_harness(entries[0].envelope)
+        return render_for_harness(entries[0].envelope, turns_shown_in_room=turns_shown_in_room)
     groups: dict[str, list[PeerInboxEntry]] = {}
     for entry in entries:
         # A message with no thread is its own group.
@@ -219,7 +219,10 @@ def render_peer_turn(entries: list[PeerInboxEntry]) -> str:
         groups.setdefault(key, []).append(entry)
     blocks = []
     for key, members in groups.items():
-        body = _BATCH_SEPARATOR.join(render_for_harness(member.envelope) for member in members)
+        body = _BATCH_SEPARATOR.join(
+            render_for_harness(member.envelope, turns_shown_in_room=turns_shown_in_room)
+            for member in members
+        )
         if len(members) == 1:
             blocks.append(body)
             continue
@@ -277,6 +280,18 @@ class PeerInboxMixin:
     _peer_inbox_tasks: set[asyncio.Task[None]]
     _peer_pair_counts: dict[tuple[str, str], dict[str, int]]
     _peer_answer_waits: dict[str, AnswerWait]
+    _turn_kept_from_room: bool
+
+    def _room_turns_are_shown_in(self) -> str:
+        """The room this session's own turns are shown in, or "" when there is none.
+
+        A conversational session (a team's agent) that shares its work on its mesh realm has
+        every turn shown in the realm's room, so a message said there is answered by writing.
+        """
+        settings = self._settings
+        if not (settings.session.conversational and settings.mesh.share_work):
+            return ""
+        return settings.mesh.realm_id
 
     def _init_peer_inbox(self) -> None:
         self._peer_answer_waits = {}
@@ -486,7 +501,13 @@ class PeerInboxMixin:
                     return True
             message_ids = [entry.envelope.message_id for entry in waiting]
             turn_id = peer_turn_id(str(self.session_id), message_ids)
-            text = render_peer_turn(waiting)
+            room = self._room_turns_are_shown_in()
+            text = render_peer_turn(waiting, turns_shown_in_room=room)
+            # A team's agent answering only its teammates speaks to them (its reply and
+            # mesh_send are said in the room as sent); the rest of that turn is its own.
+            self._turn_kept_from_room = bool(room) and all(
+                entry.envelope.room_id != room for entry in waiting
+            )
             for entry in waiting:
                 entry.injected = True
             try:
@@ -500,6 +521,8 @@ class PeerInboxMixin:
                     extra_metadata={"peer_messages": message_ids},
                 )
             except Exception:
+                # No turn started: the next one decides for itself whether the room hears it.
+                self._turn_kept_from_room = False
                 await self._return_to_waiting(waiting)
                 raise
             for entry in waiting:

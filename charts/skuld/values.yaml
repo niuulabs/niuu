@@ -678,6 +678,16 @@ room:
   # -- The session runs no agent of its own: it only hosts the room (room.routed). A
   # workflow run's room session is one.
   routed: false
+  # -- What a routed room does with a browser message that names no participant
+  # (room.untargeted_delivery). `refuse`: it goes to the room's sole ravn, and two or more
+  # are refused with an error. `everyone`: it is delivered to every agent in the room (a
+  # team's room); a room with no agent refuses it.
+  untargetedDelivery: refuse
+
+# -- Rooms of other sessions this session sits in from the start (room.seats), so it can
+# speak in them with room_post before anything was said to it there. Each is
+# `{roomId, hostSessionId, hostNode}`; Forge gives a team's members their team's room.
+roomSeats: []
 
 # Mesh configuration for session-local agent flocks. Every value below is a key of Skuld's
 # `mesh` settings (skuld.config.MeshConfig), rendered into the broker's config file. A value
@@ -706,6 +716,9 @@ mesh:
   # -- Flock realm the peer announces in and discovers within (mesh.realm_id). Peers in
   # another realm are not seen.
   realmId: ""
+  # -- What this session is called on the mesh and in its room (mesh.display_name).
+  # Empty uses the session's name; a team's agents go by their role.
+  displayName: ""
   # -- Persona name announced when the session has no pinned persona (mesh.persona).
   # Null keeps `coder`. A pinned persona's id is announced instead.
   persona: null
