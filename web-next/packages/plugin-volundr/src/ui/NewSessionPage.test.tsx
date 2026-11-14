@@ -301,7 +301,9 @@ describe('NewSessionPage — a team', () => {
   it('shows who is in the team, the room and what happens next', async () => {
     renderTeam();
 
-    expect(screen.getByText(/A team of agents picks it up/)).toBeInTheDocument();
+    expect(
+      screen.getByText(/A team of agents picks it up together, in one workspace/),
+    ).toBeInTheDocument();
     expect(
       screen.getByText('Optional — without one they wait in the room for your first message'),
     ).toBeInTheDocument();
@@ -319,7 +321,11 @@ describe('NewSessionPage — a team', () => {
     const room = screen.getByTestId('new-team-room');
     expect(room).toHaveTextContent('Everyone joins one room');
     expect(room).toHaveTextContent('All 2 agents start and wait');
-    expect(screen.getByText('2 sandboxes boot on the same branch, one per agent.')).toBeVisible();
+    expect(
+      screen.getByText(
+        'One workspace boots with your repository checked out; the 2 agents work in it together.',
+      ),
+    ).toBeVisible();
     expect(
       screen.getByText('They wait until you or someone in the room sends the first message.'),
     ).toBeInTheDocument();
@@ -535,7 +541,9 @@ describe('NewSessionPage — a team', () => {
     fireEvent.click(screen.getByTestId('new-team-remove-agent-2'));
     expect(screen.getByTestId('new-team-remove-agent-1')).toBeDisabled();
     expect(screen.getByTestId('new-session-start')).toHaveTextContent('Start session');
-    expect(screen.getByText('A sandbox boots on the branch for the agent.')).toBeVisible();
+    expect(
+      screen.getByText('One workspace boots with your repository checked out for the agent.'),
+    ).toBeVisible();
   });
 
   it('numbers the agents when there is no persona catalog', () => {

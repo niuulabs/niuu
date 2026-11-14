@@ -80,7 +80,7 @@ const LAUNCH_MODES = [
 ];
 const LEDE: Record<LaunchMode, string> = {
   one: 'Describe the task in your own words. A coding agent picks it up in its own sandbox.',
-  team: 'Describe the task in your own words. A team of agents picks it up, each in its own sandbox, talking in one room.',
+  team: 'Describe the task in your own words. A team of agents picks it up together, in one workspace, talking in one room.',
 };
 
 const WHAT_HAPPENS_NEXT = [

@@ -9,8 +9,10 @@ import {
   engineOf,
   initialTeamAgents,
   leadTeamAgent,
+  modelOf,
   newTeamAgent,
   patchTeamAgent,
+  providerOf,
   removeTeamAgent,
   roomPreviewLines,
   teamAgentLabel,
@@ -90,7 +92,12 @@ describe('the agents of a team being set up', () => {
       definitionKey: 'skuldCodex',
     });
     expect(agents[1]).toMatchObject({ personaName: 'reviewer', definitionKey: 'skuldCodex' });
-    expect(agents[0]).toMatchObject({ personaName: '', definitionKey: '' });
+    expect(agents[0]).toMatchObject({
+      personaName: '',
+      definitionKey: '',
+      providerId: '',
+      model: '',
+    });
   });
 
   it('runs an agent on its pick, else on the first engine', () => {
@@ -193,7 +200,7 @@ describe('what happens next for a team', () => {
   it('follows the opening task', () => {
     const base = { agentCount: 3, leadLabel: 'Coordinator' };
     expect(teamNextSteps({ ...base, hasTask: false, taskTo: 'lead' })).toEqual([
-      '3 sandboxes boot on the same branch, one per agent.',
+      'One workspace boots with your repository checked out; the 3 agents work in it together.',
       'They join one room and see each other’s messages, like a workflow step.',
       'They wait until you or someone in the room sends the first message.',
       'You see them all under one session and can message one or all.',
@@ -208,7 +215,7 @@ describe('what happens next for a team', () => {
       'Each agent reads the task and they agree who does what.',
     );
     expect(teamNextSteps({ ...base, agentCount: 1, hasTask: false, taskTo: 'lead' })[0]).toBe(
-      'A sandbox boots on the branch for the agent.',
+      'One workspace boots with your repository checked out for the agent.',
     );
   });
 });
@@ -274,5 +281,78 @@ describe('the request that starts a team', () => {
     expect(() => buildStartTeamRequest({ ...input, engines: [] })).toThrow(
       'No session engine is available',
     );
+  });
+});
+
+describe('the provider and model of each agent', () => {
+  const server = {
+    connection: {
+      ...connection('ai-server', 'ai_provider'),
+      config: { models: ['llama3.2:latest', 'qwen3:8b'] },
+    } as IntegrationConnection,
+    entry: { slug: 'model-server', integrationType: 'ai_provider' } as never,
+    vendor: 'local',
+  };
+  const twoProviders: EngineOption = {
+    definition: definition('skuldClaude', 'Claude Code', 'claude-sonnet'),
+    providers: [...claude.providers, server],
+  };
+  const source = { type: 'git' as const, repo: 'github.com/niuulabs/niuu', branch: 'dev' };
+  const input = {
+    name: 'niuu',
+    source,
+    task: '',
+    taskTo: 'lead' as const,
+    engines: [twoProviders, codex],
+    invitees: [],
+    integrations: [
+      connection('ai-claude', 'ai_provider'),
+      server.connection,
+      connection('ai-openai', 'ai_provider'),
+      connection('git-1', 'source_control'),
+    ],
+    repos: [],
+    repoUrl: 'github.com/niuulabs/niuu',
+  };
+
+  it('runs an agent on the engine first provider and its default model until it picks another', () => {
+    const [agent] = initialTeamAgents();
+    expect(providerOf(agent!, twoProviders)?.connection.id).toBe('ai-claude');
+    expect(modelOf(agent!, twoProviders)).toBe('claude-sonnet');
+    expect(providerOf(agent!, undefined)).toBeUndefined();
+  });
+
+  it('runs an agent on the provider it picked, on its first served model or the one it picked', () => {
+    const [agent] = patchTeamAgent(initialTeamAgents(), 'agent-1', { providerId: 'ai-server' });
+    expect(providerOf(agent!, twoProviders)?.connection.id).toBe('ai-server');
+    expect(modelOf(agent!, twoProviders)).toBe('llama3.2:latest');
+    const [picked] = patchTeamAgent([agent!], 'agent-1', { model: 'qwen3:8b' });
+    expect(modelOf(picked!, twoProviders)).toBe('qwen3:8b');
+    // a pick the provider does not serve is not sent
+    const [stale] = patchTeamAgent([agent!], 'agent-1', { model: 'gpt-x' });
+    expect(modelOf(stale!, twoProviders)).toBe('llama3.2:latest');
+  });
+
+  it('starts over on the first provider and default model when the engine changes', () => {
+    const picked = patchTeamAgent(initialTeamAgents(), 'agent-1', {
+      providerId: 'ai-server',
+      model: 'qwen3:8b',
+    });
+    const [same] = patchTeamAgent(picked, 'agent-1', { definitionKey: '' });
+    expect(same).toMatchObject({ providerId: 'ai-server', model: 'qwen3:8b' });
+    const [changed] = patchTeamAgent(picked, 'agent-1', { definitionKey: 'skuldCodex' });
+    expect(changed).toMatchObject({ providerId: '', model: '', definitionKey: 'skuldCodex' });
+  });
+
+  it('gives each member its own model and attaches the union of the chosen providers', () => {
+    const agents = patchTeamAgent(initialTeamAgents(), 'agent-2', {
+      providerId: 'ai-server',
+      model: 'qwen3:8b',
+    });
+    const request = buildStartTeamRequest({ ...input, agents });
+    expect(request.members.map((member) => member.model)).toEqual(['claude-sonnet', 'qwen3:8b']);
+    expect(new Set(request.integrationIds)).toEqual(new Set(['ai-claude', 'ai-server', 'git-1']));
+    // the provider nobody chose is not attached
+    expect(request.integrationIds).not.toContain('ai-openai');
   });
 });

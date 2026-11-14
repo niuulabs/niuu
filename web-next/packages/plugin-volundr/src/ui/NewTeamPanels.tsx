@@ -5,6 +5,7 @@ import type { PersonaSummary } from '@niuulabs/domain';
 import type { ParticipantCandidate, SessionTeamTaskTo } from '../models/volundr.model';
 import { CandidatePicker, nameOf } from './CandidatePicker';
 import { getDefinitionRune } from './launchWizardModel';
+import { EngineSelect } from './EngineSelect';
 import type { EngineOption } from './launchEngines';
 import { MemberAvatar, memberColor } from './MemberAvatar';
 import {
@@ -23,7 +24,7 @@ import {
 import './NewTeam.css';
 
 const SELECT =
-  'niuu:min-w-0 niuu:flex-1 niuu:rounded-md niuu:border niuu:border-border-subtle niuu:bg-bg-secondary niuu:px-3 niuu:py-2 niuu:text-sm niuu:text-text-primary';
+  'niuu:min-w-32 niuu:flex-1 niuu:rounded-md niuu:border niuu:border-border-subtle niuu:bg-bg-secondary niuu:px-3 niuu:py-2 niuu:text-sm niuu:text-text-primary';
 const GHOST_BTN =
   'niuu:inline-flex niuu:items-center niuu:gap-1.5 niuu:rounded-full niuu:border niuu:border-dashed niuu:border-border niuu:px-3 niuu:py-1.5 niuu:text-xs niuu:text-text-secondary niuu:transition-colors niuu:hover:border-brand niuu:hover:text-text-primary';
 
@@ -76,7 +77,7 @@ export function TeamMembersEditor({
             <li
               key={agent.id}
               data-testid={`new-team-agent-${agent.id}`}
-              className="niuu:flex niuu:flex-wrap niuu:items-center niuu:gap-2 niuu:rounded-xl niuu:border niuu:border-border-subtle niuu:bg-bg-primary niuu:p-2.5 sm:niuu:flex-nowrap"
+              className="niuu:flex niuu:flex-wrap niuu:items-center niuu:gap-2 niuu:rounded-xl niuu:border niuu:border-border-subtle niuu:bg-bg-primary niuu:p-2.5"
             >
               <MemberAvatar
                 kind="agent"
@@ -105,21 +106,24 @@ export function TeamMembersEditor({
                   Agent {index + 1}
                 </span>
               )}
-              <select
-                aria-label={`Engine of agent ${index + 1}`}
+              <EngineSelect
+                variant="inline"
+                engines={engines}
                 value={engine?.definition.key ?? ''}
-                onChange={(event) =>
-                  onChange(patchTeamAgent(agents, agent.id, { definitionKey: event.target.value }))
+                labelSuffix={` of agent ${index + 1}`}
+                selectClassName={SELECT}
+                testId={`new-team-engine-${agent.id}`}
+                selectedIntegrationIds={agent.providerId ? [agent.providerId] : []}
+                model={agent.model}
+                onChange={(definitionKey) =>
+                  onChange(patchTeamAgent(agents, agent.id, { definitionKey }))
                 }
-                className={SELECT}
-                data-testid={`new-team-engine-${agent.id}`}
-              >
-                {engines.map(({ definition }) => (
-                  <option key={definition.key} value={definition.key}>
-                    {definition.displayName}
-                  </option>
-                ))}
-              </select>
+                onProviderChange={(providerId) =>
+                  // Another provider serves its own models: the old pick does not carry over.
+                  onChange(patchTeamAgent(agents, agent.id, { providerId, model: '' }))
+                }
+                onModelChange={(model) => onChange(patchTeamAgent(agents, agent.id, { model }))}
+              />
               <button
                 type="button"
                 aria-pressed={agent.lead}

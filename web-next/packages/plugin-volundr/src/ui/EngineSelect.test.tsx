@@ -256,3 +256,54 @@ describe('EngineSelect with a model server', () => {
     expect(screen.queryByTestId('engine-select-model')).toBeNull();
   });
 });
+
+describe('EngineSelect inline', () => {
+  const twoAccounts = (): EngineOption => {
+    const option = engine('skuldClaude', 'Claude Code');
+    option.providers.push({
+      connection: {
+        id: 'model-server-local',
+        slug: 'model-server',
+        config: { models: ['llama3.2:latest', 'qwen3:8b'] },
+        createdAt: '',
+        updatedAt: '',
+      },
+      entry: {
+        id: 'model-server',
+        slug: 'model-server',
+        name: 'Model server',
+        description: '',
+        integrationType: 'ai_provider',
+        modelVendor: 'local',
+      },
+      vendor: 'local',
+    });
+    return option;
+  };
+
+  it('renders only the selects, named for their row, with the account and model it needs', () => {
+    const onProviderChange = vi.fn();
+    const onModelChange = vi.fn();
+    render(
+      <EngineSelect
+        variant="inline"
+        labelSuffix=" of agent 2"
+        engines={[twoAccounts()]}
+        value="skuldClaude"
+        onChange={() => {}}
+        selectedIntegrationIds={['model-server-local']}
+        onProviderChange={onProviderChange}
+        onModelChange={onModelChange}
+        testId="row"
+      />,
+    );
+    expect(screen.getByLabelText('Engine of agent 2')).toBeInTheDocument();
+    expect(screen.queryByText('Manage providers')).not.toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText('Account of agent 2'), {
+      target: { value: 'skuldClaude-conn' },
+    });
+    expect(onProviderChange).toHaveBeenCalledWith('skuldClaude-conn');
+    fireEvent.change(screen.getByTestId('row-model'), { target: { value: 'qwen3:8b' } });
+    expect(onModelChange).toHaveBeenCalledWith('qwen3:8b');
+  });
+});

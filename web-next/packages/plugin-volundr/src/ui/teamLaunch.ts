@@ -7,6 +7,7 @@ import type {
 } from '../models/volundr.model';
 import {
   launchModel,
+  type ConnectedProvider,
   quickLaunchIntegrationIds,
   selectedEngineProvider,
   type EngineOption,
@@ -23,6 +24,10 @@ export interface TeamAgentDraft {
   personaName: string;
   /** The engine's definition key; empty is the first engine this person can run. */
   definitionKey: string;
+  /** The connection id of the provider that runs the agent; empty is the engine's first provider. */
+  providerId: string;
+  /** A model the provider serves; empty is the provider's first, else the engine's default. */
+  model: string;
   lead: boolean;
 }
 
@@ -45,7 +50,7 @@ export function removeTeamInvitee(invitees: readonly TeamInvitee[], userId: stri
 }
 
 export function newTeamAgent(id: string, lead = false): TeamAgentDraft {
-  return { id, personaName: '', definitionKey: '', lead };
+  return { id, personaName: '', definitionKey: '', providerId: '', model: '', lead };
 }
 
 /** The agents a team starts from: a lead and one more. */
@@ -71,9 +76,29 @@ export function leadTeamAgent(agents: readonly TeamAgentDraft[], id: string): Te
 export function patchTeamAgent(
   agents: readonly TeamAgentDraft[],
   id: string,
-  patch: Partial<Pick<TeamAgentDraft, 'personaName' | 'definitionKey'>>,
+  patch: Partial<Pick<TeamAgentDraft, 'personaName' | 'definitionKey' | 'providerId' | 'model'>>,
 ): TeamAgentDraft[] {
-  return agents.map((agent) => (agent.id === id ? { ...agent, ...patch } : agent));
+  return agents.map((agent) => {
+    if (agent.id !== id) return agent;
+    // Another engine has its own providers and default model: the old pick does not carry over.
+    const engineChanged =
+      patch.definitionKey !== undefined && patch.definitionKey !== agent.definitionKey;
+    const reset = engineChanged ? { providerId: '', model: '' } : {};
+    return { ...agent, ...reset, ...patch };
+  });
+}
+
+/** The provider that runs an agent on its engine: its own pick, else the engine's first. */
+export function providerOf(
+  agent: TeamAgentDraft,
+  engine: EngineOption | undefined,
+): ConnectedProvider | undefined {
+  return selectedEngineProvider(engine, agent.providerId ? [agent.providerId] : []);
+}
+
+/** The model an agent runs: its pick when the provider serves it, else the provider's default. */
+export function modelOf(agent: TeamAgentDraft, engine: EngineOption | undefined): string {
+  return launchModel(engine, providerOf(agent, engine), agent.model);
 }
 
 /** The engine an agent runs on: its own pick, else the first one this person can run. */
@@ -148,8 +173,8 @@ export function teamNextSteps(input: {
   const { agentCount, leadLabel, hasTask, taskTo } = input;
   const boot =
     agentCount === 1
-      ? 'A sandbox boots on the branch for the agent.'
-      : `${agentCount} sandboxes boot on the same branch, one per agent.`;
+      ? 'One workspace boots with your repository checked out for the agent.'
+      : `One workspace boots with your repository checked out; the ${agentCount} agents work in it together.`;
   let task = 'Each agent reads the task and they agree who does what.';
   if (!hasTask) task = 'They wait until you or someone in the room sends the first message.';
   else if (taskTo === 'lead')
@@ -189,7 +214,7 @@ export function buildStartTeamRequest(input: {
         'No session engine is available for this agent. Connect an AI provider that can run one.',
       );
     }
-    const provider = selectedEngineProvider(engine, []);
+    const provider = providerOf(agent, engine);
     for (const id of quickLaunchIntegrationIds({
       provider,
       integrations: input.integrations,
@@ -200,7 +225,7 @@ export function buildStartTeamRequest(input: {
       integrationIds.add(id);
     }
     return {
-      model: launchModel(engine, provider, ''),
+      model: modelOf(agent, engine),
       definition: engine.definition.key,
       personaName: agent.personaName,
       lead: agent.lead,
