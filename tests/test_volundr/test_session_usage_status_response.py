@@ -70,7 +70,7 @@ def session(**changes):
 def test_rest_status_list_and_existing_event_share_the_public_context():
     s = session(session_usage=copy.deepcopy(USAGE))
     status = SessionStatusResponse.from_session(s, host="served", now=NOW).model_dump(mode="json")
-    row = SessionResponse.from_session(s).model_dump(mode="json")
+    row = SessionResponse.from_session(s, people_count=1).model_dump(mode="json")
     event = InMemoryEventBroadcaster().create_session_event(EventType.SESSION_UPDATED, s)
     assert "session_usage" not in s.model_dump(mode="json")
     assert s.model_copy(update={"name": "renamed"}).session_usage == s.session_usage

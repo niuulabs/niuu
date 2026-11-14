@@ -25,14 +25,14 @@ def test_response_serves_work_facts_and_open_controls():
     session = _session(
         last_work_at=at, open_tool_count=2, activity_metadata={"open_controls": controls}
     )
-    body = SessionResponse.from_session(session).model_dump()
+    body = SessionResponse.from_session(session, people_count=1).model_dump()
     assert body["last_work_at"] == at.isoformat()
     assert body["tool_open"] is True
     assert body["open_controls"] == controls
 
 
 def test_unknown_controls_stay_null_never_empty():
-    body = SessionResponse.from_session(_session()).model_dump()
+    body = SessionResponse.from_session(_session(), people_count=1).model_dump()
     assert body["last_work_at"] is None
     assert body["tool_open"] is False
     assert body["open_controls"] is None

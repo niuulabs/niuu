@@ -94,7 +94,7 @@ def test_every_reader_reports_the_model_in_effect_and_keeps_the_launch_record():
     )
     assert session.model == "claude-fable-5-1"  # launch config and restart read this
     assert session.effective_model == "claude-opus-5-5"
-    assert SessionResponse.from_session(session).model == "claude-opus-5-5"
+    assert SessionResponse.from_session(session, people_count=1).model == "claude-opus-5-5"
     assert SessionStatusResponse.from_session(session).model == "claude-opus-5-5"
     event = InMemoryEventBroadcaster().create_session_event(EventType.SESSION_UPDATED, session)
     assert event.data["model"] == "claude-opus-5-5"
@@ -103,7 +103,7 @@ def test_every_reader_reports_the_model_in_effect_and_keeps_the_launch_record():
 def test_without_a_reported_model_the_launch_model_is_shown():
     session = Session(name="fresh", model="claude-fable-5-1", status=SessionStatus.RUNNING)
     assert session.effective_model == "claude-fable-5-1"
-    assert SessionResponse.from_session(session).model == "claude-fable-5-1"
+    assert SessionResponse.from_session(session, people_count=1).model == "claude-fable-5-1"
 
 
 async def test_a_model_change_publishes_one_session_updated_carrying_it():
