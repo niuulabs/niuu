@@ -751,6 +751,15 @@ class TestBuildInitConfig:
         }
         assert "CREDENTIAL_ENROLLMENT_RUNNER" in _OPERATOR_OWNED_LOCAL_ENV
 
+    def test_sessions_get_their_credentials_rendered_from_the_local_store(self) -> None:
+        env = _resolve_local_pod_manager_env(CLISettings(mode="mini"))
+
+        injection = json.loads(env["SECRET_INJECTION"])
+        assert injection["adapter"].endswith("SessionFileSecretInjectionAdapter")
+        store = json.loads(env["CREDENTIAL_STORE"])["kwargs"]["base_dir"]
+        assert injection["kwargs"]["base_dir"] == store
+        assert "SECRET_INJECTION" in _OPERATOR_OWNED_LOCAL_ENV
+
     def test_sessions_read_connections_where_settings_writes_them(self) -> None:
         from niuu.service_databases import database_name_for_service
 
