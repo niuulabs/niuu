@@ -485,6 +485,28 @@ describe('NewSessionPage — a team', () => {
     expect(startTeam.mock.calls[0]![0].instanceId).toBe('mock-volundr-default');
   });
 
+  it('starts the team on the host it is asked to run on, and remembers it', async () => {
+    const service = createMockVolundrService();
+    const startTeam = vi.fn(service.startTeam);
+    service.startTeam = startTeam;
+    try {
+      renderTeam(service);
+
+      const host = await screen.findByTestId('new-session-host');
+      expect(host).toHaveValue('mock-volundr-default');
+      fireEvent.change(host, { target: { value: 'mock-volundr-gpu' } });
+      await waitFor(() => expect(screen.getByTestId('new-session-start')).toBeEnabled());
+      fireEvent.click(screen.getByTestId('new-session-start'));
+
+      await waitFor(() => expect(startTeam).toHaveBeenCalledTimes(1));
+      expect(startTeam.mock.calls[0]![0].instanceId).toBe('mock-volundr-gpu');
+      // The quick launch reads the same preference, so both start on the host last chosen.
+      expect(localStorage.getItem('niuu.forge.launch.host')).toContain('mock-volundr-gpu');
+    } finally {
+      localStorage.clear();
+    }
+  });
+
   it('invites a person found on that Forge, shows them in the room and sends their id', async () => {
     const service = createMockVolundrService();
     const startTeam = vi.fn(service.startTeam);

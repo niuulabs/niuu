@@ -32,13 +32,9 @@ import {
   quickLaunchIntegrationIds,
   selectedEngineProvider,
 } from './launchEngines';
-import {
-  defaultTargetId,
-  quickLaunchName,
-  quickLaunchSource,
-  useQuickLaunch,
-} from './hooks/useQuickLaunch';
+import { quickLaunchName, quickLaunchSource, useQuickLaunch } from './hooks/useQuickLaunch';
 import { useSessionList } from './hooks/useSessionStore';
+import { useForgePreference } from './useForgePreference';
 import { SESSION_DOT, compareSessionsByActivity } from './sessions/sessionLabels';
 import { LaunchWizard } from './LaunchWizard';
 import { TaskToPicker, TeamMembersEditor, TeamRoomPreview } from './NewTeamPanels';
@@ -52,6 +48,9 @@ import {
   teamStartLabel,
   type TeamAgentDraft,
 } from './teamLaunch';
+
+const HOST_SELECT =
+  'niuu:w-full niuu:rounded-md niuu:border niuu:border-border-subtle niuu:bg-bg-secondary niuu:px-3 niuu:py-2 niuu:text-sm niuu:text-text-primary';
 
 type RepoCatalogService = {
   getRepos(): Promise<RepoRecord[]>;
@@ -174,6 +173,12 @@ export function NewSessionPage() {
     () => (targetsQuery.data ?? []).filter((target) => target.enabled),
     [targetsQuery.data],
   );
+  // The host the quick launch last used is this page's too, so both start where you expect.
+  const [preferredHost, setPreferredHost] = useForgePreference<string>('launch.host', '');
+  const host =
+    targets.find((target) => target.id === preferredHost) ??
+    targets.find((target) => target.isDefault) ??
+    targets[0];
   const recent = useMemo(
     () => [...(sessionsQuery.data ?? [])].sort(compareSessionsByActivity).slice(0, RECENT_LIMIT),
     [sessionsQuery.data],
@@ -201,8 +206,8 @@ export function NewSessionPage() {
     !nameError &&
     !creating &&
     !loadError;
-  // The same Forge a single launch goes to; the people to invite are found on it too.
-  const teamInstanceId = defaultTargetId(targets);
+  // The Forge the team starts on; the people to invite are found on it too.
+  const teamInstanceId = host?.id;
   const inviteSearch = {
     queryKey: ['volundr', 'team-invite-candidates', teamInstanceId ?? ''] as const,
     fetcher: (typed: string, signal?: AbortSignal) =>
@@ -243,7 +248,7 @@ export function NewSessionPage() {
         source: quickLaunchSource(false, repoValue, branch),
         definition: selectedDefinition,
         model: launchModel(selectedEngine, provider, ''),
-        instanceId: defaultTargetId(targets),
+        instanceId: host?.id,
         initialPrompt: task,
         personaName,
         integrationIds: quickLaunchIntegrationIds({
@@ -397,6 +402,24 @@ export function NewSessionPage() {
             )}
           </Field>
         </div>
+
+        {targets.length > 1 && (
+          <Field label="Runs on" hint="The Forge host the sessions start on">
+            <select
+              className={HOST_SELECT}
+              aria-label="Runs on"
+              value={host?.id ?? ''}
+              onChange={(event) => setPreferredHost(event.target.value)}
+              data-testid="new-session-host"
+            >
+              {targets.map((target) => (
+                <option key={target.id} value={target.id}>
+                  {target.name}
+                </option>
+              ))}
+            </select>
+          </Field>
+        )}
 
         {!team && (
           <>
