@@ -18,7 +18,10 @@ from typing import TYPE_CHECKING, Any
 
 import typer
 
-from cli.services.compose_bundle import WORKLOAD_IDENTITY_CONTRIBUTOR
+from cli.services.compose_bundle import (
+    SECRET_INJECTION_CONTRIBUTOR,
+    WORKLOAD_IDENTITY_CONTRIBUTOR,
+)
 from cli.services.manager import ServiceState, StartupError
 from cli.services.preflight import (
     PreflightConfig,
@@ -549,12 +552,18 @@ OPENSHELL_POD_MANAGER_ADAPTER = (
 LOCAL_RESIDENT_RUNTIME_ADAPTER = (
     "volundr.adapters.outbound.local_resident_runtime.LocalContainerResidentRuntimeController"
 )
+SESSION_FILE_SECRET_INJECTION_ADAPTER = (
+    "volundr.adapters.outbound.session_file_secret_injection.SessionFileSecretInjectionAdapter"
+)
+LOCAL_LOGIN_RUNNER_ADAPTER = "volundr.adapters.outbound.local_login_runner.LocalLoginRunner"
 MINI_RESIDENTS_DIR = "~/.niuu/residents"
 #: Local defaults an operator can replace by setting the variable themselves.
 _OPERATOR_OWNED_LOCAL_ENV = frozenset(
     {
         "RESIDENT_RUNTIMES",
         "CREDENTIAL_STORE",
+        "CREDENTIAL_ENROLLMENT_RUNNER",
+        "SECRET_INJECTION",
         "MIMIR__DEPLOYMENT",
         "PROJECTS__MEMORY__DIRECTORY_ADAPTER",
         "PROJECTS__MEMORY__DIRECTORY_KWARGS",
@@ -737,12 +746,37 @@ def _resolve_local_pod_manager_env(settings: CLISettings) -> dict[str, str]:
         # machine has none of: switched off rather than left to emit a token volume that
         # neither local sessions nor registered hosts can be given.
         "SESSION_CONTRIBUTORS": json.dumps(
-            [{"adapter": WORKLOAD_IDENTITY_CONTRIBUTOR, "kwargs": {"enabled": False}}]
+            [
+                # Renders a session's credentials through SECRET_INJECTION below; without
+                # it no connection's credential reaches a local session.
+                {"adapter": SECRET_INJECTION_CONTRIBUTOR, "kwargs": {}},
+                {"adapter": WORKLOAD_IDENTITY_CONTRIBUTOR, "kwargs": {"enabled": False}},
+            ]
         ),
         "CREDENTIAL_STORE": json.dumps(
             {
                 "adapter": ("volundr.adapters.outbound.file_credential_store.FileCredentialStore"),
                 "kwargs": {"base_dir": str(workspaces_dir.parent / "credentials")},
+            }
+        ),
+        # A session's credentials (a connection's token, an attached key) are rendered per
+        # session from the same store, and the host-process runtime gives a session the
+        # rendered variables as its environment.
+        "SECRET_INJECTION": json.dumps(
+            {
+                "adapter": SESSION_FILE_SECRET_INJECTION_ADAPTER,
+                "kwargs": {
+                    "base_dir": str(workspaces_dir.parent / "credentials"),
+                    "sessions_dir": str(workspaces_dir.parent / "session-secrets"),
+                },
+            }
+        ),
+        # Subscription sign-in (Claude, Codex, Grok) runs the official CLI on this host,
+        # where local sessions run it too: Claude with the binary sessions use.
+        "CREDENTIAL_ENROLLMENT_RUNNER": json.dumps(
+            {
+                "adapter": LOCAL_LOGIN_RUNNER_ADAPTER,
+                "kwargs": {"claude_executable": str(kwargs.get("claude_binary") or "")},
             }
         ),
     }
@@ -809,6 +843,10 @@ def _resolve_local_pod_manager_env(settings: CLISettings) -> dict[str, str]:
         # A resident runtime references its realm by foreign key in Forge's
         # database, so a host that embeds Forge keeps one realm store there.
         env["NIUU__REALM_DATABASE"] = database_name_for_service("volundr")
+        # Connections are created through the shared API (niuu_shared), as in docker
+        # mode: sessions must resolve their integration ids from that same database,
+        # or every connection made in Settings is missing to Forge.
+        env["INTEGRATIONS__DATABASE_NAME"] = database_name_for_service("niuu-shared")
     return env
 
 
