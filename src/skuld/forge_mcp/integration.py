@@ -269,6 +269,8 @@ class ForgeSessionMixin:
                 transcript_turn_max_chars=cfg.transcript_turn_max_chars,
                 output_max_chars=cfg.output_max_chars,
             ),
+            # A team's agents talk to each other: a message to a teammate can be answered.
+            mesh_replies_by_default=self._settings.session.conversational,
         )
         return self._forge_mcp_toolbox_cache
 

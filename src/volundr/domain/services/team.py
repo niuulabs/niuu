@@ -451,7 +451,9 @@ def team_context_prompt(
         f'"{room_id}") is only for a note to the room when you are not answering anyone.\n\n'
         "Your teammates do not read the room. "
         f"To message one teammate, call `{MESSAGE_PEER_TOOL}` with `peer` (their peer "
-        f"id) and `content`. `{LIST_PEERS_TOOL}` lists the peers on your mesh: a teammate's "
+        f"id) and `content`; they can answer you, and their answer comes to you as a message. "
+        f"When a teammate messages you, answer them with `reply`. `{LIST_PEERS_TOOL}` lists "
+        "the peers on your mesh: a teammate's "
         "`name` is the name above and its `peer_id` is what "
         f"`{MESSAGE_PEER_TOOL}` takes. To put a question to several teammates at once, use "
         f"`{ASK_PEERS_TOOL}` with their peer ids in `peers`."

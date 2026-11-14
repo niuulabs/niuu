@@ -2202,3 +2202,47 @@ class TestUnconfirmedSends:
 
         assert result.is_error and "may have been delivered" in result.text
         assert "'r-3'" in result.text and host.asks == []
+
+
+class TestTeammatesAnswerEachOther:
+    """A team's agents talk to each other: a message to a teammate can be answered."""
+
+    def _team_toolbox(self) -> tuple[ForgeMcpToolbox, FakeHost]:
+        host = FakeHost()
+        toolbox = ForgeMcpToolbox(
+            client=FakeClient(),
+            host=host,
+            grants=(),
+            limits=LIMITS,
+            mesh_replies_by_default=True,
+        )
+        return toolbox, host
+
+    async def test_a_team_agents_message_can_be_answered_by_default(self) -> None:
+        toolbox, host = self._team_toolbox()
+
+        await toolbox.call("mesh_send", {"peer": "peer-7", "content": "hello"})
+
+        assert host.mesh_sends[0]["expect_reply"] is True
+
+    async def test_saying_no_answer_is_wanted_still_holds(self) -> None:
+        toolbox, host = self._team_toolbox()
+
+        await toolbox.call("mesh_send", {"peer": "peer-7", "content": "fyi", "expect_reply": False})
+
+        assert host.mesh_sends[0]["expect_reply"] is False
+
+    async def test_any_other_session_asks_for_an_answer_only_when_it_says_so(self) -> None:
+        toolbox, _, host = _toolbox()
+
+        await toolbox.call("mesh_send", {"peer": "peer-7", "content": "hello"})
+
+        assert host.mesh_sends[0]["expect_reply"] is False
+
+    def test_a_team_agent_is_told_its_peers_answer_by_default(self) -> None:
+        toolbox, _ = self._team_toolbox()
+
+        (spec,) = [tool for tool in toolbox.list_tools() if tool["name"] == "mesh_send"]
+
+        assert spec["inputSchema"]["properties"]["expect_reply"]["default"] is True
+        assert "may answer you" in spec["description"]

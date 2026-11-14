@@ -282,7 +282,8 @@ class _RoomPostArgs(_Args):
 class _MeshSendArgs(_Args):
     peer: str = Field(min_length=1, max_length=200)
     content: str = Field(min_length=1)
-    expect_reply: bool = False
+    #: Unset takes the session's default (``ForgeMcpToolbox(mesh_replies_by_default=...)``).
+    expect_reply: bool | None = None
     request_id: str | None = Field(default=None, pattern=_REQUEST_ID_PATTERN)
 
     @field_validator("content")
@@ -1861,6 +1862,22 @@ def _validation_text(tool: str, exc: ValidationError) -> str:
 # --------------------------------------------------------------------------- dispatch
 
 
+def _answerable_mesh_send(spec: ToolSpec) -> ToolSpec:
+    """``mesh_send`` as a session whose peers answer by default lists it."""
+    properties = dict(spec.input_schema["properties"])
+    properties["expect_reply"] = {
+        "type": "boolean",
+        "default": True,
+        "description": "Whether the peer may answer you. On by default: your peers talk back.",
+    }
+    return replace(
+        spec,
+        description=spec.description
+        + " Here a peer you message may answer you unless you set `expect_reply` to false.",
+        input_schema={**spec.input_schema, "properties": properties},
+    )
+
+
 class ForgeMcpToolbox:
     """Lists and runs the Forge MCP tools against a :class:`ForgeClient` and a host."""
 
@@ -1872,12 +1889,21 @@ class ForgeMcpToolbox:
         grants: Iterable[ForgeMcpGrant | str],
         limits: ForgeMcpLimits,
         notify_mode: ForgeMcpNotifyMode = ForgeMcpNotifyMode.TRANSCRIPT,
+        mesh_replies_by_default: bool = False,
     ) -> None:
+        """``mesh_replies_by_default``: a message to a peer can be answered unless the agent
+        says otherwise, as between a team's agents, who talk to each other."""
         self._client = client
         self._host = host
         self._grants = frozenset(ForgeMcpGrant(grant) for grant in grants)
         self._limits = limits
-        self._tool_specs = _specs_for(notify_mode)
+        self._mesh_replies_by_default = mesh_replies_by_default
+        self._tool_specs = [
+            _answerable_mesh_send(spec)
+            if mesh_replies_by_default and spec.name == "mesh_send"
+            else spec
+            for spec in _specs_for(notify_mode)
+        ]
         self._specs = {spec.name: spec for spec in self._tool_specs}
         notify = self._notify if notify_mode is ForgeMcpNotifyMode.TRANSCRIPT else self._feed_notify
         self._handlers: dict[str, Callable[[Any], Awaitable[ToolResult]]] = {
@@ -2371,7 +2397,11 @@ class ForgeMcpToolbox:
             answer = await self._host.send_mesh_message(
                 args.peer,
                 args.content,
-                expect_reply=args.expect_reply,
+                expect_reply=(
+                    self._mesh_replies_by_default
+                    if args.expect_reply is None
+                    else args.expect_reply
+                ),
                 request_id=request_id,
                 in_reply_to="",
             )

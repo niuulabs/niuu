@@ -196,6 +196,7 @@ class TestWhatEachAgentIsTold:
         # Replies are the room's conversation: answering again with a tool would repeat them.
         assert "answer a person by simply replying" in prompt
         assert "Your teammates do not read the room" in prompt
+        assert "When a teammate messages you, answer them with `reply`" in prompt
 
     async def test_an_agent_without_a_persona_is_called_agent(self, rig: TeamRig):
         members = [TeamMemberSpec(model="gpt-5", lead=True)]
