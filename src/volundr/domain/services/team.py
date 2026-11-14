@@ -14,7 +14,7 @@ the runtime settings (``TeamRoomContributor``) reads them and nothing else.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
@@ -29,7 +29,13 @@ from volundr.domain.session_participants import (
     ParticipantRole,
     SelfInviteError,
 )
-from volundr.domain.team import TEAM_KEY, TEAM_MEMBER_KEY, TEAM_TASK_TARGETS, team_realm
+from volundr.domain.team import (
+    TEAM_KEY,
+    TEAM_MEMBER_KEY,
+    TEAM_TASK_TARGETS,
+    persona_voices,
+    team_realm,
+)
 
 if TYPE_CHECKING:
     from volundr.domain.services.forge import ForgeService
@@ -81,6 +87,9 @@ class TeamMemberSpec:
     definition: str | None = None
     persona_name: str = ""
     lead: bool = False
+    #: The agent's voice per persona voice key on a team call, over its persona's own
+    #: (``TEAM_VOICE_KEYS``). Refused when this Forge runs without voice.
+    voices: Mapping[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -176,14 +185,21 @@ class TeamService:
         runtime_backend: str,
         invitations_refused: str | None,
         persona_provider: SessionPersonaProvider | None = None,
+        voice_enabled: bool = False,
+        voice_default_persona: str = "",
     ) -> None:
         """``invitations_refused`` is why this Forge's sessions cannot be attached to by an
-        invited person (and so a team cannot take invitees), or ``None`` when they can."""
+        invited person (and so a team cannot take invitees), or ``None`` when they can.
+
+        ``voice_enabled`` is Forge's ``voice.enabled``; ``voice_default_persona`` is its
+        ``voice.default_persona``, whose voices are the voice of a team's room host."""
         self._forge = forge
         self._participants = participants
         self._runtime_backend = runtime_backend
         self._invitations_refused = invitations_refused
         self._persona_provider = persona_provider
+        self._voice_enabled = voice_enabled
+        self._voice_default_persona = voice_default_persona.strip()
 
     async def start_team(self, launch: TeamLaunch, principal: Principal | None) -> Team:
         """Create the team's sessions, invite its people and start it, all or nothing.
@@ -197,6 +213,7 @@ class TeamService:
         _validate(launch)
         self._require_runtime(launch)
         planned = await self._plan(launch, principal)
+        await self._check_voices(planned, principal)
         root: Session | None = None
         members: list[Session] = []
         invited: list[str] = []
@@ -269,6 +286,65 @@ class TeamService:
                 f"persona {name!r} carries no pinned document, so a team member cannot play it"
             )
         return persona
+
+    async def _check_voices(
+        self, planned: Sequence[PlannedMember], principal: Principal | None
+    ) -> None:
+        """No two voices of a team call alike: refuse a repeat before anything is created.
+
+        A voice is a repeat when two agents, or an agent and the room's host, speak with the
+        same voice on the same provider key; the caller could not tell them apart by ear.
+        Without voice on this Forge there is no call, so an override of voices is refused
+        rather than ignored.
+        """
+        if not self._voice_enabled:
+            asking = [m.agent_name for m in planned if m.spec.voices]
+            if asking:
+                raise TeamError(
+                    f"voice is not enabled on this Forge, but {', '.join(asking)} ask for "
+                    "voices: remove voices from the members, or enable voice (voice.enabled)"
+                )
+            return
+        speakers: list[tuple[str, dict[str, str]]] = [
+            (HOST_SPEAKER, await self._host_voices(principal))
+        ]
+        speakers.extend(
+            (
+                member.agent_name,
+                {
+                    **persona_voices(member.persona.document if member.persona else None),
+                    **member.spec.voices,
+                },
+            )
+            for member in planned
+        )
+        heard: dict[tuple[str, str], str] = {}
+        for name, voices in speakers:
+            for key, voice in voices.items():
+                other = heard.setdefault((key, voice), name)
+                if other == name:
+                    continue
+                raise TeamError(
+                    f"{other} and {name} would speak with the same {key} voice {voice!r}, so "
+                    "a call could not tell them apart: pick another voice for "
+                    f"{name} in its launch voices (voices.{key})"
+                )
+
+    async def _host_voices(self, principal: Principal | None) -> dict[str, str]:
+        """The voices of the room's host: ``voice.default_persona``'s, as a session gets them."""
+        owner_id = principal.user_id if principal is not None else ""
+        if self._persona_provider is None:
+            raise TeamError(
+                "voice is enabled, but this Forge has no persona catalog to read "
+                f"voice.default_persona ({self._voice_default_persona!r}) from"
+            )
+        persona = await self._persona_provider.get(owner_id, self._voice_default_persona)
+        if persona is None:
+            raise TeamError(
+                f"voice.default_persona {self._voice_default_persona!r} is not in your persona "
+                "catalog: create it, or point voice.default_persona at one that exists"
+            )
+        return persona_voices(persona.document)
 
     async def _invite(self, root: Session, user_id: str, principal: Principal | None) -> None:
         try:
@@ -350,6 +426,9 @@ def _validate(launch: TeamLaunch) -> None:
         raise TeamError("invitees lists a person twice: list each user id once")
 
 
+#: How a team call's room host is named when a repeat of its voice is refused.
+HOST_SPEAKER = "the room's host (voice.default_persona)"
+
 #: What an agent with no persona is called in its team.
 UNNAMED_AGENT = "agent"
 
@@ -395,6 +474,13 @@ def _root_request(launch: TeamLaunch, planned: Sequence[PlannedMember]) -> TeamS
     )
 
 
+def _member_marker(member: PlannedMember) -> dict[str, Any]:
+    marker: dict[str, Any] = {"lead": member.spec.lead, "name": member.agent_name}
+    if member.spec.voices:
+        marker["voices"] = dict(member.spec.voices)
+    return marker
+
+
 def _member_request(
     launch: TeamLaunch, planned: Sequence[PlannedMember], index: int, root_id: UUID
 ) -> TeamSessionRequest:
@@ -404,7 +490,7 @@ def _member_request(
         name=member.name,
         model=member.spec.model,
         definition=member.spec.definition,
-        workload_config={TEAM_MEMBER_KEY: {"lead": member.spec.lead, "name": member.agent_name}},
+        workload_config={TEAM_MEMBER_KEY: _member_marker(member)},
         persona_definition=dict(member.persona.document) if member.persona else None,
         system_prompt=team_context_prompt(launch.name, planned, index, team_realm(str(root_id))),
         initial_prompt=launch.task if receives_task else "",

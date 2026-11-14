@@ -22,6 +22,7 @@ lead is refused at launch, naming what is missing: Skuld would otherwise start a
 can talk to.
 """
 
+import json
 from collections.abc import Mapping
 from typing import Any
 
@@ -30,13 +31,21 @@ from volundr.adapters.outbound.contributors.mesh_values import (
     ROOM_VALUES_KEY,
     announced_persona,
 )
-from volundr.domain.models import Session
+from volundr.adapters.outbound.contributors.session_voice import VOICE_MEMBERS_ENV
+from volundr.domain.models import PodSpecAdditions, Session
 from volundr.domain.ports import SessionContext, SessionContribution, SessionContributor
-from volundr.domain.team import TEAM_KEY, TEAM_MEMBER_KEY, TEAM_TASK_TARGETS, team_realm
+from volundr.domain.team import (
+    TEAM_KEY,
+    TEAM_MEMBER_KEY,
+    TEAM_TASK_TARGETS,
+    member_voices,
+    team_realm,
+)
 from volundr.domain.workflow_session import (
     PERSONA_DEFINITION_KEY,
     ROOM_SEATS_VALUES_KEY,
     TEAM_VALUES_KEY,
+    session_persona_name,
 )
 
 #: What a person's untargeted message to a team's room does: every agent receives it.
@@ -44,7 +53,20 @@ UNTARGETED_TO_EVERYONE = "everyone"
 
 
 class TeamRoomContributor(SessionContributor):
-    """Turn a team's root and member markers into Skuld's mesh and room settings."""
+    """Turn a team's root and member markers into Skuld's mesh and room settings.
+
+    ``voice_enabled`` is Forge's ``voice.enabled``: a team's root then runs Skuld's voice
+    channel, and is handed the voices of the team's agents (``SKULD__VOICE__MEMBERS``) so a
+    call speaks each agent's lines in its own voice.
+    """
+
+    def __init__(self, *, voice_enabled: bool = False, **_extra: object) -> None:
+        self._voice_enabled = voice_enabled
+
+    @property
+    def voice_enabled(self) -> bool:
+        """Whether a team's root is told its agents' voices (Forge's ``voice.enabled``)."""
+        return self._voice_enabled
 
     @property
     def name(self) -> str:
@@ -66,10 +88,10 @@ class TeamRoomContributor(SessionContributor):
                 "session is the root of a team or one of its members, not both"
             )
         if root is not None:
-            return SessionContribution(values=self._root(session, context, root))
+            return self._root(session, context, root)
         return SessionContribution(values=self._member(session, config, member))
 
-    def _root(self, session: Session, context: SessionContext, team: object) -> dict[str, Any]:
+    def _root(self, session: Session, context: SessionContext, team: object) -> SessionContribution:
         """The team's room: its realm's room, hosted by a Skuld that runs no agent."""
         _require_mapping(session, TEAM_KEY, team)
         task_to = team.get("task_to")
@@ -80,7 +102,7 @@ class TeamRoomContributor(SessionContributor):
             )
         _require_team_members(session, context)
         realm = team_realm(str(session.id))
-        return {
+        values = {
             TEAM_VALUES_KEY: {"enabled": True},
             MESH_VALUES_KEY: {"enabled": True, "realmId": realm},
             ROOM_VALUES_KEY: {
@@ -91,6 +113,13 @@ class TeamRoomContributor(SessionContributor):
                 "untargetedDelivery": UNTARGETED_TO_EVERYONE,
             },
         }
+        if not self._voice_enabled:
+            return SessionContribution(values=values)
+        members = json.dumps(_voice_members(session, context))
+        return SessionContribution(
+            values=values,
+            pod_spec=PodSpecAdditions(env=({"name": VOICE_MEMBERS_ENV, "value": members},)),
+        )
 
     def _member(
         self, session: Session, config: Mapping[str, Any], member: object
@@ -119,6 +148,34 @@ class TeamRoomContributor(SessionContributor):
             # can speak in it before anyone has said anything to it there.
             ROOM_SEATS_VALUES_KEY: [{"roomId": realm, "hostSessionId": str(session.hosted_by)}],
         }
+
+
+def _voice_members(session: Session, context: SessionContext) -> dict[str, dict[str, Any]]:
+    """Each agent of the team by its name in the room: persona, voices and whether it leads.
+
+    What Skuld's team call reads (``voice.members``) to speak an agent's lines in its voice.
+    """
+    members: dict[str, dict[str, Any]] = {}
+    for member in context.unit_members:
+        marker = member.workload_config[TEAM_MEMBER_KEY]
+        name = marker.get("name")
+        if not name:
+            raise ValueError(
+                f"team member session {member.session_id} of {session.id} has no name in the "
+                "team, so a call cannot speak its lines in its voice: launch the team through "
+                "Forge's team route, which names every agent"
+            )
+        if name in members:
+            raise ValueError(
+                f"team {session.id} has two members named {name!r}: a call could not tell "
+                "their voices apart"
+            )
+        members[name] = {
+            "persona": session_persona_name(member.workload_config),
+            "voices": member_voices(member.workload_config),
+            "lead": marker.get("lead") is True,
+        }
+    return members
 
 
 def _require_mapping(session: Session, key: str, value: object) -> None:

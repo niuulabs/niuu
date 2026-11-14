@@ -46,6 +46,7 @@ from volundr.domain.services.team import (
     TeamService,
 )
 from volundr.domain.session_runtimes import HOST_SELECTOR_KEY
+from volundr.domain.team import TEAM_VOICE_KEYS
 
 #: The longest opening task, as long as any session's initial prompt (``SessionCreate``).
 TASK_MAX_CHARS = 100_000
@@ -68,6 +69,32 @@ class TeamMemberCreate(BaseModel):
         description="Persona from the caller's persona catalog; empty plays none",
     )
     lead: bool = Field(default=False, description="Exactly one member of a team leads")
+    voices: dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "The agent's voice on a team call per persona voice key "
+            f"({', '.join(TEAM_VOICE_KEYS)}), over its persona's own voices. Any voice id the "
+            "provider accepts is allowed. No two agents, and no agent and the room's host, "
+            "may share a voice. Refused when this Forge runs without voice. An agent with "
+            "no voice is spoken in the host's voice."
+        ),
+    )
+
+    @field_validator("voices")
+    @classmethod
+    def _known_voices(cls, value: dict[str, str]) -> dict[str, str]:
+        unknown = sorted(set(value) - set(TEAM_VOICE_KEYS))
+        if unknown:
+            raise ValueError(
+                f"voices has unknown voice key(s) {', '.join(unknown)}; use "
+                f"{', '.join(TEAM_VOICE_KEYS)}"
+            )
+        empty = sorted(key for key, voice in value.items() if not voice.strip())
+        if empty:
+            raise ValueError(
+                f"voices names no voice for {', '.join(empty)}: give a voice or drop it"
+            )
+        return {key: voice.strip() for key, voice in value.items()}
 
 
 class TeamCreate(BaseModel):
@@ -142,6 +169,7 @@ class TeamCreate(BaseModel):
                     definition=m.definition,
                     persona_name=m.persona_name,
                     lead=m.lead,
+                    voices=m.voices,
                 )
                 for m in self.members
             ],

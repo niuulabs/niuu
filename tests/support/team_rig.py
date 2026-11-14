@@ -66,6 +66,27 @@ PERSONAS = {
 }
 
 
+def _voiced(name: str, voices: dict[str, str]) -> SessionPersona:
+    return SessionPersona(
+        name=name,
+        system_prompt="",
+        document={
+            "schema_version": 1,
+            "id": name.lower(),
+            "revision": "r1",
+            "definition": {"name": name.lower(), "voice": {"voices": voices}},
+        },
+    )
+
+
+#: The host of a team call (``voice.default_persona``) and agents whose voices may clash.
+HOST_PERSONA = "narrator"
+PERSONAS[HOST_PERSONA] = _voiced("Narrator", {"grok-voice": "eve", "openai-realtime": "marin"})
+PERSONAS["alto"] = _voiced("Alto", {"grok-voice": "rex"})
+PERSONAS["tenor"] = _voiced("Tenor", {"grok-voice": "rex", "openai-realtime": "cedar"})
+PERSONAS["echo"] = _voiced("Echo", {"grok-voice": "eve"})
+
+
 class Personas(SessionPersonaProvider):
     async def get(self, owner_id: str, name: str) -> SessionPersona | None:
         return PERSONAS.get(name)
@@ -95,6 +116,8 @@ class TeamRig:
         persona_provider: SessionPersonaProvider | None = Personas(),
         refused_models: Mapping[str, str] | None = None,
         contributors: list[SessionContributor] | None = None,
+        voice_enabled: bool = False,
+        voice_default_persona: str = HOST_PERSONA,
     ) -> None:
         self.repository = InMemorySessionRepository()
         self.pod_manager = MockPodManager()
@@ -121,6 +144,8 @@ class TeamRig:
             runtime_backend=runtime_backend,
             invitations_refused=invitations_refused,
             persona_provider=persona_provider,
+            voice_enabled=voice_enabled,
+            voice_default_persona=voice_default_persona,
         )
 
     async def settle(self) -> None:

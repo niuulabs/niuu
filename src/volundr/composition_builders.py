@@ -1135,10 +1135,22 @@ def _create_contributors(
         contributors.append(WorkflowStepHostContributor())
         logger.info("Session contributor: workflow_step_host (auto-wired)")
 
+    configured_room = next((c for c in contributors if c.name == "team_room"), None)
+    if (
+        configured_room is not None
+        and settings.voice.enabled
+        and not getattr(configured_room, "voice_enabled", False)
+    ):
+        raise RuntimeError(
+            "voice.enabled is true but the configured team_room contributor was built "
+            "without voice_enabled: true, so a team's room host would not know its agents' "
+            "voices. Add voice_enabled: true to its kwargs, or remove it from "
+            "session_contributors to have it wired automatically"
+        )
     if not _has_contributor("team_room"):
         from volundr.adapters.outbound.contributors.team_room import TeamRoomContributor
 
-        contributors.append(TeamRoomContributor())
+        contributors.append(TeamRoomContributor(voice_enabled=settings.voice.enabled))
         logger.info("Session contributor: team_room (auto-wired)")
 
     contributors.append(PromptContributor())

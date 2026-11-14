@@ -39,6 +39,12 @@ class AgentMemberResponse(BaseModel):
     definition: str | None = Field(description="The runtime definition the agent launched with")
     status: str = Field(description="The member session's status, as its unit shows it")
     lead: bool = Field(description="True for the one agent that leads a team")
+    voices: dict[str, str] = Field(
+        description=(
+            "The agent's voice on a team call per persona voice key (grok-voice, "
+            "openai-realtime); empty when it has none and is spoken in the host's voice"
+        )
+    )
 
     @classmethod
     def from_agent(cls, agent: AgentMember) -> AgentMemberResponse:
@@ -50,6 +56,7 @@ class AgentMemberResponse(BaseModel):
             definition=agent.definition,
             status=agent.status,
             lead=agent.lead,
+            voices=dict(agent.voices),
         )
 
 
@@ -91,6 +98,7 @@ class SessionMembersResponse(BaseModel):
                         "definition": "skuldClaude",
                         "status": "running",
                         "lead": True,
+                        "voices": {"grok-voice": "eve"},
                     }
                 ],
                 "people": [

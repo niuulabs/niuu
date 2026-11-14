@@ -35,6 +35,8 @@ from volundr.domain.session_launch_facts import VOICE_CHANNEL_FACT
 #: Skuld's ``voice.enabled`` / ``voice.default_persona`` settings, in their environment form.
 VOICE_ENABLED_ENV = "SKULD__VOICE__ENABLED"
 VOICE_DEFAULT_PERSONA_ENV = "SKULD__VOICE__DEFAULT_PERSONA"
+#: Skuld's ``voice.members`` setting: a team room host's agents and their voices (JSON).
+VOICE_MEMBERS_ENV = "SKULD__VOICE__MEMBERS"
 
 
 class SessionVoiceContributor(SessionContributor):

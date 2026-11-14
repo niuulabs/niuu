@@ -1,5 +1,6 @@
 """Tests for TeamRoomContributor: a team's root hosts its room, its members join the realm."""
 
+import json
 from uuid import UUID
 
 import pytest
@@ -192,3 +193,85 @@ class TestRefusals:
     async def test_a_member_outside_a_unit_is_refused(self):
         with pytest.raises(ValueError, match="needs hosted_by"):
             await TeamRoomContributor().contribute(_session(hosted_by=None), _member_context())
+
+
+def _named_member(
+    session_id: str, name: str | None, lead: bool, voices=None, persona_voices=None
+) -> UnitMemberContext:
+    marker = {"lead": lead}
+    if name is not None:
+        marker["name"] = name
+    if voices:
+        marker["voices"] = voices
+    config = {TEAM_MEMBER_KEY: marker}
+    if persona_voices:
+        config["persona_definition"] = {
+            "id": f"{name}-persona",
+            "definition": {"voice": {"voices": persona_voices}},
+        }
+    return UnitMemberContext(
+        session_id=session_id, owner_id="ada", tenant_id="acme", workload_config=config
+    )
+
+
+def _env(result) -> dict[str, str]:
+    return {item["name"]: item["value"] for item in result.pod_spec.env}
+
+
+class TestTheVoicesOfATeamCall:
+    async def test_the_root_hands_skuld_each_agents_persona_voices_and_lead(self):
+        members = (
+            _named_member(
+                "m1",
+                "Architect",
+                True,
+                voices={"grok-voice": "rex"},
+                persona_voices={"grok-voice": "eve", "openai-realtime": "marin"},
+            ),
+            _named_member("m2", "Coder", False),
+        )
+
+        result = await TeamRoomContributor(voice_enabled=True).contribute(
+            _session(), _root_context(members=members)
+        )
+
+        assert json.loads(_env(result)["SKULD__VOICE__MEMBERS"]) == {
+            "Architect": {
+                "persona": "Architect-persona",
+                "voices": {"grok-voice": "rex", "openai-realtime": "marin"},
+                "lead": True,
+            },
+            "Coder": {"persona": "", "voices": {}, "lead": False},
+        }
+        # The room settings are the same as without voice.
+        assert result.values["room"]["routed"] is True
+
+    async def test_without_voice_the_root_gets_no_members_env(self):
+        members = (_named_member("m1", "A", True), _named_member("m2", "B", False))
+
+        result = await TeamRoomContributor().contribute(_session(), _root_context(members=members))
+
+        assert result.pod_spec is None or not result.pod_spec.env
+
+    async def test_a_member_without_a_name_cannot_be_voiced_and_is_named(self):
+        members = (_named_member("m1", None, True), _named_member("m2", "B", False))
+
+        with pytest.raises(ValueError, match="team member session m1 .* has no name"):
+            await TeamRoomContributor(voice_enabled=True).contribute(
+                _session(), _root_context(members=members)
+            )
+
+    async def test_two_members_with_one_name_are_refused(self):
+        members = (_named_member("m1", "A", True), _named_member("m2", "A", False))
+
+        with pytest.raises(ValueError, match="two members named 'A'"):
+            await TeamRoomContributor(voice_enabled=True).contribute(
+                _session(), _root_context(members=members)
+            )
+
+    async def test_a_member_session_gets_no_members_env(self):
+        result = await TeamRoomContributor(voice_enabled=True).contribute(
+            _session(hosted_by=ROOT_ID), _member_context()
+        )
+
+        assert result.pod_spec is None or not result.pod_spec.env
