@@ -315,6 +315,7 @@ A session joins a flock as a mesh peer when `mesh.enabled` is true: it announces
 | `mesh.peerPorts` | list | `[]` | Container ports to expose for direct mesh peers; not a Skuld setting |
 | `mesh.peerId` | string | `""` | This peer's id (`mesh.peer_id`); empty uses the session id (transport, discovery, certificate and reply routes share it) |
 | `mesh.realmId` | string | `""` | Realm the peer announces in and discovers within (`mesh.realm_id`) |
+| `mesh.displayName` | string | `""` | What the session is called on the mesh and in its room (`mesh.display_name`); empty uses the session's name, a team's agents go by their role |
 | `mesh.persona` | string | `null` | Persona name announced when no persona is pinned (`mesh.persona`); null keeps `coder` |
 | `mesh.role` | string | `""` | What the session is for, announced so peers can choose (`mesh.role`); empty announces the pinned persona's id |
 | `mesh.description` | string | `""` | What the session does, announced to peers (`mesh.description`); the pinned persona's own description wins |

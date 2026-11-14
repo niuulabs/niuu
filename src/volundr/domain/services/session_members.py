@@ -205,9 +205,12 @@ def _is_lead(member: Session) -> bool:
 
 
 def _agent(session: Session, *, lead: bool) -> AgentMember:
+    marker = session.workload_config.get(TEAM_MEMBER_KEY)
+    # A team's agent goes by its name in the team; any other session by its own name.
+    team_name = marker.get("name") if isinstance(marker, dict) else None
     return AgentMember(
         session_id=session.id,
-        name=session.name,
+        name=team_name or session.name,
         persona_name=session_persona_name(session.workload_config),
         model=session.effective_model,
         definition=session.session_definition,

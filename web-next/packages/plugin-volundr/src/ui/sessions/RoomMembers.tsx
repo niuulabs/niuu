@@ -291,7 +291,9 @@ export function SessionMembersList({
         agents.map((agent, index) => {
           const worker = roomWorkers.get(agent.sessionId);
           const member = live.get(agent.sessionId);
-          const name = agent.personaName || agent.name;
+          // A team's agent goes by its name in the team (its role, numbered when two share
+          // one); any other session's agent by its persona.
+          const name = session.team ? agent.name : agent.personaName || agent.name;
           if (worker && room) {
             return (
               <MemberRow

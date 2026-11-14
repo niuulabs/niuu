@@ -78,6 +78,7 @@ WORKFLOW_MESH_ENV_NAMES = {
     "enabled": "ENABLED",
     "realmId": "REALM_ID",
     "shareWork": "SHARE_WORK",
+    "displayName": "DISPLAY_NAME",
 }
 
 #: The fields of ``values.room`` (the run's room, on its root) and the Skuld room setting each

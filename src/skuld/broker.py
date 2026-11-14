@@ -1063,8 +1063,8 @@ class Broker(
             # A run's root runs no agent: it is the run's coordinator (it publishes the run's
             # offers and hosts its room), never the coder the mesh config defaults to.
             persona=RUN_ROOT_PERSONA if run_root else topics.persona_id or mesh_cfg.persona,
-            # The session's name, so a peer can address this session by it.
-            display_name=self._settings.session.name or "Skuld",
+            # What peers address this session by: its mesh name, else the session's name.
+            display_name=mesh_cfg.display_name or self._settings.session.name or "Skuld",
             participant_type="skuld",
             capabilities=[] if run_root else list(mesh_cfg.capabilities),
             permission_mode="full_access",

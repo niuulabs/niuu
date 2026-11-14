@@ -92,7 +92,8 @@ const MEMBERS: SessionMembers = {
   agents: [
     {
       sessionId: 'm1',
-      name: 'team-coordinator',
+      // A team's agent goes by its name in the team, which the host reports.
+      name: 'Coordinator',
       personaName: 'Coordinator',
       model: 'claude-sonnet',
       definition: 'skuldClaude',
@@ -101,7 +102,7 @@ const MEMBERS: SessionMembers = {
     },
     {
       sessionId: 'm2',
-      name: 'team-coder',
+      name: 'Coder',
       personaName: 'Coder',
       model: 'gpt-codex',
       definition: 'skuldCodex',

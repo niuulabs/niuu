@@ -158,8 +158,11 @@ TEAM_AGENT_GRANTS = TeamForgeMcp(grants=(ForgeMcpGrant.MESSAGE,))
 @dataclass(frozen=True)
 class PlannedMember:
     spec: TeamMemberSpec
+    #: The member's session name (a runtime identifier).
     name: str
     persona: SessionPersona | None
+    #: What the agent is called in the team: its role, as people and teammates know it.
+    agent_name: str = ""
 
 
 class TeamService:
@@ -235,12 +238,15 @@ class TeamService:
     async def _plan(self, launch: TeamLaunch, principal: Principal | None) -> list[PlannedMember]:
         owner_id = principal.user_id if principal is not None else ""
         planned: list[PlannedMember] = []
+        taken: dict[str, int] = {}
         for index, spec in enumerate(launch.members, start=1):
+            persona = await self._persona(owner_id, spec)
             planned.append(
                 PlannedMember(
                     spec=spec,
                     name=_member_name(launch.name, index),
-                    persona=await self._persona(owner_id, spec),
+                    persona=persona,
+                    agent_name=_agent_name(persona.name if persona else "", taken),
                 )
             )
         return planned
@@ -344,6 +350,17 @@ def _validate(launch: TeamLaunch) -> None:
         raise TeamError("invitees lists a person twice: list each user id once")
 
 
+#: What an agent with no persona is called in its team.
+UNNAMED_AGENT = "agent"
+
+
+def _agent_name(role: str, taken: dict[str, int]) -> str:
+    """The agent's name in its team: its role, numbered from the second agent of that role."""
+    base = role.strip() or UNNAMED_AGENT
+    taken[base] = taken.get(base, 0) + 1
+    return base if taken[base] == 1 else f"{base}-{taken[base]}"
+
+
 def _member_name(team_name: str, index: int) -> str:
     """A member's session name: the team's, then its number, as one valid RFC 1123 label."""
     suffix = f"-{index}"
@@ -387,7 +404,7 @@ def _member_request(
         name=member.name,
         model=member.spec.model,
         definition=member.spec.definition,
-        workload_config={TEAM_MEMBER_KEY: {"lead": member.spec.lead}},
+        workload_config={TEAM_MEMBER_KEY: {"lead": member.spec.lead, "name": member.agent_name}},
         persona_definition=dict(member.persona.document) if member.persona else None,
         system_prompt=team_context_prompt(launch.name, planned, index, team_realm(str(root_id))),
         initial_prompt=launch.task if receives_task else "",
@@ -405,21 +422,22 @@ def team_context_prompt(
     me = planned[index]
     lead = _lead_of(planned)
     roster = "\n".join(
-        f"- {other.name}{' (you)' if other is me else ''}{' (lead)' if other is lead else ''}: "
-        f"persona {other.persona.name if other.persona else 'none'}, engine {other.spec.model}"
+        f"- {other.agent_name}{' (you)' if other is me else ''}"
+        f"{' (lead)' if other is lead else ''}: engine {other.spec.model}"
         for other in planned
     )
     role = (
         "You lead the team: decide how the work is split, hand parts to your teammates and "
         "bring their results together."
         if me is lead
-        else f"{lead.name} leads the team: take direction from them and from the people in "
+        else f"{lead.agent_name} leads the team: take direction from them and from the people in "
         "the room."
     )
     return (
-        f"You are {me.name}, one of the agents of the team {team_name!r}. The team shares one "
-        "room where its agents and the people invited to it talk; your replies and your work "
-        "are shared there, and a message a person sends to the room without naming an agent "
+        f"You are {me.agent_name}, one of the agents of the team {team_name!r}. The team "
+        "shares one room where its agents and the people invited to it talk; your replies and "
+        "your work are shared there, and a message a person sends to the room without naming an "
+        "agent "
         "reaches every agent of the team.\n\n"
         f"The team's agents:\n{roster}\n\n"
         f"{role}\n\n"

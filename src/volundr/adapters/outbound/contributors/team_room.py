@@ -111,6 +111,8 @@ class TeamRoomContributor(SessionContributor):
                 "realmId": realm,
                 # The team's room keeps what its members do: they share it on the mesh.
                 "shareWork": True,
+                # Known by its role in the room and on the mesh, not by its session's name.
+                **({"displayName": member["name"]} if member.get("name") else {}),
                 **announced_persona(config.get(PERSONA_DEFINITION_KEY)),
             },
             # Seated in the team's room from the start (its id is the realm's), so a member

@@ -16,7 +16,9 @@ from typing import Literal
 #: was started without a task and waits for the first message in its room.
 TEAM_KEY = "team"
 
-#: On each member of a team: ``{"lead": bool}``.
+#: On each member of a team: ``{"lead": bool, "name": str}``. ``name`` is what the agent is
+#: called in the team (its role, numbered when two agents share one): its name in the room,
+#: on the mesh and in its teammates' instructions, apart from its session's name.
 TEAM_MEMBER_KEY = "team_member"
 
 #: Who receives the opening task, when one is given at start.

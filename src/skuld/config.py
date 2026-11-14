@@ -133,6 +133,14 @@ class MeshConfig(BaseModel):
         ),
     )
     realm_id: str = Field(default="")
+    display_name: str = Field(
+        default="",
+        description=(
+            "What this session is called on the mesh and in its room: the name peers address "
+            "it by and people see it speak under. Empty uses the session's name. A team's "
+            "agents go by their role (their persona), not their session's name."
+        ),
+    )
     capabilities: list[str] = Field(default_factory=lambda: list(_DEFAULT_MESH_CAPABILITIES))
     tools: list[str] = Field(default_factory=lambda: list(_DEFAULT_MESH_TOOLS))
     persona: str = Field(default="coder")

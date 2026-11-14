@@ -112,7 +112,10 @@ async def _team(repository) -> tuple[Session, Session, Session]:
             "planner",
             status=SessionStatus.STARTING,
             session_definition="skuldClaude",
-            workload_config={TEAM_MEMBER_KEY: {"lead": True}, "persona": "architect"},
+            workload_config={
+                TEAM_MEMBER_KEY: {"lead": True, "name": "architect"},
+                "persona": "architect",
+            },
         )
     )
     worker = await repository.create(
@@ -128,6 +131,18 @@ async def _team(repository) -> tuple[Session, Session, Session]:
     worker = await repository.attach_to_unit(worker.id, root.id, 8000)
     root = await repository.update(root.model_copy(update={"status": SessionStatus.RUNNING}))
     return root, lead, worker
+
+
+class TestATeamsAgentsGoByTheirRole:
+    async def test_an_agent_is_named_as_its_team_names_it(self, service, repository):
+        root, lead, worker = await _team(repository)
+
+        members = await service.members(root.id, None)
+
+        names = {agent.session_id: agent.name for agent in members.agents}
+        assert names[lead.id] == "architect"
+        # A member stored before agents had team names keeps its session's name.
+        assert names[worker.id] == "coder"
 
 
 class TestAgents:
@@ -157,7 +172,7 @@ class TestAgents:
         members = await service.members(root.id, None)
 
         assert [(a.session_id, a.name, a.persona_name, a.lead) for a in members.agents] == [
-            (lead.id, "planner", "architect", True),
+            (lead.id, "architect", "architect", True),
             (worker.id, "coder", "coder", False),
         ]
         assert [(a.model, a.definition) for a in members.agents] == [

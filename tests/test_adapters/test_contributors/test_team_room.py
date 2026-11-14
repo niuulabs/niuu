@@ -73,6 +73,14 @@ async def test_a_member_joins_the_roots_realm_shares_its_work_and_sits_in_its_ro
     }
 
 
+async def test_a_member_is_known_in_the_room_and_on_the_mesh_by_its_name_in_the_team():
+    context = SessionContext(workload_config={TEAM_MEMBER_KEY: {"lead": False, "name": "reviewer"}})
+
+    result = await TeamRoomContributor().contribute(_session(hosted_by=ROOT_ID), context)
+
+    assert result.values["mesh"]["displayName"] == "reviewer"
+
+
 async def test_a_member_is_not_a_workflow_step_host_and_hosts_no_room():
     result = await TeamRoomContributor().contribute(_session(hosted_by=ROOT_ID), _member_context())
 

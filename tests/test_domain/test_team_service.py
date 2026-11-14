@@ -53,9 +53,10 @@ class TestTheUnit:
         assert team.root.workload_config[TEAM_KEY] == {"task_to": None}
         assert [m.hosted_by for m in team.members] == [team.root.id, team.root.id]
         assert [m.name for m in team.members] == ["ship-it-1", "ship-it-2"]
+        # Each agent goes by its role in the team, apart from its session's name.
         assert [m.workload_config[TEAM_MEMBER_KEY] for m in team.members] == [
-            {"lead": True},
-            {"lead": False},
+            {"lead": True, "name": "Architect"},
+            {"lead": False, "name": "Coder"},
         ]
 
     async def test_the_unit_starts_once_with_every_member(self, rig: TeamRig):
@@ -167,16 +168,16 @@ class TestWhatEachAgentIsTold:
         team = await _start(rig)
 
         prompt = _held(team.members[1])["system_prompt"]
-        assert "You are ship-it-2" in prompt
-        assert "- ship-it-1 (lead): persona Architect, engine claude-sonnet-4-6" in prompt
-        assert "- ship-it-2 (you): persona Coder, engine gpt-5" in prompt
-        assert "ship-it-1 leads the team" in prompt
+        assert "You are Coder" in prompt
+        assert "- Architect (lead): engine claude-sonnet-4-6" in prompt
+        assert "- Coder (you): engine gpt-5" in prompt
+        assert "Architect leads the team" in prompt
 
     async def test_the_lead_is_told_it_leads(self, rig: TeamRig):
         team = await _start(rig)
 
         prompt = _held(team.members[0])["system_prompt"]
-        assert "- ship-it-1 (you) (lead)" in prompt
+        assert "- Architect (you) (lead)" in prompt
         assert "You lead the team" in prompt
 
     async def test_it_names_the_tools_that_reach_a_teammate(self, rig: TeamRig):
@@ -196,12 +197,25 @@ class TestWhatEachAgentIsTold:
         assert "answer a person by simply replying" in prompt
         assert "Your teammates do not read the room" in prompt
 
-    async def test_an_agent_without_a_persona_is_listed_as_having_none(self, rig: TeamRig):
+    async def test_an_agent_without_a_persona_is_called_agent(self, rig: TeamRig):
         members = [TeamMemberSpec(model="gpt-5", lead=True)]
 
         team = await _start(rig, members=members)
 
-        assert "persona none, engine gpt-5" in _held(team.members[0])["system_prompt"]
+        assert "- agent (you) (lead): engine gpt-5" in _held(team.members[0])["system_prompt"]
+
+    async def test_two_agents_of_one_role_are_numbered(self, rig: TeamRig):
+        members = [
+            TeamMemberSpec(model="gpt-5", persona_name="coder", lead=True),
+            TeamMemberSpec(model="gpt-5", persona_name="coder"),
+        ]
+
+        team = await _start(rig, members=members)
+
+        assert [m.workload_config[TEAM_MEMBER_KEY]["name"] for m in team.members] == [
+            "Coder",
+            "Coder-2",
+        ]
 
 
 class TestThePeople:

@@ -716,6 +716,9 @@ mesh:
   # -- Flock realm the peer announces in and discovers within (mesh.realm_id). Peers in
   # another realm are not seen.
   realmId: ""
+  # -- What this session is called on the mesh and in its room (mesh.display_name).
+  # Empty uses the session's name; a team's agents go by their role.
+  displayName: ""
   # -- Persona name announced when the session has no pinned persona (mesh.persona).
   # Null keeps `coder`. A pinned persona's id is announced instead.
   persona: null
