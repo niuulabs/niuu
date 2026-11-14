@@ -449,7 +449,10 @@ def team_context_prompt(
         "in the team's room under your name, so answer a person by simply replying. Do not "
         f"repeat a reply with `{ROOM_POST_TOOL}` or `reply`; `{ROOM_POST_TOOL}` (room_id "
         f'"{room_id}") is only for a note to the room when you are not answering anyone.\n\n'
-        "Your teammates do not read the room. "
+        "What you and your teammates send each other is shown in the room too, as it is "
+        "sent and addressed to whoever it is for, so do not narrate or relay it (no 'I sent "
+        "…' or '… answered …'); when sending was all you had to do, end your turn without "
+        "more text. Your teammates do not read the room. "
         f"To message one teammate, call `{MESSAGE_PEER_TOOL}` with `peer` (their peer "
         f"id) and `content`; they can answer you, and their answer comes to you as a message. "
         f"When a teammate messages you, answer them with `reply`. `{LIST_PEERS_TOOL}` lists "

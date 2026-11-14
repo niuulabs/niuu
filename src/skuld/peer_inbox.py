@@ -280,6 +280,7 @@ class PeerInboxMixin:
     _peer_inbox_tasks: set[asyncio.Task[None]]
     _peer_pair_counts: dict[tuple[str, str], dict[str, int]]
     _peer_answer_waits: dict[str, AnswerWait]
+    _turn_kept_from_room: bool
 
     def _room_turns_are_shown_in(self) -> str:
         """The room this session's own turns are shown in, or "" when there is none.
@@ -500,7 +501,13 @@ class PeerInboxMixin:
                     return True
             message_ids = [entry.envelope.message_id for entry in waiting]
             turn_id = peer_turn_id(str(self.session_id), message_ids)
-            text = render_peer_turn(waiting, turns_shown_in_room=self._room_turns_are_shown_in())
+            room = self._room_turns_are_shown_in()
+            text = render_peer_turn(waiting, turns_shown_in_room=room)
+            # A team's agent answering only its teammates speaks to them (its reply and
+            # mesh_send are said in the room as sent); the rest of that turn is its own.
+            self._turn_kept_from_room = bool(room) and all(
+                entry.envelope.room_id != room for entry in waiting
+            )
             for entry in waiting:
                 entry.injected = True
             try:
@@ -514,6 +521,8 @@ class PeerInboxMixin:
                     extra_metadata={"peer_messages": message_ids},
                 )
             except Exception:
+                # No turn started: the next one decides for itself whether the room hears it.
+                self._turn_kept_from_room = False
                 await self._return_to_waiting(waiting)
                 raise
             for entry in waiting:

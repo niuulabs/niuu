@@ -711,6 +711,9 @@ class Broker(
         self._mesh_adapter: Any = None
         #: Shares this session's work with its realm's room (``mesh.share_work``); None off.
         self._work_sharer: Any = None
+        #: The turn in progress answers only teammates (a team's agent): its text and tool
+        #: work stay in this session; the room hears what it sends them. Cleared per turn.
+        self._turn_kept_from_room = False
         self._mesh_attested: Any = None
         self._mesh_topics: MeshTopics | None = None
         self._mesh_identity: Any = None
@@ -2452,7 +2455,7 @@ class Broker(
                     if kind in {"tool_use", "tool_result"} and isinstance(identity, str):
                         self._live_tool_details.setdefault(identity, {})[kind] = block
             self._enqueue_event_log(data, ts=frame_ts)
-            if self._work_sharer is not None:
+            if self._work_sharer is not None and not self._turn_kept_from_room:
                 await self._work_sharer.cli_event(data)
 
         if event_type == "remote_control":
@@ -2918,8 +2921,9 @@ class Broker(
             # Emit CLI turn as room_message so it shows participant color. A realm room's
             # host keeps its own agent: its reply is already its own turn, so it is not
             # copied into the room a second time.
-            if self._work_sharer is not None and content:
+            if self._work_sharer is not None and content and not self._turn_kept_from_room:
                 await self._work_sharer.reply(content)
+            self._turn_kept_from_room = False
             if self._room_bridge is not None and self._mesh_adapter is not None and content:
                 if self._room_copies_cli_replies():
                     await self._room_bridge.broadcast_cli_message(

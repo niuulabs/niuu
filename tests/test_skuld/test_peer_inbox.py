@@ -1198,3 +1198,80 @@ class TestWhereATeamAgentsTurnsAreShown:
         )
 
         assert broker._room_turns_are_shown_in() == ""
+
+
+class TestATeamAgentsRoom:
+    def _broker(self, tmp_path, *, conversational: bool, seats: list[dict]) -> Broker:
+        return Broker(
+            SkuldSettings(
+                session={
+                    "id": SESSION_ID,
+                    "workspace_dir": str(tmp_path),
+                    "conversational": conversational,
+                },
+                mesh={"enabled": True, "realm_id": "team-1", "share_work": True},
+                room={"seats": seats},
+                chronicle_watcher_enabled=False,
+            )
+        )
+
+    def test_a_team_agents_room_is_the_one_it_sits_in_for_its_realm(self, tmp_path):
+        broker = self._broker(
+            tmp_path,
+            conversational=True,
+            seats=[
+                {"room_id": "huddle-9", "host_session_id": "other"},
+                {"room_id": "team-1", "host_session_id": "root-1"},
+            ],
+        )
+
+        assert broker._team_room_id() == "team-1"
+
+    def test_only_a_team_agent_has_a_team_room(self, tmp_path):
+        seats = [{"room_id": "team-1", "host_session_id": "root-1"}]
+
+        assert self._broker(tmp_path, conversational=False, seats=seats)._team_room_id() == ""
+        assert self._broker(tmp_path, conversational=True, seats=[])._team_room_id() == ""
+
+
+class TestATeamAgentKeepsItsTeammateTurnsOutOfTheRoom:
+    def _agent(self, tmp_path) -> Broker:
+        agent = _inbox_broker(tmp_path)
+        agent._settings.session.conversational = True
+        agent._settings.mesh.realm_id = "team-1"
+        agent._settings.mesh.share_work = True
+        return agent
+
+    async def test_a_turn_that_answers_only_teammates_is_kept_from_the_room(self, tmp_path):
+        agent = self._agent(tmp_path)
+
+        await _accept(agent, _message(reply=ReplyRoute(ReplyKind.MESH, "p-coder")))
+
+        assert agent._turn_kept_from_room is True
+
+    async def test_a_turn_that_answers_the_room_is_shown_there(self, tmp_path):
+        agent = self._agent(tmp_path)
+
+        await _accept(
+            agent,
+            _message(
+                room_id="team-1",
+                relayed_by=PeerAddress(PeerKind.SESSION, "root-1"),
+                reply=ReplyRoute(ReplyKind.ROOM, "root-1"),
+            ),
+        )
+
+        assert agent._turn_kept_from_room is False
+
+    async def test_a_kept_turn_shares_none_of_its_work(self, tmp_path):
+        agent = self._agent(tmp_path)
+        agent._work_sharer = MagicMock(cli_event=AsyncMock(), reply=AsyncMock())
+        agent._turn_kept_from_room = True
+
+        await agent._handle_cli_event({"type": "assistant", "message": {"content": []}})
+
+        agent._work_sharer.cli_event.assert_not_awaited()
+        # A turn the room should hear is shared as before.
+        agent._turn_kept_from_room = False
+        await agent._handle_cli_event({"type": "assistant", "message": {"content": []}})
+        agent._work_sharer.cli_event.assert_awaited_once()

@@ -269,10 +269,25 @@ class ForgeSessionMixin:
                 transcript_turn_max_chars=cfg.transcript_turn_max_chars,
                 output_max_chars=cfg.output_max_chars,
             ),
-            # A team's agents talk to each other: a message to a teammate can be answered.
+            # A team's agents talk to each other: a message to a teammate can be answered,
+            # and what they say to each other is said in their room too.
             mesh_replies_by_default=self._settings.session.conversational,
+            team_room_id=self._team_room_id(),
         )
         return self._forge_mcp_toolbox_cache
+
+    def _team_room_id(self) -> str:
+        """The room of this session's team: the room it was seated in for its own realm.
+
+        Only a conversational session (a team's agent) has one; any other session's mesh
+        messages stay between the two sessions."""
+        settings = self._settings
+        if not settings.session.conversational:
+            return ""
+        for seat in settings.room.seats:
+            if seat.room_id == settings.mesh.realm_id:
+                return seat.room_id
+        return ""
 
     def _memory_gateway(self) -> MemoryGatewayClient:
         """The gateway client, authenticated as this session (its Forge credential)."""

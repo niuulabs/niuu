@@ -237,23 +237,45 @@ def render_for_harness(message: PeerMessage, *, turns_shown_in_room: str = "") -
     lines.append("")
     lines.append(message.content)
     lines.append("")
-    if message.reply is None:
+    if turns_shown_in_room:
+        lines.append(_footer_in_room(message, turns_shown_in_room))
+    elif message.reply is None:
         lines.append("[The sender takes no reply to this message.]")
-    elif (
-        turns_shown_in_room
-        and message.reply.kind is ReplyKind.ROOM
-        and message.room_id == turns_shown_in_room
-    ):
-        lines.append(
-            f"[Answer by writing your reply: what you write in your turn is shown in room "
-            f"{message.room_id}. Do not answer it again with a tool.]"
-        )
     else:
         lines.append(
             f'[Answer with the `{REPLY_TOOL}` tool, message_id "{message.message_id}". '
             "Text you write in your turn does not reach the sender.]"
         )
     return "\n".join(lines)
+
+
+def _footer_in_room(message: PeerMessage, room_id: str) -> str:
+    """How an agent whose turns are shown in ``room_id`` (a team's) answers ``message``.
+
+    Its turn is already said in the room, so it never narrates there what it sent or got:
+    a message from the room is answered by writing; a teammate's, with ``reply`` (shown in
+    the room as it is sent) and nothing more; one that takes no answer, not at all."""
+    if message.reply is not None and message.reply.kind is ReplyKind.ROOM:
+        if message.room_id == room_id:
+            return (
+                f"[Answer by writing your reply: what you write in your turn is shown in room "
+                f"{room_id}. Do not answer it again with a tool.]"
+            )
+        return (
+            f'[Answer with the `{REPLY_TOOL}` tool, message_id "{message.message_id}". '
+            "Text you write in your turn does not reach the sender.]"
+        )
+    if message.reply is None:
+        return (
+            f"[The sender takes no reply. What you write in your turn is shown in room "
+            f"{room_id}: end your turn without text unless you have something new to tell the "
+            "people there, and do not report that this message arrived.]"
+        )
+    return (
+        f'[Answer with the `{REPLY_TOOL}` tool, message_id "{message.message_id}": your answer '
+        f"is shown in room {room_id} as you send it. Then end your turn without text; do not "
+        "repeat or report the answer.]"
+    )
 
 
 def _text(value: Any, field_name: str, *, required: bool = False) -> str:
