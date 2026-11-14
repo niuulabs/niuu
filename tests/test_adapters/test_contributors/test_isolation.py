@@ -1,5 +1,7 @@
 """Tests for IsolationContributor."""
 
+from uuid import uuid4
+
 import pytest
 
 from volundr.adapters.outbound.contributors.isolation import IsolationContributor
@@ -36,3 +38,12 @@ class TestIsolationContributor:
         labels = result.values["podLabels"]
         assert labels[LABEL_SESSION_ID] == str(session.id)
         assert LABEL_OWNER not in labels
+
+    async def test_a_unit_member_is_labelled_as_its_units_pod(self, session):
+        # A member runs in its unit root's pod, on the root's workspace claim.
+        root_id = uuid4()
+        member = session.model_copy(update={"hosted_by": root_id, "hosted_port": 8001})
+
+        result = await IsolationContributor().contribute(member, SessionContext())
+
+        assert result.values["podLabels"][LABEL_SESSION_ID] == str(root_id)
