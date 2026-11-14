@@ -1480,6 +1480,22 @@ class PeerInboxConfig(BaseModel):
     )
 
 
+class VoiceMemberConfig(BaseModel):
+    """One agent of a team's room, as a team call speaks it (``voice.members``)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    persona: str = Field(default="", description="The persona the agent plays; empty for none.")
+    lead: bool = Field(default=False, description="True for the one agent that leads the team.")
+    voices: dict[str, str] = Field(
+        description=(
+            "The agent's voice per persona voice key (grok-voice, openai-realtime): its "
+            "persona's voice.voices with the team launch's override applied. A call on a "
+            "provider the agent has no voice for speaks its lines in the host's voice and says so."
+        ),
+    )
+
+
 class VoiceConfig(BaseModel):
     """The session voice channel: a realtime voice call with the session's owner.
 
@@ -1512,6 +1528,14 @@ class VoiceConfig(BaseModel):
     display_name: str = Field(
         default="",
         description="Name the voice introduces itself by; empty uses the persona's name.",
+    )
+    members: dict[str, VoiceMemberConfig] = Field(
+        default_factory=dict,
+        description=(
+            "On a team's room host: each agent by its name in the room, with its voices "
+            "(SKULD__VOICE__MEMBERS, JSON; Forge renders it at the team's launch). Empty on "
+            "every other session."
+        ),
     )
     time_zone: str = Field(
         default="UTC", description="IANA time zone for the date and time in the call's prompt."

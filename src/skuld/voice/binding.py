@@ -7,13 +7,15 @@ the data it opens with) and the tools the call has. The binding is chosen when t
 channel is composed; the channel never assumes that this broker runs the agent the call
 talks about.
 
-Today there is one binding, :class:`~skuld.voice.session_binding.SessionVoiceBinding`: the
-call steers the one session this broker runs. A room binding (a team call on a unit root
-that hosts a routed room and runs no agent) is a second implementation: its tools are the
-roster and saying something to one member or to everyone, its grounding the room feed. It
-will also have the phone speak a member's line in that member's own voice, so nothing
-here or in the channel assumes every line is spoken in the call's one persona voice: the
-persona voice is the call's default, used to mint and to open it.
+Two bindings exist. :class:`~skuld.voice.session_binding.SessionVoiceBinding` steers the one
+session this broker runs. :class:`~skuld.voice.room_binding.RoomVoiceBinding` binds a call to
+the room this broker hosts when it runs no agent (a team's root, a workflow run's root): its
+tools speak to the room's agents, its grounding is the roster and the room's recent posts,
+and it pushes what the agents post to the phone while the call is up, through the
+:class:`CallOutlet` the channel attaches. An agent's spoken line goes out as a ``speak``
+frame naming the agent and its voices, so the phone says it in that agent's own voice:
+nothing assumes every line is spoken in the call's one persona voice, which is the call's
+default, used to mint and to open it.
 
 Whatever the binding sends on the person's behalf is the person's own words, authored as
 the verified caller (the owner), never as the voice model's.
@@ -40,8 +42,28 @@ class ToolOutcome:
     is_error: bool = False
 
 
+class CallOutlet(ABC):
+    """How a binding reaches the phones on the call (the channel implements it)."""
+
+    @abstractmethod
+    async def push(self, message_type: str, payload: dict[str, Any]) -> int:
+        """Send one frame to every connected call; the number of phones it reached."""
+
+
 class VoiceCallBinding(ABC):
     """The subject of a voice call: its grounding and its tools."""
+
+    def attach(self, outlet: CallOutlet) -> None:
+        """Take the outlet to the phones; a binding that pushes nothing ignores it."""
+        del outlet
+
+    async def call_started(self, author: MessageAuthor | None) -> None:
+        """A person started a call (``session.start``); a binding with no presence ignores it."""
+        del author
+
+    async def call_ended(self, author: MessageAuthor | None) -> None:
+        """That person's call ended (``session.end`` or the socket closed)."""
+        del author
 
     @property
     @abstractmethod

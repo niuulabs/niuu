@@ -21,6 +21,7 @@ import hashlib
 import json
 import logging
 import time
+import uuid
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
@@ -40,7 +41,7 @@ from fastapi.responses import JSONResponse
 from niuu.domain.message_author import MessageAuthor
 from niuu.domain.session_voice import SESSION_VOICE_PATH, SESSION_VOICE_PROTOCOL
 from skuld.voice import protocol as wire
-from skuld.voice.binding import UnknownToolError, VoiceCallBinding
+from skuld.voice.binding import CallOutlet, UnknownToolError, VoiceCallBinding
 from skuld.voice.calls import UnknownCallError, VoiceCallBook
 from skuld.voice.minting import ForgeVoiceMinter, VoiceMintError
 from skuld.voice.persona import MINT_PROVIDERS, UnsupportedProviderError, VoicePromptComposer
@@ -62,6 +63,8 @@ class _Connection:
     websocket: WebSocket
     author: MessageAuthor | None
     allowlist: set[str] | None = None
+    #: Between this phone's ``session.start`` and ``session.end``: room posts reach it.
+    on_call: bool = False
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
     async def send(self, message: dict[str, Any]) -> bool:
@@ -74,8 +77,8 @@ class _Connection:
         return True
 
 
-class SessionVoiceChannel:
-    """The voice channel of one session."""
+class SessionVoiceChannel(CallOutlet):
+    """The voice channel of one session (the binding's outlet to the phones on a call)."""
 
     def __init__(
         self,
@@ -97,10 +100,22 @@ class SessionVoiceChannel:
         self._owner_id = owner_id.strip()
         self._user_id_header = user_id_header
         self._display_name_header = display_name_header
-        self._connections: set[int] = set()
+        self._connections: dict[int, _Connection] = {}
         self._started = time.monotonic()
         #: Set when the call list could not be restored from the durable log.
         self.history_unavailable: str | None = None
+        binding.attach(self)
+
+    async def push(self, message_type: str, payload: dict[str, Any]) -> int:
+        """Send a frame the binding originates to every phone that is on a call."""
+        reached = 0
+        for connection in list(self._connections.values()):
+            if not connection.on_call:
+                continue
+            frame = wire.frame(message_type, f"{message_type}-{uuid.uuid4().hex}", payload)
+            if await connection.send(frame):
+                reached += 1
+        return reached
 
     @property
     def calls(self) -> VoiceCallBook:
@@ -251,7 +266,7 @@ class SessionVoiceChannel:
         await websocket.accept()
         connection = _Connection(websocket=websocket, author=author)
         key = id(connection)
-        self._connections.add(key)
+        self._connections[key] = connection
         try:
             while True:
                 raw = await websocket.receive_text()
@@ -262,7 +277,11 @@ class SessionVoiceChannel:
             # The app closing its socket is the normal end of a connection.
             pass
         finally:
-            self._connections.discard(key)
+            self._connections.pop(key, None)
+            if connection.on_call:
+                # A phone that hung up without session.end has still left the call.
+                connection.on_call = False
+                await self._binding.call_ended(connection.author)
             with contextlib.suppress(RuntimeError):
                 await websocket.close()
 
@@ -313,11 +332,11 @@ class SessionVoiceChannel:
             case wire.TOOLS_CALL:
                 return await self._call(connection, message_id, payload)
             case wire.SESSION_START:
-                return self._session_start(message_id, payload)
+                return await self._session_start(connection, message_id, payload)
             case wire.SESSION_LOG:
                 return self._session_log(message_id, payload)
             case wire.SESSION_END:
-                return self._session_end(message_id, payload)
+                return await self._session_end(connection, message_id, payload)
             case wire.VOICE_EPHEMERAL:
                 return await self._mint(message_id, payload)
             case wire.GATEWAY_CREDENTIALS:
@@ -414,7 +433,9 @@ class SessionVoiceChannel:
         )
         return wire.frame(wire.TOOLS_CALL_RESULT, message_id, {"name": name, "result": result})
 
-    def _session_start(self, message_id: str, payload: dict[str, Any]) -> dict:
+    async def _session_start(
+        self, connection: _Connection, message_id: str, payload: dict[str, Any]
+    ) -> dict:
         call_id = _required(payload, "sessionId")
         metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
         call = self._calls.start(
@@ -423,6 +444,9 @@ class SessionVoiceChannel:
             provider=str(payload.get("provider") or ""),
             metadata=metadata,
         )
+        if not connection.on_call:
+            connection.on_call = True
+            await self._binding.call_started(connection.author)
         return wire.frame(
             wire.SESSION_STARTED, message_id, {"session": self._calls.session_json(call)}
         )
@@ -441,7 +465,9 @@ class SessionVoiceChannel:
             wire.SESSION_LOG_ACK, message_id, {"entry": self._calls.entry_json(entry)}
         )
 
-    def _session_end(self, message_id: str, payload: dict[str, Any]) -> dict:
+    async def _session_end(
+        self, connection: _Connection, message_id: str, payload: dict[str, Any]
+    ) -> dict:
         call_id = _required(payload, "sessionId")
         duration = payload.get("durationMs")
         metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
@@ -456,6 +482,9 @@ class SessionVoiceChannel:
             )
         except UnknownCallError as exc:
             raise wire.ProtocolError(str(exc), wire.ErrorCodes.SESSION_ERROR) from exc
+        if connection.on_call:
+            connection.on_call = False
+            await self._binding.call_ended(connection.author)
         return wire.frame(
             wire.SESSION_ENDED, message_id, {"summary": self._calls.session_json(call)}
         )

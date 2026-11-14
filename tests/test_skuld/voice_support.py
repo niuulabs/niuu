@@ -2,15 +2,27 @@
 
 from __future__ import annotations
 
+import asyncio
+from collections.abc import Callable
 from typing import Any
 
 from fastapi import FastAPI
 
 from niuu.domain.message_author import MessageAuthor
+from skuld.voice.binding import CallOutlet
 from skuld.voice.calls import VoiceCallBook
 from skuld.voice.channel import SessionVoiceChannel, register_voice_routes
 from skuld.voice.minting import MintedCredential, VoiceMintError
 from skuld.voice.persona import VoicePromptComposer, resolve_voice_persona
+from skuld.voice.room_binding import RoomVoiceBinding
+from skuld.voice.room_port import (
+    PostKind,
+    RoomKind,
+    RoomMember,
+    RoomPost,
+    RoomVoiceStatus,
+    VoiceRoomPort,
+)
 from skuld.voice.session_binding import SessionVoiceBinding
 from skuld.voice.session_port import (
     SendOutcome,
@@ -247,3 +259,104 @@ def make_app(channel: SessionVoiceChannel | None) -> FastAPI:
     app = FastAPI()
     register_voice_routes(app, lambda: channel)
     return app
+
+
+class FakeRoom(VoiceRoomPort):
+    """A voice room the tests set up, and whose sends and records they read back."""
+
+    def __init__(
+        self,
+        *,
+        kind: RoomKind = RoomKind.TEAM,
+        members: tuple[RoomMember, ...] = (),
+        people: tuple[str, ...] = (),
+        name: str = "Release crew",
+    ) -> None:
+        self.kind = kind
+        self.members = members
+        self.people = people
+        self.name = name
+        self.current_posts: list[RoomPost] = []
+        self.outcome = SendOutcome(SendStatus.DELIVERED)
+        self.everyone_outcome = SendOutcome(SendStatus.DELIVERED)
+        self.said: list[tuple[str, str, MessageAuthor | None, str]] = []
+        self.said_everyone: list[tuple[str, MessageAuthor | None, str]] = []
+        self.records: list[dict[str, Any]] = []
+        self.listener: Callable[[RoomPost], None] | None = None
+
+    def status(self) -> RoomVoiceStatus:
+        return RoomVoiceStatus(
+            room_id="room-1",
+            name=self.name,
+            kind=self.kind,
+            members=self.members,
+            people_online=self.people,
+        )
+
+    def posts(self) -> list[RoomPost]:
+        return list(self.current_posts)
+
+    async def say_to(
+        self, member: str, text: str, *, author: MessageAuthor | None, model_note: str
+    ) -> SendOutcome:
+        self.said.append((member, text, author, model_note))
+        return self.outcome
+
+    async def say_to_everyone(
+        self, text: str, *, author: MessageAuthor | None, model_note: str
+    ) -> SendOutcome:
+        self.said_everyone.append((text, author, model_note))
+        return self.everyone_outcome
+
+    def listen(self, listener: Callable[[RoomPost], None] | None) -> None:
+        self.listener = listener
+
+    def record(self, frame: dict[str, Any]) -> None:
+        self.records.append(frame)
+
+
+class FakeOutlet(CallOutlet):
+    """The phones on a call: records every frame pushed, in order, once it has been sent."""
+
+    def __init__(self, *, reached: int = 1, yields: int = 1) -> None:
+        self.reached = reached
+        #: How many times a push gives up the loop before it is done (a socket write awaits).
+        self.yields = yields
+        self.frames: list[tuple[str, dict[str, Any]]] = []
+
+    async def push(self, message_type: str, payload: dict[str, Any]) -> int:
+        for _ in range(self.yields):
+            await asyncio.sleep(0)
+        self.frames.append((message_type, payload))
+        return self.reached
+
+
+def make_member(name: str, **overrides: Any) -> RoomMember:
+    return RoomMember(name=name, **overrides)
+
+
+def make_post(post_id: str = "p1", speaker: str = "Reviewer", **overrides: Any) -> RoomPost:
+    fields: dict[str, Any] = {
+        "post_id": post_id,
+        "speaker": speaker,
+        "kind": PostKind.ANSWER,
+        "text": "Looks fine.",
+    }
+    fields.update(overrides)
+    return RoomPost(**fields)
+
+
+def make_room_binding(
+    room: FakeRoom | None = None,
+    *,
+    card_recent_turns: int = 6,
+    card_turn_max_chars: int = 1500,
+    full_read_max_chars: int = FULL_READ_MAX_CHARS,
+) -> RoomVoiceBinding:
+    return RoomVoiceBinding(
+        room or FakeRoom(),
+        tool_timeout_seconds=60.0,
+        full_read_max_chars=full_read_max_chars,
+        card_recent_turns=card_recent_turns,
+        card_turn_max_chars=card_turn_max_chars,
+    )

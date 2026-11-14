@@ -46,6 +46,14 @@ CALL_PRESENCE_RESULT = "call.presence.result"
 PUSH_REGISTER_RESULT = "push.register.result"
 ERROR = "error"
 
+# Session → client, on the session's own initiative while a call is up (a room call).
+#: Context for the voice model about a room post; ``speak: true`` marks one the phone may
+#: have the host voice mention (under its quiet gate), with ``say`` telling it how.
+ROOM_NOTE = "room.note"
+#: A line to say in a room agent's own voice: ``{postId, member, persona, kind, text,
+#: voices}``. See ``docs/operator/session-voice.md`` (team calls) for what the phone does.
+SPEAK = "speak"
+
 
 class ErrorCodes:
     """``payload.code`` values the client reads."""
