@@ -255,6 +255,30 @@ def test_a_member_with_the_roots_pod_is_accepted():
     require_same_pod(unit_spec(root, [], pod=pod), entry)
 
 
+def test_a_member_that_declares_no_pod_of_its_own_runs_in_the_units():
+    # The root's secrets agent renders the member's credentials into the unit's volume.
+    root = root_session()
+    unit_pod = PodSpecAdditions(
+        service_account="openbao-session-root",
+        volumes=({"name": "secrets", "emptyDir": {}},),
+        volume_mounts=({"name": "secrets", "mountPath": "/run/secrets"},),
+        init_containers=({"name": "openbao-agent-init", "image": "i"},),
+    )
+    entry = member_entry(member_launch(root, 8082, persona="coder"))
+
+    require_same_pod(unit_spec(root, [], pod=unit_pod), entry)
+
+
+def test_a_member_with_an_agent_of_its_own_beside_the_units_is_refused():
+    root = root_session()
+    unit_pod = PodSpecAdditions(init_containers=({"name": "openbao-agent-init", "image": "i"},))
+    own = PodSpecAdditions(init_containers=({"name": "openbao-agent-init", "image": "other"},))
+    entry = member_entry(member_launch(root, 8082, persona="coder", pod=own))
+
+    with pytest.raises(HostedUnitError, match="its own init containers"):
+        require_same_pod(unit_spec(root, [], pod=unit_pod), entry)
+
+
 # -- the launch payload ------------------------------------------------------------------------
 
 

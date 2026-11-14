@@ -149,8 +149,9 @@ pod managers refuse. Forge keeps the members' needs met in three places:
   (`participants/role`) accepts that pod's workload credential for the root and for the
   sessions it hosts, and for no other session.
 
-A VM unit keeps an agent per member (explicit containers on the guest); the root's injection
-there covers only its own credentials.
+A VM unit does the same with the guest agent: the root's explicit agent containers render the
+union into the unit's `/run/secrets`, which every member's container mounts, and a member adds
+no agent, volume or ServiceAccount of its own.
 
 ### Workspace
 

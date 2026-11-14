@@ -91,14 +91,21 @@ def member_spec(entry: Mapping[str, Any]) -> SessionSpec:
     )
 
 
+#: The parts of a member's pod that are the unit's: a member declares the root's or none.
+_POD_PARTS = ("volumes", "volume_mounts", "init_containers", "extra_containers", "service_account")
+
+
 def require_same_pod(root: SessionSpec, entry: Mapping[str, Any]) -> None:
     """Refuse a member whose pod differs from the root's: a unit has one pod.
 
     The unit's volumes, mounts, init containers, sidecars and ServiceAccount come from the
-    root's spec and are shared by every Skuld of the unit. A member that declares others
-    would silently run without them, so the unit does not start.
+    root's spec and are shared by every Skuld of the unit. A member that declares none runs
+    in the unit's (its secrets are rendered by the root's injection); a member that declares
+    others would silently run without them, so the unit does not start.
     """
     pod = entry["pod"]
+    if not any(pod[key] for key in _POD_PARTS):
+        return
     wanted = {
         "volumes": [dict(v) for v in root.pod_spec.volumes],
         "volume_mounts": [dict(v) for v in root.pod_spec.volume_mounts],
