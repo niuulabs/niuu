@@ -11,6 +11,7 @@ from volundr.adapters.outbound.contributors.team_room import TeamRoomContributor
 from volundr.domain.models import HOSTED_LAUNCH_KEY, SessionStatus
 from volundr.domain.ports import PersonaNotPlayableError
 from volundr.domain.services.forge import HostedUnitInUseError
+from volundr.domain.services.forge_session_launch import FORGE_MCP_KEY, GRANTS_KEY
 from volundr.domain.services.team import (
     TEAM_RUNTIME_BACKENDS,
     TeamError,
@@ -146,6 +147,19 @@ class TestTheOpeningTask:
 
         unit = team.root.workload_config["hosted_unit"]
         assert (unit["initial_prompt"], unit["system_prompt"]) == ("", "")
+
+
+class TestWhatEachAgentMayDo:
+    async def test_every_agent_may_speak_in_the_room_and_message_its_teammates(self, rig: TeamRig):
+        team = await _start(rig)
+
+        for member in team.members:
+            assert member.workload_config[FORGE_MCP_KEY][GRANTS_KEY] == ["message"]
+
+    async def test_the_room_itself_is_given_no_grant(self, rig: TeamRig):
+        team = await _start(rig)
+
+        assert team.root.workload_config[FORGE_MCP_KEY][GRANTS_KEY] == []
 
 
 class TestWhatEachAgentIsTold:

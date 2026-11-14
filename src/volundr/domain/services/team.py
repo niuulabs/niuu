@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
+from niuu.forge_mcp.models import ForgeMcpGrant
 from volundr.domain.models import Principal, Session, SessionSource
 from volundr.domain.ports import SessionPersona, SessionPersonaProvider
 from volundr.domain.session_participants import (
@@ -138,6 +139,20 @@ class TeamSessionRequest:
     persona_definition: dict[str, Any] | None = None
     hosts_members: bool = False
     hosted_by: UUID | None = None
+    forge_mcp: TeamForgeMcp | None = None
+
+
+@dataclass(frozen=True)
+class TeamForgeMcp:
+    """The Forge MCP grants a team gives its agents (what ``forge_mcp`` carries on a create)."""
+
+    grants: tuple[ForgeMcpGrant, ...]
+
+
+#: What a team's agent may do through Forge beyond its own session: speak in its team's room
+#: (``room_post`` is relayed by Forge when the mesh does not verify senders) and message its
+#: teammates. The person who starts the team grants it, as they would on any session.
+TEAM_AGENT_GRANTS = TeamForgeMcp(grants=(ForgeMcpGrant.MESSAGE,))
 
 
 @dataclass(frozen=True)
@@ -377,6 +392,7 @@ def _member_request(
         system_prompt=team_context_prompt(launch.name, planned, index, team_realm(str(root_id))),
         initial_prompt=launch.task if receives_task else "",
         hosted_by=root_id,
+        forge_mcp=TEAM_AGENT_GRANTS,
         **_launch_fields(launch),
     )
 
