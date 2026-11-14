@@ -213,7 +213,7 @@ class TestSend:
         task = broker.tasks[0]
         assert not task.done() and not task.cancelled()  # the wait timing out must not cancel it
         release.set()
-        await task
+        assert await task is None
         assert task.exception() is None
 
     async def test_a_turn_already_active_on_timeout_counts_as_delivered(self, broker):

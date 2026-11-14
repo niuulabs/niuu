@@ -756,7 +756,8 @@ class TestRestPrompt:
         )
 
         assert response.status_code == 404
-        assert "gemini" in response.json()["error"]
+        assert "composes no voice prompt for that provider" in response.json()["error"]
+        assert "gemini" not in response.json()["error"]  # no exception text reflected
 
     def test_a_missing_provider_is_a_422(self, setup):
         _, _, _, client = setup

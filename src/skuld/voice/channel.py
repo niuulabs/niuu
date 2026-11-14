@@ -182,7 +182,15 @@ class SessionVoiceChannel:
                 conversation_id=conversation_id,
             )
         except UnsupportedProviderError as exc:
-            return JSONResponse({"success": False, "error": str(exc)}, status_code=404)
+            logger.info("No voice prompt: %s", str(exc).replace("\n", " "))
+            return JSONResponse(
+                {
+                    "success": False,
+                    "error": "This session composes no voice prompt for that provider: it is "
+                    "not grok or gpt-realtime, or the persona has no voice for it",
+                },
+                status_code=404,
+            )
         return JSONResponse({"success": True, "prompt": prompt})
 
     def _require_history(self) -> None:

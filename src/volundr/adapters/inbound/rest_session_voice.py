@@ -133,9 +133,9 @@ def create_session_voice_router(
         except RealtimeCredentialError as exc:
             logger.error(
                 "Voice credential mint failed for session %s (%s): %s",
-                session_id,
-                body.provider,
-                exc,
+                _log_safe(str(session_id)),
+                _log_safe(body.provider),
+                _log_safe(str(exc)),
             )
             raise HTTPException(status.HTTP_502_BAD_GATEWAY, str(exc)) from exc
         response.headers["Cache-Control"] = "no-store"
@@ -148,3 +148,8 @@ def create_session_voice_router(
         )
 
     return router
+
+
+def _log_safe(value: str) -> str:
+    """A caller-supplied value fit for one log line (no forged entries)."""
+    return value.replace("\r", "\\r").replace("\n", "\\n")
