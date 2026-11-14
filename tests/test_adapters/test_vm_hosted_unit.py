@@ -55,6 +55,7 @@ from volundr.domain.guest_access import GuestCommandResult
 from volundr.domain.models import GitSource, PodSpecAdditions, Session, SessionSpec
 from volundr.domain.services.host_access_key import generate_host_access_key
 from volundr.domain.vm_runtime import VmRuntimeStageError
+from volundr.guest_agent import config as guest_agent_config
 
 ISOLATION = {"cpu": 1.0, "memory_mib": 1024, "pids": 256}
 
@@ -525,6 +526,9 @@ async def test_the_metadata_delivery_writes_a_config_for_each_member(tmp_path):
         "file": "token",
     }
     assert configs[f"{member_id}.json"]["allocation_id"] == configs["config.json"]["allocation_id"]
+    # The guest agent accepts every field the runtime writes for the member.
+    accepted = {*guest_agent_config._TOP_LEVEL, *guest_agent_config._OPTIONAL_TOP_LEVEL}
+    assert set(configs[f"{member_id}.json"]) <= accepted
     assert json.loads(payloads(runtime)[-1])["relaunch"] is True
 
 

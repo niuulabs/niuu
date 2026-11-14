@@ -402,6 +402,9 @@ computeHosts:
   nativeImages: []
   # -- Skuld preview.router_auth for live preview on hosts ({adapter, kwargs}); {} is off
   previewRouterAuth: {}
+  # -- The pod manager's mesh for the hosts' sessions ({enabled: true} for teams and
+  # workflow runs, whose members talk over it); {} leaves it off
+  mesh: {}
 
 # VM guest metadata endpoint (POST /api/v1/internal/compute/metadata/credentials). A VM
 # session's guest agent pulls its ServiceAccount tokens and Forge session credential

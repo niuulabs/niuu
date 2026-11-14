@@ -54,8 +54,10 @@ class FakeRoom:
         self.roster: list[RoomParticipantInfo] = []
         self.connected: list[ConnectedPerson] = []
         self.error: Exception | None = None
+        self.credentials: list[str | None] = []
 
-    async def read_room(self, session_id):
+    async def read_room(self, session_id, *, credential=None):
+        self.credentials.append(credential)
         if self.error is not None:
             raise self.error
         return RoomRoster(participants=list(self.roster), connected_people=list(self.connected))
@@ -266,6 +268,16 @@ class TestMembersRoute:
         assert response.status_code == 502
         assert "ConnectionError: broker refused the connection" in response.json()["detail"]
         assert str(root.id) in response.json()["detail"]
+
+    async def test_the_room_is_read_with_the_callers_own_credential(self, forge):
+        root, _, _ = await _team(forge)
+
+        forge.client.get(
+            f"{PREFIX}/sessions/{root.id}/members",
+            headers={**_headers("ada"), "Authorization": "Bearer ada-token"},
+        )
+
+        assert forge.room.credentials == ["Bearer ada-token"]
 
 
 class TestSessionResponseFields:

@@ -2452,6 +2452,14 @@ class TestComputeHosts:
         # Without guestMetadata there is no credential delivery to configure.
         assert compute.credential_delivery is None
 
+    def test_the_mesh_is_off_unless_it_is_asked_for(self):
+        assert "mesh" not in self._config(*self.ON)["pod_manager"]["kwargs"]
+
+        config = self._config(*self.ON, "--set", "computeHosts.mesh.enabled=true")
+
+        # Teams and workflow runs on the hosts talk over the pod manager's mesh.
+        assert config["pod_manager"]["kwargs"]["mesh"] == {"enabled": True}
+
     def test_the_catalog_it_renders_resolves(self, tmp_path):
         from niuu.utils import import_class
         from volundr.compute.config import ComputeConfig

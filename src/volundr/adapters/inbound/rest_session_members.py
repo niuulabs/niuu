@@ -145,7 +145,9 @@ def create_session_members_router(
         """The agents and people of a session; a team's agents are its hosted members."""
         principal = await extract_principal(request)
         try:
-            members = await service.members(session_id, principal)
+            members = await service.members(
+                session_id, principal, credential=request.headers.get("authorization")
+            )
         except SessionNotFoundError as exc:
             raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
         except PermissionError as exc:

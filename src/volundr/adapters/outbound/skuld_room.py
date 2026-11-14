@@ -91,8 +91,8 @@ class SkuldRoomAdapter(SessionRoomPort, SessionCommunicationPort):
         payload = await self._get(session_id, "/api/room/participants")
         return _parse_participants(payload)
 
-    async def read_room(self, session_id: UUID) -> RoomRoster:
-        payload = await self._get(session_id, "/api/room/participants")
+    async def read_room(self, session_id: UUID, *, credential: str | None = None) -> RoomRoster:
+        payload = await self._get(session_id, "/api/room/participants", credential=credential)
         if not isinstance(payload, dict) or "connected_people" not in payload:
             raise ValueError(
                 f"The broker of session {session_id} reported no connected_people; "
@@ -149,10 +149,13 @@ class SkuldRoomAdapter(SessionRoomPort, SessionCommunicationPort):
             response.raise_for_status()
             return response.json()
 
-    async def _get(self, session_id: UUID, suffix: str) -> dict:
+    async def _get(self, session_id: UUID, suffix: str, *, credential: str | None = None) -> dict:
         target = await self._resolve_request_target(session_id)
+        headers = dict(target.headers)
+        if credential:
+            headers["Authorization"] = credential
         async with httpx.AsyncClient(timeout=self._timeout) as client:
-            response = await client.get(f"{target.base_url}{suffix}", headers=target.headers)
+            response = await client.get(f"{target.base_url}{suffix}", headers=headers)
             response.raise_for_status()
             return response.json()
 

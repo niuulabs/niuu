@@ -107,7 +107,7 @@ logger = logging.getLogger(__name__)
 # Init containers run to completion and sidecars start before Skuld, in the
 # order a kubelet uses, on every start (their volumes live on guest tmpfs).
 _START = r"""
-import json, os, pathlib, subprocess, sys
+import base64, json, os, pathlib, subprocess, sys
 p=json.load(sys.stdin)
 # A slot (vm_slot_layout.SlotLayout.launch) places the session in its own
 # directories, namespaces and cgroup; without one the session is the VM's.
@@ -116,9 +116,17 @@ root=pathlib.Path(s['data_root'] if s else '/var/lib/niuu/session')
 marker=root/'.allocation'
 name=s['skuld'] if s else 'niuu-skuld'
 labels=s['labels'] if s else ['compute.niuu.io/allocation='+p['allocation_id']]
-def run(*args, env=None):
-    return subprocess.run(args,check=True,stdout=subprocess.DEVNULL,
-        env={**os.environ,**(env or {})})
+def run(*args, env=None, stage=None):
+    try:
+        return subprocess.run(args,check=True,stdout=subprocess.DEVNULL,
+            env={**os.environ,**(env or {})})
+    except subprocess.CalledProcessError as e:
+        # Only the step's name and exit code leave the guest: its output may hold secrets.
+        if stage:
+            print('__STAGE__'+stage[:64],file=sys.stderr)
+            detail=base64.b64encode(('exit code '+str(e.returncode)).encode()).decode()
+            print('__DETAIL__'+detail,file=sys.stderr)
+        raise
 def owned(container):
     r=subprocess.run(['docker','container','inspect',container],capture_output=True,text=True)
     if r.returncode:
@@ -162,14 +170,14 @@ if address:
 # The holder of a slot's PID namespace is its init and reaps for every container.
 init=[] if s else ['--init']
 for c in p.get('init_containers',[]):
-    run('docker','run','--rm',*container(c),env=c['environment'])
+    run('docker','run','--rm',*container(c),env=c['environment'],stage='init-'+c['name'])
 for c in p.get('sidecars',[]):
     sidecar=(s['sidecar_prefix'] if s else 'niuu-sidecar-')+c['name']
     if owned(sidecar):
-        run('docker','start',sidecar)
+        run('docker','start',sidecar,stage='sidecar-'+c['name'])
         continue
     run('docker','run','--detach',*init,'--restart','unless-stopped','--name',sidecar,
-        *container(c),env=c['environment'])
+        *container(c),env=c['environment'],stage='sidecar-'+c['name'])
 if p.get('containers_only'):
     # Another runtime starts the broker itself, next to these containers.
     sys.exit(0)
@@ -205,17 +213,17 @@ if p['repo'] and not (workspace/'.git').exists():
     if p['branch']:
         args.extend(['--branch',p['branch']])
     args.extend(['--',p['repo'],str(workspace)])
-    run(*args)
+    run(*args,stage='clone')
 # -h: a link the session left in its storage names its own path, never a target.
 owner=f"{s['uid']}:{s['uid']}" if s else '1000:1000'
-run('chown','-R','-h',owner,str(root))
+run('chown','-R','-h',owner,str(root),stage='chown')
 identity=[]
 if s:
     # The slot's uid, with the image account's name, home and shell.
     identity=['--user',owner,*binds([
         {'source':s['identity']+'/passwd','target':'/etc/passwd'},
         {'source':s['identity']+'/group','target':'/etc/group'}])]
-run('docker','pull',p['image'])
+run('docker','pull',p['image'],stage='pull')
 for u in missing:
     env_args=[arg for key in u['environment'] for arg in ('--env',key)]
     run('docker','run','--detach',*init,'--name',u['name'],*placement(),
@@ -223,8 +231,10 @@ for u in missing:
         *env_args,*binds(p.get('secret_mounts',[])),*binds(u['mounts']),
         '--mount','type=bind,src='+str(workspace)+',dst=/workspace',
         '--mount','type=bind,src='+str(u['home'])+',dst=/home/skuld',p['image'],
-        env=u['environment'])
-"""
+        env=u['environment'],stage='skuld-'+u['name'])
+""".replace("__STAGE__", vm_slot_supervisor.STAGE_PREFIX).replace(
+    "__DETAIL__", vm_slot_supervisor.DETAIL_PREFIX
+)
 
 _PREPARE = r"""
 import json,os,pathlib,sys,tarfile
@@ -1501,6 +1511,8 @@ class SshContainerVmRuntime(BrokeredCredentialPodManager, VmRuntime):
             bootstrap,
             self._python(_START),
             data=json.dumps(payload).encode(),
+            safe_error_prefix=vm_slot_supervisor.STAGE_PREFIX,
+            safe_detail_prefix=vm_slot_supervisor.DETAIL_PREFIX,
         )
 
     def _require_slot_delivery(self, layout: SlotLayout, bootstrap: MachineBootstrap) -> None:

@@ -19,8 +19,10 @@ class IsolationContributor(SessionContributor):
         session: Session,
         context: SessionContext,
     ) -> SessionContribution:
+        # A unit member is a container of its unit root's pod and works in the root's
+        # workspace, so the pod (and the claim it may mount) is labelled with the root's id.
         pod_labels: dict[str, str] = {
-            LABEL_SESSION_ID: str(session.id),
+            LABEL_SESSION_ID: str(session.hosted_by or session.id),
         }
         if session.owner_id:
             pod_labels[LABEL_OWNER] = session.owner_id
