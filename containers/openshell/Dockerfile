@@ -1,5 +1,5 @@
 # Security fixes awaiting stable CPython releases; no interpreter ABI changes.
-FROM --platform=$BUILDPLATFORM python:3.14-slim-bookworm@sha256:516b51cb9db2ef061e465c803e50f64361b82cefd91e525b889b967b83e83527 AS python-security
+FROM --platform=$BUILDPLATFORM python:3.14-slim-bookworm@sha256:3fe1a0b6c2d6b2ebb572906cdabeca75aeb558c0c17db5ffefbcf8094871c32b AS python-security
 COPY containers/python-security/ /security/
 RUN apt-get update && apt-get install -y --no-install-recommends patch \
     && python /security/build.py /patched-stdlib
@@ -11,7 +11,7 @@ FROM ghcr.io/astral-sh/uv:0.13.7@sha256:96f40d3904aad8d0bd010539001d36c8e2188b98
 # klauspost/compress v1.20.3 (GO-2026-6865, fixed in v1.20.2), so no module override
 # is needed. Replace the base's gh with v2.103.3 built from the checksum-verified
 # source with Go 1.27.3, which satisfies its `toolchain go1.27.3`.
-FROM --platform=$BUILDPLATFORM golang:1.27.3-alpine3.23@sha256:8a5046497cda39860b832ffdbe8dd66018a0f05bb01352f533a36e7e2ced66a0 AS gh-build
+FROM --platform=$BUILDPLATFORM golang:1.27.3-alpine3.23@sha256:5d5113301ffcac84e2bfb20c42648803fecaea6789c89bb9b66884e18cbb30a7 AS gh-build
 ARG TARGETARCH
 WORKDIR /src
 RUN wget -q https://github.com/cli/cli/archive/refs/tags/v2.103.3.tar.gz -O /tmp/gh.tar.gz \
