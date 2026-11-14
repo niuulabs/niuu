@@ -759,6 +759,8 @@ class TestBuildInitConfig:
         store = json.loads(env["CREDENTIAL_STORE"])["kwargs"]["base_dir"]
         assert injection["kwargs"]["base_dir"] == store
         assert "SECRET_INJECTION" in _OPERATOR_OWNED_LOCAL_ENV
+        contributors = [c["adapter"] for c in json.loads(env["SESSION_CONTRIBUTORS"])]
+        assert any(adapter.endswith("SecretInjectionContributor") for adapter in contributors)
 
     def test_sessions_read_connections_where_settings_writes_them(self) -> None:
         from niuu.service_databases import database_name_for_service
@@ -1676,12 +1678,9 @@ def test_mini_mode_switches_workload_identity_off():
     """One machine has no Kubernetes token issuer for the contributor's projected token."""
     env = _resolve_local_pod_manager_env(CLISettings(mode="mini", hosts={"enabled": False}))
     contributors = json.loads(env["SESSION_CONTRIBUTORS"])
-    assert contributors == [
-        {
-            "adapter": (
-                "volundr.adapters.outbound.contributors.workload_identity."
-                "WorkloadIdentityContributor"
-            ),
-            "kwargs": {"enabled": False},
-        }
-    ]
+    assert {
+        "adapter": (
+            "volundr.adapters.outbound.contributors.workload_identity.WorkloadIdentityContributor"
+        ),
+        "kwargs": {"enabled": False},
+    } in contributors

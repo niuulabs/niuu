@@ -18,7 +18,10 @@ from typing import TYPE_CHECKING, Any
 
 import typer
 
-from cli.services.compose_bundle import WORKLOAD_IDENTITY_CONTRIBUTOR
+from cli.services.compose_bundle import (
+    SECRET_INJECTION_CONTRIBUTOR,
+    WORKLOAD_IDENTITY_CONTRIBUTOR,
+)
 from cli.services.manager import ServiceState, StartupError
 from cli.services.preflight import (
     PreflightConfig,
@@ -743,7 +746,12 @@ def _resolve_local_pod_manager_env(settings: CLISettings) -> dict[str, str]:
         # machine has none of: switched off rather than left to emit a token volume that
         # neither local sessions nor registered hosts can be given.
         "SESSION_CONTRIBUTORS": json.dumps(
-            [{"adapter": WORKLOAD_IDENTITY_CONTRIBUTOR, "kwargs": {"enabled": False}}]
+            [
+                # Renders a session's credentials through SECRET_INJECTION below; without
+                # it no connection's credential reaches a local session.
+                {"adapter": SECRET_INJECTION_CONTRIBUTOR, "kwargs": {}},
+                {"adapter": WORKLOAD_IDENTITY_CONTRIBUTOR, "kwargs": {"enabled": False}},
+            ]
         ),
         "CREDENTIAL_STORE": json.dumps(
             {
