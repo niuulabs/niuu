@@ -61,12 +61,14 @@ async def test_a_root_started_without_a_task_hosts_the_same_room():
     assert result.values["room"]["routed"] is True
 
 
-async def test_a_member_joins_the_roots_realm_and_shares_its_work():
+async def test_a_member_joins_the_roots_realm_shares_its_work_and_sits_in_its_room():
     result = await TeamRoomContributor().contribute(_session(hosted_by=ROOT_ID), _member_context())
 
     assert result.values == {
         "team": {"enabled": True},
         "mesh": {"enabled": True, "realmId": REALM, "shareWork": True},
+        # The room's id is the realm's, hosted by the root: the member can speak in it at once.
+        "roomSeats": [{"roomId": REALM, "hostSessionId": str(ROOT_ID)}],
     }
 
 

@@ -96,6 +96,10 @@ WORKFLOW_ROOM_ENV_NAMES = {
 #: mesh realm and room variables a workflow run gets (``workflow_session_environment``).
 TEAM_VALUES_KEY = "team"
 
+#: Top-level key of the session spec values naming the rooms a session sits in from the start
+#: (``values.roomSeats``): ``[{"roomId": ..., "hostSessionId": ...}]``. Skuld's ``room.seats``.
+ROOM_SEATS_VALUES_KEY = "roomSeats"
+
 
 def workflow_session_environment(values: Mapping[str, Any]) -> dict[str, str]:
     """The Skuld variables a workflow run's or a team's session spec values call for.
@@ -119,6 +123,18 @@ def workflow_session_environment(values: Mapping[str, Any]) -> dict[str, str]:
     mesh = values.get("mesh")
     if isinstance(mesh, Mapping):
         environment.update(_prefixed(mesh, WORKFLOW_MESH_ENV_NAMES, "SKULD__MESH__"))
+    seats = values.get(ROOM_SEATS_VALUES_KEY)
+    if isinstance(seats, list) and seats:
+        environment["SKULD__ROOM__SEATS"] = json.dumps(
+            [
+                {
+                    "room_id": seat["roomId"],
+                    "host_session_id": seat["hostSessionId"],
+                    "host_node": seat.get("hostNode", ""),
+                }
+                for seat in seats
+            ]
+        )
     room = values.get("room")
     if isinstance(room, Mapping) and room.get("enabled") is True:
         room_values = dict(room)

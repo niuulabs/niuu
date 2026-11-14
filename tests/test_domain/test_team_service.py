@@ -172,6 +172,13 @@ class TestWhatEachAgentIsTold:
         assert "`mesh_send`" in prompt and "`mesh_peers`" in prompt and "`mesh_ask`" in prompt
         assert "`peer`" in prompt and "`peer_id`" in prompt
 
+    async def test_it_says_they_share_one_checkout_and_how_to_speak_in_the_room(self, rig: TeamRig):
+        team = await _start(rig)
+
+        prompt = _held(team.members[1])["system_prompt"]
+        assert "one checkout of the repository, on one branch" in prompt
+        assert f'`room_post` with `room_id` "team-{team.root.id}"' in prompt
+
     async def test_an_agent_without_a_persona_is_listed_as_having_none(self, rig: TeamRig):
         members = [TeamMemberSpec(model="gpt-5", lead=True)]
 

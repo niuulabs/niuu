@@ -4508,9 +4508,12 @@ class Broker(
         Learned from what was said in them: a message said in a room names the room and the
         session that relayed it, its host. {room_id: {host_session_id: host_node}}. It
         includes nothing this session has not been told, and the inbox is durable, so it
-        survives a restart.
+        survives a restart. The rooms it was configured to sit in (``room.seats``, a team's
+        room) are there from the start.
         """
         seats: dict[str, dict[str, str]] = {}
+        for seat in self._settings.room.seats:
+            seats.setdefault(seat.room_id, {})[seat.host_session_id] = seat.host_node
         for entry in self._peer_inbox.values():
             envelope = entry.envelope
             if envelope.room_id and envelope.relayed_by is not None:

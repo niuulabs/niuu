@@ -1,5 +1,7 @@
 """A workflow run's session started from the environment gets what the chart renders."""
 
+import json
+
 from tests.support.workflow_steps import (
     MEMBER_MESH_ENV,
     MEMBER_MESH_VALUES,
@@ -88,6 +90,27 @@ def test_a_teams_member_joins_the_realm_and_shares_its_work_with_no_step_setting
         "SKULD__MESH__REALM_ID": "team-1",
         "SKULD__MESH__SHARE_WORK": "true",
     }
+
+
+def test_a_teams_member_is_seated_in_its_teams_room_from_the_start() -> None:
+    from skuld.config import SkuldSettings
+
+    environment = workflow_session_environment(
+        {
+            "team": {"enabled": True},
+            "mesh": {"enabled": True, "realmId": "team-1", "shareWork": True},
+            "roomSeats": [{"roomId": "team-1", "hostSessionId": "root-1"}],
+        }
+    )
+
+    assert json.loads(environment["SKULD__ROOM__SEATS"]) == [
+        {"room_id": "team-1", "host_session_id": "root-1", "host_node": ""}
+    ]
+    room = SkuldSettings.model_validate(
+        {"room": {"seats": json.loads(environment["SKULD__ROOM__SEATS"])}}
+    ).room
+    assert [(seat.room_id, seat.host_session_id) for seat in room.seats] == [("team-1", "root-1")]
+    assert room.enabled is False
 
 
 def test_a_workflow_rooms_untargeted_delivery_is_left_to_skulds_own_default() -> None:

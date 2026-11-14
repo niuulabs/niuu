@@ -1769,6 +1769,24 @@ def test_a_runs_room_session_runs_no_agent_of_its_own():
 
 
 @pytest.mark.skipif(shutil.which("helm") is None, reason="Helm is required")
+def test_a_session_is_seated_in_the_rooms_it_is_given_without_hosting_one():
+    from skuld.config import SkuldSettings
+
+    config = _rendered_skuld_config(
+        "skuld",
+        "--set",
+        "roomSeats[0].roomId=team-1",
+        "--set",
+        "roomSeats[0].hostSessionId=root-1",
+    )
+
+    room = SkuldSettings(**config).room
+    assert room.enabled is False
+    assert [(seat.room_id, seat.host_session_id) for seat in room.seats] == [("team-1", "root-1")]
+    assert "room" not in _rendered_skuld_config("skuld")
+
+
+@pytest.mark.skipif(shutil.which("helm") is None, reason="Helm is required")
 def test_a_rooms_untargeted_delivery_is_rendered_and_refuse_by_default():
     from skuld.config import SkuldSettings
 

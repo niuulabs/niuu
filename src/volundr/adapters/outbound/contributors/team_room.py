@@ -33,7 +33,11 @@ from volundr.adapters.outbound.contributors.mesh_values import (
 from volundr.domain.models import Session
 from volundr.domain.ports import SessionContext, SessionContribution, SessionContributor
 from volundr.domain.team import TEAM_KEY, TEAM_MEMBER_KEY, TEAM_TASK_TARGETS, team_realm
-from volundr.domain.workflow_session import PERSONA_DEFINITION_KEY, TEAM_VALUES_KEY
+from volundr.domain.workflow_session import (
+    PERSONA_DEFINITION_KEY,
+    ROOM_SEATS_VALUES_KEY,
+    TEAM_VALUES_KEY,
+)
 
 #: What a person's untargeted message to a team's room does: every agent receives it.
 UNTARGETED_TO_EVERYONE = "everyone"
@@ -98,15 +102,19 @@ class TeamRoomContributor(SessionContributor):
                 f"session {session.id} is a team member and needs hosted_by (the team's "
                 "root): the realm of its room is the root's"
             )
+        realm = team_realm(str(session.hosted_by))
         return {
             TEAM_VALUES_KEY: {"enabled": True},
             MESH_VALUES_KEY: {
                 "enabled": True,
-                "realmId": team_realm(str(session.hosted_by)),
+                "realmId": realm,
                 # The team's room keeps what its members do: they share it on the mesh.
                 "shareWork": True,
                 **announced_persona(config.get(PERSONA_DEFINITION_KEY)),
             },
+            # Seated in the team's room from the start (its id is the realm's), so a member
+            # can speak in it before anyone has said anything to it there.
+            ROOM_SEATS_VALUES_KEY: [{"roomId": realm, "hostSessionId": str(session.hosted_by)}],
         }
 
 

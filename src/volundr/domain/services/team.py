@@ -28,7 +28,7 @@ from volundr.domain.session_participants import (
     ParticipantRole,
     SelfInviteError,
 )
-from volundr.domain.team import TEAM_KEY, TEAM_MEMBER_KEY, TEAM_TASK_TARGETS
+from volundr.domain.team import TEAM_KEY, TEAM_MEMBER_KEY, TEAM_TASK_TARGETS, team_realm
 
 if TYPE_CHECKING:
     from volundr.domain.services.forge import ForgeService
@@ -47,6 +47,8 @@ _SESSION_NAME_MAX = 63
 #: that tool takes. Both are Forge MCP tools of a session whose mesh is enabled, and a team's
 #: members have it enabled (``TeamRoomContributor``).
 MESSAGE_PEER_TOOL = "mesh_send"
+#: The tool an agent speaks in a room with, to everyone in it.
+ROOM_POST_TOOL = "room_post"
 LIST_PEERS_TOOL = "mesh_peers"
 ASK_PEERS_TOOL = "mesh_ask"
 
@@ -372,15 +374,18 @@ def _member_request(
         definition=member.spec.definition,
         workload_config={TEAM_MEMBER_KEY: {"lead": member.spec.lead}},
         persona_definition=dict(member.persona.document) if member.persona else None,
-        system_prompt=team_context_prompt(launch.name, planned, index),
+        system_prompt=team_context_prompt(launch.name, planned, index, team_realm(str(root_id))),
         initial_prompt=launch.task if receives_task else "",
         hosted_by=root_id,
         **_launch_fields(launch),
     )
 
 
-def team_context_prompt(team_name: str, planned: Sequence[PlannedMember], index: int) -> str:
-    """What one member is told about its team: who is in it, who leads, how to reach them."""
+def team_context_prompt(
+    team_name: str, planned: Sequence[PlannedMember], index: int, room_id: str
+) -> str:
+    """What one member is told about its team: who is in it, who leads, where they work and
+    how to reach them."""
     me = planned[index]
     lead = _lead_of(planned)
     roster = "\n".join(
@@ -402,6 +407,12 @@ def team_context_prompt(team_name: str, planned: Sequence[PlannedMember], index:
         "reaches every agent of the team.\n\n"
         f"The team's agents:\n{roster}\n\n"
         f"{role}\n\n"
+        "All of you work in one checkout of the repository, on one branch: a teammate's edits "
+        "and commits are in your working tree as soon as they make them, so read them there "
+        "instead of asking for them, and agree who edits which files before you change the "
+        "same ones.\n\n"
+        f"To say something to the whole team, call `{ROOM_POST_TOOL}` with "
+        f'`room_id` "{room_id}" and `content`; the people in the room see it too. '
         f"To message one teammate directly, call `{MESSAGE_PEER_TOOL}` with `peer` (their peer "
         f"id) and `content`. `{LIST_PEERS_TOOL}` lists the peers on your mesh: a teammate's "
         "`name` is the name above and its `peer_id` is what "
