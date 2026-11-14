@@ -407,6 +407,31 @@ class TestInMemoryEventBroadcaster:
         assert unplaced.data["coordination"] is None
 
     @pytest.mark.asyncio
+    async def test_session_event_keeps_a_team_member_in_its_team(
+        self,
+        broadcaster: InMemoryEventBroadcaster,
+        sample_session: Session,
+    ):
+        root_id = uuid4()
+        member = sample_session.model_copy(
+            update={"hosted_by": root_id, "workload_config": {"team_member": {"lead": True}}}
+        )
+        root = sample_session.model_copy(update={"workload_config": {"team": {"task_to": None}}})
+
+        event = broadcaster.create_session_event(EventType.SESSION_UPDATED, member)
+        root_event = broadcaster.create_session_event(EventType.SESSION_UPDATED, root)
+        plain = broadcaster.create_session_event(EventType.SESSION_UPDATED, sample_session)
+
+        assert event.data["hosted_by"] == str(root_id)
+        assert event.data["team_member"] == {"lead": True}
+        assert root_event.data["team"] == {"task_to": None}
+        assert (plain.data["hosted_by"], plain.data["team"], plain.data["team_member"]) == (
+            None,
+            None,
+            None,
+        )
+
+    @pytest.mark.asyncio
     async def test_session_event_carries_needs_attention(
         self,
         broadcaster: InMemoryEventBroadcaster,

@@ -3525,7 +3525,9 @@ describe('session read state', () => {
 
   it('keeps the caller-specific fields when a stream event omits them', async () => {
     const client = makeClient();
-    client.get.mockResolvedValue([{ ...row, worked_seconds_24h: 600, read_state: payload }]);
+    client.get.mockResolvedValue([
+      { ...row, worked_seconds_24h: 600, read_state: payload, people_count: 3 },
+    ]);
     let streamOptions: { onEvent?: (event: { event?: string; data: string }) => void } = {};
     const svc = buildVolundrHttpAdapter(
       client,
@@ -3547,6 +3549,7 @@ describe('session read state', () => {
       name: 'renamed',
       workedSeconds24h: 600,
       readState: { isUnread: true, revision: 3 },
+      peopleCount: 3,
     });
   });
 

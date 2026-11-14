@@ -622,7 +622,9 @@ function PodEntry({
                     data-testid={`session-unit-${session.id}`}
                   >
                     <UnitStack session={session} unit={unit} />
-                    {unitSummaryLabel(unit, !shared)}
+                    <span className="forge-session-row__unit-label">
+                      {unitSummaryLabel(unit, !shared)}
+                    </span>
                   </span>
                 )}
                 {coordinatorWorkers !== undefined && (

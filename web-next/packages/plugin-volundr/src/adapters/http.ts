@@ -1742,10 +1742,13 @@ export function buildVolundrHttpAdapter(
     if (!prior || prior.instanceId !== fresh.instanceId) return fresh;
     const readState = fresh.readState ?? prior.readState;
     const workedSeconds24h = fresh.workedSeconds24h ?? prior.workedSeconds24h;
+    // Counted by the list read only; a streamed update does not carry it.
+    const peopleCount = fresh.peopleCount ?? prior.peopleCount;
     return {
       ...fresh,
       ...(readState ? { readState } : {}),
       ...(workedSeconds24h !== undefined ? { workedSeconds24h } : {}),
+      ...(peopleCount !== undefined ? { peopleCount } : {}),
     };
   }
 

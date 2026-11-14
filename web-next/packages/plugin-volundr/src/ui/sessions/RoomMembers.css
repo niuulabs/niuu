@@ -44,6 +44,13 @@
   align-items: center;
   gap: 6px;
   color: var(--color-text-secondary);
+  white-space: nowrap;
+}
+/* A narrow list shortens the summary on its one line; it never wraps into the status. */
+.forge-session-row__unit-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .forge-unit-stack {
   display: inline-flex;
