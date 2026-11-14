@@ -132,9 +132,14 @@ class GuestAgent:
         await self._client.aclose()
 
     async def fetch(self) -> Fetched:
-        body = json.dumps(
-            {"allocation_id": self._config.allocation_id, "slot": self._config.slot}
-        ).encode()
+        request: dict[str, object] = {
+            "allocation_id": self._config.allocation_id,
+            "slot": self._config.slot,
+        }
+        if self._config.session_id:
+            # A member of the unit: Forge answers with that member's own credential.
+            request["session_id"] = self._config.session_id
+        body = json.dumps(request).encode()
         headers = await self._signer.headers(method="POST", path=self._path, body=body)
         headers["Content-Type"] = "application/json"
         try:

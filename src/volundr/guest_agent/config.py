@@ -31,6 +31,8 @@ _TOP_LEVEL = (
     "request_timeout_seconds",
     "ca_file",
 )
+#: Fields a config may leave out.
+_OPTIONAL_TOP_LEVEL = ("session_id",)
 _MAX_PORT = 65535
 
 
@@ -96,6 +98,9 @@ class AgentConfig:
     request_timeout_seconds: float
     #: PEM bundle that verifies Forge's certificate; empty means the system roots.
     ca_file: str
+    #: A member of the unit bound to the slot, whose own credential this agent fetches;
+    #: empty fetches for the slot's own session.
+    session_id: str = ""
 
 
 def load_config(path: str | os.PathLike[str]) -> AgentConfig:
@@ -113,7 +118,7 @@ def load_config(path: str | os.PathLike[str]) -> AgentConfig:
 
 def parse_config(raw: object) -> AgentConfig:
     """Validate a decoded config document, raising ``ConfigError`` naming the field."""
-    top = _fields(raw, "", _TOP_LEVEL)
+    top = _fields(raw, "", _TOP_LEVEL, optional=_OPTIONAL_TOP_LEVEL)
     metadata_url = _metadata_url(top["metadata_url"])
     allocation_id = _allocation_id(top["allocation_id"])
     auth = _auth(top["auth"])
@@ -138,6 +143,7 @@ def parse_config(raw: object) -> AgentConfig:
             top["request_timeout_seconds"], "request_timeout_seconds"
         ),
         ca_file=_string(top["ca_file"], "ca_file", allow_empty=True),
+        session_id=_session_id(top.get("session_id")),
     )
 
 
@@ -145,12 +151,14 @@ def _qualify(parent: str, name: str) -> str:
     return f"{parent}.{name}" if parent else name
 
 
-def _fields(raw: object, parent: str, names: tuple[str, ...]) -> Mapping[str, object]:
+def _fields(
+    raw: object, parent: str, names: tuple[str, ...], *, optional: tuple[str, ...] = ()
+) -> Mapping[str, object]:
     label = parent or "the config"
     if not isinstance(raw, dict):
         raise ConfigError(f"{label}: expected an object, got {type(raw).__name__}")
     for name in raw:
-        if name not in names:
+        if name not in names and name not in optional:
             raise ConfigError(f"{_qualify(parent, str(name))}: unknown field")
     for name in names:
         if name not in raw:
@@ -216,6 +224,16 @@ def _allocation_id(value: object) -> str:
         return str(uuid.UUID(text))
     except ValueError as exc:
         raise ConfigError(f"allocation_id: not a UUID: {text!r}") from exc
+
+
+def _session_id(value: object) -> str:
+    if value is None:
+        return ""
+    text = _string(value, "session_id")
+    try:
+        return str(uuid.UUID(text))
+    except ValueError as exc:
+        raise ConfigError(f"session_id: not a UUID: {text!r}") from exc
 
 
 def _slot(value: object) -> int:
