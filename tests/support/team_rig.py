@@ -6,6 +6,7 @@ catalog. A team started through it takes the same unit paths a production Forge 
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Mapping
 from typing import Any
 from unittest.mock import AsyncMock
@@ -124,8 +125,7 @@ class TeamRig:
 
     async def settle(self) -> None:
         """Let the start of every unit that began finish, so no task outlives its test."""
-        for task in list(self.session_service._provisioning_tasks.values()):
-            await task
+        await asyncio.gather(*list(self.session_service._provisioning_tasks.values()))
 
 
 def launch(**fields: Any) -> TeamLaunch:
