@@ -103,6 +103,7 @@ class TestKnownWorkloadScopes:
             {
                 "forge:mesh:identity",
                 "forge:memory",
+                "forge:session:voice",
                 "forge:session:create",
                 "forge:session:room-role",
                 "ting:workflow:coordinate",
@@ -359,6 +360,7 @@ class TestForgeSessionScopes:
             FORGE_SESSION_LIFECYCLE_SCOPE,
             "forge:mesh:identity",
             "forge:memory",
+            "forge:session:voice",
         }
         assert FORGE_SESSION_SCOPES <= KNOWN_WORKLOAD_SCOPES
         assert not FORGE_SESSION_SCOPES & VALKYRIE_BUILD_SCOPES

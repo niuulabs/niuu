@@ -38,6 +38,7 @@ from niuu.domain.services.token_scope import (
     FORGE_SESSION_READ_SCOPE,
     FORGE_SESSION_SECRET_SCOPE,
     FORGE_SESSION_TOKEN_USE,
+    FORGE_SESSION_VOICE_SCOPE,
 )
 from niuu.domain.services.workload_identity import WorkloadIdentityService
 from niuu.forge_mcp.credentials import (
@@ -101,6 +102,7 @@ class TestMint:
             FORGE_SESSION_SECRET_SCOPE,
             FORGE_MESH_IDENTITY_SCOPE,
             FORGE_MEMORY_SCOPE,
+            FORGE_SESSION_VOICE_SCOPE,
             FORGE_SESSION_MESSAGE_SCOPE,
         ]
         assert claims["resource_access"]["volundr"]["roles"] == list(FORGE_SESSION_ROLES)
@@ -124,6 +126,7 @@ class TestMint:
             FORGE_SESSION_SECRET_SCOPE,
             FORGE_MESH_IDENTITY_SCOPE,
             FORGE_MEMORY_SCOPE,
+            FORGE_SESSION_VOICE_SCOPE,
         )
         assert issued.grants == ()
 
@@ -282,6 +285,7 @@ class TestGrantsAndScopes:
             FORGE_SESSION_SECRET_SCOPE,
             FORGE_MESH_IDENTITY_SCOPE,
             FORGE_MEMORY_SCOPE,
+            FORGE_SESSION_VOICE_SCOPE,
         )
         assert scopes_for_grants(["message", "lifecycle", "message"]) == (
             FORGE_NOTIFY_SCOPE,
@@ -289,6 +293,7 @@ class TestGrantsAndScopes:
             FORGE_SESSION_SECRET_SCOPE,
             FORGE_MESH_IDENTITY_SCOPE,
             FORGE_MEMORY_SCOPE,
+            FORGE_SESSION_VOICE_SCOPE,
             FORGE_SESSION_LIFECYCLE_SCOPE,
             FORGE_SESSION_MESSAGE_SCOPE,
         )
