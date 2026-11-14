@@ -269,6 +269,23 @@ def test_a_member_that_declares_no_pod_of_its_own_runs_in_the_units():
     require_same_pod(unit_spec(root, [], pod=unit_pod), entry)
 
 
+def test_a_member_that_declares_some_of_the_units_parts_runs_in_the_units():
+    # Workload identity gives every session the same token volume; only the root has the
+    # secrets agent's.
+    root = root_session()
+    token = {"name": "workload-token", "projected": {"sources": []}}
+    unit_pod = PodSpecAdditions(
+        service_account="openbao-session-root",
+        volumes=(token, {"name": "secrets", "emptyDir": {}}),
+        init_containers=({"name": "openbao-agent-init", "image": "i"},),
+    )
+    entry = member_entry(
+        member_launch(root, 8082, persona="coder", pod=PodSpecAdditions(volumes=(token,)))
+    )
+
+    require_same_pod(unit_spec(root, [], pod=unit_pod), entry)
+
+
 def test_a_member_with_an_agent_of_its_own_beside_the_units_is_refused():
     root = root_session()
     unit_pod = PodSpecAdditions(init_containers=({"name": "openbao-agent-init", "image": "i"},))
