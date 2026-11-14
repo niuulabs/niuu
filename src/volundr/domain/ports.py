@@ -2323,10 +2323,17 @@ class SessionPersonaProvider(ABC):
 
 @dataclass(frozen=True)
 class SessionContribution:
-    """Output from a single contributor."""
+    """Output from a single contributor.
+
+    ``launch_facts`` are facts this launch establishes about the session (for example that
+    its broker runs the voice channel). The launch records them on the session's workload
+    config (``session_launch_facts``) and every launch replaces the whole record, so a fact
+    never outlives the launch that made it.
+    """
 
     values: dict[str, Any] = field(default_factory=dict)
     pod_spec: PodSpecAdditions | None = None
+    launch_facts: dict[str, Any] = field(default_factory=dict)
 
 
 class SessionContributor(ABC):

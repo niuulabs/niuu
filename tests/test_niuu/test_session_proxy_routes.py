@@ -883,3 +883,299 @@ class TestDisplayNameHeader:
         )
 
         assert headers["x-auth-display-name"] == "Dev Person"
+
+
+def _with_role(reg: SkuldPortRegistry, role: str | None) -> None:
+    async def role_resolver(session_id, user_id, tenant_id, roles) -> str | None:
+        return role
+
+    reg.set_room_role_resolver(role_resolver)
+
+
+class TestVoiceChannelProxyRoutes:
+    """``/s/{id}/voice`` reaches the broker's voice channel, for the session's owner alone."""
+
+    def test_http_forwards_to_the_brokers_voice_api_with_the_owner_role(self, tmp_path) -> None:
+        app, reg = _bare_app(tmp_path)
+        reg.register("sess", 9123)
+        _with_role(reg, "owner")
+
+        with patch("httpx.AsyncClient") as mock_client_cls:
+            mock_client = _mock_http_client(mock_client_cls)
+            resp = TestClient(app).post("/s/sess/voice/api/calls/c1:end?x=1", content=b'{"a": 1}')
+
+        assert resp.status_code == 200
+        request = mock_client.request.await_args.kwargs
+        assert request["method"] == "POST"
+        assert request["url"] == "http://127.0.0.1:9123/voice/api/calls/c1%3Aend"
+        assert request["params"] == {"x": "1"}
+        assert request["content"] == b'{"a": 1}'
+        assert request["headers"]["x-niuu-room-role"] == "owner"
+
+    @pytest.mark.parametrize("method", ["GET", "POST", "PATCH", "DELETE"])
+    def test_http_methods_the_voice_api_speaks_are_proxied(self, tmp_path, method: str) -> None:
+        app, reg = _bare_app(tmp_path)
+        reg.register("sess", 9123)
+        _with_role(reg, "owner")
+
+        with patch("httpx.AsyncClient") as mock_client_cls:
+            mock_client = _mock_http_client(mock_client_cls)
+            resp = TestClient(app).request(method, "/s/sess/voice/api/agents")
+
+        assert resp.status_code == 200
+        assert mock_client.request.await_args.kwargs["method"] == method
+
+    def test_put_is_not_a_voice_api_method(self, tmp_path) -> None:
+        app, reg = _bare_app(tmp_path)
+        reg.register("sess", 9123)
+        _with_role(reg, "owner")
+
+        with patch("httpx.AsyncClient") as mock_client_cls:
+            mock_client = _mock_http_client(mock_client_cls)
+            resp = TestClient(app).put("/s/sess/voice/api/agents")
+
+        assert resp.status_code == 405
+        mock_client.request.assert_not_called()
+
+    @pytest.mark.parametrize("role", ["viewer", "approver", None])
+    @pytest.mark.parametrize("method", ["GET", "POST"])
+    def test_http_refuses_every_role_below_owner_even_for_read_routes(
+        self, tmp_path, role, method: str
+    ) -> None:
+        app, reg = _bare_app(tmp_path)
+        reg.register("sess", 9123)
+        _with_role(reg, role)
+
+        with patch("httpx.AsyncClient") as mock_client_cls:
+            mock_client = _mock_http_client(mock_client_cls)
+            resp = TestClient(app).request(method, "/s/sess/voice/api/conversation/history")
+
+        assert resp.status_code == 403
+        assert resp.json()["detail"] == "This route requires the owner room role"
+        mock_client.request.assert_not_called()
+
+    def test_the_broker_api_keeps_its_own_per_route_roles(self, tmp_path) -> None:
+        """Only the voice legs are owner-only: ``/api`` still asks each route's own role."""
+        app, reg = _bare_app(tmp_path)
+        reg.register("sess", 9123)
+        _with_role(reg, "viewer")
+
+        with patch("httpx.AsyncClient") as mock_client_cls:
+            mock_client = _mock_http_client(mock_client_cls)
+            read = TestClient(app).get("/s/sess/api/conversation/history")
+            write = TestClient(app).put("/s/sess/api/anything")
+
+        assert read.status_code == 200
+        assert mock_client.request.await_args.kwargs["url"] == (
+            "http://127.0.0.1:9123/api/conversation/history"
+        )
+        assert write.status_code == 403
+        assert write.json()["detail"] == "This route requires the owner room role"
+
+    def test_http_denies_a_caller_who_cannot_attach(self, tmp_path) -> None:
+        async def deny(session_id, user_id, tenant_id, roles) -> bool:
+            return False
+
+        app, reg = _bare_app(tmp_path, guard=deny)
+        reg.register("sess", 9123)
+        _with_role(reg, "owner")
+
+        with patch("httpx.AsyncClient") as mock_client_cls:
+            mock_client = _mock_http_client(mock_client_cls)
+            resp = TestClient(app).get("/s/sess/voice/api/agents")
+
+        assert resp.status_code == 403
+        assert resp.json()["detail"] == "Not authorized for this session"
+        mock_client.request.assert_not_called()
+
+    def test_http_refuses_to_attach_without_a_guard_outside_dev(self, tmp_path) -> None:
+        app, reg = _bare_app(tmp_path, guard=None)
+        reg.register("sess", 9123)
+
+        with patch("httpx.AsyncClient") as mock_client_cls:
+            with pytest.raises(SessionProxyGuardMissingError):
+                TestClient(app).get("/s/sess/voice/api/agents")
+            mock_client_cls.assert_not_called()
+
+    def test_http_unknown_session_is_not_found(self, tmp_path) -> None:
+        app, _reg = _bare_app(tmp_path)
+
+        resp = TestClient(app).get("/s/nonexistent/voice/api/agents")
+
+        assert resp.status_code == 404
+        assert resp.json()["detail"] == "Session not found"
+
+    @pytest.mark.parametrize(
+        "path",
+        ["agents//x", "agents/%5Cx", "agents/a%20b", "agents/a;b", "agents/%2e%2e/x", "agents/%2e"],
+    )
+    def test_http_refuses_paths_that_could_leave_the_voice_api(self, tmp_path, path) -> None:
+        app, reg = _bare_app(tmp_path)
+        reg.register("sess", 9123)
+        _with_role(reg, "owner")
+
+        with patch("httpx.AsyncClient") as mock_client_cls:
+            mock_client = _mock_http_client(mock_client_cls)
+            resp = TestClient(app).get(f"/s/sess/voice/api/{path}")
+
+        assert resp.status_code == 400
+        assert resp.json()["detail"] == "Invalid path"
+        mock_client.request.assert_not_called()
+
+    def test_http_reaches_an_external_target_at_the_voice_prefix(self, tmp_path) -> None:
+        app, reg = _bare_app(tmp_path)
+        target = _external_target()
+
+        async def _resolve(session_id: str) -> SessionProxyTarget | None:
+            return target if session_id == "sess-open" else None
+
+        reg.set_target_resolver(_resolve)
+        _with_role(reg, "owner")
+
+        with patch("httpx.AsyncClient") as mock_client_cls:
+            mock_client = _mock_http_client(mock_client_cls)
+            resp = TestClient(app).get("/s/sess-open/voice/api/agents")
+
+        assert resp.status_code == 200
+        request = mock_client.request.await_args.kwargs
+        assert (
+            request["url"] == "http://openshell.openshell.svc.cluster.local:8080/voice/api/agents"
+        )
+        assert request["headers"]["Host"] == "forge-123--skuld.openshell.localhost:8080"
+
+    def test_http_reports_a_broker_that_is_not_ready(self, tmp_path) -> None:
+        import httpx
+
+        app, reg = _bare_app(tmp_path)
+        reg.register("sess", 9123)
+        _with_role(reg, "owner")
+
+        with patch("httpx.AsyncClient") as mock_client_cls:
+            mock_client = _mock_http_client(mock_client_cls)
+            mock_client.request.side_effect = httpx.ConnectError("refused")
+            resp = TestClient(app).get("/s/sess/voice/api/agents")
+
+        assert resp.status_code == 502
+
+    def test_health_is_forwarded_to_the_voice_health_route_for_the_owner(self, tmp_path) -> None:
+        app, reg = _bare_app(tmp_path)
+        reg.register("sess", 9123)
+        _with_role(reg, "owner")
+
+        with patch("httpx.AsyncClient") as mock_client_cls:
+            mock_client = _mock_http_client(mock_client_cls)
+            resp = TestClient(app).get("/s/sess/voice/health")
+
+        assert resp.status_code == 200
+        assert mock_client.request.await_args.kwargs["url"] == (
+            "http://127.0.0.1:9123/voice/health"
+        )
+
+    def test_health_is_refused_below_owner(self, tmp_path) -> None:
+        app, reg = _bare_app(tmp_path)
+        reg.register("sess", 9123)
+        _with_role(reg, "approver")
+
+        with patch("httpx.AsyncClient") as mock_client_cls:
+            mock_client = _mock_http_client(mock_client_cls)
+            resp = TestClient(app).get("/s/sess/voice/health")
+
+        assert resp.status_code == 403
+        mock_client.request.assert_not_called()
+
+    @pytest.mark.parametrize("url", ["/s/sess/voice", "/s/sess/voice/"])
+    def test_ws_dials_the_brokers_voice_path_for_the_owner(self, tmp_path, url: str) -> None:
+        from starlette.websockets import WebSocketDisconnect
+
+        app, reg = _bare_app(tmp_path)
+        reg.register("sess", 9123)
+        _with_role(reg, "owner")
+        captured: dict = {}
+
+        with patch("websockets.asyncio.client.connect", side_effect=_capture_ws_dial(captured)):
+            with pytest.raises(WebSocketDisconnect) as exc:
+                with TestClient(app).websocket_connect(
+                    url, headers={"cookie": "session=secret", "x-niuu-room-role": "viewer"}
+                ) as ws:
+                    ws.receive_text()
+
+        assert exc.value.code == 4411
+        assert captured["url"] == "ws://127.0.0.1:9123/voice"
+        assert captured["headers"]["x-niuu-room-role"] == "owner"
+        assert "cookie" not in {key.lower() for key in captured["headers"]}
+
+    def test_ws_does_not_carry_chat_history_negotiation(self, tmp_path) -> None:
+        from starlette.websockets import WebSocketDisconnect
+
+        app, reg = _bare_app(tmp_path)
+        reg.register("sess", 9123)
+        _with_role(reg, "owner")
+        captured: dict = {}
+
+        with patch("websockets.asyncio.client.connect", side_effect=_capture_ws_dial(captured)):
+            with pytest.raises(WebSocketDisconnect):
+                with TestClient(app).websocket_connect("/s/sess/voice?history=recent") as ws:
+                    ws.receive_text()
+
+        assert captured["url"] == "ws://127.0.0.1:9123/voice"
+
+    @pytest.mark.parametrize("role", ["viewer", "approver", None])
+    def test_ws_refuses_every_role_below_owner_without_dialing_the_broker(
+        self, tmp_path, role
+    ) -> None:
+        from starlette.websockets import WebSocketDisconnect
+
+        app, reg = _bare_app(tmp_path)
+        reg.register("sess", 9123)
+        _with_role(reg, role)
+
+        with patch("websockets.asyncio.client.connect") as dial:
+            with pytest.raises(WebSocketDisconnect) as exc:
+                with TestClient(app).websocket_connect("/s/sess/voice") as ws:
+                    ws.receive_text()
+
+        assert exc.value.code == 1008
+        assert "owner room role" in exc.value.reason
+        dial.assert_not_called()
+
+    def test_the_chat_websocket_is_still_open_to_every_attached_role(self, tmp_path) -> None:
+        from starlette.websockets import WebSocketDisconnect
+
+        app, reg = _bare_app(tmp_path)
+        reg.register("sess", 9123)
+        _with_role(reg, "viewer")
+        captured: dict = {}
+
+        with patch("websockets.asyncio.client.connect", side_effect=_capture_ws_dial(captured)):
+            with pytest.raises(WebSocketDisconnect):
+                with TestClient(app).websocket_connect("/s/sess/session") as ws:
+                    ws.receive_text()
+
+        assert captured["url"] == "ws://127.0.0.1:9123/session"
+        assert captured["headers"]["x-niuu-room-role"] == "viewer"
+
+    def test_ws_dials_the_gateway_for_an_external_target_at_the_voice_path(self, tmp_path) -> None:
+        from starlette.websockets import WebSocketDisconnect
+
+        app, reg = _bare_app(tmp_path)
+        target = _external_target()
+
+        async def _resolve(session_id: str) -> SessionProxyTarget | None:
+            return target if session_id == "sess-open" else None
+
+        reg.set_target_resolver(_resolve)
+        _with_role(reg, "owner")
+        captured: dict = {}
+
+        def _connect(url, **kwargs):
+            captured["url"] = url
+            captured["kwargs"] = kwargs
+            raise OSError("gateway unreachable")
+
+        with patch("websockets.asyncio.client.connect", side_effect=_connect):
+            with pytest.raises(WebSocketDisconnect):
+                with TestClient(app).websocket_connect("/s/sess-open/voice") as ws:
+                    ws.receive_text()
+
+        assert captured["url"] == "ws://forge-123--skuld.openshell.localhost:8080/voice"
+        assert captured["kwargs"]["host"] == "openshell.openshell.svc.cluster.local"
