@@ -214,11 +214,13 @@ class PeerMessage:
 REPLY_TOOL = "reply"
 
 
-def render_for_harness(message: PeerMessage) -> str:
+def render_for_harness(message: PeerMessage, *, turns_shown_in_room: str = "") -> str:
     """The text a recipient harness reads: a header the platform wrote, then the content.
 
     Every Skuld transport delivers this same text, so every harness sees who sent the
-    message, when, and how to answer it.
+    message, when, and how to answer it. ``turns_shown_in_room`` is the room the recipient's
+    own turns are shown in (a team's agent's): a message said in that room is answered by
+    writing the turn, and answering it again with a tool would say it twice.
     """
     lines = [
         f"[Message {message.message_id} from {message.sender.label()}, "
@@ -237,6 +239,15 @@ def render_for_harness(message: PeerMessage) -> str:
     lines.append("")
     if message.reply is None:
         lines.append("[The sender takes no reply to this message.]")
+    elif (
+        turns_shown_in_room
+        and message.reply.kind is ReplyKind.ROOM
+        and message.room_id == turns_shown_in_room
+    ):
+        lines.append(
+            f"[Answer by writing your reply: what you write in your turn is shown in room "
+            f"{message.room_id}. Do not answer it again with a tool.]"
+        )
     else:
         lines.append(
             f'[Answer with the `{REPLY_TOOL}` tool, message_id "{message.message_id}". '

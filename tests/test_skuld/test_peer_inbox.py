@@ -1165,3 +1165,36 @@ class TestDirectedRoomMessageEndToEnd:
         assert answer["status"] == "refused"
         assert "verified" in answer["error"]
         assert member._peer_inbox == {}
+
+
+class TestWhereATeamAgentsTurnsAreShown:
+    def test_a_team_agent_sharing_its_work_is_shown_in_its_realms_room(self, tmp_path):
+        broker = Broker(
+            SkuldSettings(
+                session={"id": SESSION_ID, "workspace_dir": str(tmp_path), "conversational": True},
+                mesh={"enabled": True, "realm_id": "team-1", "share_work": True},
+                chronicle_watcher_enabled=False,
+            )
+        )
+
+        assert broker._room_turns_are_shown_in() == "team-1"
+
+    @pytest.mark.parametrize(
+        ("conversational", "share_work"), [(False, True), (True, False), (False, False)]
+    )
+    def test_any_other_session_answers_room_messages_with_the_tool(
+        self, tmp_path, conversational, share_work
+    ):
+        broker = Broker(
+            SkuldSettings(
+                session={
+                    "id": SESSION_ID,
+                    "workspace_dir": str(tmp_path),
+                    "conversational": conversational,
+                },
+                mesh={"enabled": True, "realm_id": "team-1", "share_work": share_work},
+                chronicle_watcher_enabled=False,
+            )
+        )
+
+        assert broker._room_turns_are_shown_in() == ""
