@@ -5902,6 +5902,45 @@ def create_volundr_router(
             headers=headers,
         )
 
+    @router.post(
+        "/sessions/{session_id}/voice/client-secrets",
+        operation_id="mint_session_voice_client_secret",
+    )
+    async def voice_client_secret(
+        request: Request,
+        session_id: str,
+        principal: Principal = Depends(extract_principal),
+    ) -> Response:
+        """A session's realtime voice credential, minted by the Forge node that owns the session.
+
+        The session's Skuld broker asks with its own Forge session credential for one voice call
+        (``skuld.voice``). The body goes through as bytes, and so do Forge's status (409 no key,
+        422 no minter, 502 the provider refused) and its ``Cache-Control: no-store``: the secret
+        is for one call and is never cached.
+        """
+        instance, _ = await _find_session_owner(
+            service, principal, request, session_id, embedded_app=embedded_forge_app
+        )
+        upstream = await _request_remote(
+            instance,
+            request,
+            method="POST",
+            path=f"/sessions/{session_id}/voice/client-secrets",
+            content_body=await request.body(),
+            params=None,
+            extra_headers={"content-type": "application/json"},
+            embedded_app=embedded_forge_app,
+        )
+        headers: dict[str, str] = {}
+        if cache := upstream.headers.get("cache-control"):
+            headers["cache-control"] = cache
+        return Response(
+            content=upstream.content,
+            status_code=upstream.status_code,
+            media_type=upstream.headers.get("content-type"),
+            headers=headers,
+        )
+
     @router.get("/sessions/{session_id}/memory-context", operation_id="get_session_memory_context")
     async def memory_context(
         request: Request,
