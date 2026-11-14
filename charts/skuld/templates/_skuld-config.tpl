@@ -179,6 +179,39 @@ unit (see skuld.memberValues). Every line is indented four spaces, to sit under 
       {{- end }}
     {{- end }}
 
+    {{- if or (not (kindIs "invalid" .Values.voice.displayName)) (not (kindIs "invalid" .Values.voice.timeZone)) (not (kindIs "invalid" .Values.voice.models)) (not (kindIs "invalid" .Values.voice.mintTimeoutSeconds)) (not (kindIs "invalid" .Values.voice.sendConfirmSeconds)) (not (kindIs "invalid" .Values.voice.toolTimeoutSeconds)) (not (kindIs "invalid" .Values.voice.cardRecentTurns)) (not (kindIs "invalid" .Values.voice.cardTurnMaxChars)) (not (kindIs "invalid" .Values.voice.fullReadMaxChars)) }}
+
+    # Tuning of the session voice channel; Forge turns it on per launch (SKULD__VOICE__ENABLED).
+    voice:
+      {{- if not (kindIs "invalid" .Values.voice.displayName) }}
+      display_name: {{ .Values.voice.displayName | toJson }}
+      {{- end }}
+      {{- if not (kindIs "invalid" .Values.voice.timeZone) }}
+      time_zone: {{ .Values.voice.timeZone | toJson }}
+      {{- end }}
+      {{- if not (kindIs "invalid" .Values.voice.models) }}
+      models: {{ .Values.voice.models | toJson }}
+      {{- end }}
+      {{- if not (kindIs "invalid" .Values.voice.mintTimeoutSeconds) }}
+      mint_timeout_seconds: {{ .Values.voice.mintTimeoutSeconds | toJson }}
+      {{- end }}
+      {{- if not (kindIs "invalid" .Values.voice.sendConfirmSeconds) }}
+      send_confirm_seconds: {{ .Values.voice.sendConfirmSeconds | toJson }}
+      {{- end }}
+      {{- if not (kindIs "invalid" .Values.voice.toolTimeoutSeconds) }}
+      tool_timeout_seconds: {{ .Values.voice.toolTimeoutSeconds | toJson }}
+      {{- end }}
+      {{- if not (kindIs "invalid" .Values.voice.cardRecentTurns) }}
+      card_recent_turns: {{ .Values.voice.cardRecentTurns | toJson }}
+      {{- end }}
+      {{- if not (kindIs "invalid" .Values.voice.cardTurnMaxChars) }}
+      card_turn_max_chars: {{ .Values.voice.cardTurnMaxChars | toJson }}
+      {{- end }}
+      {{- if not (kindIs "invalid" .Values.voice.fullReadMaxChars) }}
+      full_read_max_chars: {{ .Values.voice.fullReadMaxChars | toJson }}
+      {{- end }}
+    {{- end }}
+
     # How request_secret waits for the user's answer in the chat card.
     secret_requests:
       poll_interval_s: {{ .Values.secretRequests.pollIntervalS | toJson }}
