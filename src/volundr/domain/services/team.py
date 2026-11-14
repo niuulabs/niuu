@@ -427,9 +427,12 @@ def team_context_prompt(
         "and commits are in your working tree as soon as they make them, so read them there "
         "instead of asking for them, and agree who edits which files before you change the "
         "same ones.\n\n"
-        f"To say something to the whole team, call `{ROOM_POST_TOOL}` with "
-        f'`room_id` "{room_id}" and `content`; the people in the room see it too. '
-        f"To message one teammate directly, call `{MESSAGE_PEER_TOOL}` with `peer` (their peer "
+        "This is a conversation, not a hand-off: everything you write in your replies is shown "
+        "in the team's room under your name, so answer a person by simply replying. Do not "
+        f"repeat a reply with `{ROOM_POST_TOOL}` or `reply`; `{ROOM_POST_TOOL}` (room_id "
+        f'"{room_id}") is only for a note to the room when you are not answering anyone.\n\n'
+        "Your teammates do not read the room. "
+        f"To message one teammate, call `{MESSAGE_PEER_TOOL}` with `peer` (their peer "
         f"id) and `content`. `{LIST_PEERS_TOOL}` lists the peers on your mesh: a teammate's "
         "`name` is the name above and its `peer_id` is what "
         f"`{MESSAGE_PEER_TOOL}` takes. To put a question to several teammates at once, use "

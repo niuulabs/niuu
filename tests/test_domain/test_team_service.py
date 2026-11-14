@@ -191,7 +191,10 @@ class TestWhatEachAgentIsTold:
 
         prompt = _held(team.members[1])["system_prompt"]
         assert "one checkout of the repository, on one branch" in prompt
-        assert f'`room_post` with `room_id` "team-{team.root.id}"' in prompt
+        assert f'(room_id "team-{team.root.id}")' in prompt
+        # Replies are the room's conversation: answering again with a tool would repeat them.
+        assert "answer a person by simply replying" in prompt
+        assert "Your teammates do not read the room" in prompt
 
     async def test_an_agent_without_a_persona_is_listed_as_having_none(self, rig: TeamRig):
         members = [TeamMemberSpec(model="gpt-5", lead=True)]

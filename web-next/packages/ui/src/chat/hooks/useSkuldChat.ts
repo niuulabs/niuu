@@ -2340,6 +2340,9 @@ export function useSkuldChat(
             }
             const confirmedDelivery = deliveryFromSteeringState(event.steering_state);
             const confirmedAuthor = parseMessageAuthor(event.author);
+            // Said in the room by a participant (another session of the room), not by a
+            // person at this keyboard: it keeps its speaker, as history does.
+            const confirmedParticipant = parseParticipantMeta(event.participant);
             setMessages((prev) => {
               if (optimisticMessageId) {
                 return prev.map((message) =>
@@ -2385,6 +2388,7 @@ export function useSkuldChat(
                   visibility: event.visibility,
                   ...(confirmedDelivery ? { delivery: confirmedDelivery } : {}),
                   ...(confirmedAuthor ? { author: confirmedAuthor } : {}),
+                  ...(confirmedParticipant ? { participant: confirmedParticipant } : {}),
                 },
               ];
             });

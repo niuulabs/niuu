@@ -534,6 +534,29 @@ describe('useSkuldChat session frames', () => {
       expect(result.current.messages[0]?.delivery).toEqual({ state: 'active' });
     });
 
+    it('keeps the speaker of a room post another session said, as history does', async () => {
+      const { result } = await connect();
+      frame({
+        type: 'user_confirmed',
+        id: 'post-1',
+        content: 'The first thing I check is the setup steps.',
+        participantId: 'member-2',
+        participant: {
+          peer_id: 'member-2',
+          persona: 'reviewer',
+          display_name: 'hello-world-2',
+          participant_type: 'skuld',
+        },
+      });
+
+      const post = result.current.messages.find((message) => message.id === 'post-1');
+      expect(post?.participant).toMatchObject({
+        peerId: 'member-2',
+        persona: 'reviewer',
+        participantType: 'skuld',
+      });
+    });
+
     it('treats user_consumed (named by msg_id) as the agent taking the message', async () => {
       const { result, requestId } = await sendOne();
       frame({
