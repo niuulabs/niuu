@@ -819,6 +819,10 @@ def _resolve_local_pod_manager_env(settings: CLISettings) -> dict[str, str]:
         # A resident runtime references its realm by foreign key in Forge's
         # database, so a host that embeds Forge keeps one realm store there.
         env["NIUU__REALM_DATABASE"] = database_name_for_service("volundr")
+        # Connections are created through the shared API (niuu_shared), as in docker
+        # mode: sessions must resolve their integration ids from that same database,
+        # or every connection made in Settings is missing to Forge.
+        env["INTEGRATIONS__DATABASE_NAME"] = database_name_for_service("niuu-shared")
     return env
 
 

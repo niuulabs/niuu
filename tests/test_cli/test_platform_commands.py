@@ -751,6 +751,13 @@ class TestBuildInitConfig:
         }
         assert "CREDENTIAL_ENROLLMENT_RUNNER" in _OPERATOR_OWNED_LOCAL_ENV
 
+    def test_sessions_read_connections_where_settings_writes_them(self) -> None:
+        from niuu.service_databases import database_name_for_service
+
+        env = _resolve_local_pod_manager_env(CLISettings(mode="mini"))
+
+        assert env["INTEGRATIONS__DATABASE_NAME"] == database_name_for_service("niuu-shared")
+
     def test_bifrost_config_stays_open_under_host_auth_none(self) -> None:
         """OWNER CONSTRAINT: host_auth.mode: none must not touch bifrost.auth_mode."""
         settings = CLISettings(mode="mini")
