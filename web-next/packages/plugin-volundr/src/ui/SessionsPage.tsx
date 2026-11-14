@@ -26,7 +26,6 @@ import {
   SidebarResizer,
   useDictation,
   useResizableSidebar,
-  verdictLabel,
 } from '@niuulabs/ui';
 import type { DotState, Worker } from '@niuulabs/ui';
 import {
@@ -72,9 +71,14 @@ import {
   leadState,
   nestSessions,
   roleLabel,
+  unitSummary,
+  unitSummaryLabel,
   type SessionTreeNode,
+  type UnitSummary,
 } from '../domain/projectTree';
 import { groupByState } from './sessions/groupByState';
+import { RoomWorkerRow, SessionMembersList, type OpenRoom } from './sessions/RoomMembers';
+import { memberColor } from './MemberAvatar';
 import { LiveSessionDetailPage } from './LiveSessionDetailPage';
 import { SessionStartupHeadline } from './SessionStartupProgress';
 import { InvitationActions, InvitationPane, invitationLabel } from './SessionInvitation';
@@ -328,6 +332,43 @@ const InvitationAnswered = createContext<{
 const SharedOwnerNames = createContext<ReadonlyMap<string, string>>(new Map());
 
 // ---------------------------------------------------------------------------
+// UnitStack — one dot per agent and per person in a session's room
+// ---------------------------------------------------------------------------
+
+/** The small stack on a unit's folded row: filled dots for agents, rings for people. */
+function UnitStack({ session, unit }: { session: Session; unit: UnitSummary }) {
+  const agents = unit.agents ?? 0;
+  return (
+    <span
+      className="forge-unit-stack"
+      aria-hidden="true"
+      data-testid={`session-stack-${session.id}`}
+    >
+      {Array.from({ length: agents }, (_, index) => (
+        <i
+          key={`agent-${index}`}
+          className="forge-unit-stack__dot"
+          data-kind="agent"
+          style={{ '--agent-color': memberColor(index) } as React.CSSProperties}
+        />
+      ))}
+      {Array.from({ length: unit.people }, (_, index) => (
+        <i
+          key={`person-${index}`}
+          className="forge-unit-stack__dot"
+          data-kind="person"
+          style={
+            {
+              '--agent-color': index === 0 ? 'var(--color-brand)' : memberColor(agents + index - 1),
+            } as React.CSSProperties
+          }
+        />
+      ))}
+    </span>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // PodEntry — a single session row in the sidebar
 // ---------------------------------------------------------------------------
 
@@ -349,7 +390,10 @@ function PodEntry({
   context = false,
   nested = false,
   unreadNote = false,
+  unit = null,
 }: {
+  /** Set when this session hosts a unit (a team) or has other people in it: who is in it. */
+  unit?: UnitSummary | null;
   /** In the unread list the row says it is new, and since when, instead of its state. */
   unreadNote?: boolean;
   session: Session;
@@ -572,6 +616,17 @@ function PodEntry({
                 >
                   {modelLabel}
                 </span>
+                {unit && (
+                  <span
+                    className="forge-session-row__unit"
+                    data-testid={`session-unit-${session.id}`}
+                  >
+                    <UnitStack session={session} unit={unit} />
+                    <span className="forge-session-row__unit-label">
+                      {unitSummaryLabel(unit, !shared)}
+                    </span>
+                  </span>
+                )}
                 {coordinatorWorkers !== undefined && (
                   <span
                     className="forge-session-row__leads"
@@ -728,90 +783,37 @@ function PodEntry({
 // PodGroup — a state section with label + session entries
 // ---------------------------------------------------------------------------
 
-/** The open session's room: its workers, the one the chat shows alone, and how to pick one. */
-interface OpenRoom {
-  sessionId: string;
-  workers: readonly Worker[];
-  /** Workers that are sessions of their own (a workflow run's members), nested under the room. */
-  sessionWorkerIds: ReadonlySet<string>;
-  focusedPeerId: string | null;
-  onSelect: (sessionId: string, peerId: string) => void;
-}
-
-const WORKER_STATUS_TEXT: Record<Worker['status'], string> = {
-  working: 'Working',
-  idle: 'Idle',
-  error: 'Error',
-  left: 'Left',
-  stopped: 'Stopped',
-};
-
-/** A worker in the open session's room, under its coordinator: picking it shows only its output. */
-function RoomWorkerRow({
-  worker,
-  selected,
-  onSelect,
-}: {
-  worker: Worker;
-  selected: boolean;
-  onSelect: () => void;
-}) {
-  return (
-    <div className="forge-session-row forge-room-worker" data-nested="true">
-      <button
-        type="button"
-        onClick={onSelect}
-        aria-current={selected ? 'true' : undefined}
-        title={`${worker.name}: show only this worker`}
-        data-testid={`room-worker-${worker.peerId}`}
-        className={cn(
-          'forge-session-row__select niuu:flex niuu:w-full niuu:items-center niuu:gap-2 niuu:border-b niuu:border-l-2 niuu:px-3 niuu:py-1.5 niuu:text-left niuu:transition-colors',
-          selected
-            ? 'niuu:border-brand niuu:border-b-white/10 forge-session-row__select--selected'
-            : 'niuu:border-transparent niuu:border-b-white/6 niuu:hover:bg-bg-tertiary',
-        )}
-        style={{ '--forge-worker-color': worker.color } as React.CSSProperties}
-      >
-        <span className="forge-room-worker__dot" aria-hidden="true" />
-        {worker.persona && worker.persona !== worker.peerId && worker.persona !== worker.name && (
-          <span
-            className="forge-session-row__role"
-            data-testid={`room-worker-${worker.peerId}-role`}
-          >
-            {roleLabel(worker.persona)}
-          </span>
-        )}
-        <span className="forge-session-row__title">{worker.name}</span>
-        <span className="forge-room-worker__state" data-status={worker.status}>
-          {worker.latest && worker.status !== 'working'
-            ? verdictLabel(worker.latest.verdict)
-            : WORKER_STATUS_TEXT[worker.status]}
-        </span>
-      </button>
-    </div>
-  );
-}
-
 function SessionTreeEntry({
   node,
   renderRow,
   depth = 0,
   openRoom,
+  selectedId,
+  onSelect,
 }: {
   node: SessionTreeNode;
   renderRow: (session: Session, depth: number) => React.ReactNode;
   depth?: number;
   openRoom?: OpenRoom | null;
+  selectedId: string | null;
+  onSelect: (id: string) => void;
 }) {
   const roomWorkers = openRoom?.sessionId === node.session.id ? openRoom.workers : [];
   // Under the open room, a nested session that is one of its workers (a workflow run's
   // member) is listed as the room's worker: its verdict, and picking it shows its work there.
   const roomWorkerIds = new Set(roomWorkers.map((worker) => worker.peerId));
   const children = node.children.filter((child) => !roomWorkerIds.has(child.session.id));
-  const hasChildren = node.children.length > 0 || roomWorkers.length > 0;
+  // A team's root runs no agent: its members are listed as the team's agents, not as sessions.
+  const isTeam = node.session.team !== undefined;
+  const hasPeople = (node.session.peopleCount ?? 1) > 1;
+  const leadsOthers = node.children.length > 0 || roomWorkers.length > 0;
+  const hasChildren = leadsOthers || isTeam || hasPeople;
+  // A team, and a session that leads others, open as the list always opened them; a session
+  // that works alone and someone joined opens folded, so the list reads as it did until the
+  // person asks who is in it.
   const [folded, setFolded] = useForgePreference(
     `tree.${node.session.clusterId}.${node.session.id}`,
-    '0',
+    hasPeople && !isTeam && !leadsOthers ? '1' : '0',
     ['0', '1'],
   );
   return (
@@ -821,7 +823,7 @@ function SessionTreeEntry({
           <button
             type="button"
             className="forge-session-tree-toggle"
-            aria-label={`${folded === '1' ? 'Expand' : 'Collapse'} workers of ${node.session.name ?? node.session.personaName}`}
+            aria-label={`${folded === '1' ? 'Expand' : 'Collapse'} ${isTeam || hasPeople ? 'members' : 'workers'} of ${node.session.name ?? node.session.personaName}`}
             aria-expanded={folded !== '1'}
             onClick={() => setFolded(folded === '1' ? '0' : '1')}
           >
@@ -832,7 +834,8 @@ function SessionTreeEntry({
       </div>
       {folded !== '1' && hasChildren && (
         <div className="forge-session-tree-children">
-          {openRoom &&
+          {!isTeam &&
+            openRoom &&
             roomWorkers.map((worker) => (
               <RoomWorkerRow
                 key={worker.peerId}
@@ -841,15 +844,30 @@ function SessionTreeEntry({
                 onSelect={() => openRoom.onSelect(node.session.id, worker.peerId)}
               />
             ))}
-          {children.map((child) => (
-            <SessionTreeEntry
-              key={child.session.id}
-              node={child}
-              renderRow={renderRow}
-              depth={depth + 1}
-              openRoom={openRoom}
+          {!isTeam &&
+            children.map((child) => (
+              <SessionTreeEntry
+                key={child.session.id}
+                node={child}
+                renderRow={renderRow}
+                depth={depth + 1}
+                openRoom={openRoom}
+                selectedId={selectedId}
+                onSelect={onSelect}
+              />
+            ))}
+          {(isTeam || hasPeople) && (
+            <SessionMembersList
+              session={node.session}
+              // A session that leads others has its own rows for them; a team's agents and a
+              // session that works alone are listed here.
+              showAgents={isTeam || !leadsOthers}
+              memberSessions={node.children.map((child) => child.session)}
+              room={openRoom?.sessionId === node.session.id ? openRoom : null}
+              selectedId={selectedId}
+              onSelectSession={onSelect}
             />
-          ))}
+          )}
         </div>
       )}
     </div>
@@ -919,35 +937,42 @@ function PodGroup({
     openRoom?.sessionId === s.id
       ? openRoom.workers.filter((worker) => !openRoom.sessionWorkerIds.has(worker.peerId)).length
       : 0;
-  const renderRow = (s: Session, depth = 0) => (
-    <PodEntry
-      key={s.id}
-      session={s}
-      displayState={leadState(s, sessions)}
-      coordinatorWorkers={
-        (workerCounts && isCoordinator(s, workerCounts)) || roomWorkerCount(s) > 0
-          ? (workerCounts?.get(s.id) ?? 0) + roomWorkerCount(s)
-          : undefined
-      }
-      context={contextIds?.has(s.id) ?? false}
-      nested={depth > 0}
-      showDetails={showDetails}
-      onAction={onAction}
-      onReadChange={onReadChange}
-      busy={!!busyId}
-      readBusy={readPendingIds?.has(s.id) ?? false}
-      selected={s.id === selectedId && !(openRoom?.sessionId === s.id && openRoom.focusedPeerId)}
-      onSelect={() => onSelect(s.id)}
-      collapsed={collapsed}
-      selectable={selectableSessionIds?.has(s.id) ?? false}
-      checked={selectedSessionIds?.has(s.id) ?? false}
-      onToggleSelection={
-        onToggleSelection && selectableSessionIds?.has(s.id)
-          ? () => onToggleSelection(s.id)
-          : undefined
-      }
-    />
-  );
+  const renderRow = (s: Session, depth = 0) => {
+    const unit = unitSummary(s, workerCounts?.get(s.id) ?? 0);
+    // A team's row says who is in it where a coordinator's says how many workers it has.
+    const leadsAsCoordinator =
+      (workerCounts && isCoordinator(s, workerCounts)) || roomWorkerCount(s) > 0;
+    return (
+      <PodEntry
+        key={s.id}
+        session={s}
+        unit={unit}
+        displayState={leadState(s, sessions)}
+        coordinatorWorkers={
+          leadsAsCoordinator && !s.team
+            ? (workerCounts?.get(s.id) ?? 0) + roomWorkerCount(s)
+            : undefined
+        }
+        context={contextIds?.has(s.id) ?? false}
+        nested={depth > 0}
+        showDetails={showDetails}
+        onAction={onAction}
+        onReadChange={onReadChange}
+        busy={!!busyId}
+        readBusy={readPendingIds?.has(s.id) ?? false}
+        selected={s.id === selectedId && !(openRoom?.sessionId === s.id && openRoom.focusedPeerId)}
+        onSelect={() => onSelect(s.id)}
+        collapsed={collapsed}
+        selectable={selectableSessionIds?.has(s.id) ?? false}
+        checked={selectedSessionIds?.has(s.id) ?? false}
+        onToggleSelection={
+          onToggleSelection && selectableSessionIds?.has(s.id)
+            ? () => onToggleSelection(s.id)
+            : undefined
+        }
+      />
+    );
+  };
 
   return (
     <div
@@ -1042,6 +1067,8 @@ function PodGroup({
                 node={node}
                 renderRow={renderRow}
                 openRoom={openRoom}
+                selectedId={selectedId}
+                onSelect={onSelect}
               />
             ))
           : sessions.map((s) => renderRow(s)))}
@@ -1318,14 +1345,10 @@ export function SessionsPage() {
   // Only a session that leads its room lists the room's workers under it. A run's member
   // sees the run's other members in its own chat, but it leads none of them: listing them
   // under it would move the run's sessions every time a member is opened.
-  const openSessionIsNested = useMemo(
-    () =>
-      Boolean(
-        allSessions.find((session) => session.id === resolvedSelectedSessionId)?.coordination
-          ?.parent,
-      ),
-    [allSessions, resolvedSelectedSessionId],
-  );
+  const openSessionIsNested = useMemo(() => {
+    const open = allSessions.find((session) => session.id === resolvedSelectedSessionId);
+    return Boolean(open?.coordination?.parent || open?.hostedBy);
+  }, [allSessions, resolvedSelectedSessionId]);
   const openRoom = useMemo<OpenRoom | null>(
     () =>
       !showProjectHome &&

@@ -5346,8 +5346,51 @@ class TestBrokerRoomAdapter:
 
         response = await get_room_participants(environment_id="cluster-a")
 
-        assert response == {"participants": [{"peer_id": "cluster-peer"}]}
+        assert response == {"participants": [{"peer_id": "cluster-peer"}], "connected_people": []}
         get_participants.assert_called_once_with(environment_id="cluster-a")
+
+    @pytest.mark.asyncio
+    async def test_room_participants_api_lists_connected_people_apart_from_participants(
+        self, monkeypatch
+    ):
+        monkeypatch.setattr(broker, "get_room_participants", MagicMock(return_value=[]))
+        monkeypatch.setattr(
+            broker,
+            "connected_people",
+            MagicMock(return_value=[{"user_id": "u-1", "display_name": "Ada"}]),
+        )
+
+        response = await get_room_participants(environment_id=None)
+
+        assert response == {
+            "participants": [],
+            "connected_people": [{"user_id": "u-1", "display_name": "Ada"}],
+        }
+
+    @pytest.mark.asyncio
+    async def test_connected_people_are_the_verified_live_connections_once_each(
+        self, room_settings
+    ):
+        from niuu.domain.message_author import MessageAuthor
+        from skuld.channels import WebSocketChannel
+
+        b = Broker(settings=room_settings)
+        ada = MessageAuthor(user_id="u-ada", display_name="Ada")
+        first = WebSocketChannel(AsyncMock(), author=ada)
+        second = WebSocketChannel(AsyncMock(), author=ada)
+        bob = WebSocketChannel(AsyncMock(), author=MessageAuthor(user_id="u-bob"))
+        anonymous = WebSocketChannel(AsyncMock())
+        gone = WebSocketChannel(AsyncMock(), author=MessageAuthor(user_id="u-gone"))
+        gone._closed = True
+        for channel in (second, bob, anonymous, gone, first):
+            b._channels.add(channel)
+
+        assert b.connected_people() == [
+            {"user_id": "u-ada", "display_name": "Ada"},
+            {"user_id": "u-bob", "display_name": ""},
+        ]
+        # They are not seated: the room's roster, and what routes to it, is unchanged.
+        assert b.get_room_participants() == []
 
     def test_get_communication_routes_returns_channel_routes(self, room_settings):
         b = Broker(settings=room_settings)

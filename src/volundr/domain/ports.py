@@ -71,6 +71,7 @@ from volundr.domain.models import (  # noqa: F401
     ResidentRuntime,
     ResidentSession,
     RoomParticipantInfo,
+    RoomRoster,
     SavedPrompt,
     SecretInfo,
     SecretMountSpec,
@@ -537,6 +538,17 @@ class SessionParticipantRepository(ABC):
         """
 
     @abstractmethod
+    async def count_active_for_sessions(
+        self, session_ids: list[UUID], now: datetime
+    ) -> dict[UUID, int]:
+        """Active, unexpired grants per session, for all of ``session_ids`` in one read.
+
+        ``now`` is the instant expiry is judged at (``SessionParticipant.is_active`` judges
+        it in Python, so the database clock never disagrees with it). A session with no
+        such grant has no entry.
+        """
+
+    @abstractmethod
     async def candidates(
         self, session_id: UUID, tenant_id: str, owner_id: str, query: str
     ) -> list[ParticipantCandidate]:
@@ -545,6 +557,17 @@ class SessionParticipantRepository(ABC):
         Not the owner, and not anyone already invited or active on the session; a
         revoked grant can be invited again. ``query`` matches display name or email,
         case-insensitively; empty matches everyone.
+        """
+
+    @abstractmethod
+    async def tenant_people(
+        self, tenant_id: str, excluded_user_id: str, query: str
+    ) -> list[ParticipantCandidate]:
+        """Active members of ``tenant_id`` other than ``excluded_user_id``.
+
+        The people someone may invite before any session exists, so no session's grants
+        are consulted. ``query`` matches display name or email, case-insensitively; empty
+        matches everyone.
         """
 
 
@@ -2360,6 +2383,14 @@ class SessionRoomPort(ABC):
     @abstractmethod
     async def list_room_participants(self, session_id: UUID) -> list[RoomParticipantInfo]:
         """Return the current room participants for a live session."""
+
+    @abstractmethod
+    async def read_room(self, session_id: UUID) -> RoomRoster:
+        """Return the room's seated participants and the people connected to it.
+
+        ``list_room_participants`` is the same read without the connected people, for the
+        callers that route to participants only.
+        """
 
 
 class SessionCommunicationPort(ABC):

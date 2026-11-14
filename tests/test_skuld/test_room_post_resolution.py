@@ -15,6 +15,7 @@ from niuu.domain.peer_message import PeerAddress, PeerKind, PeerMessage, ReplyKi
 from niuu.forge_mcp.models import ForgeApiError
 from niuu.mesh.attestation import VERIFIED_SENDER_KEY
 from niuu.ports.mesh import PeerNotFoundError
+from skuld.config import RoomSeat
 from tests.test_skuld.test_mesh_threads import Node, _certs, flock  # noqa: F401
 
 CERTS = _certs("member", "outsider")
@@ -53,6 +54,19 @@ class TestTheSessionKnowsItsRooms:
         assert member.broker.room_seats() == {
             "huddle-1": {"host-a": "n1"},
             "huddle-2": {"host-b": "n2"},
+        }
+
+    async def test_a_room_it_was_seated_in_by_configuration_is_known_from_the_start(
+        self, flock
+    ) -> None:
+        member = await flock.add("member", certs=CERTS)
+        member.broker._settings.room.seats = [RoomSeat(room_id="team-1", host_session_id="root-1")]
+
+        await _told_of_room(member, "huddle-1", "host-a")
+
+        assert member.broker.room_seats() == {
+            "team-1": {"root-1": ""},
+            "huddle-1": {"host-a": "n1"},
         }
 
     async def test_a_message_from_no_room_adds_none(self, flock) -> None:
@@ -124,7 +138,7 @@ class TestPostingOverTheMesh:
         }
         # The host acted for the session the mesh certified, not one the message named.
         host.broker.handle_session_room_message.assert_awaited_once_with(
-            "session-member", "huddle-1", "hi all"
+            "session-member", "huddle-1", "hi all", caller_peer_id="member"
         )
         member.host._client.post_room_message.assert_not_awaited()
 
@@ -226,7 +240,9 @@ class TestTheHostsRpc:
         )
 
         assert answer == {"status": "accepted", "message_id": "m-1"}
-        host.broker.handle_session_room_message.assert_awaited_once_with("real-session", "r", "x")
+        host.broker.handle_session_room_message.assert_awaited_once_with(
+            "real-session", "r", "x", caller_peer_id="p"
+        )
 
     @pytest.mark.parametrize("body", [{"room_id": 3, "content": "x"}, {"room_id": "r"}])
     async def test_it_refuses_a_malformed_post(self, flock, body) -> None:

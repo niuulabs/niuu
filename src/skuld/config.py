@@ -203,6 +203,16 @@ class MeshConfig(BaseModel):
     )
 
 
+class RoomSeat(BaseModel):
+    """A room this session sits in, hosted by another session."""
+
+    room_id: str = Field(min_length=1, description="The room's id (what room_post takes).")
+    host_session_id: str = Field(min_length=1, description="The session that hosts the room.")
+    host_node: str = Field(
+        default="", description="The Forge node of the host, when it is on another node."
+    )
+
+
 class RoomConfig(BaseModel):
     """Multi-agent room chat configuration.
 
@@ -246,6 +256,19 @@ class RoomConfig(BaseModel):
             "competes with the room's ravns for the same chat frames."
         ),
     )
+    untargeted_delivery: Literal["refuse", "everyone"] = Field(
+        default="refuse",
+        description=(
+            "What a declared-routed room (``routed``) does with a browser message that names "
+            "no participant when ``default_target_peer_id`` is unset. ``refuse``: it goes to "
+            "the room's sole ravn, and with two or more ravns it is refused with an error "
+            "telling the sender to address one. ``everyone``: it is delivered as a directed "
+            "message to every agent in the room (every participant that is neither a person, "
+            "a workflow, nor this host itself, so the harness sessions of a team count); a "
+            "room with no agent refuses it with an error. Has no effect on a room that is "
+            "not ``routed``."
+        ),
+    )
     presence_sweep_interval_s: float = Field(
         default=30.0,
         description=(
@@ -278,6 +301,14 @@ class RoomConfig(BaseModel):
             "Seconds a person, or an agent of another session, that joined the room may "
             "go without a heartbeat before it is shown as away. Longer than the agent "
             "TTL because a browser tab heartbeats less often. 0 never marks them away."
+        ),
+    )
+    seats: list[RoomSeat] = Field(
+        default_factory=list,
+        description=(
+            "Rooms this session sits in from the start, hosted by other sessions, so it can "
+            "speak in them (room_post) before anything was said to it there. A team's members "
+            "are given their team's room. Any other room is learned from what is said in it."
         ),
     )
     realm_room: bool = Field(

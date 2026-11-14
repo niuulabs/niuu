@@ -15,6 +15,8 @@ import type {
   SessionRoom,
   SessionSource,
   SessionStartup,
+  SessionTeam,
+  SessionTeamMember,
 } from '../models/volundr.model';
 
 export type SessionState =
@@ -67,6 +69,14 @@ export interface Session {
   /** Who shared the session, by name, when the host knows. */
   ownerName?: string;
   coordination?: SessionCoordination;
+  /** The unit root this session runs in (a team's member, a workflow run's member). */
+  hostedBy?: string;
+  /** Set on a team's root: what the opening task was addressed to. */
+  team?: SessionTeam;
+  /** Set on a team's member: whether it leads. */
+  teamMember?: SessionTeamMember;
+  /** The owner plus everyone with an active grant on the session; absent when not reported. */
+  peopleCount?: number;
   id: string;
   ravnId: string;
   name?: string;

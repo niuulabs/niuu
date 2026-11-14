@@ -339,6 +339,37 @@ class TestListingThePeople:
         assert refused.status_code == 403
 
 
+class TestPeopleSearchWithoutASession:
+    def _people(self, forge, user="owner", **params):
+        return forge.client.get(
+            f"{PREFIX}/participant-candidates", headers=_headers(user), params=params
+        )
+
+    def test_any_member_of_the_org_finds_the_others_but_not_themselves(self, forge):
+        response = self._people(forge, user="zed")
+
+        assert response.status_code == 200
+        assert [c["user_id"] for c in response.json()] == ["invitee", "owner"]
+        assert response.json()[0] == {
+            "user_id": "invitee",
+            "display_name": "Ivan Invitee",
+            "email": "ivan@example.test",
+        }
+
+    def test_it_narrows_by_what_is_typed(self, forge):
+        assert [c["user_id"] for c in self._people(forge, q="zim").json()] == ["zed"]
+
+    def test_it_does_not_leave_out_people_already_invited_to_some_session(self, forge):
+        forge.invite()
+
+        assert [c["user_id"] for c in self._people(forge).json()] == ["invitee", "zed"]
+
+    def test_another_orgs_people_are_not_offered(self, forge):
+        forge.repository.directory.append(("sam", "Sam Stranger", "sam@other.test", "other"))
+
+        assert "sam" not in [c["user_id"] for c in self._people(forge).json()]
+
+
 class TestCandidates:
     def _candidates(self, forge, user="owner", **params):
         return forge.client.get(

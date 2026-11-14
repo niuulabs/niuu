@@ -1299,3 +1299,94 @@ describe('the mock chat participants', () => {
     expect(await svc.getSessionProjectPeople('no-such-session')).toBeNull();
   });
 });
+
+describe('the mock teams', () => {
+  const source = { type: 'git' as const, repo: 'github.com/niuulabs/niuu', branch: 'dev' };
+  const members = [
+    { model: 'm1', definition: 'skuldClaude', personaName: 'coordinator', lead: true },
+    { model: 'm2', definition: 'skuldCodex', personaName: '', lead: false },
+  ];
+
+  it('starts a root and a member session per agent, and lists them as the room', async () => {
+    const svc = createMockVolundrService();
+    const started = await svc.startTeam({
+      name: 'niuu',
+      source,
+      task: 'Fix it',
+      taskTo: 'lead',
+      members,
+      invitees: ['alice'],
+      instanceId: 'thor',
+    });
+
+    // An invitee counts once they have joined, and the team starts on the Forge asked for.
+    expect(started.session).toMatchObject({
+      team: { taskTo: 'lead' },
+      peopleCount: 1,
+      instanceId: 'thor',
+    });
+    expect(started.members.map((member) => member.hostedBy)).toEqual([
+      started.session.id,
+      started.session.id,
+    ]);
+    expect(started.members.map((member) => member.teamMember?.lead)).toEqual([true, false]);
+
+    const room = await svc.getSessionMembers(started.session.id);
+    expect(room.agents.map((agent) => [agent.personaName, agent.lead])).toEqual([
+      ['coordinator', true],
+      ['', false],
+    ]);
+    expect(room.people[0]).toMatchObject({ role: 'owner', status: 'active' });
+    expect(room.people[1]).toMatchObject({ userId: 'alice', role: 'viewer', status: 'invited' });
+  });
+
+  it('refuses to invite someone the org does not have', async () => {
+    const svc = createMockVolundrService();
+    await expect(
+      svc.startTeam({ name: 'n', source, members, invitees: ['ghost'] }),
+    ).rejects.toThrow('Cannot invite this user');
+  });
+
+  it('finds people to invite before the team exists', async () => {
+    const svc = createMockVolundrService();
+    expect((await svc.getTeamInviteCandidates('ali')).map((person) => person.userId)).toEqual([
+      'alice',
+    ]);
+    expect((await svc.getTeamInviteCandidates('')).length).toBeGreaterThan(1);
+  });
+
+  it('refuses a team without exactly one lead, and a task nobody was given', async () => {
+    const svc = createMockVolundrService();
+    await expect(
+      svc.startTeam({ name: 'n', source, members: members.map((m) => ({ ...m, lead: false })) }),
+    ).rejects.toThrow('exactly one lead');
+    await expect(svc.startTeam({ name: 'n', source, task: 'Do it', members })).rejects.toThrow(
+      'who gets it',
+    );
+    const started = await svc.startTeam({ name: 'n', source, task: '  ', members });
+    expect(started.session.team).toEqual({ taskTo: null });
+  });
+
+  it('answers a session that is not a team with the session itself and its people', async () => {
+    const svc = createMockVolundrService();
+    const [session] = await svc.getSessions();
+    await svc.inviteSessionParticipant(session!.id, { userId: 'alice', role: 'viewer' });
+    const room = await svc.getSessionMembers(session!.id);
+    expect(room.agents.map((agent) => agent.sessionId)).toEqual([session!.id]);
+    expect(room.people.map((person) => [person.userId, person.status])).toEqual([
+      [session!.ownerId ?? 'u1', 'active'],
+      ['alice', 'invited'],
+    ]);
+    await expect(svc.getSessionMembers('missing')).rejects.toThrow('Session not found');
+  });
+
+  it('says the owner is online in a running session and an invitee is not there yet', async () => {
+    const svc = createMockVolundrService();
+    const running = (await svc.getSessions()).find((session) => session.status === 'running');
+    await svc.inviteSessionParticipant(running!.id, { userId: 'alice', role: 'viewer' });
+    const room = await svc.getSessionMembers(running!.id);
+    expect(room.people[0]?.online).toBe(true);
+    // An invitee who has not joined is not in the room to be seen.
+    expect(room.people[1]?.online).toBeNull();
+  });
+});

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { screen, waitFor, fireEvent } from '@testing-library/react';
+import { screen, waitFor, fireEvent, within } from '@testing-library/react';
 import type { PersonaSummary } from '@niuulabs/domain';
 import { NewSessionPage } from './NewSessionPage';
 import { renderWithVolundr } from '../testing/renderWithVolundr';
@@ -269,5 +269,337 @@ describe('NewSessionPage', () => {
     renderPage();
     await waitFor(() => expect(screen.getByTestId('new-session-repo')).toBeInTheDocument());
     expect(screen.queryByTestId('new-session-persona')).not.toBeInTheDocument();
+  });
+});
+
+describe('NewSessionPage — a team', () => {
+  beforeEach(() => {
+    navigate.mockClear();
+    setSearch({ repo: 'github.com/niuulabs/volundr', branch: 'main' });
+  });
+
+  function renderTeam(
+    service: IVolundrService = createMockVolundrService(),
+    extraServices?: Record<string, unknown>,
+  ) {
+    const view = renderPage(service, extraServices);
+    fireEvent.click(screen.getByRole('button', { name: 'A team' }));
+    return view;
+  }
+
+  it('offers the two ways in and leaves the single-agent page as it was', () => {
+    renderPage();
+    expect(screen.getByRole('button', { name: 'One agent' })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
+    expect(screen.getByTestId('new-session-more-options')).toBeInTheDocument();
+    expect(screen.queryByTestId('new-team-members')).not.toBeInTheDocument();
+    expect(screen.getByText(/A coding agent picks it up in its own sandbox/)).toBeInTheDocument();
+  });
+
+  it('shows who is in the team, the room and what happens next', async () => {
+    renderTeam();
+
+    expect(
+      screen.getByText(/A team of agents picks it up together, in one workspace/),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText('Optional — without one they wait in the room for your first message'),
+    ).toBeInTheDocument();
+    expect(screen.getByTestId('new-team-members')).toBeInTheDocument();
+    expect(screen.getByTestId('new-team-agent-agent-1')).toBeInTheDocument();
+    expect(screen.getByTestId('new-team-agent-agent-2')).toBeInTheDocument();
+    expect(screen.getByTestId('new-team-lead-agent-1')).toHaveTextContent('Leads');
+    expect(screen.getByTestId('new-team-lead-agent-2')).toHaveTextContent('Make lead');
+    expect(screen.queryByTestId('new-session-more-options')).not.toBeInTheDocument();
+    expect(screen.queryByRole('radiogroup', { name: 'Who works on it' })).not.toBeInTheDocument();
+    expect(screen.getByTestId('new-session-start')).toHaveTextContent('Start 2 sessions');
+
+    // No task yet: nobody is asked who gets it, and the room says they wait.
+    expect(screen.queryByTestId('new-team-task-to')).not.toBeInTheDocument();
+    const room = screen.getByTestId('new-team-room');
+    expect(room).toHaveTextContent('Everyone joins one room');
+    expect(room).toHaveTextContent('All 2 agents start and wait');
+    expect(
+      screen.getByText(
+        'One workspace boots with your repository checked out; the 2 agents work in it together.',
+      ),
+    ).toBeVisible();
+    expect(
+      screen.getByText('They wait until you or someone in the room sends the first message.'),
+    ).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByTestId('new-team-engine-agent-1')).toBeEnabled());
+  });
+
+  it('starts a team with no task: nobody is given one and the lead is the first agent', async () => {
+    const service = createMockVolundrService();
+    const startTeam = vi.fn(service.startTeam);
+    service.startTeam = startTeam;
+    renderTeam(service);
+
+    await waitFor(() => expect(screen.getByTestId('new-session-start')).toBeEnabled());
+    fireEvent.click(screen.getByTestId('new-session-start'));
+
+    await waitFor(() => expect(startTeam).toHaveBeenCalledTimes(1));
+    const request = startTeam.mock.calls[0]![0];
+    expect(request.name).toBe('volundr');
+    expect(request.source).toEqual({
+      type: 'git',
+      repo: 'github.com/niuulabs/volundr',
+      branch: 'main',
+    });
+    expect(request).not.toHaveProperty('task');
+    expect(request).not.toHaveProperty('taskTo');
+    expect(request.members.map((member) => member.lead)).toEqual([true, false]);
+    expect(request.members.every((member) => member.definition === 'skuldClaude')).toBe(true);
+    // The team opens on its root, where the room is.
+    await waitFor(() =>
+      expect(navigate).toHaveBeenCalledWith({
+        to: '/volundr/sessions/$sessionId',
+        params: { sessionId: 'team-1' },
+      }),
+    );
+  });
+
+  it('asks who gets the task once one is typed, and sends it to the lead by default', async () => {
+    const service = createMockVolundrService();
+    const startTeam = vi.fn(service.startTeam);
+    service.startTeam = startTeam;
+    renderTeam(service);
+
+    fireEvent.change(screen.getByTestId('new-session-task'), {
+      target: { value: 'Fix the refresh bug' },
+    });
+    expect(screen.getByTestId('new-team-task-to-lead')).toHaveAttribute('aria-checked', 'true');
+    await waitFor(() =>
+      expect(screen.getByTestId('new-team-room')).toHaveTextContent('Claude Code gets the task'),
+    );
+    expect(screen.getByTestId('new-team-room')).toHaveTextContent('hands work to Claude Code');
+    expect(screen.getByText('Claude Code reads the task and hands out the work.')).toBeVisible();
+
+    await waitFor(() => expect(screen.getByTestId('new-session-start')).toBeEnabled());
+    fireEvent.click(screen.getByTestId('new-session-start'));
+
+    await waitFor(() => expect(startTeam).toHaveBeenCalledTimes(1));
+    expect(startTeam.mock.calls[0]![0]).toMatchObject({
+      task: 'Fix the refresh bug',
+      taskTo: 'lead',
+    });
+  });
+
+  it('sends the task to everyone when that is chosen', async () => {
+    const service = createMockVolundrService();
+    const startTeam = vi.fn(service.startTeam);
+    service.startTeam = startTeam;
+    renderTeam(service);
+
+    fireEvent.change(screen.getByTestId('new-session-task'), { target: { value: 'Review it' } });
+    fireEvent.click(screen.getByTestId('new-team-task-to-everyone'));
+    expect(screen.getByTestId('new-team-task-to-everyone')).toHaveAttribute('aria-checked', 'true');
+    expect(screen.getByTestId('new-team-room')).toHaveTextContent('All 2 agents get the task');
+    expect(
+      screen.getByText('Each agent reads the task and they agree who does what.'),
+    ).toBeVisible();
+
+    await waitFor(() => expect(screen.getByTestId('new-session-start')).toBeEnabled());
+    fireEvent.click(screen.getByTestId('new-session-start'));
+
+    await waitFor(() => expect(startTeam).toHaveBeenCalledTimes(1));
+    expect(startTeam.mock.calls[0]![0]).toMatchObject({ task: 'Review it', taskTo: 'everyone' });
+  });
+
+  it('submits on Cmd+Enter from the task box', async () => {
+    const service = createMockVolundrService();
+    const startTeam = vi.fn(service.startTeam);
+    service.startTeam = startTeam;
+    renderTeam(service);
+
+    const task = screen.getByTestId('new-session-task');
+    fireEvent.change(task, { target: { value: 'Ship it' } });
+    await waitFor(() => expect(screen.getByTestId('new-session-start')).toBeEnabled());
+    fireEvent.keyDown(task, { key: 'Enter', metaKey: true });
+
+    await waitFor(() => expect(startTeam).toHaveBeenCalledTimes(1));
+  });
+
+  it('lets each agent pick its engine and persona, who leads, and be added or removed', async () => {
+    const service = createMockVolundrService();
+    const startTeam = vi.fn(service.startTeam);
+    service.startTeam = startTeam;
+    renderTeam(service, {
+      'ravn.personas': { listPersonas: async () => [persona('coder'), persona('reviewer')] },
+    });
+
+    const personaSelect = await screen.findByTestId('new-team-persona-agent-2');
+    await waitFor(() => expect(within(personaSelect).getByText(/reviewer/)).toBeInTheDocument());
+    fireEvent.change(personaSelect, { target: { value: 'reviewer' } });
+    fireEvent.change(screen.getByTestId('new-team-engine-agent-2'), {
+      target: { value: 'skuldCodex' },
+    });
+    fireEvent.click(screen.getByTestId('new-team-lead-agent-2'));
+    expect(screen.getByTestId('new-team-lead-agent-1')).toHaveTextContent('Make lead');
+    expect(screen.getByTestId('new-team-lead-agent-2')).toHaveTextContent('Leads');
+
+    fireEvent.click(screen.getByTestId('new-team-add-agent'));
+    expect(screen.getByTestId('new-team-agent-agent-3')).toBeInTheDocument();
+    expect(screen.getByTestId('new-session-start')).toHaveTextContent('Start 3 sessions');
+    fireEvent.click(screen.getByTestId('new-team-remove-agent-1'));
+    expect(screen.queryByTestId('new-team-agent-agent-1')).not.toBeInTheDocument();
+    // The next agent added does not reuse a removed row's id.
+    fireEvent.click(screen.getByTestId('new-team-add-agent'));
+    expect(screen.getByTestId('new-team-agent-agent-4')).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('new-team-remove-agent-4'));
+
+    await waitFor(() => expect(screen.getByTestId('new-session-start')).toBeEnabled());
+    fireEvent.click(screen.getByTestId('new-session-start'));
+
+    await waitFor(() => expect(startTeam).toHaveBeenCalledTimes(1));
+    expect(startTeam.mock.calls[0]![0].members).toEqual([
+      expect.objectContaining({
+        definition: 'skuldCodex',
+        personaName: 'reviewer',
+        lead: true,
+      }),
+      expect.objectContaining({ definition: 'skuldClaude', personaName: '', lead: false }),
+    ]);
+  });
+
+  it('starts the team on the same Forge a single launch goes to', async () => {
+    const service = createMockVolundrService();
+    const startTeam = vi.fn(service.startTeam);
+    service.startTeam = startTeam;
+    renderTeam(service);
+
+    await waitFor(() => expect(screen.getByTestId('new-session-start')).toBeEnabled());
+    fireEvent.click(screen.getByTestId('new-session-start'));
+    await waitFor(() => expect(startTeam).toHaveBeenCalledTimes(1));
+    expect(startTeam.mock.calls[0]![0].instanceId).toBe('mock-volundr-default');
+  });
+
+  it('invites a person found on that Forge, shows them in the room and sends their id', async () => {
+    const service = createMockVolundrService();
+    const startTeam = vi.fn(service.startTeam);
+    const search = vi.fn(service.getTeamInviteCandidates);
+    service.startTeam = startTeam;
+    service.getTeamInviteCandidates = search;
+    renderTeam(service);
+
+    await waitFor(() => expect(screen.getByTestId('new-session-start')).toBeEnabled());
+    expect(screen.queryByTestId('new-team-invite')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('new-team-add-person'));
+    expect(screen.getByTestId('new-team-add-person')).toBeDisabled();
+    fireEvent.change(screen.getByLabelText('Find someone in your org'), {
+      target: { value: 'ali' },
+    });
+    fireEvent.click(await screen.findByRole('button', { name: /Alice Lindqvist/ }));
+
+    // The search ran on the Forge the team will start on.
+    expect(search).toHaveBeenCalledWith('ali', {
+      instanceId: 'mock-volundr-default',
+      signal: expect.anything(),
+    });
+    const row = screen.getByTestId('new-team-person-alice');
+    expect(row).toHaveTextContent('Alice Lindqvist');
+    expect(row).toHaveTextContent('joins the room · can message anyone');
+    expect(screen.queryByTestId('new-team-invite')).not.toBeInTheDocument();
+    expect(screen.getByTestId('new-team-room')).toHaveTextContent(
+      'You and Alice Lindqvist can talk to everyone',
+    );
+
+    fireEvent.click(screen.getByTestId('new-session-start'));
+    await waitFor(() => expect(startTeam).toHaveBeenCalledTimes(1));
+    expect(startTeam.mock.calls[0]![0].invitees).toEqual(['alice']);
+  });
+
+  it('does not offer someone already invited, and lets an invitee be taken out again', async () => {
+    renderTeam();
+    const invite = async (typed: string, name: RegExp) => {
+      fireEvent.click(screen.getByTestId('new-team-add-person'));
+      fireEvent.change(screen.getByLabelText('Find someone in your org'), {
+        target: { value: typed },
+      });
+      fireEvent.click(await screen.findByRole('button', { name }));
+    };
+    await invite('a', /Alice Lindqvist/);
+
+    fireEvent.click(screen.getByTestId('new-team-add-person'));
+    fireEvent.change(screen.getByLabelText('Find someone in your org'), {
+      target: { value: 'alice' },
+    });
+    expect(await screen.findByText('Nobody else in your org matches.')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(screen.queryByTestId('new-team-invite')).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId('new-team-remove-person-alice'));
+    expect(screen.queryByTestId('new-team-person-alice')).not.toBeInTheDocument();
+    expect(screen.getByTestId('new-team-room')).toHaveTextContent('You can talk to everyone');
+  });
+
+  it('keeps the last agent: a team has at least one', () => {
+    renderTeam();
+    fireEvent.click(screen.getByTestId('new-team-remove-agent-2'));
+    expect(screen.getByTestId('new-team-remove-agent-1')).toBeDisabled();
+    expect(screen.getByTestId('new-session-start')).toHaveTextContent('Start session');
+    expect(
+      screen.getByText('One workspace boots with your repository checked out for the agent.'),
+    ).toBeVisible();
+  });
+
+  it('numbers the agents when there is no persona catalog', () => {
+    renderTeam();
+    expect(screen.queryByTestId('new-team-persona-agent-1')).not.toBeInTheDocument();
+    expect(screen.getByText('Agent 1')).toBeInTheDocument();
+    expect(screen.getByText('Agent 2')).toBeInTheDocument();
+  });
+
+  it('needs a repository to start, and returns to the caller when a back target was given', async () => {
+    setSearch({ back: '/realms/orders' });
+    renderTeam();
+    await waitFor(() => expect(screen.getByTestId('new-session-repo')).toBeInTheDocument());
+    expect(screen.getByTestId('new-session-start')).toBeDisabled();
+
+    fireEvent.change(screen.getByTestId('new-session-repo'), {
+      target: { value: 'github.com/niuulabs/volundr' },
+    });
+    await waitFor(() => expect(screen.getByTestId('new-session-start')).toBeEnabled());
+    fireEvent.click(screen.getByTestId('new-session-start'));
+
+    await waitFor(() => expect(navigate).toHaveBeenCalledWith({ to: '/realms/orders' }));
+  });
+
+  it('says no engine can run the team when no provider is connected', async () => {
+    const service = createMockVolundrService();
+    service.getIntegrations = async () => [];
+    renderTeam(service);
+
+    expect(await screen.findByTestId('new-session-no-provider')).toBeInTheDocument();
+    expect(screen.getByTestId('new-session-start')).toBeDisabled();
+  });
+
+  it('surfaces a failure to start the team instead of navigating', async () => {
+    const service = createMockVolundrService();
+    service.startTeam = async () => {
+      throw new Error('this runtime cannot host the team room');
+    };
+    renderTeam(service);
+
+    await waitFor(() => expect(screen.getByTestId('new-session-start')).toBeEnabled());
+    fireEvent.click(screen.getByTestId('new-session-start'));
+
+    await waitFor(() =>
+      expect(screen.getByTestId('new-session-error')).toHaveTextContent(
+        'this runtime cannot host the team room',
+      ),
+    );
+    expect(navigate).not.toHaveBeenCalled();
+  });
+
+  it('goes back to one agent with the single-agent page intact', () => {
+    renderTeam();
+    fireEvent.click(screen.getByRole('button', { name: 'One agent' }));
+    expect(screen.queryByTestId('new-team-members')).not.toBeInTheDocument();
+    expect(screen.getByTestId('new-session-more-options')).toBeInTheDocument();
+    expect(screen.getByTestId('new-session-start')).toHaveTextContent('Start session');
   });
 });

@@ -61,3 +61,25 @@ def test_create_contributors_keeps_a_configured_integrations_contributor_single(
     )
     contributors = _create_contributors(settings, integration_registry=IntegrationRegistry([]))
     assert len([c for c in contributors if c.name == "integrations"]) == 1
+
+
+def test_create_contributors_auto_wires_the_team_room_once_before_the_prompt() -> None:
+    """A team's root and members get their mesh realm and room with no contributor listed."""
+    names = [contributor.name for contributor in _create_contributors(Settings())]
+
+    assert names.count("team_room") == 1
+    assert names.index("team_room") < names.index("prompt")
+
+
+def test_create_contributors_keeps_a_configured_team_room_single() -> None:
+    settings = Settings(
+        session_contributors=[
+            SessionContributorConfig(
+                adapter="volundr.adapters.outbound.contributors.team_room.TeamRoomContributor"
+            )
+        ]
+    )
+
+    names = [contributor.name for contributor in _create_contributors(settings)]
+
+    assert names.count("team_room") == 1

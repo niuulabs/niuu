@@ -195,6 +195,9 @@ def _configure_logging() -> None:
 _configure_logging()
 logger = logging.getLogger("skuld.broker")
 
+#: Room participant types that are not agents: a message for everyone does not go to them.
+_NON_AGENT_PARTICIPANT_TYPES = frozenset({"human", "workflow"})
+
 #: What a workflow run's root announces itself as on the run's mesh: it runs no agent.
 RUN_ROOT_PERSONA = "coordinator"
 #: How a run's root is named in the run's room.
@@ -1100,6 +1103,9 @@ class Broker(
                     environment_id=getattr(peer, "realm_id", "") or mesh_cfg.realm_id,
                     participant_kind="mesh",
                     heartbeat_ttl_s=0.0,
+                    room_ids=self._realm_room_seat(
+                        getattr(peer, "realm_id", "") or mesh_cfg.realm_id
+                    ),
                 )
 
             def _on_join(peer: Any) -> None:
@@ -1379,6 +1385,17 @@ class Broker(
         """
         return not self._settings.room.realm_room
 
+    def _realm_room_seat(self, realm_id: str) -> tuple[str, ...]:
+        """The room a mesh peer of ``realm_id`` is seated in: this realm room, else none.
+
+        A realm room's members are the peers of its own realm. Seating them is what lets a
+        member post into the room (``handle_session_room_message``) and be heard in it.
+        """
+        room = self._settings.room
+        if not room.realm_room or realm_id != room.environment_id:
+            return ()
+        return (room.environment_id,)
+
     def _room_default_target_peer_id(self) -> str:
         """Peer that untargeted browser messages route to (resident sessions)."""
         if self._room_bridge is None:
@@ -1422,6 +1439,47 @@ class Broker(
         if len(peer_ids) != 1:
             return ""
         return peer_ids[0]
+
+    def _room_agent_peer_ids(self) -> list[str]:
+        """Peer ids of every agent in the room: all but people, workflows and this host.
+
+        A team's members are harness sessions (Claude Code, Codex) on the realm mesh, and the
+        mesh announces them as ``skuld`` participants, so the type alone cannot tell a member
+        from the host. The host is told apart by its own mesh peer id.
+        """
+        if self._room_bridge is None:
+            return []
+        host_peer_id = self._mesh_adapter.peer_id if self._mesh_adapter is not None else ""
+        return [
+            participant.peer_id
+            for participant in self._room_bridge.participants.values()
+            if participant.participant_type not in _NON_AGENT_PARTICIPANT_TYPES
+            and participant.peer_id != host_peer_id
+        ]
+
+    def _untargeted_room_peer_ids(self) -> list[str]:
+        """Who an untargeted browser message goes to in a declared-routed room.
+
+        ``room.untargeted_delivery`` decides: ``refuse`` takes the room's sole ravn (none when
+        it is ambiguous), ``everyone`` takes every agent in the room. Empty means there is no
+        one to deliver to and the caller reports it.
+        """
+        if self._settings.room.untargeted_delivery == "everyone":
+            return self._room_agent_peer_ids()
+        sole = self._sole_room_ravn_peer_id()
+        return [sole] if sole else []
+
+    def _no_untargeted_target_message(self) -> str:
+        if self._settings.room.untargeted_delivery == "everyone":
+            return (
+                "No agent in this room to deliver this message to. Wait for the room's agents "
+                "to join, or address a participant explicitly with a directed_message."
+            )
+        return (
+            "No room participant to deliver this message to. Set "
+            "room.default_target_peer_id, or address a participant "
+            "explicitly with a directed_message."
+        )
 
     def _event_consumer_peer_ids(self, event_type: str) -> set[str]:
         """Return room peer ids that subscribe to ``event_type``."""
@@ -3423,59 +3481,24 @@ class Broker(
                 # the CLI transport path does — a bare str() would deliver a
                 # Python repr of the block list (base64 blobs inline).
                 default_target = self._room_default_target_peer_id()
-                if not default_target and self._is_declared_room_routed():
+                targets = [default_target] if default_target else []
+                if not targets and self._is_declared_room_routed():
                     # A declared-routed broker has no CLI agent to fall through
                     # to, so an unresolvable target must be reported, never
                     # dropped into a transport that does not exist.
-                    default_target = self._sole_room_ravn_peer_id()
-                    if not default_target:
-                        error_msg = (
-                            "No room participant to deliver this message to. Set "
-                            "room.default_target_peer_id, or address a participant "
-                            "explicitly with a directed_message."
-                        )
+                    targets = self._untargeted_room_peer_ids()
+                    if not targets:
+                        error_msg = self._no_untargeted_target_message()
                         logger.info("_dispatch_browser_message: %s", error_msg)
                         if sender_ws:
                             await self._send_broker_frame_to(
                                 sender_ws, {"type": "error", "content": error_msg}
                             )
                         return
-                if default_target:
-                    if not await self._guard_reply_context_consumption(
-                        default_target, actual_role, data, sender_ws
-                    ):
-                        return
-                    request_id = data.get("request_id")
-                    request_id = request_id if isinstance(request_id, str) and request_id else None
-                    # A live browser connection can never claim "telegram" —
-                    # only the real Telegram channel dispatches with no
-                    # sender_ws (see the sender_ws is None guard above).
-                    incoming_source = str(data.get("source") or "").strip().lower()
-                    is_telegram = sender_ws is None and incoming_source == "telegram"
-                    source = "telegram" if is_telegram else "browser"
-                    if source == "telegram":
-                        metadata = _telegram_directed_metadata(data)
-                    else:
-                        metadata = _sanitize_directed_metadata(
-                            actual_role,
-                            data.get("metadata")
-                            if isinstance(data.get("metadata"), dict)
-                            else None,
-                        )
-                    try:
-                        await self.handle_directed_room_message(
-                            default_target,
-                            content_str,
-                            source=source,
-                            request_id=request_id,
-                            metadata=metadata,
-                            author=self._author_for(sender_ws),
-                        )
-                    except LookupError as exc:
-                        if sender_ws:
-                            await self._send_broker_frame_to(
-                                sender_ws, {"type": "error", "content": str(exc)}
-                            )
+                if targets:
+                    await self._deliver_untargeted_to(
+                        targets, content_str, data, actual_role, sender_ws
+                    )
                     return
 
                 # Record user turn in conversation history
@@ -3513,6 +3536,65 @@ class Broker(
                     source="browser",
                     author=self._author_for(sender_ws),
                 )
+
+    async def _deliver_untargeted_to(
+        self,
+        targets: list[str],
+        content_str: str,
+        data: dict,
+        actual_role: str,
+        sender_ws: WebSocket | None,
+    ) -> None:
+        """Deliver an untargeted browser message as a directed message to each of ``targets``.
+
+        Each target takes the single-target path (reply-context guard, directed delivery), so a
+        message for everyone is exactly N directed messages. Every target is tried: an unknown
+        participant is reported to the sender and a failed delivery is raised after the rest
+        were attempted, never swallowed. Only the first delivered message carries the
+        client's ``request_id``, so the client's one optimistic message is confirmed once.
+        """
+        request_id = data.get("request_id")
+        request_id = request_id if isinstance(request_id, str) and request_id else None
+        # A live browser connection can never claim "telegram" -
+        # only the real Telegram channel dispatches with no
+        # sender_ws (see the sender_ws is None guard above).
+        incoming_source = str(data.get("source") or "").strip().lower()
+        is_telegram = sender_ws is None and incoming_source == "telegram"
+        source = "telegram" if is_telegram else "browser"
+        if source == "telegram":
+            metadata = _telegram_directed_metadata(data)
+        else:
+            metadata = _sanitize_directed_metadata(
+                actual_role,
+                data.get("metadata") if isinstance(data.get("metadata"), dict) else None,
+            )
+        failures: list[str] = []
+        for target in targets:
+            if not await self._guard_reply_context_consumption(
+                target, actual_role, data, sender_ws
+            ):
+                continue
+            try:
+                await self.handle_directed_room_message(
+                    target,
+                    content_str,
+                    source=source,
+                    request_id=request_id,
+                    metadata=metadata,
+                    author=self._author_for(sender_ws),
+                )
+            except LookupError as exc:
+                if sender_ws:
+                    await self._send_broker_frame_to(
+                        sender_ws, {"type": "error", "content": str(exc)}
+                    )
+                continue
+            except RuntimeError as exc:
+                failures.append(str(exc))
+                continue
+            request_id = None
+        if failures:
+            raise RuntimeError("; ".join(failures))
 
     async def _accept_peer_message_frame(self, data: dict) -> None:
         """Take a ``peer_message`` frame into the inbox and acknowledge it by ``request_id``."""
@@ -4404,13 +4486,16 @@ class Broker(
             }
         raw = message.get(VERIFIED_SENDER_KEY)
         caller = raw.get("session_id") if isinstance(raw, dict) else ""
+        caller_peer_id = raw.get("peer_id") if isinstance(raw, dict) else ""
         if not caller:
             return {"status": "refused", "error": "the mesh named no verified session for you"}
         room_id, content = message.get("room_id"), message.get("content")
         if not isinstance(room_id, str) or not isinstance(content, str):
             return {"status": "refused", "error": "a room post needs a room_id and content"}
         try:
-            message_id = await self.handle_session_room_message(caller, room_id, content)
+            message_id = await self.handle_session_room_message(
+                caller, room_id, content, caller_peer_id=caller_peer_id
+            )
         except PermissionError as exc:
             return {"status": "refused", "error": str(exc)}
         except (ValueError, RuntimeError) as exc:
@@ -4423,9 +4508,12 @@ class Broker(
         Learned from what was said in them: a message said in a room names the room and the
         session that relayed it, its host. {room_id: {host_session_id: host_node}}. It
         includes nothing this session has not been told, and the inbox is durable, so it
-        survives a restart.
+        survives a restart. The rooms it was configured to sit in (``room.seats``, a team's
+        room) are there from the start.
         """
         seats: dict[str, dict[str, str]] = {}
+        for seat in self._settings.room.seats:
+            seats.setdefault(seat.room_id, {})[seat.host_session_id] = seat.host_node
         for entry in self._peer_inbox.values():
             envelope = entry.envelope
             if envelope.room_id and envelope.relayed_by is not None:
@@ -4435,21 +4523,31 @@ class Broker(
         return seats
 
     async def handle_session_room_message(
-        self, caller_session_id: str, room_id: str, content: str
+        self, caller_session_id: str, room_id: str, content: str, *, caller_peer_id: str = ""
     ) -> str:
         """Record a message a member session says in a room, as said by that session.
 
         ``caller_session_id`` is the session Forge verified. It is accepted only when a
-        participant seated in ``room_id`` joined from that session; anyone else is refused
-        with the reason. Nothing about the speaker comes from ``content``.
+        participant seated in ``room_id`` joined from that session, or is the mesh peer that
+        session is (a member of a realm room: its peer id is its session id, or the peer the
+        mesh verified, ``caller_peer_id``); anyone else is refused with the reason. Nothing
+        about the speaker comes from ``content``.
         """
+        mesh_identities = {caller_session_id, caller_peer_id} - {""}
         if self._room_bridge is None:
             raise RuntimeError("Room mode is not enabled")
         member = next(
             (
                 participant
                 for participant in self._room_bridge.participants.values()
-                if participant.session_id == caller_session_id and room_id in participant.room_ids
+                if room_id in participant.room_ids
+                and (
+                    participant.session_id == caller_session_id
+                    or (
+                        participant.participant_kind == "mesh"
+                        and participant.peer_id in mesh_identities
+                    )
+                )
             ),
             None,
         )
@@ -4463,7 +4561,9 @@ class Broker(
             source="session",
             participant_id=member.peer_id,
             metadata={"speaker_session_id": caller_session_id, "room_id": room_id},
-            deliver_to_transport=True,
+            # A host that runs no agent of its own has no transport to say it to: the post
+            # is the room's, and starting a CLI for it would answer chat meant for no one.
+            deliver_to_transport=not self._is_declared_room_routed(),
         )
 
     async def handle_directed_room_message(
@@ -4538,7 +4638,13 @@ class Broker(
                     response = await self._mesh_adapter.send_directed_message(
                         target_peer_id,
                         content,
-                        metadata=routing_metadata,
+                        # The room this host speaks in, and an id fixed for this delivery:
+                        # the member answers into the room and its inbox deduplicates.
+                        metadata={
+                            **routing_metadata,
+                            "room_id": self._settings.room.environment_id,
+                            "delivery_id": msg_id,
+                        },
                     )
                     status = str(response.get("status") or "error").strip().lower()
                     telemetry.set_attributes({**attributes, "skuld.room.status": status})
@@ -4791,6 +4897,23 @@ class Broker(
         if self._room_bridge is None:
             return []
         return self._room_bridge.environment_roster(environment_id=environment_id)
+
+    def connected_people(self) -> list[dict[str, str]]:
+        """The verified people with a live browser connection to this session, once each.
+
+        Browser connections are not room participants, so this is the only place they show.
+        A connection that carried no verified identity is not counted: it is a socket, not a
+        known person. Sorted by user id so the answer is stable.
+        """
+        people: dict[str, dict[str, str]] = {}
+        for channel in self._channels.channels:
+            if not isinstance(channel, WebSocketChannel) or not channel.is_open:
+                continue
+            author = channel.author
+            if author is None:
+                continue
+            people.setdefault(author.user_id, author.to_dict())
+        return [people[user_id] for user_id in sorted(people)]
 
     def get_communication_routes(self) -> list[dict[str, Any]]:
         """Return active external communication routes exposed by this broker."""

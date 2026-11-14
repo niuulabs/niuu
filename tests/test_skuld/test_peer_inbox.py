@@ -24,6 +24,7 @@ from niuu.domain.peer_message import (
     ReplyRoute,
     render_for_harness,
 )
+from niuu.mesh.attestation import VERIFIED_SENDER_KEY
 from niuu.ports.cli.transport import TransportCapabilities
 from skuld import peer_inbox
 from skuld.broker import Broker
@@ -1021,3 +1022,146 @@ class TestMeshEndToEnd:
 
         assert answer["status"] == "refused"
         assert "mesh peer receiver-peer" in answer["error"]
+
+
+class TestDirectedRoomMessageEndToEnd:
+    """A room host's directed message to a harness member: sent by the host, taken by the member.
+
+    The host is a real broker with a real mesh adapter and the member a real broker behind its
+    own, joined by a fake mesh that hands the payload to the member's RPC handler, so the two
+    ends are the real shapes and a payload one end writes and the other refuses fails here.
+    """
+
+    def _adapter(self, broker: Broker, peer_id: str, mesh=None) -> SkuldMeshAdapter:
+        return SkuldMeshAdapter(
+            participant=SimpleNamespace(peer_id=peer_id, mesh=mesh, discovery=None),
+            config=MeshConfig(enabled=True),
+            session_id=str(broker.session_id),
+            peer_inbox=broker,
+        )
+
+    def _host(self, tmp_path, member: Broker, *, answer=None) -> tuple[Broker, list[dict]]:
+        sent: list[dict] = []
+
+        class FakeMesh:
+            async def send(self, target, payload, timeout_s=None):
+                assert target == "member-peer"
+                sent.append(payload)
+                if answer is not None:
+                    return answer
+                return await member._mesh_adapter._handle_rpc(payload)
+
+        host = Broker(
+            SkuldSettings(
+                session={"id": SENDER_ID, "workspace_dir": str(tmp_path / "host")},
+                transport="subprocess",
+                mesh={"enabled": True},
+                room={"enabled": True, "environment_id": "team-1", "routed": True},
+                chronicle_watcher_enabled=False,
+            )
+        )
+        host._mesh_adapter = self._adapter(host, "host-peer", mesh=FakeMesh())
+        host._room_bridge = MagicMock()
+        host._room_bridge.participants = {
+            "member-peer": SimpleNamespace(
+                peer_id="member-peer", persona="Reviewer", participant_kind="mesh"
+            )
+        }
+        host._room_bridge.route_directed_message = AsyncMock(return_value=False)
+        host.handle_human_room_message = AsyncMock(return_value="human-msg-1")
+        return host, sent
+
+    async def test_the_member_takes_a_directed_room_message_as_a_user_turn(self, tmp_path) -> None:
+        member = _inbox_broker(tmp_path / "member")
+        member._mesh_adapter = self._adapter(member, "member-peer")
+        host, sent = self._host(tmp_path, member)
+
+        await host.handle_directed_room_message("member-peer", "Review the diff", request_id="r-1")
+        await _settle()
+
+        # The host's send is not answered unknown_message_type: the member took it.
+        assert sent[0]["type"] == "directed_message"
+        (held,) = member._peer_inbox.values()
+        envelope = held.envelope
+        assert envelope.content.endswith("Review the diff")
+        assert envelope.recipient.id == SESSION_ID
+        assert envelope.sender.id == SENDER_ID
+        assert envelope.relayed_by.id == SENDER_ID
+        assert envelope.room_id == "team-1"
+        assert envelope.reply == ReplyRoute(ReplyKind.ROOM, SENDER_ID)
+        # ...and reached the harness as a turn, rendered with who said it and how to answer.
+        assert _sent_texts(member) == [render_for_harness(envelope)]
+        assert "Said in room team-1" in _sent_texts(member)[0]
+
+    async def test_a_member_that_refuses_the_message_makes_the_host_raise(self, tmp_path) -> None:
+        member = _inbox_broker(tmp_path / "member", peer_inbox={"enabled": False})
+        member._mesh_adapter = self._adapter(member, "member-peer")
+        host, _ = self._host(tmp_path, member)
+
+        with pytest.raises(RuntimeError, match="peer_inbox.enabled is off"):
+            await host.handle_directed_room_message("member-peer", "Review", request_id="r-1")
+
+    async def test_the_same_delivery_twice_is_held_once(self, tmp_path) -> None:
+        member = _inbox_broker(tmp_path / "member")
+        member._mesh_adapter = self._adapter(member, "member-peer")
+        host, sent = self._host(tmp_path, member)
+        await host.handle_directed_room_message("member-peer", "Review", request_id="r-1")
+        await _settle()
+
+        again = await member._mesh_adapter._handle_rpc(sent[0])
+
+        assert again["status"] == "accepted" and again["duplicate"] is True
+        assert len(member._peer_inbox) == 1
+
+    @pytest.mark.parametrize(
+        ("changes", "reason"),
+        [
+            ({"content": ""}, "text content"),
+            ({"content": 3}, "text content"),
+            ({"metadata": None}, "metadata object"),
+            ({"metadata": {"session_id": SENDER_ID, "delivery_id": "d"}}, "metadata.room_id"),
+            ({"metadata": {"session_id": SENDER_ID, "room_id": "r"}}, "metadata.delivery_id"),
+            ({"metadata": {"room_id": "r", "delivery_id": "d"}}, "metadata.session_id"),
+        ],
+    )
+    async def test_a_malformed_directed_message_is_refused_with_the_reason(
+        self, tmp_path, changes, reason
+    ) -> None:
+        member = _inbox_broker(tmp_path / "member")
+        member._mesh_adapter = self._adapter(member, "member-peer")
+        payload = {
+            "type": "directed_message",
+            "content": "Review",
+            "metadata": {"session_id": SENDER_ID, "room_id": "team-1", "delivery_id": "d-1"},
+            **changes,
+        }
+
+        answer = await member._mesh_adapter._handle_rpc(payload)
+
+        assert answer["status"] == "refused"
+        assert reason in answer["error"]
+        assert member._peer_inbox == {}
+
+    async def test_a_host_the_mesh_did_not_verify_as_that_session_is_refused(
+        self, tmp_path
+    ) -> None:
+        member = _inbox_broker(tmp_path / "member")
+        member._mesh_adapter = SkuldMeshAdapter(
+            participant=SimpleNamespace(peer_id="member-peer", mesh=None, discovery=None),
+            config=MeshConfig(enabled=True, attestation={"required": True}),
+            session_id=SESSION_ID,
+            peer_inbox=member,
+        )
+
+        answer = await member._mesh_adapter._handle_rpc(
+            {
+                "type": "directed_message",
+                "content": "Review",
+                "metadata": {"session_id": SENDER_ID, "room_id": "team-1", "delivery_id": "d"},
+                VERIFIED_SENDER_KEY: {"peer_id": "someone", "session_id": OTHER_SENDER_ID},
+            }
+        )
+
+        assert answer["status"] == "refused"
+        assert "verified" in answer["error"]
+        assert member._peer_inbox == {}

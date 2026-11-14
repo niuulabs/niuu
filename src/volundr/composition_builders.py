@@ -1067,6 +1067,12 @@ def _create_contributors(
         contributors.append(WorkflowStepHostContributor())
         logger.info("Session contributor: workflow_step_host (auto-wired)")
 
+    if not _has_contributor("team_room"):
+        from volundr.adapters.outbound.contributors.team_room import TeamRoomContributor
+
+        contributors.append(TeamRoomContributor())
+        logger.info("Session contributor: team_room (auto-wired)")
+
     contributors.append(PromptContributor())
 
     from volundr.adapters.outbound.contributors.session_mcp import SessionMCPContributor

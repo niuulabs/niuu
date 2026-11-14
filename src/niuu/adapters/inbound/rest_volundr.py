@@ -2526,12 +2526,15 @@ def create_volundr_router(
         )
         return payload
 
-    @router.post("/sessions", status_code=status.HTTP_201_CREATED)
-    async def create_session(
-        request: Request,
-        body: dict[str, Any] = Body(default_factory=dict),
-        principal: Principal = Depends(extract_principal),
-    ) -> dict[str, Any]:
+    async def _place_launch(
+        request: Request, principal: Principal, body: dict[str, Any]
+    ) -> tuple[RegisteredInstance, dict[str, Any]]:
+        """The Forge a launch request targets, and the body with its host selector applied.
+
+        The target comes from ``instance_id`` or ``target_tags``/``target_match`` in the
+        body, as for a session; tags that the Forge's own tags do not satisfy become the
+        ``workload_config.host_selector`` the Forge must still satisfy with a host.
+        """
         requested_instance_id = body.get("instance_id") or body.get("instanceId")
         target_tags = body.get("target_tags") or body.get("targetTags")
         target_match = body.get("target_match") or body.get("targetMatch") or "all"
@@ -2550,6 +2553,15 @@ def create_volundr_router(
         host_selector = _host_selector_for(instance, tags, str(target_match))
         if host_selector is not None:
             body = _with_host_selector(body, host_selector)
+        return instance, body
+
+    @router.post("/sessions", status_code=status.HTTP_201_CREATED)
+    async def create_session(
+        request: Request,
+        body: dict[str, Any] = Body(default_factory=dict),
+        principal: Principal = Depends(extract_principal),
+    ) -> dict[str, Any]:
+        instance, body = await _place_launch(request, principal, body)
         await _sync_persona_to_instance(
             instance,
             request,
@@ -2598,6 +2610,84 @@ def create_volundr_router(
                 detail="Unexpected response from target Volundr instance",
             )
         return _with_instance(payload, instance)
+
+    @router.post("/teams", status_code=status.HTTP_201_CREATED)
+    async def create_team(
+        request: Request,
+        body: dict[str, Any] = Body(default_factory=dict),
+        principal: Principal = Depends(extract_principal),
+    ) -> dict[str, Any]:
+        """Start a team on the Forge the request targets (``instance_id`` or ``target_tags``).
+
+        A team is one unit on one Forge, so the root and every member are created there:
+        each member's persona is materialised on the target first, and the root and every
+        member come back marked with the instance that holds them.
+        """
+        instance, body = await _place_launch(request, principal, body)
+        members = body.get("members")
+        for member in members if isinstance(members, list) else []:
+            if not isinstance(member, dict):
+                continue
+            await _sync_persona_to_instance(
+                instance,
+                request,
+                principal,
+                member.get("persona_name") or member.get("personaName"),
+                embedded_app=embedded_forge_app,
+            )
+        response = await _request_remote(
+            instance,
+            request,
+            method="POST",
+            path="/teams",
+            json_body=_strip_instance_hints(body),
+            embedded_app=embedded_forge_app,
+        )
+        _ensure_remote_success(response)
+        payload = _remote_json(response)
+        root = payload.get("session") if isinstance(payload, dict) else None
+        started = payload.get("members") if isinstance(payload, dict) else None
+        if (
+            not isinstance(root, dict)
+            or not isinstance(started, list)
+            or not all(isinstance(member, dict) for member in started)
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail="Unexpected team response from target Volundr instance",
+            )
+        return {
+            **payload,
+            "session": _with_instance(root, instance),
+            "members": [_with_instance(member, instance) for member in started],
+        }
+
+    @router.get("/participant-candidates")
+    async def participant_candidates(
+        request: Request,
+        q: str = Query(""),
+        instance_id: str | None = Query(default=None),
+        principal: Principal = Depends(extract_principal),
+    ) -> list[Any]:
+        """People of the caller's org who could be invited, before any session exists.
+
+        Answered by the targeted Forge (the default one without ``instance_id``): it holds
+        the org's people, so a team can invite them before it is started.
+        """
+        instance = await _resolve_target_instance(service, principal, instance_id)
+        response = await _request_remote(
+            instance,
+            request,
+            method="GET",
+            path="/participant-candidates",
+            params=[("q", q)],
+            embedded_app=embedded_forge_app,
+        )
+        _ensure_remote_success(response)
+        payload = _remote_json(response)
+        if not isinstance(payload, list):
+            raise HTTPException(502, "Unexpected Forge response from /participant-candidates")
+        return payload
 
     @router.post("/repos/prs", status_code=status.HTTP_201_CREATED)
     async def create_pull_request(
@@ -4397,6 +4487,17 @@ def create_volundr_router(
         A session with no project is the owner's 409, passed through with its reason."""
         return await _session_member_call(
             request, session_id, principal, method="GET", suffix="/people", expect_list=True
+        )
+
+    @router.get("/sessions/{session_id}/members")
+    async def list_session_members(
+        request: Request,
+        session_id: UUID,
+        principal: Principal = Depends(extract_principal),
+    ) -> Response:
+        """The agents and people of a session or team, from the node that holds it."""
+        return await _session_member_call(
+            request, session_id, principal, method="GET", suffix="/members"
         )
 
     @router.get("/sessions/{session_id}/participants")

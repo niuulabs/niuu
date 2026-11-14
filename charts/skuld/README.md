@@ -307,6 +307,7 @@ A session joins a flock as a mesh peer when `mesh.enabled` is true: it announces
 | `room.environmentId` | string | `""` | Environment of the room's participants (`room.environment_id`); empty uses `mesh.realmId` |
 | `room.realmRoom` | bool | `false` | Show every member of the mesh realm, not only events tagged with this session (`room.realm_room`) |
 | `room.routed` | bool | `false` | The session runs no agent of its own and only hosts the room (`room.routed`); a workflow run's room session |
+| `room.untargetedDelivery` | string | `refuse` | What a routed room does with a browser message that names no participant (`room.untargeted_delivery`): `refuse` sends it to the room's sole ravn and refuses it when there are two or more; `everyone` delivers it to every agent in the room, as a team's room does |
 | `mesh.announce` | object | `{}` | `persona`, `consumes` and `emits` written as the pod's `ravn.niuu.world/persona`, `/consumes` and `/emits` annotations, which pod discovery shows to the realm's other peers. Forge sets it for a workflow step session from its pinned persona |
 | `mesh.shareWork` | bool | `false` | Share this session's replies, tool work and step closes with its realm's room (`mesh.share_work`); Forge sets it for a workflow run's member sessions |
 | `mesh.enabled` | bool | `false` | Join the flock as a mesh peer (`mesh.enabled`) |
