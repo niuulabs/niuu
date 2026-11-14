@@ -205,6 +205,8 @@ Currently `down` and `status` operate on their own process-local service manager
 | --- | --- |
 | Preflight cannot find `claude` | Run `claude --version` in the terminal that starts Niuu; fix its `PATH`. |
 | Embedded PostgreSQL binaries are missing | For a source checkout, run `make build-postgres`. For a release installation, reinstall the matching release asset and report the version if its bundle is incomplete. |
+| `this niuu carries no gbrain` | Memory runs a local gbrain. For a source checkout, install Bun 1.3.11 or later and run `make build-gbrain`; or set `local_memory.enabled: false` in `~/.niuu/config.yaml` to run without memory. |
+| `gbrain from an earlier niuu platform up is still running` | The previous host was killed before it could stop gbrain. Run the `kill` the message names, then start again. |
 | Port 8080 is already in use | Stop the other local host or set `server.port` in `~/.niuu/config.yaml`, restart, and use the newly printed URL. |
 | `forge session` is disabled | Check that a model is selected and the source is blank. Resolve any resource or Forge-target validation message. |
 | Session runs but Chat reports expired OAuth / 401 | Stop the session, run `claude auth login`, and repeat the real `claude -p` check. Launch a new session after authentication succeeds. |

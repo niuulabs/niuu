@@ -3,6 +3,7 @@
 # Targets:
 #   make build-web      — build web-next SPA, copy into src/cli/web/dist/
 #   make build-postgres — compile PostgreSQL + pgvector from source
+#   make build-gbrain   — compile the pinned gbrain for mini mode's memory
 #   make build-cli      — Nuitka --onefile compilation → dist/niuu
 #   make build          — all of the above
 #
@@ -23,14 +24,14 @@ POSTGRES_VERSION := $(shell python3 -c "exec(open('$(PG_VERSIONS_PY)').read()); 
 PGVECTOR_VERSION := $(shell python3 -c "exec(open('$(PG_VERSIONS_PY)').read()); print(PGVECTOR_VERSION)")
 PGINSTALL_DIR    := build/pginstall
 
-.PHONY: build build-web build-postgres build-cli build-cli-bin clean lint test verify \
+.PHONY: build build-web build-postgres build-gbrain build-cli build-cli-bin clean lint test verify \
        test-integration test-integration-volundr test-integration-ting test-integration-sleipnir \
        test-e2e test-e2e-ui test-all test-ravn
 
 # --------------------------------------------------------------------------
 # Full build: web assets → migrations → PostgreSQL → Nuitka binary
 # --------------------------------------------------------------------------
-build: build-web build-postgres build-cli
+build: build-web build-postgres build-gbrain build-cli
 
 # --------------------------------------------------------------------------
 # Web UI: pnpm build + copy dist/ into the cli package data directory
@@ -48,6 +49,13 @@ build-postgres:
 	PGVECTOR_VERSION=$(PGVECTOR_VERSION) \
 	INSTALL_PREFIX=$(PGINSTALL_DIR) \
 	scripts/build_postgres.sh
+
+# --------------------------------------------------------------------------
+# gbrain: compile the pinned commit (containers/gbrain/Dockerfile) into
+# build/gbrain/gbrain, which `niuu platform up` runs for memory. Needs Bun.
+# --------------------------------------------------------------------------
+build-gbrain:
+	scripts/build_gbrain.sh
 
 # --------------------------------------------------------------------------
 # Nuitka single-binary compilation

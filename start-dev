@@ -227,6 +227,9 @@ bootstrap_dependencies
 echo "Preparing workspace..."
 uv sync --extra dev
 make -C "${ROOT_DIR}" build-postgres
+# Mini mode runs this gbrain for memory (local_memory in ~/.niuu/config.yaml); the
+# build needs Bun >= 1.3.11 and says so when it is missing.
+make -C "${ROOT_DIR}" build-gbrain
 pnpm --dir "${ROOT_DIR}/web-next" install
 pnpm --dir "${ROOT_DIR}/web-next" -r --filter "@niuulabs/*" --filter "!@niuulabs/niuu" build
 (

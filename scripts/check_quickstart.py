@@ -115,15 +115,6 @@ def main() -> None:
     parser.add_argument("--live", action="store_true", help="Require real model file creation")
     parser.add_argument("--model", default="sonnet")
     parser.add_argument("--timeout", type=float, default=180)
-    parser.add_argument(
-        "--mimir-backend",
-        required=True,
-        help=(
-            "JSON for the store Mímir serves, passed as MIMIR__BACKEND, for example "
-            '{"adapter": "mimir.adapters.gbrain.GBrainMimirAdapter", "mcp_url": "<gbrain /mcp>", '
-            '"api_token_file": "<token file>"}. Mímir has no default store.'
-        ),
-    )
     args = parser.parse_args()
     binary = args.niuu.resolve(strict=True)
     if not shutil.which("claude"):
@@ -137,14 +128,16 @@ def main() -> None:
     # Avoid reading an existing platform's configuration/database. Preserve the
     # user's HOME and Claude login; the live check uses their normal auth path.
     for key in list(env):
-        if key.startswith(("NIUU_", "DATABASE__", "VOLUNDR_", "SKULD__", "MIMIR__")):
+        if key.startswith(("NIUU_", "DATABASE__", "VOLUNDR_", "SKULD__", "MIMIR__", "MEMORY__")):
             env.pop(key)
     port = free_port()
     env.update(
         PATH=f"{run / 'bin'}{os.pathsep}{env['PATH']}",
         NIUU_CONFIG=str(run / "config.yaml"),
         MIMIR__PATH=str(run / "mimir"),
-        MIMIR__BACKEND=args.mimir_backend,
+        # The platform runs its own gbrain for Memory (local_memory); keep it isolated.
+        NIUU_LOCAL_MEMORY__HOME=str(run / "memory"),
+        NIUU_LOCAL_MEMORY__GBRAIN__PORT=str(free_port()),
         NIUU_PGDATA_DIR=str(run / "pgdata"),
         NIUU_FORGE_STATE_FILE=str(run / "forge-state.json"),
         NIUU_SERVER__HOST="127.0.0.1",
@@ -242,6 +235,8 @@ def main() -> None:
                     request(base, f"/api/v1/forge/sessions/{session_id}/stop", {})
             finally:
                 stop(process)
+    if (run / "memory" / "gbrain.pid").exists():
+        raise RuntimeError("Ctrl+C left the memory gbrain running")
     print("PASS: documented commands, real PostgreSQL, web UI, session launch and stop, Ctrl+C")
     print(
         "PASS: live agent file creation and persistence"

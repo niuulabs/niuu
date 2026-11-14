@@ -11,6 +11,7 @@ import asyncio
 import inspect
 import json
 import os
+import signal
 from contextlib import suppress
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -30,6 +31,7 @@ if TYPE_CHECKING:
     from bifrost.config import BifrostConfig
     from cli.config import CLISettings
     from cli.registry import PluginRegistry
+    from cli.services.local_memory import LocalMemoryBrain
     from cli.services.manager import ServiceManager
     from niuu.ports.plugin import ServiceDefinition
 
@@ -41,6 +43,8 @@ def _build_preflight_config(
 ) -> PreflightConfig:
     """Build a PreflightConfig from CLISettings."""
     ports = [settings.server.port]
+    if settings.mode == "mini" and settings.local_memory.enabled:
+        ports.append(settings.local_memory.gbrain.port)
     for plugin_cfg in settings.plugins.extra:
         plugin_port = plugin_cfg.get("port")
         if isinstance(plugin_port, int) and plugin_port not in ports:
@@ -139,6 +143,7 @@ async def _startup(
     host_profile: str,
     enabled_mounts: set[str] | None,
     workspaces_dir_override: str = "",
+    memory_brain: LocalMemoryBrain | None = None,
 ) -> None:
     """Run preflight checks, start infrastructure, then the root server."""
     if not skip_preflight:
@@ -161,6 +166,9 @@ async def _startup(
     except StartupError as exc:
         typer.echo(f"\nStartup failed: {exc}")
         raise typer.Exit(1) from None
+
+    if memory_brain is not None:
+        await _start_local_memory(manager, memory_brain)
 
     # Start the unified root server (all plugin APIs + web UI on one port)
     from niuu.app import RootServer
@@ -214,6 +222,34 @@ async def _startup(
     typer.echo(f"  Web UI: http://{host}:{port}/")
 
 
+async def _start_local_memory(manager: ServiceManager, brain: LocalMemoryBrain) -> None:
+    """Start mini mode's gbrain; a failure stops what already started and exits."""
+    from cli.services.local_memory import LocalMemoryError
+
+    typer.echo("  Starting memory (gbrain)...", nl=False)
+    manager._memory_brain = brain  # type: ignore[attr-defined]
+    try:
+        await brain.start()
+    except LocalMemoryError as exc:
+        typer.echo(" FAILED")
+        typer.echo(f"\nStartup failed: {exc}")
+        manager._memory_brain = None  # type: ignore[attr-defined]
+        await manager.stop_all()
+        raise typer.Exit(1) from None
+    typer.echo(" ok")
+
+
+async def _stop_local_memory(manager: ServiceManager) -> None:
+    """Stop mini mode's gbrain after everything that calls it has stopped."""
+    brain = getattr(manager, "_memory_brain", None)
+    if brain is None:
+        return
+    typer.echo("  Stopping memory (gbrain)...", nl=False)
+    await brain.stop()
+    manager._memory_brain = None  # type: ignore[attr-defined]
+    typer.echo(" done")
+
+
 async def _shutdown(manager: ServiceManager) -> None:
     """Stop all services gracefully."""
     typer.echo("Stopping services...")
@@ -222,6 +258,7 @@ async def _shutdown(manager: ServiceManager) -> None:
         typer.echo("  Stopping API server...", nl=False)
         await root_server.stop()
         typer.echo(" done")
+    await _stop_local_memory(manager)
     await manager.stop_all()
 
 
@@ -272,6 +309,7 @@ def _build_up_callback(
 
         enabled = _resolve_enabled_services(service_defs, settings, start_all, svc_flags)
         environment_before: dict[str, str | None] = {}
+        memory_brain: LocalMemoryBrain | None = None
 
         def _set_environment(key: str, value: str, *, only_if_missing: bool = False) -> None:
             if key not in environment_before:
@@ -285,6 +323,10 @@ def _build_up_callback(
             _set_environment("LOCAL_MOUNTS__MINI_MODE", "true", only_if_missing=True)
             local_env = _resolve_local_pod_manager_env(effective_settings)
             _check_auth_env_conflicts(local_env, effective_settings.host_auth.mode)
+            if effective_settings.local_memory.enabled:
+                memory_brain, memory_env = _local_memory(effective_settings)
+                _check_memory_env_conflicts(memory_env)
+                local_env.update(memory_env)
             for key, value in local_env.items():
                 _set_environment(
                     key,
@@ -296,19 +338,32 @@ def _build_up_callback(
             _set_environment("NIUU_NO_WEB", "true")
 
         async def _run() -> None:
-            await _startup(
-                manager,
-                effective_settings,
-                enabled,
-                skip_preflight,
-                host_profile,
-                enabled_mounts,
-                workspaces_dir_override=workspaces_dir,
-            )
+            # A service manager's stop (SIGTERM) shuts down like Ctrl+C: gbrain runs in
+            # its own process group and embedded PostgreSQL is a daemon, so without this
+            # both outlive the platform and hold their data for the next start. It sets
+            # an event rather than cancelling: uvicorn captures SIGTERM and raises it
+            # again when it exits, and a second cancel would cut the shutdown short.
+            terminated = asyncio.Event()
+            asyncio.get_running_loop().add_signal_handler(signal.SIGTERM, terminated.set)
+            try:
+                await _startup(
+                    manager,
+                    effective_settings,
+                    enabled,
+                    skip_preflight,
+                    host_profile,
+                    enabled_mounts,
+                    workspaces_dir_override=workspaces_dir,
+                    memory_brain=memory_brain,
+                )
+            except BaseException:
+                # gbrain runs in its own process group: nothing else stops it.
+                await _stop_local_memory(manager)
+                raise
 
-            # Wait forever until cancelled by KeyboardInterrupt
+            # Wait until SIGTERM, or until cancelled by KeyboardInterrupt
             with suppress(asyncio.CancelledError):
-                await asyncio.Event().wait()
+                await terminated.wait()
 
             await _shutdown(manager)
 
@@ -755,6 +810,51 @@ def _resolve_local_pod_manager_env(settings: CLISettings) -> dict[str, str]:
         # database, so a host that embeds Forge keeps one realm store there.
         env["NIUU__REALM_DATABASE"] = database_name_for_service("volundr")
     return env
+
+
+def _local_memory(settings: CLISettings) -> tuple[LocalMemoryBrain, dict[str, str]]:
+    """Mini mode's gbrain and the settings that point Mímir and Forge at it."""
+    from cli.services.local_memory import (
+        LocalMemoryBrain,
+        LocalMemoryError,
+        memory_environment,
+        resolve_gbrain_executable,
+    )
+
+    if settings.host_auth.mode != "none":
+        raise typer.BadParameter(
+            "local_memory.enabled runs the memory gateway with this host, and it can call "
+            "Forge only where Forge's identity adapter is allow-all (host_auth.mode: none). "
+            f"With host_auth.mode: {settings.host_auth.mode} set local_memory.enabled: false.",
+            param_hint="local_memory.enabled",
+        )
+    try:
+        executable = resolve_gbrain_executable(settings.local_memory.gbrain.executable)
+    except LocalMemoryError as exc:
+        raise typer.BadParameter(str(exc), param_hint="local_memory") from exc
+    brain = LocalMemoryBrain(settings.local_memory, executable=executable)
+    environment = memory_environment(
+        brain,
+        settings.local_memory,
+        forge_url=_host_resident_platform_url(settings),
+        session_gateway_url=f"{_session_platform_url(settings)}/api/v1/mimir",
+    )
+    brain.keep_mimir_settings(environment)
+    return brain, environment
+
+
+def _check_memory_env_conflicts(computed: dict[str, str]) -> None:
+    """Refuse an operator's own Mímir/Forge memory settings while local memory runs."""
+    for key, value in computed.items():
+        existing = os.environ.get(key)
+        if existing is None or existing == value:
+            continue
+        raise typer.BadParameter(
+            f"{key} is already set in the environment, but local_memory.enabled points it at "
+            f"the gbrain this host runs. Remove {key}, or set local_memory.enabled: false to "
+            "configure memory yourself.",
+            param_hint=key,
+        )
 
 
 MODEL_SERVER_SLUG = "model-server"
