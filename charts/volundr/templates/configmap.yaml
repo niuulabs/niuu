@@ -250,7 +250,11 @@ data:
       runtime_backend: vm
       room_role_source: {{ .Values.podManager.roomRoleSource | default "deployment" | quote }}
       room_role_cache_ttl_seconds: {{ .Values.podManager.roomRoleCacheTtlSeconds | default 5.0 }}
-      kwargs: {{ dict "pool_id" .Values.computeHosts.poolId "max_machines" .Values.computeHosts.maxHosts "profile" .Values.computeHosts.profile "server_port" (.Values.service.targetPort | default 8080) "public_origin" .Values.computeHosts.joinUrl | toJson }}
+      {{- $hostKwargs := dict "pool_id" .Values.computeHosts.poolId "max_machines" .Values.computeHosts.maxHosts "profile" .Values.computeHosts.profile "server_port" (.Values.service.targetPort | default 8080) "public_origin" .Values.computeHosts.joinUrl }}
+      {{- if .Values.computeHosts.mesh }}
+      {{- $_ := set $hostKwargs "mesh" .Values.computeHosts.mesh }}
+      {{- end }}
+      kwargs: {{ $hostKwargs | toJson }}
       secret_kwargs_env: {}
 
     compute: {{ include "volundr.computeHosts" . }}
