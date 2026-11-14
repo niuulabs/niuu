@@ -68,6 +68,14 @@ const ACCEPTED_FILE_TYPES = [
   '.sql',
 ].join(',');
 
+/** Whether ``text`` already @-names any of ``labels`` as a word of its own. */
+function namesInText(text: string, labels: ReadonlyArray<string | undefined>): boolean {
+  const words = new Set(
+    Array.from(text.matchAll(/(^|\s)@([^\s@]+)/g), (match) => match[2]?.toLowerCase()),
+  );
+  return labels.some((label) => Boolean(label) && words.has(label!.toLowerCase()));
+}
+
 function resolveInlineAgentMentions(
   input: string,
   participants: ReadonlyMap<string, RoomParticipant>,
@@ -269,8 +277,13 @@ export function ChatInput({
       (m): m is Extract<SelectedMention, { kind: 'file' }> => m.kind === 'file',
     );
 
-    const agentPrefixes = selectedAgentMentions.map((p) => `@${p.persona}`);
-    const filePaths = fileMentions.map((m) => `@${m.entry.path}`);
+    // Picking a mention already writes it into the text; only one that is not there is added.
+    const agentPrefixes = selectedAgentMentions
+      .filter((p) => !namesInText(trimmed, [p.persona, p.displayName]))
+      .map((p) => `@${p.persona}`);
+    const filePaths = fileMentions
+      .filter((m) => !namesInText(trimmed, [m.entry.path, m.entry.name]))
+      .map((m) => `@${m.entry.path}`);
     const allPrefixes = [...agentPrefixes, ...filePaths];
     const fullMessage = allPrefixes.length > 0 ? `${allPrefixes.join(' ')} ${trimmed}` : trimmed;
 
