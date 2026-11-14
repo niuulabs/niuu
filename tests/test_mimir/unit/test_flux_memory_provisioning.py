@@ -42,7 +42,7 @@ class FakeKubernetes:
         self.services: dict[str, int] = {}
         self.release_creates = 0
         self.secret_creates = 0
-        self.fail_with: ApiException | None = None
+        self.fail_with: Exception | None = None
 
     # CustomObjectsApi
     async def create_namespaced_custom_object(self, group, version, namespace, plural, body):
@@ -273,6 +273,11 @@ class TestProvisioning:
             await target.memory_system(TENANT)
         with pytest.raises(MemoryProvisioningError, match="Forbidden"):
             await target.memory_systems()
+
+    async def test_an_unreachable_api_server_raises(self, kube) -> None:
+        kube.fail_with = ConnectionRefusedError("connection refused")
+        with pytest.raises(MemoryProvisioningError, match="connection refused"):
+            await _target(kube).provision_memory_system(TENANT)
 
     async def test_without_a_chart_and_image_it_raises(self, kube) -> None:
         target = FluxKnowledgeDeploymentAdapter(

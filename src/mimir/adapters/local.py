@@ -14,7 +14,6 @@ another on this computer, provision once.
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import fcntl
 import importlib
 import json
@@ -692,8 +691,8 @@ class LocalKnowledgeDeploymentAdapter(KnowledgeDeploymentPort):
             return False  # not up yet; the startup timeout bounds the wait
 
     async def close(self) -> None:
-        for task in self._memory_tasks.values():
+        """Cancel provisioning in flight and wait until each attempt has stopped."""
+        tasks = list(self._memory_tasks.values())
+        for task in tasks:
             task.cancel()
-        for task in self._memory_tasks.values():
-            with contextlib.suppress(asyncio.CancelledError):
-                await task
+        await asyncio.gather(*tasks, return_exceptions=True)

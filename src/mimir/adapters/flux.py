@@ -445,10 +445,11 @@ class FluxKnowledgeDeploymentAdapter(FluxHelmReleases, KnowledgeDeploymentPort):
 
     @staticmethod
     def _provisioning_errors() -> tuple[type[BaseException], ...]:
-        from aiohttp import ClientError
+        """What asking the Kubernetes API can raise: a refusal, or the connection failing
+        (aiohttp's connection errors are OSErrors) or timing out."""
         from kubernetes_asyncio.client.exceptions import ApiException
 
-        return (ApiException, ClientError, asyncio.TimeoutError)
+        return (ApiException, OSError, asyncio.TimeoutError)
 
     async def provision_memory_system(self, tenant_id: str) -> MemorySystemRecord:
         name = memory_system_name(tenant_id)
