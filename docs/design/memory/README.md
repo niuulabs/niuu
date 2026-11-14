@@ -377,6 +377,17 @@ Markdown wiki adapter is retired; its content imports into gbrain.
 - **One gbrain per org**, with its own database and credentials, deployed
   through the existing knowledge deployment port (local and Flux adapters).
   Two orgs never share a memory system instance.
+- **Provisioned on first use** (decided 2026-11-13, `memory.provisioning`, opt-in per
+  deployment): an org not in the static `memory.tenants` map gets its gbrain when a
+  member first uses memory, a session Forge confirmed or a person's own login; a
+  connector, which names the org itself, never starts one. The static map stays the
+  operator's override. The registry is the deployment target's own record (the
+  HelmRelease, annotated with the tenant, and its Secrets; a private directory on a
+  workstation), not a gateway database: it cannot drift from what runs, and its atomic
+  create makes concurrent first requests on several replicas deploy once. While it is
+  prepared the org's requests get 503 with `Retry-After`; a failure is a 502 with its
+  remedy. Each brain is database-only, its owner token is in the chart's Secret (a 0600
+  file locally), and its signing key is created once and kept.
 - **Each layer is its own gbrain source** inside its org's system (decided
   2026-11-13): `org`, and `p-`, `r-` or `s-` plus a hash of the layer for
   projects, runs and sessions (gbrain source ids are at most 32 characters). Each

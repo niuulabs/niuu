@@ -37,6 +37,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import math
 import re
 from collections.abc import Sequence
 from datetime import datetime
@@ -62,7 +63,12 @@ from mimir.memory.models import (
 )
 from mimir.memory.readers import PersonReader
 from mimir.memory.retention import RetentionSweeper
-from mimir.memory.systems import MemorySystems, TenantNotConfiguredError
+from mimir.memory.systems import (
+    MemoryPreparingError,
+    MemoryProvisioningFailedError,
+    MemorySystems,
+    MemorySystemUnavailableError,
+)
 from mimir.memory.tools import MemoryTools, UnknownToolError, instructions
 from mimir.ports.attached_memory import AttachedMemories
 from mimir.ports.people_directory import (
@@ -87,6 +93,26 @@ _CALL = re.compile(_PREFIX + r"/tools/[A-Za-z0-9_]+")
 _PACK = re.compile(_PREFIX + r"/context-pack")
 #: A session id is only ever placed in Forge's URL path; nothing else may ride along.
 _SESSION_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]*")
+
+
+def memory_unavailable(exc: MemorySystemUnavailableError) -> HTTPException:
+    """The answer to a request whose org's memory system cannot serve it.
+
+    - being prepared (provisioning on its way): 503 with ``Retry-After``;
+    - provisioning failed: 502, naming the remedy;
+    - not configured: 503 naming ``memory.tenants`` (no ``Retry-After``: waiting will
+      not help).
+    """
+    match exc:
+        case MemoryPreparingError():
+            return HTTPException(
+                status_code=503,
+                detail=str(exc),
+                headers={"Retry-After": str(math.ceil(exc.retry_after))},
+            )
+        case MemoryProvisioningFailedError():
+            return HTTPException(status_code=502, detail=str(exc))
+    return HTTPException(status_code=503, detail=str(exc))
 
 
 def is_session_route(method: str, path: str) -> bool:
@@ -322,8 +348,8 @@ class MemoryRouter:
             )
         try:
             return await self._gateway.open(context), token
-        except TenantNotConfiguredError as exc:
-            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        except MemorySystemUnavailableError as exc:
+            raise memory_unavailable(exc) from exc
         except (LayerUnavailableError, MemoryStoreError) as exc:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
 
@@ -455,8 +481,8 @@ class MemoryRouter:
                 return HTTPException(status_code=409, detail=str(exc))
             case MemoryValidationError():
                 return HTTPException(status_code=422, detail=str(exc))
-            case TenantNotConfiguredError():
-                return HTTPException(status_code=503, detail=str(exc))
+            case MemorySystemUnavailableError():
+                return memory_unavailable(exc)
             case ForgeUnavailableError() | MemoryStoreError():
                 return HTTPException(status_code=502, detail=str(exc))
         raise exc
@@ -466,7 +492,7 @@ class MemoryRouter:
         PersonRefusedError,
         CurationRefusedError,
         ForgeUnavailableError,
-        TenantNotConfiguredError,
+        MemorySystemUnavailableError,
         MemoryStoreError,
         FactError,
     )
@@ -550,8 +576,8 @@ class MemoryRouter:
                 imported = await self._gateway.import_source(**fields)
             except MemoryValidationError as exc:
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
-            except TenantNotConfiguredError as exc:
-                raise HTTPException(status_code=503, detail=str(exc)) from exc
+            except MemorySystemUnavailableError as exc:
+                raise memory_unavailable(exc) from exc
             except MemoryStoreError as exc:
                 raise HTTPException(status_code=502, detail=str(exc)) from exc
             return {
@@ -657,6 +683,11 @@ class MemoryRouter:
         """Start the retention sweep, when there is one."""
         if self._sweeper is not None and self._sweep_task is None:
             self._sweep_task = asyncio.create_task(self._sweeper.run(), name="memory-retention")
+
+    def systems_health(self) -> dict[str, Any]:
+        """The memory systems' counts for the service's health surface."""
+        systems = self._systems if self._systems is not None else self._gateway.systems
+        return systems.health()
 
     async def close(self) -> None:
         if self._sweep_task is not None:

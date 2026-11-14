@@ -328,8 +328,47 @@ config:
     #     (add `create: true` to have the chart create it once and keep it)
     #   timeoutSeconds / pageSize / recallLimit / timelineLimit: optional, null = default
     systems: []
-    # -- Tenant id -> the `name` of the system holding that org's layers.
+    # -- Tenant id -> the `name` of the system holding that org's layers. The operator's
+    # override: a listed org always uses its system and is never provisioned.
     tenants: {}
+    # Provision one gbrain per org on the org's first use (docs/operator/mimir.md,
+    # Provisioned memory systems): a Flux HelmRelease of the gbrain chart per org in
+    # `namespace`, database-only on its own CloudNativePG database, with its owner token
+    # and signing key in Secrets there. Only orgs not in `tenants` are provisioned. Until
+    # one answers, its org's requests get a 503 with Retry-After. The chart grants the
+    # gateway's ServiceAccount a Role in `namespace` (HelmReleases get/list/create,
+    # Secrets get/create, Services get), so give brains a namespace of their own.
+    provisioning:
+      # -- Provision memory systems. When on, `systems` may be empty.
+      enabled: false
+      # -- Namespace the brains are deployed in (must exist; Flux's helm-controller
+      # reconciles HelmReleases there). Required when enabled.
+      namespace: ""
+      # -- Flux HelmRepository holding the gbrain chart. Required when enabled.
+      sourceName: ""
+      # -- Its namespace. Empty = `namespace`.
+      sourceNamespace: ""
+      # -- gbrain chart version. Required when enabled.
+      chartVersion: ""
+      # -- gbrain image, <repository>:<tag>[@<digest>]. Required when enabled.
+      image: ""
+      # -- Cluster name written into each brain's niuu.world labels.
+      cluster: ""
+      # -- Storage class of each brain's volume and database. Empty = the cluster default.
+      storageClass: ""
+      # -- gbrain chart values merged over each brain's defaults (engine: postgres,
+      # postgres.enabled: true, connection.enabled: false), e.g.
+      # {postgres: {instances: 1, size: 10Gi}, resources: {...}}. existingSecret, niuu and
+      # image are the deployment's own and are refused.
+      values: {}
+      # -- gbrain native config (config.json passthrough) for each brain.
+      gbrainConfig: {}
+      # -- Seconds a request for an org being prepared is told to wait (Retry-After).
+      # Null = the service default (30).
+      retryAfterSeconds: null
+      # -- Extra GBrainBackend arguments for each provisioned system (timeout_seconds,
+      # page_size, recall_limit, timeline_limit).
+      backend: {}
     # -- How the gateway authenticates as a service (Forge's memory/ended for retention):
     # a niuu.ports.http_auth.HttpAuthPort dynamic adapter,
     # rendered as given. Required when enabled. Examples:

@@ -555,5 +555,5 @@ async def test_systems_are_checked_at_startup() -> None:
     with pytest.raises(MimirConfigurationError, match="has no 'adapter'"):
         MemorySystems.from_config([{"name": "a"}], {})
     built = MemorySystems.from_config([good], {"acme": "acme-brain"})
-    assert built.for_tenant("acme")[0] == "acme-brain"
+    assert (await built.for_tenant("acme"))[0] == "acme-brain"
     await built.close()

@@ -278,7 +278,81 @@ mount whatever the chosen adapter reads. In mini mode without auth use
 `niuu.adapters.outbound.http_auth.NoAuthHeaderAdapter`. Startup fails on a system
 that cannot be built, a tenant naming a missing system, a system lacking a
 capability its layers need, and a missing `service_auth`. A session whose org is not in
-`tenants` gets a 503 naming `memory.tenants`.
+`tenants` gets a 503 naming `memory.tenants`, unless provisioning is on.
+
+### Provisioned memory systems (`memory.provisioning`)
+
+With `memory.provisioning` set, an org that is not in `memory.tenants` gets its own
+gbrain on its first use, deployed through the knowledge deployment port. Static
+`systems`/`tenants` stay the operator's override: a listed org always uses its system
+and is never provisioned. Off (the default), nothing changes.
+
+```yaml
+memory:
+  provisioning:
+    deployment:                     # a KnowledgeDeploymentPort that provisions memory systems
+      adapter: mimir.adapters.flux.FluxKnowledgeDeploymentAdapter
+      namespace: memory             # brains only; the gateway may read its Secrets
+      source_name: niuu             # Flux HelmRepository with the gbrain chart
+      source_namespace: knowledge
+      chart_versions: {gbrain: 2.0.0-dev.610}
+      images: {gbrain: ghcr.io/niuulabs/gbrain:<tag>}
+      cluster: ymir
+      storage_class: harvester-data
+      memory_values: {postgres: {instances: 1}}   # gbrain chart values over the defaults
+    retry_after_seconds: 30         # what a request is told to wait while it is prepared
+    backend: {timeout_seconds: 30}  # extra GBrainBackend arguments
+```
+
+On this computer use `mimir.adapters.local.LocalKnowledgeDeploymentAdapter` with
+`root` and `gbrain_command` (and optionally `database` for an embedded PostgreSQL).
+
+**Who causes it.** Any member of the org, on the org's first use: a session Forge
+confirmed (its org comes from Forge), or a person through their own login (the people
+routes, the graph). The org is never named by the caller on these paths, so nobody can
+provision a brain for an org they are not in, and an org gets one brain however many
+members ask. A connector (`POST …/memory/sources`) names the org in its request body,
+so it never starts provisioning: an org without a system gets the 503 naming
+`memory.tenants`. Operator commands (`mimir import-wiki`, `list-proposals`) read
+provisioned systems and never start one.
+
+**While it is prepared** every request for the org gets **503 with `Retry-After`**
+(`retry_after_seconds`) and a detail that says memory for the org is being prepared,
+never an empty result. A provisioning that failed is a **502** naming the cause and the
+remedy. A not-configured org stays a 503 without `Retry-After`. Each outcome is counted
+on `mimir.memory.provisioning` (attribute `outcome`: `started`, `preparing`, `ready`,
+`failed`) and on `GET /health` under `memory.provisioning`.
+
+**The registry is the deployment itself**, not a table. On Kubernetes each org's
+gbrain is a HelmRelease `memory-<16 hex of sha256(tenant)>` labelled
+`niuu.world/managed-by: mimir-memory` and annotated with the full tenant id; beside it
+are the chart's `<release>-gbrain-admin` Secret (the owner bootstrap token) and
+`<release>-memory-seal` (the signing key, created once by the gateway, not owned by the
+release, so deleting the release keeps it). Creating either is atomic in the API
+server, so replicas that ask at once deploy one brain: the loser's create is a 409 and
+it reads the winner's. Ready means Flux's `Ready` condition is true for the current
+generation; `Stalled` is failed (fix the cause, then `flux reconcile helmrelease`). A
+release whose seal Secret is missing is failed and no new key is made: restore it, or
+every record it sealed reads as unattested. The retention sweep covers every ready
+provisioned system.
+
+On this computer each org's gbrain lives in `<root>/.memory/<key>/`: `memory.json`
+(the record), `admin-token` and `signing-key` (0600, created once), `runtime.json`, and
+a launchd/systemd service `dev.niuu.memory.<key>` / `niuu-memory-<key>`. Provisioning
+runs in the background under an exclusive lock on `<root>/.memory/<key>.lock`, so
+processes on one computer provision once. gbrain is initialised `--db-only`
+(`--pglite`, or `--non-interactive` with an embedded database) and has
+`startup_timeout` seconds to answer. A failed or interrupted attempt is reported as
+failed with its directory; remove the directory to provision again.
+
+In the chart: `config.memory.provisioning` (`enabled`, `namespace`, `sourceName`,
+`sourceNamespace`, `chartVersion`, `image`, `cluster`, `storageClass`, `values`,
+`gbrainConfig`, `retryAfterSeconds`, `backend`). It renders the Flux target, a Role and
+RoleBinding in `namespace` (HelmReleases get/list/create, Secrets get/create, Services
+get) and mounts the pod's ServiceAccount token, and lets `systems` be empty. The
+namespace must exist, be reconciled by Flux's helm-controller, and be reachable from
+the gateway's pods; keep it for brains only, since the Role cannot name per-org
+Secrets.
 
 **Session routes.** `GET {base}/memory/tools` (instructions and tool
 definitions), `POST {base}/memory/tools/{name}` (one call, an MCP

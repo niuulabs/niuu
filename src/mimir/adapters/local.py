@@ -1,10 +1,23 @@
-"""Persistent local knowledge services using the host's service manager."""
+"""Persistent local knowledge services using the host's service manager.
+
+It also provisions the memory gateway's per-org memory systems on this computer
+(``provision_memory_system``): one gbrain service per org under ``<root>/.memory/<key
+of the org>/`` (a name no knowledge instance can take), initialised database-only,
+supervised by launchd or systemd like a knowledge instance. That directory is the
+registry: ``memory.json`` names the org and says whether the system is ready, and the
+owner bootstrap token (``admin-token``) and signing key (``signing-key``) are 0600
+files created once and kept. Provisioning runs in the background and holds an
+exclusive lock on ``<key>.lock``, so concurrent first requests, from this process or
+another on this computer, provision once.
+"""
 
 from __future__ import annotations
 
 import asyncio
+import fcntl
 import importlib
 import json
+import logging
 import os
 import plistlib
 import re
@@ -16,10 +29,41 @@ from pathlib import Path
 
 import httpx
 
-from mimir.ports.deployment import DeploymentRequest, KnowledgeDeploymentPort
+from mimir.ports.deployment import (
+    DeploymentRequest,
+    KnowledgeDeploymentPort,
+    MemoryProvisioningError,
+    MemorySystemPhase,
+    MemorySystemRecord,
+    memory_system_key,
+    memory_system_name,
+)
+
+logger = logging.getLogger(__name__)
+
+_MEMORY_DIR = ".memory"
+_MEMORY_RECORD = "memory.json"
+_ADMIN_TOKEN_FILE = "admin-token"
+_SIGNING_KEY_FILE = "signing-key"
+#: Random bytes of a new owner token or signing key (64 URL-safe characters).
+_SECRET_BYTES = 48
+
+
+def _private_secret(path: Path) -> str:
+    """The secret in *path*, created once (0600) when the file does not exist yet."""
+    if not path.exists():
+        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(descriptor, "w") as handle:
+            handle.write(secrets.token_urlsafe(_SECRET_BYTES))
+    value = path.read_text().strip()
+    if not value:
+        raise MemoryProvisioningError(f"{path} is empty; restore it from a backup")
+    return value
 
 
 class LocalKnowledgeDeploymentAdapter(KnowledgeDeploymentPort):
+    provisions_memory_systems = True
+
     def __init__(
         self,
         *,
@@ -40,6 +84,7 @@ class LocalKnowledgeDeploymentAdapter(KnowledgeDeploymentPort):
         self.poll = poll_interval
         self._ports: dict = {}
         self._lock = asyncio.Lock()
+        self._memory_tasks: dict[str, asyncio.Task[None]] = {}
 
     def _records(self) -> list[dict]:
         return [json.loads(p.read_text()) for p in sorted(self.root.glob("*/deployment.json"))]
@@ -66,21 +111,23 @@ class LocalKnowledgeDeploymentAdapter(KnowledgeDeploymentPort):
             raise RuntimeError(detail)
         return out.decode()
 
-    def _service_file(self, name: str) -> Path:
+    def _service_file(self, name: str, kind: str = "knowledge") -> Path:
         if sys.platform == "darwin":
-            return Path.home() / "Library/LaunchAgents" / f"dev.niuu.knowledge.{name}.plist"
+            return Path.home() / "Library/LaunchAgents" / f"dev.niuu.{kind}.{name}.plist"
         if sys.platform == "linux":
-            return Path.home() / ".config/systemd/user" / f"niuu-knowledge-{name}.service"
+            return Path.home() / ".config/systemd/user" / f"niuu-{kind}-{name}.service"
         raise ValueError("Local deployments require macOS launchd or Linux systemd")
 
-    async def _install(self, name: str, command: list[str], directory: Path) -> None:
-        service = self._service_file(name)
+    async def _install(
+        self, name: str, command: list[str], directory: Path, kind: str = "knowledge"
+    ) -> None:
+        service = self._service_file(name, kind)
         service.parent.mkdir(parents=True, exist_ok=True)
         if sys.platform == "darwin":
             service.write_bytes(
                 plistlib.dumps(
                     {
-                        "Label": f"dev.niuu.knowledge.{name}",
+                        "Label": f"dev.niuu.{kind}.{name}",
                         "ProgramArguments": command,
                         "WorkingDirectory": str(self.workspace),
                         "RunAtLoad": True,
@@ -98,7 +145,7 @@ class LocalKnowledgeDeploymentAdapter(KnowledgeDeploymentPort):
             for arg in command
         )
         service.write_text(
-            f"[Unit]\nDescription=Niuu knowledge {name}\n[Service]\n"
+            f"[Unit]\nDescription=Niuu {kind} {name}\n[Service]\n"
             f"ExecStart={quoted}\nWorkingDirectory={self.workspace}\nRestart=on-failure\n"
             f"StandardOutput=append:{directory}/stdout.log\n"
             f"StandardError=append:{directory}/stderr.log\n"
@@ -379,3 +426,273 @@ class LocalKnowledgeDeploymentAdapter(KnowledgeDeploymentPort):
                 await close()
             await asyncio.to_thread(shutil.rmtree, directory)
             return {"name": instance, "deleted": True}
+
+    # -- memory systems --------------------------------------------------
+
+    def _memory_dir(self, tenant_id: str) -> Path:
+        return self.root / _MEMORY_DIR / memory_system_key(tenant_id)
+
+    def _memory_lock(self, tenant_id: str) -> int | None:
+        """An exclusive, non-blocking lock on the org's provisioning, or None when
+        another process holds it. The caller closes the descriptor to release it."""
+        parent = self.root / _MEMORY_DIR
+        parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        descriptor = os.open(
+            parent / f"{memory_system_key(tenant_id)}.lock", os.O_RDWR | os.O_CREAT, 0o600
+        )
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            os.close(descriptor)
+            return None
+        return descriptor
+
+    def _read_memory_record(self, tenant_id: str) -> dict | None:
+        path = self._memory_dir(tenant_id) / _MEMORY_RECORD
+        if not path.exists():
+            return None
+        record = json.loads(path.read_text())
+        if record.get("tenant_id") != tenant_id:
+            raise MemoryProvisioningError(
+                f"{path} belongs to org {record.get('tenant_id')!r}, not {tenant_id!r}; the two "
+                "orgs' memory-system keys collide. Move one of them to memory.tenants"
+            )
+        return record
+
+    def _write_memory_record(self, tenant_id: str, record: dict) -> None:
+        path = self._memory_dir(tenant_id) / _MEMORY_RECORD
+        temporary = path.with_suffix(".tmp")
+        temporary.write_text(json.dumps(record))
+        temporary.chmod(0o600)
+        temporary.replace(path)
+
+    def _memory_view(
+        self, tenant_id: str, record: dict, *, interrupted: bool, started: bool = False
+    ) -> MemorySystemRecord:
+        name = memory_system_name(tenant_id)
+        directory = self._memory_dir(tenant_id)
+        if record.get("error"):
+            return MemorySystemRecord(
+                tenant_id=tenant_id,
+                name=name,
+                phase=MemorySystemPhase.FAILED,
+                message=(
+                    f"{record['error']} (logs in {directory}; remove that directory to "
+                    "provision it again)"
+                ),
+            )
+        if record.get("ready"):
+            return MemorySystemRecord(
+                tenant_id=tenant_id,
+                name=name,
+                phase=MemorySystemPhase.READY,
+                message="running on this computer",
+                mcp_url=record["url"] + "/mcp",
+                admin_token=_private_secret(directory / _ADMIN_TOKEN_FILE),
+                signing_key=_private_secret(directory / _SIGNING_KEY_FILE),
+            )
+        if interrupted:
+            return MemorySystemRecord(
+                tenant_id=tenant_id,
+                name=name,
+                phase=MemorySystemPhase.FAILED,
+                message=(
+                    f"provisioning in {directory} stopped before it finished (the process "
+                    "that ran it ended); remove that directory to provision it again"
+                ),
+            )
+        return MemorySystemRecord(
+            tenant_id=tenant_id,
+            name=name,
+            phase=MemorySystemPhase.PREPARING,
+            message="starting its gbrain on this computer",
+            started=started,
+        )
+
+    def _in_flight(self, tenant_id: str) -> bool:
+        task = self._memory_tasks.get(tenant_id)
+        return task is not None and not task.done()
+
+    async def provision_memory_system(self, tenant_id: str) -> MemorySystemRecord:
+        if not self.gbrain_command:
+            raise MemoryProvisioningError(
+                "the local target has no gbrain executable configured (gbrain_command)"
+            )
+        if self._in_flight(tenant_id):
+            return self._memory_view(tenant_id, {}, interrupted=False)
+        record = self._read_memory_record(tenant_id)
+        if record is not None and (record.get("ready") or record.get("error")):
+            return self._memory_view(tenant_id, record, interrupted=False)
+        lock = self._memory_lock(tenant_id)
+        if lock is None:
+            # Another process on this computer is provisioning it.
+            return self._memory_view(tenant_id, record or {}, interrupted=False)
+        try:
+            record = self._read_memory_record(tenant_id)
+            if record is not None:
+                # Under the lock and not in flight anywhere: an earlier attempt ended
+                # half-way. Never resumed over: its directory may hold a started database.
+                os.close(lock)
+                return self._memory_view(tenant_id, record, interrupted=True)
+            record = self._begin_memory(tenant_id)
+        except BaseException:
+            os.close(lock)
+            raise
+        task = asyncio.create_task(
+            self._provision_memory(tenant_id, record),
+            name=f"provision-memory-{memory_system_key(tenant_id)}",
+        )
+        # Released when the task ends however it ends, even cancelled before it ran.
+        task.add_done_callback(lambda _: os.close(lock))
+        self._memory_tasks[tenant_id] = task
+        return self._memory_view(tenant_id, record, interrupted=False, started=True)
+
+    async def memory_system(self, tenant_id: str) -> MemorySystemRecord | None:
+        if self._in_flight(tenant_id):
+            return self._memory_view(tenant_id, {}, interrupted=False)
+        record = self._read_memory_record(tenant_id)
+        if record is None:
+            return None
+        if record.get("ready") or record.get("error"):
+            return self._memory_view(tenant_id, record, interrupted=False)
+        lock = self._memory_lock(tenant_id)
+        if lock is None:
+            return self._memory_view(tenant_id, record, interrupted=False)
+        os.close(lock)
+        return self._memory_view(tenant_id, record, interrupted=True)
+
+    async def memory_systems(self) -> list[MemorySystemRecord]:
+        records = []
+        for path in sorted((self.root / _MEMORY_DIR).glob(f"*/{_MEMORY_RECORD}")):
+            tenant_id = json.loads(path.read_text()).get("tenant_id", "")
+            if not tenant_id or path.parent.name != memory_system_key(tenant_id):
+                raise MemoryProvisioningError(
+                    f"{path} names no org whose key is {path.parent.name}; it was not made "
+                    "by the gateway"
+                )
+            found = await self.memory_system(tenant_id)
+            if found is not None:
+                records.append(found)
+        return records
+
+    def _begin_memory(self, tenant_id: str) -> dict:
+        """The org's directory, secrets and first record, made under its lock."""
+        directory = self._memory_dir(tenant_id)
+        directory.mkdir(mode=0o700, parents=True, exist_ok=False)
+        directory.chmod(0o700)
+        _private_secret(directory / _ADMIN_TOKEN_FILE)
+        _private_secret(directory / _SIGNING_KEY_FILE)
+        with socket.socket() as sock:
+            sock.bind(("127.0.0.1", 0))
+            port = sock.getsockname()[1]
+        url = f"http://127.0.0.1:{port}"
+        record = {
+            "tenant_id": tenant_id,
+            "name": memory_system_name(tenant_id),
+            "backend": "gbrain",
+            "url": url,
+            "health_url": url + "/health",
+            "port": port,
+            "ready": False,
+        }
+        self._write_memory_record(tenant_id, record)
+        return record
+
+    async def _provision_memory(self, tenant_id: str, record: dict) -> None:
+        """Initialise the org's gbrain database-only, install its service, wait for it.
+
+        Runs in the background while its caller holds the org's lock. A failure is written into the
+        record (and so answered as FAILED, with the remedy) and logged at error.
+        """
+        directory = self._memory_dir(tenant_id)
+        key = memory_system_key(tenant_id)
+        database = None
+        try:
+            env = {
+                **self.environment,
+                "GBRAIN_HOME": str(directory),
+                "GBRAIN_ADMIN_BOOTSTRAP_TOKEN": _private_secret(directory / _ADMIN_TOKEN_FILE),
+            }
+            database_config = dict(self.database) if self.database else None
+            if database_config:
+                from mimir.local_runtime import start_database
+
+                with socket.socket() as sock:
+                    sock.bind(("127.0.0.1", 0))
+                    database_config.update(
+                        listen_host="127.0.0.1",
+                        listen_port=sock.getsockname()[1],
+                        listen_password=secrets.token_urlsafe(32),
+                    )
+                database, env["GBRAIN_DATABASE_URL"] = await start_database(
+                    database_config, directory
+                )
+            # Templates select a separate database for each org.
+            env = {k: v.replace("{name}", f"memory_{key}") for k, v in env.items()}
+            await self._run(
+                *self.gbrain_command,
+                "init",
+                *(["--non-interactive"] if env.get("GBRAIN_DATABASE_URL") else ["--pglite"]),
+                "--db-only",
+                "--no-embedding",
+                env={**os.environ, **env},
+            )
+            if database is not None:
+                await database.stop()
+                database = None
+            runner = directory / "runtime.json"
+            runner.write_text(
+                json.dumps(
+                    {
+                        "database": database_config,
+                        "command": self.gbrain_command,
+                        "environment": env,
+                        "port": record["port"],
+                    }
+                )
+            )
+            runner.chmod(0o600)
+            command = [sys.executable, "-m", "mimir.local_runtime", str(runner)]
+            await self._install(key, command, directory, kind="memory")
+            async with asyncio.timeout(self.timeout):
+                while not await self._answers(record["health_url"]):
+                    await asyncio.sleep(self.poll)
+            record["ready"] = True
+            self._write_memory_record(tenant_id, record)
+            logger.info(
+                "memory: provisioned the memory system of org %r in %s", tenant_id, directory
+            )
+        except Exception as exc:  # recorded and answered as FAILED with its remedy
+            if database is not None:
+                try:
+                    await database.stop()
+                except Exception as stop_error:  # the original failure is the one recorded
+                    logger.error(
+                        "memory: the database of org %r's failed provisioning did not stop: %s",
+                        tenant_id,
+                        stop_error,
+                    )
+            message = (
+                f"gbrain did not answer within startup_timeout={self.timeout:g} s"
+                if isinstance(exc, TimeoutError)
+                else f"{type(exc).__name__}: {exc}"
+            )
+            record["error"] = message
+            self._write_memory_record(tenant_id, record)
+            logger.error(
+                "memory: provisioning the memory system of org %r failed: %s", tenant_id, message
+            )
+
+    async def _answers(self, url: str) -> bool:
+        try:
+            async with httpx.AsyncClient(timeout=self.poll + 1) as client:
+                return (await client.get(url)).is_success
+        except httpx.HTTPError:
+            return False  # not up yet; the startup timeout bounds the wait
+
+    async def close(self) -> None:
+        """Cancel provisioning in flight and wait until each attempt has stopped."""
+        tasks = list(self._memory_tasks.values())
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)

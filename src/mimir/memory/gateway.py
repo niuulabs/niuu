@@ -347,9 +347,12 @@ class MemoryGateway:
     async def open(self, context: SessionMemoryContext) -> Session:
         """Resolve a session's layers and make sure each exists on its system.
 
-        Raises TenantNotConfiguredError when the session's org has no system.
+        Forge confirmed the session's org, so its first use may provision the org's
+        system (``memory.provisioning``).
+
+        Raises a MemorySystemUnavailableError when the session's org has no usable system.
         """
-        system, backend = self._systems.for_tenant(context.tenant_id)
+        system, backend = await self._systems.for_tenant(context.tenant_id, provision=True)
         return await self._open_view(SessionView.of(context, system), backend)
 
     async def open_reader(
@@ -362,9 +365,10 @@ class MemoryGateway:
         """A person's reading view: *project_ids*, the attachments named, and the org.
 
         The caller has already checked with Forge that the person may read each project.
-        Raises TenantNotConfiguredError when the org has no system.
+        The org is the person's own (their verified login), so it may be provisioned.
+        Raises a MemorySystemUnavailableError when the org has no usable system.
         """
-        system, backend = self._systems.for_tenant(tenant_id)
+        system, backend = await self._systems.for_tenant(tenant_id, provision=True)
         view = LayerView.for_reader(
             tenant_id=tenant_id,
             system=system,
@@ -683,7 +687,8 @@ class MemoryGateway:
         Raises:
             MemoryValidationError: the layer is not a project or org layer, the connector is
                 not a name, or the source is malformed.
-            TenantNotConfiguredError: the org has no memory system.
+            MemorySystemUnavailableError: the org has no usable memory system. A connector
+                names the org itself, so it never starts provisioning one.
             LayerUnavailableError: the layer could not be prepared or written.
         """
         target = Layer.parse(layer)
@@ -707,7 +712,7 @@ class MemoryGateway:
             ) from None
         cited = (Evidence(EvidenceKind.URL, origin_url),)
         source = NewSource(title=title, content=content, kind=source_kind, origin_url=origin_url)
-        system, backend = self._systems.for_tenant(tenant_id)
+        system, backend = await self._systems.for_tenant(tenant_id, provision=False)
         await self._place(system, backend, target.kind, target.namespace)
         caller = FactCaller(FactAuthor(AuthorKind.TOOL, connector))
         record, new = await self._guard(

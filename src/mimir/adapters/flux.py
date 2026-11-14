@@ -1,12 +1,39 @@
-"""Named knowledge services deployed through the cluster's Flux controller."""
+"""Named knowledge services deployed through the cluster's Flux controller.
+
+It also provisions the memory gateway's per-org memory systems
+(``provision_memory_system``): one gbrain HelmRelease per org, named
+``memory-<key of the org>``, in this target's namespace, labelled
+``niuu.world/managed-by: mimir-memory`` so the knowledge registry never lists it as a
+mount. The HelmRelease is the registry: its ``niuu.world/tenant-id`` annotation says
+whose it is, and creating it is atomic, so two gateway replicas asking for one org at
+once deploy it once (the second create is a 409 and reads the first). Beside it:
+
+- the gbrain chart's own ``<release>-gbrain-admin`` Secret holds the owner bootstrap
+  token (created by the chart once and kept on upgrade);
+- ``<release>-memory-seal`` holds the key that seals attribution, created here once
+  (a 409 reads the winner's), never owned by the HelmRelease, so deleting the release
+  keeps it.
+
+gbrain is initialised database-only (the chart's ``--db-only``) on its own PostgreSQL
+(CloudNativePG, ``postgres.enabled``) unless ``memory_values`` says otherwise.
+"""
 
 import asyncio
 import base64
 import copy
 import hashlib
+import secrets
 from typing import Any
 
-from mimir.ports.deployment import DeploymentRequest, KnowledgeDeploymentPort
+from mimir.ports.deployment import (
+    DeploymentRequest,
+    KnowledgeDeploymentPort,
+    MemoryProvisioningError,
+    MemorySystemPhase,
+    MemorySystemRecord,
+    memory_system_key,
+    memory_system_name,
+)
 from niuu.adapters.flux import (
     HELMRELEASE_GROUP,
     HELMRELEASE_PLURAL,
@@ -18,9 +45,55 @@ from niuu.adapters.flux import (
 #: The only knowledge backend this target deploys.
 GBRAIN = "gbrain"
 
+#: The ``niuu.world/managed-by`` label of a provisioned memory system.
+MEMORY_MANAGED_BY = "mimir-memory"
+_TENANT_ANNOTATION = "niuu.world/tenant-id"
+_SEAL_KEY = "key"
+_ADMIN_TOKEN_KEY = "GBRAIN_ADMIN_BOOTSTRAP_TOKEN"
+#: Random bytes of a new signing key (64 URL-safe characters, as the mimir chart makes).
+_SEAL_BYTES = 48
+#: Chart values a memory system's deployment owns; ``memory_values`` cannot set them.
+_OWNED_MEMORY_VALUES = ("existingSecret", "niuu", "image")
+
+
+def _image(reference: str) -> tuple[str, str]:
+    """``(repository, tag)`` of an image reference, a digest kept with its tag."""
+    name, _, digest = reference.partition("@")
+    repository, sep, tag = name.rpartition(":")
+    if not sep or "/" in tag:
+        raise ValueError(f"image {reference!r} has no tag; pin it as <repository>:<tag>")
+    return repository, f"{tag}@{digest}" if digest else tag
+
+
+def _deep_merge(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]:
+    result = dict(base)
+    for key, value in overlay.items():
+        current = result.get(key)
+        result[key] = (
+            _deep_merge(current, value)
+            if isinstance(current, dict) and isinstance(value, dict)
+            else copy.deepcopy(value)
+        )
+    return result
+
+
+def _status(exc: BaseException) -> int | None:
+    return getattr(exc, "status", None)
+
 
 class FluxKnowledgeDeploymentAdapter(FluxHelmReleases, KnowledgeDeploymentPort):
+    """Knowledge instances and memory systems as Flux HelmReleases.
+
+    Args (memory systems):
+        memory_values: gbrain chart values merged over a memory system's defaults
+            (``engine: postgres`` with its own CloudNativePG database, no connection
+            token), e.g. ``{postgres: {instances: 1, size: 10Gi}, resources: {...}}``.
+            ``existingSecret``, ``niuu`` and ``image`` belong to the deployment: one
+            shared Secret would give every org the same database and owner token.
+    """
+
     _managed_by = "mimir"
+    provisions_memory_systems = True
 
     def __init__(
         self,
@@ -38,7 +111,14 @@ class FluxKnowledgeDeploymentAdapter(FluxHelmReleases, KnowledgeDeploymentPort):
         kube_context: str | None = None,
         think_model: str = "",
         gbrain_config: dict[str, Any] | None = None,
+        memory_values: dict[str, Any] | None = None,
     ) -> None:
+        owned = [key for key in _OWNED_MEMORY_VALUES if key in (memory_values or {})]
+        if owned:
+            raise ValueError(
+                f"memory_values sets {', '.join(owned)}, which each memory system's "
+                "deployment owns (an org's own database, owner token and image); remove them"
+            )
         self._namespace = namespace
         self._source_ref_kind = "HelmRepository"
         self._source_ref_name = source_name
@@ -68,6 +148,7 @@ class FluxKnowledgeDeploymentAdapter(FluxHelmReleases, KnowledgeDeploymentPort):
         # in-cluster gateway. Deliberately excludes credentials/storage
         # settings, same contract as charts/gbrain/values.yaml's `config`.
         self.gbrain_config = gbrain_config or {}
+        self.memory_values = copy.deepcopy(memory_values or {})
         self._client = None
         self._client_lock = asyncio.Lock()
         self._mount_ports = {}
@@ -353,3 +434,251 @@ class FluxKnowledgeDeploymentAdapter(FluxHelmReleases, KnowledgeDeploymentPort):
             },
         )
         return self._view(obj)
+
+    # -- memory systems --------------------------------------------------
+
+    async def _core(self):
+        from kubernetes_asyncio import client
+
+        await self._get_api()
+        return client.CoreV1Api(self._client)
+
+    @staticmethod
+    def _provisioning_errors() -> tuple[type[BaseException], ...]:
+        """What asking the Kubernetes API can raise: a refusal, or the connection failing
+        (aiohttp's connection errors are OSErrors) or timing out."""
+        from kubernetes_asyncio.client.exceptions import ApiException
+
+        return (ApiException, OSError, asyncio.TimeoutError)
+
+    async def provision_memory_system(self, tenant_id: str) -> MemorySystemRecord:
+        name = memory_system_name(tenant_id)
+        try:
+            release = await self._get_helmrelease(name)
+            if release is not None:
+                return await self._memory_record(release, tenant_id)
+            # The seal comes first: a release never exists without its key, so a release
+            # whose key is missing is a lost key (failed), never one to make again.
+            await self._ensure_seal(name, tenant_id)
+            release, started = await self._create_memory_release(name, tenant_id)
+            return await self._memory_record(release, tenant_id, started=started)
+        except self._provisioning_errors() as exc:
+            raise MemoryProvisioningError(
+                f"Kubernetes refused provisioning {name} in namespace {self.namespace}: {exc}"
+            ) from exc
+
+    async def memory_system(self, tenant_id: str) -> MemorySystemRecord | None:
+        name = memory_system_name(tenant_id)
+        try:
+            release = await self._get_helmrelease(name)
+            if release is None:
+                return None
+            return await self._memory_record(release, tenant_id)
+        except self._provisioning_errors() as exc:
+            raise MemoryProvisioningError(
+                f"cannot read memory system {name} in namespace {self.namespace}: {exc}"
+            ) from exc
+
+    async def memory_systems(self) -> list[MemorySystemRecord]:
+        try:
+            api = await self._get_api()
+            listed = await api.list_namespaced_custom_object(
+                HELMRELEASE_GROUP,
+                HELMRELEASE_VERSION,
+                self.namespace,
+                HELMRELEASE_PLURAL,
+                label_selector=f"niuu.world/managed-by={MEMORY_MANAGED_BY}",
+            )
+            records = []
+            for release in listed["items"]:
+                tenant_id = release["metadata"].get("annotations", {}).get(_TENANT_ANNOTATION)
+                if not tenant_id:
+                    raise MemoryProvisioningError(
+                        f"memory system {release['metadata']['name']} has no "
+                        f"{_TENANT_ANNOTATION} annotation; it was not made by the gateway"
+                    )
+                records.append(await self._memory_record(release, tenant_id))
+            return records
+        except self._provisioning_errors() as exc:
+            raise MemoryProvisioningError(
+                f"cannot list memory systems in namespace {self.namespace}: {exc}"
+            ) from exc
+
+    def _memory_values(self, name: str, tenant_id: str) -> dict[str, Any]:
+        if not self._configured(GBRAIN):
+            raise MemoryProvisioningError(
+                "no gbrain chart version and image are configured for this target "
+                "(chart_versions.gbrain, images.gbrain)"
+            )
+        repository, tag = _image(self.images[GBRAIN])
+        values: dict[str, Any] = {
+            "engine": "postgres",
+            "postgres": {"enabled": True, "storageClass": self.storage_class},
+            "persistence": {"storageClass": self.storage_class},
+            "connection": {"enabled": False},
+        }
+        if self.gbrain_config:
+            values["config"] = copy.deepcopy(self.gbrain_config)
+        values = _deep_merge(values, self.memory_values)
+        values["image"] = {"repository": repository, "tag": tag}
+        values["niuu"] = {"cluster": self.cluster, "instanceId": name, "tenantId": tenant_id}
+        return values
+
+    async def _create_memory_release(self, name: str, tenant_id: str) -> tuple[dict, bool]:
+        from kubernetes_asyncio.client.exceptions import ApiException
+
+        body = self._build_helmrelease(
+            name,
+            self._memory_values(name, tenant_id),
+            chart_name=GBRAIN,
+            chart_version=self.versions[GBRAIN],
+            labels={
+                "niuu.world/managed-by": MEMORY_MANAGED_BY,
+                "niuu.world/knowledge-backend": GBRAIN,
+                "niuu.world/tenant": memory_system_key(tenant_id),
+            },
+            annotations={_TENANT_ANNOTATION: tenant_id, "niuu.world/instance-name": name},
+        )
+        api = await self._get_api()
+        try:
+            created = await api.create_namespaced_custom_object(
+                HELMRELEASE_GROUP, HELMRELEASE_VERSION, self.namespace, HELMRELEASE_PLURAL, body
+            )
+        except ApiException as exc:
+            if _status(exc) != 409:
+                raise
+            # Another replica created it first: theirs is the org's system.
+            existing = await self._get_helmrelease(name)
+            if existing is None:
+                raise MemoryProvisioningError(
+                    f"memory system {name} was reported as existing and then not found"
+                ) from exc
+            return existing, False
+        return created, True
+
+    def _seal_name(self, name: str) -> str:
+        return f"{name}-memory-seal"
+
+    async def _ensure_seal(self, name: str, tenant_id: str) -> None:
+        from kubernetes_asyncio.client.exceptions import ApiException
+
+        core = await self._core()
+        key = secrets.token_urlsafe(_SEAL_BYTES)
+        body = {
+            "apiVersion": "v1",
+            "kind": "Secret",
+            "metadata": {
+                "name": self._seal_name(name),
+                "labels": {
+                    "niuu.world/managed-by": MEMORY_MANAGED_BY,
+                    "niuu.world/tenant": memory_system_key(tenant_id),
+                },
+                "annotations": {_TENANT_ANNOTATION: tenant_id},
+            },
+            "type": "Opaque",
+            "data": {_SEAL_KEY: base64.b64encode(key.encode()).decode()},
+        }
+        try:
+            await core.create_namespaced_secret(self.namespace, body)
+        except ApiException as exc:
+            if _status(exc) != 409:
+                raise
+            # Made before (by another replica, or an attempt that stopped before its
+            # release): that key is the system's, never replaced.
+
+    async def _read_secret(self, name: str) -> Any | None:
+        from kubernetes_asyncio.client.exceptions import ApiException
+
+        core = await self._core()
+        try:
+            return await core.read_namespaced_secret(name, self.namespace)
+        except ApiException as exc:
+            if _status(exc) == 404:
+                return None
+            raise
+
+    @staticmethod
+    def _secret_value(secret: Any, key: str) -> str:
+        data = getattr(secret, "data", None) or {}
+        value = data.get(key)
+        return base64.b64decode(value).decode().strip() if value else ""
+
+    @staticmethod
+    def _owner(obj: Any) -> str:
+        metadata = obj["metadata"] if isinstance(obj, dict) else obj.metadata
+        annotations = (
+            metadata.get("annotations") if isinstance(metadata, dict) else metadata.annotations
+        )
+        return (annotations or {}).get(_TENANT_ANNOTATION, "")
+
+    async def _memory_record(
+        self, release: dict[str, Any], tenant_id: str, *, started: bool = False
+    ) -> MemorySystemRecord:
+        name = release["metadata"]["name"]
+        owner = self._owner(release)
+        if owner != tenant_id:
+            raise MemoryProvisioningError(
+                f"HelmRelease {name} belongs to org {owner!r}, not {tenant_id!r}; the two orgs' "
+                "memory-system keys collide. Move one of them to memory.tenants"
+            )
+
+        def record(phase: MemorySystemPhase, message: str, **ready: str) -> MemorySystemRecord:
+            return MemorySystemRecord(
+                tenant_id=tenant_id,
+                name=name,
+                phase=phase,
+                message=message,
+                started=started,
+                **ready,
+            )
+
+        seal = await self._read_secret(self._seal_name(name))
+        if seal is None or self._owner(seal) != tenant_id:
+            return record(
+                MemorySystemPhase.FAILED,
+                f"its signing key Secret {self._seal_name(name)} in namespace {self.namespace} "
+                "is missing or belongs to another org. Restore it from a backup: a new key "
+                "would make every record it sealed read as unattested",
+            )
+        signing_key = self._secret_value(seal, _SEAL_KEY)
+        if not signing_key:
+            return record(
+                MemorySystemPhase.FAILED,
+                f"its signing key Secret {self._seal_name(name)} has no '{_SEAL_KEY}'",
+            )
+        conditions = {c.get("type"): c for c in release.get("status", {}).get("conditions", [])}
+        stalled = conditions.get("Stalled", {})
+        if stalled.get("status") == "True":
+            return record(
+                MemorySystemPhase.FAILED,
+                f"Flux stopped installing HelmRelease {name} in namespace {self.namespace} "
+                f"({stalled.get('reason', 'Stalled')}: {stalled.get('message', '')}). Fix the "
+                "cause, then `flux reconcile helmrelease` it",
+            )
+        ready = conditions.get("Ready", {})
+        observed = release.get("status", {}).get("observedGeneration", 0)
+        current = release["metadata"].get("generation", 1)
+        if ready.get("status") != "True" or observed < current:
+            return record(
+                MemorySystemPhase.PREPARING,
+                ready.get("message") or "waiting for Flux to install its gbrain",
+            )
+        gbrain = f"{name}-gbrain"
+        admin = await self._read_secret(f"{gbrain}-admin")
+        admin_token = self._secret_value(admin, _ADMIN_TOKEN_KEY) if admin is not None else ""
+        if not admin_token:
+            return record(
+                MemorySystemPhase.FAILED,
+                f"gbrain's owner token ({_ADMIN_TOKEN_KEY} in Secret {gbrain}-admin) is "
+                "missing although the release is installed",
+            )
+        core = await self._core()
+        service = await core.read_namespaced_service(gbrain, self.namespace)
+        port = service.spec.ports[0].port
+        return record(
+            MemorySystemPhase.READY,
+            "ready",
+            mcp_url=f"http://{gbrain}.{self.namespace}.svc.cluster.local:{port}/mcp",
+            admin_token=admin_token,
+            signing_key=signing_key,
+        )

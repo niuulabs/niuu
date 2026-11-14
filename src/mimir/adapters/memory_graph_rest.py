@@ -23,10 +23,11 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 
 from identity.adapters.http_auth import presented_actor
+from mimir.adapters.memory_rest import memory_unavailable
 from mimir.memory.graph import GraphError, KnowledgeGraph
 from mimir.memory.models import Layer, MemoryStoreError, MemoryValidationError
 from mimir.memory.person_layers import ReadableLayer, readable_layers
-from mimir.memory.systems import TenantNotConfiguredError
+from mimir.memory.systems import MemorySystemUnavailableError
 from mimir.ports.people_directory import ForgeUnavailableError, Person, PersonRefusedError
 from niuu.domain.services.forge_session_token import SESSION_ID_CLAIM
 from niuu.domain.services.token_scope import credential_allows_route
@@ -165,8 +166,8 @@ class MemoryGraphRouter:
                 graph = await self._graph.graph(person.tenant_id, chosen)
             except PersonRefusedError as exc:
                 raise HTTPException(status_code=exc.status, detail=str(exc)) from exc
-            except TenantNotConfiguredError as exc:
-                raise HTTPException(status_code=503, detail=str(exc)) from exc
+            except MemorySystemUnavailableError as exc:
+                raise memory_unavailable(exc) from exc
             except (ForgeUnavailableError, GraphError, MemoryStoreError) as exc:
                 logger.error("memory graph for %s failed: %s", person.ref, exc)
                 raise HTTPException(status_code=502, detail=str(exc)) from exc

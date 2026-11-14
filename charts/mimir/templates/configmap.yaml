@@ -61,8 +61,9 @@ data:
       {{- if not (kindIs "invalid" .defaultResultCount) }}
       default_result_count: {{ .defaultResultCount }}
       {{- end }}
-      {{- if not .systems }}
-      {{- fail "config.memory.systems needs at least one memory system when config.memory.enabled" }}
+      {{- $provisioning := and .provisioning .provisioning.enabled }}
+      {{- if not (or .systems $provisioning) }}
+      {{- fail "config.memory.systems needs at least one memory system when config.memory.enabled, or turn on config.memory.provisioning" }}
       {{- end }}
       systems:
         {{- range $system := .systems }}
@@ -84,12 +85,50 @@ data:
           {{- if not (kindIs "invalid" $system.timelineLimit) }}
           timeline_limit: {{ $system.timelineLimit }}
           {{- end }}
+        {{- else }} []
         {{- end }}
       tenants:
         {{- range $tenant, $system := .tenants }}
         {{ $tenant | quote }}: {{ $system | quote }}
         {{- else }} {}
         {{- end }}
+      {{- if $provisioning }}
+      {{- with .provisioning }}
+      provisioning:
+        deployment:
+          adapter: mimir.adapters.flux.FluxKnowledgeDeploymentAdapter
+          namespace: {{ required "config.memory.provisioning.namespace is required: where each org's brain is deployed" .namespace | quote }}
+          source_name: {{ required "config.memory.provisioning.sourceName is required: the Flux HelmRepository holding the gbrain chart" .sourceName | quote }}
+          {{- with .sourceNamespace }}
+          source_namespace: {{ . | quote }}
+          {{- end }}
+          chart_versions:
+            gbrain: {{ required "config.memory.provisioning.chartVersion is required: the gbrain chart version" .chartVersion | quote }}
+          images:
+            gbrain: {{ required "config.memory.provisioning.image is required: the gbrain image" .image | quote }}
+          {{- with .cluster }}
+          cluster: {{ . | quote }}
+          {{- end }}
+          {{- with .storageClass }}
+          storage_class: {{ . | quote }}
+          {{- end }}
+          {{- with .values }}
+          memory_values:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .gbrainConfig }}
+          gbrain_config:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+        {{- if not (kindIs "invalid" .retryAfterSeconds) }}
+        retry_after_seconds: {{ .retryAfterSeconds }}
+        {{- end }}
+        {{- with .backend }}
+        backend:
+          {{- toYaml . | nindent 10 }}
+        {{- end }}
+      {{- end }}
+      {{- end }}
       {{- if not (and .serviceAuth .serviceAuth.adapter) }}
       {{- fail "config.memory.serviceAuth.adapter is required when config.memory.enabled: how the gateway authenticates as a service to Forge" }}
       {{- end }}
