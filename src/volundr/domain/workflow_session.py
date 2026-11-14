@@ -87,24 +87,35 @@ WORKFLOW_ROOM_ENV_NAMES = {
     "environmentId": "ENVIRONMENT_ID",
     "realmRoom": "REALM_ROOM",
     "routed": "ROUTED",
+    "untargetedDelivery": "UNTARGETED_DELIVERY",
 }
+
+#: Top-level key of the session spec values that marks a session as part of a Forge team
+#: (``values.team``): ``{"enabled": true}``. The skuld chart ignores it; the runtimes that start
+#: Skuld from the environment read it, because a team has no ``workflowSteps`` but needs the same
+#: mesh realm and room variables a workflow run gets (``workflow_session_environment``).
+TEAM_VALUES_KEY = "team"
 
 
 def workflow_session_environment(values: Mapping[str, Any]) -> dict[str, str]:
-    """The Skuld variables a workflow run's session spec values call for.
+    """The Skuld variables a workflow run's or a team's session spec values call for.
 
-    Every ``values.workflowSteps`` field (``SKULD__WORKFLOW_STEPS__...``), and the run's mesh
-    realm, work sharing and room (``values.mesh`` and ``values.room``), so a member or a root
-    started from the environment gets the same settings the chart renders into a pod's config
-    file. Without the room a run's root shows none of its members' work, and without the realm
-    and work sharing the members have nothing to show it. Skuld refuses a member or root that
-    lacks a step setting at startup, so nothing is filled in here. An ordinary session has no
-    ``workflowSteps`` and gets none of these.
+    Every ``values.workflowSteps`` field (``SKULD__WORKFLOW_STEPS__...``), and the mesh realm,
+    work sharing and room (``values.mesh`` and ``values.room``), so a member or a root started
+    from the environment gets the same settings the chart renders into a pod's config file.
+    Without the room a root shows none of its members' work, and without the realm and work
+    sharing the members have nothing to show it. Skuld refuses a workflow member or root that
+    lacks a step setting at startup, so nothing is filled in here. A team (``values.team``) has
+    no ``workflowSteps`` and gets only its mesh and room. An ordinary session has neither and
+    gets none of these.
     """
     steps = values.get(WORKFLOW_STEPS_VALUES_KEY)
-    if not isinstance(steps, Mapping):
+    if isinstance(steps, Mapping):
+        environment = _prefixed(steps, WORKFLOW_STEPS_ENV_NAMES, WORKFLOW_STEPS_ENV_PREFIX)
+    elif isinstance(values.get(TEAM_VALUES_KEY), Mapping):
+        environment = {}
+    else:
         return {}
-    environment = _prefixed(steps, WORKFLOW_STEPS_ENV_NAMES, WORKFLOW_STEPS_ENV_PREFIX)
     mesh = values.get("mesh")
     if isinstance(mesh, Mapping):
         environment.update(_prefixed(mesh, WORKFLOW_MESH_ENV_NAMES, "SKULD__MESH__"))

@@ -4027,3 +4027,338 @@ def test_a_session_nobody_holds_for_this_caller_is_not_found() -> None:
     response = client.post(f"{GATEWAY}/participants/accept", headers=_headers())
 
     assert response.status_code == 404
+
+
+def _team_body(**overrides: Any) -> dict[str, Any]:
+    return {
+        "name": "reviewers",
+        "members": [
+            {"model": "m", "persona_name": "reviewer", "lead": True},
+            {"model": "m", "persona_name": "tester"},
+        ],
+        **overrides,
+    }
+
+
+def _team_answer() -> dict[str, Any]:
+    return {
+        "session": {"id": "root", "chat_endpoint": "/s/root"},
+        "members": [{"id": "m1"}, {"id": "m2"}],
+    }
+
+
+@respx.mock
+def test_create_team_goes_to_the_requested_instance_and_marks_every_session() -> None:
+    client = _client(
+        [
+            _instance("default", base_url="http://default", is_default=True),
+            _instance("target", base_url="http://target"),
+        ]
+    )
+    route = respx.post("http://target/api/v1/forge/teams").mock(
+        return_value=Response(201, json=_team_answer())
+    )
+
+    response = client.post(
+        "/api/v1/forge/teams",
+        headers=_headers(),
+        json=_team_body(instance_id="target", instanceName="ignored", target_tags=None),
+    )
+
+    assert response.status_code == 201
+    body = response.json()
+    assert [body["session"]["instance_id"]] + [m["instance_id"] for m in body["members"]] == [
+        "target",
+        "target",
+        "target",
+    ]
+    assert body["members"][1]["instance_name"] == "Instance target"
+    assert body["session"]["chat_endpoint"].startswith("ws://target")
+    sent = _sent(route)
+    assert sent == _team_body()
+
+
+@respx.mock
+def test_create_team_targets_an_instance_by_tags_and_adds_the_hosts_selector() -> None:
+    client = _client(
+        [
+            _instance("cpu", base_url="http://cpu", is_default=True, tags=["us-west"]),
+            _instance("gpu", base_url="http://gpu", tags=["gpu", "us-west"]),
+        ]
+    )
+    respx.get("http://cpu/api/v1/forge/compute/hosts/tag-sets").mock(return_value=Response(404))
+    route = respx.post("http://gpu/api/v1/forge/teams").mock(
+        return_value=Response(201, json=_team_answer())
+    )
+
+    response = client.post(
+        "/api/v1/forge/teams",
+        headers=_headers(),
+        json=_team_body(target_tags=["gpu"]),
+    )
+
+    assert response.status_code == 201
+    assert response.json()["session"]["instance_id"] == "gpu"
+    assert "target_tags" not in _sent(route)
+    assert "workload_config" not in _sent(route)
+
+
+@respx.mock
+def test_create_team_sends_the_host_part_of_target_tags_as_a_host_selector() -> None:
+    client = _client(
+        [
+            _instance("forge", base_url="http://forge", is_default=True, tags=["eu"]),
+        ]
+    )
+    respx.get("http://forge/api/v1/forge/compute/hosts/tag-sets").mock(
+        return_value=Response(200, json={"tag_sets": [["arm64"]]})
+    )
+    route = respx.post("http://forge/api/v1/forge/teams").mock(
+        return_value=Response(201, json=_team_answer())
+    )
+
+    response = client.post(
+        "/api/v1/forge/teams",
+        headers=_headers(),
+        json=_team_body(target_tags=["eu", "arm64"]),
+    )
+
+    assert response.status_code == 201
+    assert _sent(route)["workload_config"] == {"host_selector": {"tags": ["arm64"], "match": "all"}}
+
+
+@respx.mock
+def test_create_team_refuses_target_tags_with_a_callers_host_selector() -> None:
+    client = _client([_instance("gpu", base_url="http://gpu", is_default=True, tags=["gpu"])])
+    route = respx.post("http://gpu/api/v1/forge/teams").mock(
+        return_value=Response(201, json=_team_answer())
+    )
+
+    response = client.post(
+        "/api/v1/forge/teams",
+        headers=_headers(),
+        json=_team_body(target_tags=["gpu"], workload_config={"host_selector": {"tags": ["x"]}}),
+    )
+
+    assert response.status_code == 422
+    assert not route.called
+
+
+@respx.mock
+def test_create_team_fails_loud_when_no_instance_matches_tags() -> None:
+    client = _client([_instance("cpu", base_url="http://cpu", is_default=True, tags=["us-west"])])
+    respx.get("http://cpu/api/v1/forge/compute/hosts/tag-sets").mock(return_value=Response(404))
+
+    response = client.post(
+        "/api/v1/forge/teams", headers=_headers(), json=_team_body(target_tags=["gpu"])
+    )
+
+    assert response.status_code == 503
+    assert "gpu" in response.json()["detail"]
+
+
+@respx.mock
+def test_create_team_syncs_every_members_persona_to_the_target() -> None:
+    embedded = FastAPI()
+    embedded.state.persona_registry = SimpleNamespace(
+        get_persona=AsyncMock(
+            side_effect=lambda user, name: SimpleNamespace(
+                has_override=True, payload={"name": name, "system_prompt_template": "x"}
+            )
+        )
+    )
+    client = _client(
+        [_instance("target", base_url="http://target", is_default=True)],
+        embedded_forge_app=embedded,
+    )
+    respx.get(url__regex=r"http://target/api/v1/personas/.+").mock(return_value=Response(404))
+    sync = respx.post("http://target/api/v1/personas").mock(
+        return_value=Response(201, json={"name": "x"})
+    )
+    launch = respx.post("http://target/api/v1/forge/teams").mock(
+        return_value=Response(201, json=_team_answer())
+    )
+
+    response = client.post(
+        "/api/v1/forge/teams",
+        headers=_headers(),
+        json=_team_body(
+            members=[
+                {"model": "m", "persona_name": "reviewer", "lead": True},
+                {"model": "m", "personaName": "tester"},
+                {"model": "m"},
+            ]
+        ),
+    )
+
+    assert response.status_code == 201
+    assert [json.loads(call.request.read())["name"] for call in sync.calls] == [
+        "reviewer",
+        "tester",
+    ]
+    assert launch.called
+
+
+@respx.mock
+def test_create_team_with_an_unknown_persona_is_422_and_creates_nothing() -> None:
+    embedded = FastAPI()
+    embedded.state.persona_registry = SimpleNamespace(get_persona=AsyncMock(return_value=None))
+    client = _client(
+        [_instance("target", base_url="http://target", is_default=True)],
+        embedded_forge_app=embedded,
+    )
+    launch = respx.post("http://target/api/v1/forge/teams").mock(
+        return_value=Response(201, json=_team_answer())
+    )
+
+    response = client.post("/api/v1/forge/teams", headers=_headers(), json=_team_body())
+
+    assert response.status_code == 422
+    assert "Persona not found" in response.json()["detail"]
+    assert not launch.called
+
+
+@respx.mock
+def test_create_team_passes_the_forges_refusal_through() -> None:
+    client = _client([_instance("default", base_url="http://default", is_default=True)])
+    respx.post("http://default/api/v1/forge/teams").mock(
+        return_value=Response(422, json={"detail": "exactly one member must lead"})
+    )
+
+    response = client.post("/api/v1/forge/teams", headers=_headers(), json=_team_body())
+
+    assert response.status_code == 422
+    assert "exactly one member must lead" in response.json()["detail"]
+
+
+@respx.mock
+@pytest.mark.parametrize(
+    "answer",
+    [
+        ["bad"],
+        {"session": {"id": "root"}},
+        {"session": "root", "members": []},
+        {"session": {"id": "root"}, "members": ["m1"]},
+    ],
+)
+def test_create_team_with_an_unexpected_answer_is_a_bad_gateway(answer: Any) -> None:
+    client = _client([_instance("default", base_url="http://default", is_default=True)])
+    respx.post("http://default/api/v1/forge/teams").mock(return_value=Response(201, json=answer))
+
+    response = client.post("/api/v1/forge/teams", headers=_headers(), json=_team_body())
+
+    assert response.status_code == 502
+
+
+@respx.mock
+def test_session_members_are_the_nodes_answer() -> None:
+    client = _client([_instance("alpha", base_url="http://alpha")])
+    _holds_the_session(role="viewer")
+    members = respx.get(f"{NODE}/members").mock(
+        return_value=Response(
+            200,
+            json={
+                "agents": [{"session_id": "m1", "lead": True}],
+                "people": [{"user_id": "u", "role": "owner", "online": None}],
+            },
+        )
+    )
+
+    response = client.get(f"{GATEWAY}/members", headers=_headers())
+
+    assert response.status_code == 200
+    assert response.json()["agents"][0]["lead"] is True
+    assert response.json()["people"][0]["role"] == "owner"
+    assert members.called
+
+
+@respx.mock
+def test_session_members_keep_the_nodes_refusal() -> None:
+    client = _client([_instance("alpha", base_url="http://alpha")])
+    _holds_the_session(role="viewer")
+    respx.get(f"{NODE}/members").mock(
+        return_value=Response(502, json={"detail": "the room could not be read"})
+    )
+
+    response = client.get(f"{GATEWAY}/members", headers=_headers())
+
+    assert response.status_code == 502
+
+
+@respx.mock
+def test_session_members_of_a_session_nobody_holds_are_not_found() -> None:
+    client = _client([_instance("alpha", base_url="http://alpha")])
+    respx.get(f"{NODE}/participants/me").mock(
+        return_value=Response(404, json={"detail": "Session not found"})
+    )
+
+    assert client.get(f"{GATEWAY}/members", headers=_headers()).status_code == 404
+
+
+@respx.mock
+def test_people_search_without_a_session_asks_the_default_instance() -> None:
+    client = _client(
+        [
+            _instance("default", base_url="http://default", is_default=True),
+            _instance("other", base_url="http://other"),
+        ]
+    )
+    people = respx.get("http://default/api/v1/forge/participant-candidates").mock(
+        return_value=Response(200, json=[{"user_id": "zed", "display_name": "Zed"}])
+    )
+
+    response = client.get(
+        "/api/v1/forge/participant-candidates", params={"q": "ze"}, headers=_headers()
+    )
+
+    assert response.status_code == 200
+    assert response.json() == [{"user_id": "zed", "display_name": "Zed"}]
+    assert dict(people.calls.last.request.url.params) == {"q": "ze"}
+
+
+@respx.mock
+def test_people_search_without_a_session_asks_the_named_instance() -> None:
+    client = _client(
+        [
+            _instance("default", base_url="http://default", is_default=True),
+            _instance("other", base_url="http://other"),
+        ]
+    )
+    people = respx.get("http://other/api/v1/forge/participant-candidates").mock(
+        return_value=Response(200, json=[])
+    )
+
+    response = client.get(
+        "/api/v1/forge/participant-candidates",
+        params={"instance_id": "other"},
+        headers=_headers(),
+    )
+
+    assert response.status_code == 200 and response.json() == []
+    # The selector is this gateway's own: the Forge is asked for the query alone.
+    assert dict(people.calls.last.request.url.params) == {"q": ""}
+
+
+@respx.mock
+def test_people_search_without_a_session_on_an_unknown_instance_is_not_found() -> None:
+    client = _client([_instance("default", base_url="http://default", is_default=True)])
+
+    response = client.get(
+        "/api/v1/forge/participant-candidates",
+        params={"instance_id": "missing"},
+        headers=_headers(),
+    )
+
+    assert response.status_code == 404
+
+
+@respx.mock
+def test_people_search_that_is_not_a_list_is_a_bad_gateway() -> None:
+    client = _client([_instance("default", base_url="http://default", is_default=True)])
+    respx.get("http://default/api/v1/forge/participant-candidates").mock(
+        return_value=Response(200, json={"x": 1})
+    )
+
+    response = client.get("/api/v1/forge/participant-candidates", headers=_headers())
+
+    assert response.status_code == 502

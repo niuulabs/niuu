@@ -199,6 +199,7 @@ from volundr.domain.session_read_state import (
 )
 from volundr.domain.session_runtimes import SessionRuntimeOffer
 from volundr.domain.session_startup import SessionStartup
+from volundr.domain.team import TEAM_KEY, TEAM_MEMBER_KEY
 from volundr.domain.workflow_session import (
     WORKFLOW_MEMBER_KEY,
     WORKFLOW_RUN_ID_KEY,
@@ -1433,6 +1434,35 @@ class DeviceResponse(BaseModel):
         )
 
 
+class SessionTeam(BaseModel):
+    """What a team's root records about its team."""
+
+    task_to: Literal["lead", "everyone"] | None = Field(
+        default=None,
+        description="Who receives the opening task; null when the team started without one",
+    )
+
+
+class SessionTeamMember(BaseModel):
+    """What a team's member records about itself."""
+
+    lead: bool = Field(description="True for the one member that leads the team")
+
+
+def _session_team(session: Session) -> SessionTeam | None:
+    marker = session.workload_config.get(TEAM_KEY)
+    if not isinstance(marker, dict):
+        return None
+    return SessionTeam(task_to=marker.get("task_to"))
+
+
+def _session_team_member(session: Session) -> SessionTeamMember | None:
+    marker = session.workload_config.get(TEAM_MEMBER_KEY)
+    if not isinstance(marker, dict):
+        return None
+    return SessionTeamMember(lead=marker.get("lead") is True)
+
+
 class SessionResponse(BaseModel):
     """Response model for a session."""
 
@@ -1455,6 +1485,22 @@ class SessionResponse(BaseModel):
     workflow_step_host: bool = Field(
         default=False,
         description="Whether the session hosts workflow steps (step API and close tool on)",
+    )
+    hosted_by: UUID | None = Field(
+        default=None,
+        description="The unit root this session runs in (null for a session of its own)",
+    )
+    team: SessionTeam | None = Field(
+        default=None,
+        description="Set on a team's root: how its opening task is addressed",
+    )
+    team_member: SessionTeamMember | None = Field(
+        default=None,
+        description="Set on a team's member: whether it leads the team",
+    )
+    people_count: int = Field(
+        ge=1,
+        description="People in the session: its owner and its active participant grants",
     )
     source: SessionSource = Field(description="Workspace source config")
     status: SessionStatus = Field(description="Current lifecycle status")
@@ -1670,9 +1716,15 @@ class SessionResponse(BaseModel):
         cls,
         session: Session,
         *,
+        people_count: int,
         public_host: str = "127.0.0.1",
     ) -> "SessionResponse":
-        """Create response from domain model."""
+        """Create response from domain model.
+
+        ``people_count`` is the owner plus the session's active participant grants, which
+        the domain model does not hold: the caller reads it from the grants, for a whole
+        listing in one query.
+        """
         return cls(
             read_state=session.read_state,
             id=session.id,
@@ -1683,6 +1735,10 @@ class SessionResponse(BaseModel):
             workflow_run_id=session.workload_config.get(WORKFLOW_RUN_ID_KEY),
             workflow_member=session.workload_config.get(WORKFLOW_MEMBER_KEY),
             workflow_step_host=session.workload_config.get(WORKFLOW_STEP_HOST_KEY) is True,
+            hosted_by=session.hosted_by,
+            team=_session_team(session),
+            team_member=_session_team_member(session),
+            people_count=people_count,
             source=session.source,
             status=session.status,
             chat_endpoint=_public_session_endpoint(
@@ -2464,9 +2520,21 @@ def create_router(
         else {}
     )
 
-    def _session_response(session: Session) -> SessionResponse:
-        response = SessionResponse.from_session(session, public_host=server_public_host)
-        return response.model_copy(update=own_instance_fields) if own_instance_fields else response
+    async def _session_responses(sessions: list[Session]) -> list[SessionResponse]:
+        """The responses for *sessions*, their people counted in one query for the lot."""
+        counts = await session_participant_service.people_counts([s.id for s in sessions])
+        responses = [
+            SessionResponse.from_session(
+                s, people_count=counts[s.id], public_host=server_public_host
+            )
+            for s in sessions
+        ]
+        if not own_instance_fields:
+            return responses
+        return [response.model_copy(update=own_instance_fields) for response in responses]
+
+    async def _session_response(session: Session) -> SessionResponse:
+        return (await _session_responses([session]))[0]
 
     def _http_proxy_target(url: str) -> tuple[str, dict[str, str]]:
         return _server_side_http_proxy_target(
@@ -2902,9 +2970,7 @@ def create_router(
         if changes is not None:
             sessions = [s for s in sessions if s.id in changes.ids]
         sessions = await forge.with_read_states(sessions, principal)
-        result: list[SessionResponse | SessionRoomSummary] = [
-            _session_response(s) for s in sessions
-        ]
+        result: list[SessionResponse | SessionRoomSummary] = [*await _session_responses(sessions)]
 
         room_pairs = await forge.list_participant_only_sessions(
             status=status_filter,
@@ -3175,7 +3241,7 @@ def create_router(
             raise HTTPException(status_code=422, detail=str(e)) from e
         except HistoryImportError as e:
             raise HTTPException(status_code=503, detail=str(e)) from e
-        return _session_response(session)
+        return await _session_response(session)
 
     @router.post("/sessions/{session_id}/history/import", tags=["Sessions"])
     async def import_session_history(request: Request, session_id: UUID) -> dict:
@@ -3268,7 +3334,7 @@ def create_router(
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(e))
         except (ExecutionCatalogError, ExecutionSelectionError) as e:
             raise _execution_catalog_http_error(e) from e
-        return _session_response(started)
+        return await _session_response(started)
 
     @router.post(
         "/sessions/playability",
@@ -3335,7 +3401,7 @@ def create_router(
             )
 
         session = (await forge.with_read_states([session], principal))[0]
-        return _session_response(session)
+        return await _session_response(session)
 
     @router.get(
         "/sessions/{session_id}/status",
@@ -3555,7 +3621,7 @@ def create_router(
                 tracker_issue_id=data.tracker_issue_id,
                 principal=principal,
             )
-            return _session_response(session)
+            return await _session_response(session)
         except SessionAccessDeniedError:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
@@ -3599,7 +3665,7 @@ def create_router(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Session not found: {session_id}",
             )
-        return _session_response(session)
+        return await _session_response(session)
 
     def _forge_mcp_grants_response(session_id: UUID, view) -> ForgeMcpGrantsResponse:
         return ForgeMcpGrantsResponse(
@@ -3761,7 +3827,7 @@ def create_router(
                 principal=principal,
                 integration_ids=data.integration_ids if data else None,
             )
-            return _session_response(session)
+            return await _session_response(session)
         except ForgeMcpGrantEscalationError as e:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e))
         except SessionAccessDeniedError:
@@ -3815,7 +3881,7 @@ def create_router(
         principal = await _optional_principal(request)
         try:
             session = await forge.stop_session(session_id, principal=principal)
-            return _session_response(session)
+            return await _session_response(session)
         except SessionAccessDeniedError:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
@@ -4044,7 +4110,7 @@ def create_router(
                 session_id,
                 principal=principal,
             )
-            return _session_response(session)
+            return await _session_response(session)
         except SessionAccessDeniedError:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
@@ -4080,7 +4146,7 @@ def create_router(
                 session_id,
                 principal=principal,
             )
-            return _session_response(session)
+            return await _session_response(session)
         except SessionAccessDeniedError:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
@@ -6473,7 +6539,7 @@ def create_router(
                 status_code=status.HTTP_409_CONFLICT,
                 detail=str(e),
             ) from e
-        return _session_response(session)
+        return await _session_response(session)
 
     @router.get(
         "/chronicles/{chronicle_id}/chain",

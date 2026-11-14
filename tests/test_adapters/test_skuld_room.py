@@ -96,6 +96,78 @@ async def test_list_room_participants_uses_internal_skuld_endpoint():
 
 
 @respx.mock
+async def test_list_room_participants_ignores_connected_people():
+    session = _session()
+    respx.get(f"http://127.0.0.1:8080/s/{session.id}/api/room/participants").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "participants": [{"peer_id": "p", "persona": "coder", "participant_type": "ravn"}],
+                "connected_people": [{"user_id": "ada", "display_name": "Ada"}],
+            },
+        )
+    )
+    adapter = SkuldRoomAdapter(_FakeSessionRepository(session))
+
+    participants = await adapter.list_room_participants(session.id)
+
+    assert [p.peer_id for p in participants] == ["p"]
+
+
+@respx.mock
+async def test_read_room_carries_participants_and_connected_people():
+    session = _session()
+    route = respx.get(f"http://127.0.0.1:8080/s/{session.id}/api/room/participants").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "participants": [{"peer_id": "p", "persona": "coder", "participant_type": "human"}],
+                "connected_people": [
+                    {"user_id": "ada", "display_name": "Ada"},
+                    {"user_id": "bo"},
+                ],
+            },
+        )
+    )
+    adapter = SkuldRoomAdapter(_FakeSessionRepository(session))
+
+    roster = await adapter.read_room(session.id)
+
+    assert route.call_count == 1
+    assert [(p.peer_id, p.participant_type) for p in roster.participants] == [("p", "human")]
+    assert [(c.user_id, c.display_name) for c in roster.connected_people] == [
+        ("ada", "Ada"),
+        ("bo", ""),
+    ]
+
+
+@respx.mock
+async def test_read_room_refuses_a_broker_that_reports_no_connected_people():
+    session = _session()
+    respx.get(f"http://127.0.0.1:8080/s/{session.id}/api/room/participants").mock(
+        return_value=httpx.Response(200, json={"participants": []})
+    )
+    adapter = SkuldRoomAdapter(_FakeSessionRepository(session))
+
+    with pytest.raises(ValueError, match="connected_people.*older than this Forge"):
+        await adapter.read_room(session.id)
+
+
+@respx.mock
+async def test_read_room_refuses_a_connected_person_without_a_user_id():
+    session = _session()
+    respx.get(f"http://127.0.0.1:8080/s/{session.id}/api/room/participants").mock(
+        return_value=httpx.Response(
+            200, json={"participants": [], "connected_people": [{"display_name": "Ghost"}]}
+        )
+    )
+    adapter = SkuldRoomAdapter(_FakeSessionRepository(session))
+
+    with pytest.raises(ValueError, match="no user_id"):
+        await adapter.read_room(session.id)
+
+
+@respx.mock
 async def test_list_room_participants_refuses_a_participant_without_a_type():
     session = _session()
     respx.get(f"http://127.0.0.1:8080/s/{session.id}/api/room/participants").mock(
