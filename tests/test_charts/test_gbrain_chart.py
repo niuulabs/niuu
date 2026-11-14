@@ -46,7 +46,7 @@ def test_persistent_server_and_secret_reference():
 
 
 def test_restarts_keep_the_client_secret_journal_private():
-    """gbrain refuses a delivery file that is not 0600, and recovering a client's secret needs one."""
+    """gbrain refuses a delivery file that is not 0600; recovering a secret needs one."""
     result = render()
     assert result.returncode == 0, result.stderr
     docs = {d["kind"]: d for d in yaml.safe_load_all(result.stdout)}
@@ -56,6 +56,7 @@ def test_restarts_keep_the_client_secret_journal_private():
     repair = "find /data/.gbrain/credential-deliveries -type f -name '*.json' -exec chmod 600 {} +"
     assert repair in start
     assert start.index(repair) < start.index("exec gbrain serve")
+
 
 def test_postgres_maintenance_has_no_access_to_live_pglite_files():
     result = render("--set", "engine=postgres", "--set", "dream.enabled=true")
