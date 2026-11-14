@@ -228,7 +228,7 @@ async def test_sigterm_cancels_the_login_so_it_stops_its_cli():
     await asyncio.sleep(0)
     os.kill(os.getpid(), signal.SIGTERM)
     async with asyncio.timeout(5):
-        await task
+        await asyncio.gather(task)
     assert stopped.is_set()
 
 

@@ -406,7 +406,7 @@ async def until_terminated(login: Coroutine[Any, Any, None]) -> None:
     task = asyncio.ensure_future(login)
     asyncio.get_running_loop().add_signal_handler(signal.SIGTERM, task.cancel)
     with contextlib.suppress(asyncio.CancelledError):
-        await task
+        await asyncio.gather(task)
 
 
 if __name__ == "__main__":
