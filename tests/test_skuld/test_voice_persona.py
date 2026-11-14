@@ -10,7 +10,6 @@ import pytest
 from niuu.cap_telemetry import cap_hit_counts, reset_cap_hits
 from personas.domain.persona_document import PersonaDocumentError
 from skuld.voice.persona import (
-    CARD_TURN_KNOB,
     PROMPT_VERSION,
     UnsupportedProviderError,
     VoicePersona,
@@ -18,8 +17,8 @@ from skuld.voice.persona import (
     VoicePromptComposer,
     normalize_provider,
     resolve_voice_persona,
-    session_mode_rules,
 )
+from skuld.voice.session_binding import CARD_TURN_KNOB, session_mode_rules
 from skuld.voice.session_port import SessionTurn
 from tests.test_skuld.voice_support import MODELS, make_composer, make_status, persona_document
 
@@ -152,9 +151,6 @@ class TestComposer:
                 persona,
                 models={"grok": "g"},
                 time_zone="UTC",
-                tool_names=[],
-                card_recent_turns=1,
-                card_turn_max_chars=10,
             )
 
     def test_an_unknown_time_zone_raises(self):

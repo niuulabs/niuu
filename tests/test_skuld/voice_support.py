@@ -11,6 +11,7 @@ from skuld.voice.calls import VoiceCallBook
 from skuld.voice.channel import SessionVoiceChannel, register_voice_routes
 from skuld.voice.minting import MintedCredential, VoiceMintError
 from skuld.voice.persona import VoicePromptComposer, resolve_voice_persona
+from skuld.voice.session_binding import SessionVoiceBinding
 from skuld.voice.session_port import (
     SendOutcome,
     SendStatus,
@@ -127,6 +128,71 @@ def failing_minter(reason: str = "Forge refused (HTTP 401): bad key") -> FakeMin
     return FakeMinter(error=VoiceMintError(reason))
 
 
+class _NamedToolsBinding(SessionVoiceBinding):
+    """A session binding whose tool names a test chooses (for the prompt's fingerprint)."""
+
+    def __init__(self, *args: Any, tool_names: list[str], **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self._names = list(tool_names)
+
+    @property
+    def tool_names(self) -> list[str]:
+        return list(self._names)
+
+
+def make_binding(
+    session: FakeSession | None = None,
+    *,
+    tool_names: list[str] | None = None,
+    card_recent_turns: int = 6,
+    card_turn_max_chars: int = 1500,
+    full_read_max_chars: int = FULL_READ_MAX_CHARS,
+) -> SessionVoiceBinding:
+    """A call bound to *session* (a fresh fake by default)."""
+    session = session or FakeSession()
+    tools = SessionVoiceTools(
+        session, tool_timeout_seconds=60.0, full_read_max_chars=full_read_max_chars
+    )
+    kwargs = {"card_recent_turns": card_recent_turns, "card_turn_max_chars": card_turn_max_chars}
+    if tool_names is None:
+        return SessionVoiceBinding(session, tools, **kwargs)
+    return _NamedToolsBinding(session, tools, tool_names=tool_names, **kwargs)
+
+
+class ComposerHarness:
+    """The real composer over a session binding, driven by a status and turns per call."""
+
+    def __init__(self, composer: VoicePromptComposer, binding_args: dict[str, Any]) -> None:
+        self.composer = composer
+        self._binding_args = binding_args
+
+    @property
+    def persona(self) -> Any:
+        return self.composer.persona
+
+    def model_for(self, provider: str) -> str:
+        return self.composer.model_for(provider)
+
+    def _binding(self, status: SessionVoiceStatus, turns: list[SessionTurn]) -> SessionVoiceBinding:
+        session = FakeSession(status=status)
+        session.current_turns = list(turns)
+        return make_binding(session, **self._binding_args)
+
+    def card(self, status: SessionVoiceStatus, turns: list[SessionTurn]) -> str:
+        return self._binding(status, turns).card(status, turns)
+
+    def standing_instructions(self, status: SessionVoiceStatus, turns: list[SessionTurn]) -> str:
+        return self.composer.standing_instructions(self._binding(status, turns))
+
+    def instructions(self, status: SessionVoiceStatus, turns: list[SessionTurn], **kw: Any) -> str:
+        return self.composer.instructions(self._binding(status, turns), **kw)
+
+    def prompt(
+        self, provider: str, status: SessionVoiceStatus, turns: list[SessionTurn], **kw: Any
+    ) -> dict[str, Any]:
+        return self.composer.prompt(provider, self._binding(status, turns), **kw)
+
+
 def make_composer(
     *,
     persona: dict[str, Any] | None = None,
@@ -134,15 +200,16 @@ def make_composer(
     card_recent_turns: int = 6,
     card_turn_max_chars: int = 1500,
     time_zone: str = "UTC",
-) -> VoicePromptComposer:
+) -> ComposerHarness:
     voice_persona = resolve_voice_persona(None, persona or persona_document())
-    return VoicePromptComposer(
-        voice_persona,
-        models=MODELS,
-        time_zone=time_zone,
-        tool_names=tool_names or [],
-        card_recent_turns=card_recent_turns,
-        card_turn_max_chars=card_turn_max_chars,
+    composer = VoicePromptComposer(voice_persona, models=MODELS, time_zone=time_zone)
+    return ComposerHarness(
+        composer,
+        {
+            "tool_names": tool_names,
+            "card_recent_turns": card_recent_turns,
+            "card_turn_max_chars": card_turn_max_chars,
+        },
     )
 
 
@@ -157,15 +224,16 @@ def make_channel(
 ) -> tuple[SessionVoiceChannel, FakeSession, FakeMinter]:
     session = session or FakeSession()
     minter = minter or FakeMinter()
-    tools = SessionVoiceTools(
-        session, tool_timeout_seconds=60.0, full_read_max_chars=full_read_max_chars
-    )
+    persona_document_ = persona or persona_document()
     channel = SessionVoiceChannel(
-        session=session,
-        composer=make_composer(
-            persona=persona, tool_names=tools.names, card_turn_max_chars=card_turn_max_chars
+        binding=make_binding(
+            session,
+            full_read_max_chars=full_read_max_chars,
+            card_turn_max_chars=card_turn_max_chars,
         ),
-        tools=tools,
+        composer=VoicePromptComposer(
+            resolve_voice_persona(None, persona_document_), models=MODELS, time_zone="UTC"
+        ),
         calls=VoiceCallBook(session.record),
         minter=minter,  # type: ignore[arg-type]
         owner_id=owner_id,

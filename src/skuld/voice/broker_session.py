@@ -22,6 +22,7 @@ from skuld.voice.calls import VoiceCallBook
 from skuld.voice.channel import SessionVoiceChannel
 from skuld.voice.minting import ForgeVoiceMinter
 from skuld.voice.persona import VoicePromptComposer, resolve_voice_persona
+from skuld.voice.session_binding import SessionVoiceBinding
 from skuld.voice.session_port import (
     SendOutcome,
     SendStatus,
@@ -159,18 +160,17 @@ def build_voice_channel(broker: Any) -> SessionVoiceChannel:
         tool_timeout_seconds=config.tool_timeout_seconds,
         full_read_max_chars=config.full_read_max_chars,
     )
-    composer = VoicePromptComposer(
-        persona,
-        models=config.models,
-        time_zone=config.time_zone,
-        tool_names=tools.names,
+    composer = VoicePromptComposer(persona, models=config.models, time_zone=config.time_zone)
+    # The call is bound to this session. A team call on a room host binds to its room.
+    binding = SessionVoiceBinding(
+        session,
+        tools,
         card_recent_turns=config.card_recent_turns,
         card_turn_max_chars=config.card_turn_max_chars,
     )
     channel = SessionVoiceChannel(
-        session=session,
+        binding=binding,
         composer=composer,
-        tools=tools,
         calls=VoiceCallBook(session.record),
         minter=ForgeVoiceMinter(
             broker._get_session_http_client,

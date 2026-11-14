@@ -40,11 +40,10 @@ from fastapi.responses import JSONResponse
 from niuu.domain.message_author import MessageAuthor
 from niuu.domain.session_voice import SESSION_VOICE_PATH, SESSION_VOICE_PROTOCOL
 from skuld.voice import protocol as wire
+from skuld.voice.binding import UnknownToolError, VoiceCallBinding
 from skuld.voice.calls import UnknownCallError, VoiceCallBook
 from skuld.voice.minting import ForgeVoiceMinter, VoiceMintError
 from skuld.voice.persona import MINT_PROVIDERS, UnsupportedProviderError, VoicePromptComposer
-from skuld.voice.session_port import VoiceSessionPort
-from skuld.voice.tools import SessionVoiceTools, UnknownToolError
 from skuld.websocket_auth import author_from_headers
 
 logger = logging.getLogger("skuld.voice")
@@ -81,9 +80,8 @@ class SessionVoiceChannel:
     def __init__(
         self,
         *,
-        session: VoiceSessionPort,
+        binding: VoiceCallBinding,
         composer: VoicePromptComposer,
-        tools: SessionVoiceTools,
         calls: VoiceCallBook,
         minter: ForgeVoiceMinter,
         owner_id: str,
@@ -92,9 +90,8 @@ class SessionVoiceChannel:
     ) -> None:
         if not owner_id.strip():
             raise ValueError("The voice channel needs the session's owner: only they are served")
-        self._session = session
+        self._binding = binding
         self._composer = composer
-        self._tools = tools
         self._calls = calls
         self._minter = minter
         self._owner_id = owner_id.strip()
@@ -131,14 +128,14 @@ class SessionVoiceChannel:
             "uptime": int(time.monotonic() - self._started),
             "connections": len(self._connections),
             "sessions": self._calls.active_count(),
-            "tools": len(self._tools.names),
+            "tools": len(self._binding.tool_names),
             **(
                 {"historyUnavailable": self.history_unavailable} if self.history_unavailable else {}
             ),
         }
 
     def tool_catalog(self, profile: str | None) -> JSONResponse:
-        definitions = self._tools.definitions()
+        definitions = self._binding.tool_definitions()
         if profile is None:
             return JSONResponse({"success": True, "tools": definitions})
         if profile != VOICE_TOOL_PROFILE:
@@ -160,7 +157,7 @@ class SessionVoiceChannel:
         args = body.get("args") if isinstance(body.get("args"), dict) else {}
         call_id = str(body.get("conversationId") or body.get("sessionId") or "")
         try:
-            outcome = await self._tools.call(name, args, author=author, call_id=call_id)
+            outcome = await self._binding.call_tool(name, args, author=author, call_id=call_id)
         except UnknownToolError:
             return JSONResponse(
                 {"success": False, "error": f"Voice tool '{name}' is not registered"},
@@ -180,8 +177,7 @@ class SessionVoiceChannel:
         try:
             prompt = self._composer.prompt(
                 provider,
-                self._session.status(),
-                self._session.turns(),
+                self._binding,
                 surface=surface,
                 conversation_id=conversation_id,
             )
@@ -355,17 +351,15 @@ class SessionVoiceChannel:
         return {
             "name": persona.name,
             "displayName": persona.display_name,
-            "contextPrompt": self._composer.standing_instructions(
-                self._session.status(), self._session.turns()
-            ),
+            "contextPrompt": self._composer.standing_instructions(self._binding),
             "voice": persona.default_voice(),
             "voices": voices,
-            "sources": [f"persona:{persona.name}", f"session:{self._session.status().session_id}"],
+            "sources": [f"persona:{persona.name}", *self._binding.sources()],
             "errors": [],
         }
 
     def _allowed_definitions(self, connection: _Connection) -> list[dict[str, Any]]:
-        definitions = self._tools.definitions()
+        definitions = self._binding.tool_definitions()
         if connection.allowlist is None:
             return definitions
         return [d for d in definitions if d["name"] in connection.allowlist]
@@ -376,7 +370,7 @@ class SessionVoiceChannel:
             raise wire.ProtocolError(
                 "tools must be a list of names", wire.ErrorCodes.INVALID_PARAMS
             )
-        connection.allowlist = {name for name in names if name in self._tools.names}
+        connection.allowlist = {name for name in names if name in self._binding.tool_names}
         return wire.frame(
             wire.TOOLS_ENABLE_RESULT, message_id, {"enabled": sorted(connection.allowlist)}
         )
@@ -397,7 +391,7 @@ class SessionVoiceChannel:
                 {"name": name, "error": f"Tool {name} is not enabled on this call"},
             )
         try:
-            outcome = await self._tools.call(
+            outcome = await self._binding.call_tool(
                 name,
                 args,
                 author=connection.author,
@@ -475,9 +469,7 @@ class SessionVoiceChannel:
         except UnsupportedProviderError as exc:
             raise wire.ProtocolError(str(exc), wire.ErrorCodes.UNSUPPORTED_PROVIDER) from exc
         model = str(payload.get("model") or self._composer.model_for(prompt_provider))
-        instructions = self._composer.standing_instructions(
-            self._session.status(), self._session.turns()
-        )
+        instructions = self._composer.standing_instructions(self._binding)
         try:
             credential = await self._minter.mint(
                 provider=provider,

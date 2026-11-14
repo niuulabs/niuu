@@ -8,12 +8,12 @@ call steers this session, and the session does the work.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
 from niuu.cap_telemetry import record_truncation
 from niuu.domain.message_author import MessageAuthor
+from skuld.voice.binding import ToolOutcome, UnknownToolError
 from skuld.voice.session_port import SendStatus, SessionTurn, VoiceSessionPort
 
 #: Category the app files these tools under.
@@ -27,18 +27,6 @@ FULL_READ_KNOB = "voice.full_read_max_chars"
 #: Characters a full read keeps for its first line (the header, or the note on what it
 #: leaves out); ``voice.full_read_max_chars`` has a floor well above it.
 _HEADER_ROOM = 512
-
-
-class UnknownToolError(LookupError):
-    """No voice tool by that name."""
-
-
-@dataclass(frozen=True)
-class ToolOutcome:
-    """What the voice model hears back."""
-
-    content: str
-    is_error: bool = False
 
 
 class SessionVoiceTools:

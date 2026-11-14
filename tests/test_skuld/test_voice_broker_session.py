@@ -19,6 +19,7 @@ from skuld.voice.broker_session import (
 )
 from skuld.voice.channel import SessionVoiceChannel
 from skuld.voice.persona import VoicePersonaError
+from skuld.voice.session_binding import SessionVoiceBinding
 from skuld.voice.session_port import SendStatus
 from tests.test_skuld.voice_support import OWNER, persona_document
 
@@ -329,6 +330,7 @@ class TestBuildVoiceChannel:
         assert owner is not None
         assert channel.caller({"x-auth-user-id": "someone-else"}) is None
         assert channel.health()["tools"] == 3
+        assert isinstance(channel._binding, SessionVoiceBinding)
 
     def test_the_display_name_and_models_come_from_config(self, tmp_path):
         settings = self._settings(
@@ -338,7 +340,7 @@ class TestBuildVoiceChannel:
         channel = build_voice_channel(self._broker(settings))
 
         prompt = channel._composer.prompt(
-            "grok", channel._session.status(), [], surface="ios", conversation_id="c"
+            "grok", channel._binding, surface="ios", conversation_id="c"
         )
         assert prompt["displayName"] == "Max"
         assert prompt["session"]["model"] == "g-1"
