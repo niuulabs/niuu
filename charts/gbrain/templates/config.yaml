@@ -20,6 +20,11 @@ data:
     {{- if .Values.connection.enabled }}
     bun /etc/gbrain/connection.ts
     {{- end }}
+    # gbrain hands a client's secret back only from a private (0600) delivery file. A volume mounted
+    # under the kubelet's default fsGroup policy made them group-writable; restore the mode gbrain wrote.
+    if [ -d /data/.gbrain/credential-deliveries ]; then
+      find /data/.gbrain/credential-deliveries -type f -name '*.json' -exec chmod 600 {} +
+    fi
     exec gbrain serve --http --bind 0.0.0.0 --port 3131
 
   {{- if .Values.connection.enabled }}

@@ -212,7 +212,7 @@ Currently `down` and `status` operate on their own process-local service manager
 | Session runs but Chat reports expired OAuth / 401 | Stop the session, run `claude auth login`, and repeat the real `claude -p` check. Launch a new session after authentication succeeds. |
 | Model unavailable or access denied | Check the model in the launch summary and test access with the Claude CLI. A catalog entry does not grant provider access. |
 | `hello.txt` is missing | Inspect Chat for tool approvals/errors and **Logs** for runtime failures. Do not treat the running status or the boot progress bar as proof of inference. |
-| Connection buttons in Settings do not work locally | Browser-based provider enrollment needs a configured login runner. This tutorial uses the host's Claude login instead. |
+| A connection button in Settings says the login is not available | Local sign-in runs the provider's own CLI on this machine: install it (`claude`, `codex` or `grok`) on the `PATH` of the terminal that starts Niuu, then restart. |
 
 ## Next
 

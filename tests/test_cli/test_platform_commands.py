@@ -16,6 +16,8 @@ from typer.testing import CliRunner
 from bifrost.config import BifrostConfig
 from cli.commands import platform as platform_module
 from cli.commands.platform import (
+    _OPERATOR_OWNED_LOCAL_ENV,
+    MINI_POD_MANAGER_ADAPTER,
     _build_init_config,
     _build_preflight_config,
     _build_up_callback,
@@ -733,6 +735,39 @@ class TestBuildInitConfig:
         ]
         assert resident_config["profiles"][0]["default_model"] == ("niuu/nvidia/nemotron-test")
         assert "FileCredentialStore" in json.loads(env["CREDENTIAL_STORE"])["adapter"]
+
+    def test_subscription_sign_in_runs_on_this_host_with_the_sessions_claude(self) -> None:
+        settings = CLISettings(
+            mode="mini",
+            pod_manager={"adapter": MINI_POD_MANAGER_ADAPTER, "claude_binary": "/opt/bin/claude"},
+        )
+
+        env = _resolve_local_pod_manager_env(settings)
+
+        runner = json.loads(env["CREDENTIAL_ENROLLMENT_RUNNER"])
+        assert runner == {
+            "adapter": "volundr.adapters.outbound.local_login_runner.LocalLoginRunner",
+            "kwargs": {"claude_executable": "/opt/bin/claude"},
+        }
+        assert "CREDENTIAL_ENROLLMENT_RUNNER" in _OPERATOR_OWNED_LOCAL_ENV
+
+    def test_sessions_get_their_credentials_rendered_from_the_local_store(self) -> None:
+        env = _resolve_local_pod_manager_env(CLISettings(mode="mini"))
+
+        injection = json.loads(env["SECRET_INJECTION"])
+        assert injection["adapter"].endswith("SessionFileSecretInjectionAdapter")
+        store = json.loads(env["CREDENTIAL_STORE"])["kwargs"]["base_dir"]
+        assert injection["kwargs"]["base_dir"] == store
+        assert "SECRET_INJECTION" in _OPERATOR_OWNED_LOCAL_ENV
+        contributors = [c["adapter"] for c in json.loads(env["SESSION_CONTRIBUTORS"])]
+        assert any(adapter.endswith("SecretInjectionContributor") for adapter in contributors)
+
+    def test_sessions_read_connections_where_settings_writes_them(self) -> None:
+        from niuu.service_databases import database_name_for_service
+
+        env = _resolve_local_pod_manager_env(CLISettings(mode="mini"))
+
+        assert env["INTEGRATIONS__DATABASE_NAME"] == database_name_for_service("niuu-shared")
 
     def test_bifrost_config_stays_open_under_host_auth_none(self) -> None:
         """OWNER CONSTRAINT: host_auth.mode: none must not touch bifrost.auth_mode."""
@@ -1643,12 +1678,9 @@ def test_mini_mode_switches_workload_identity_off():
     """One machine has no Kubernetes token issuer for the contributor's projected token."""
     env = _resolve_local_pod_manager_env(CLISettings(mode="mini", hosts={"enabled": False}))
     contributors = json.loads(env["SESSION_CONTRIBUTORS"])
-    assert contributors == [
-        {
-            "adapter": (
-                "volundr.adapters.outbound.contributors.workload_identity."
-                "WorkloadIdentityContributor"
-            ),
-            "kwargs": {"enabled": False},
-        }
-    ]
+    assert {
+        "adapter": (
+            "volundr.adapters.outbound.contributors.workload_identity.WorkloadIdentityContributor"
+        ),
+        "kwargs": {"enabled": False},
+    } in contributors
