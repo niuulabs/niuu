@@ -46,6 +46,10 @@ podSecurityContext:
   runAsUser: 1000
   runAsGroup: 1000
   fsGroup: 1000
+  # gbrain refuses a credential file that is not 0600. With the default policy (Always) the kubelet
+  # makes every file on the volume group-writable on each mount, so a restarted pod could no longer
+  # hand back the client secrets it keeps; OnRootMismatch leaves the modes gbrain set alone.
+  fsGroupChangePolicy: OnRootMismatch
 # -- Container-level security context of the server and the dream job.
 securityContext:
   allowPrivilegeEscalation: false
