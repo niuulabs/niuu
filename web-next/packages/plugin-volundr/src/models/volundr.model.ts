@@ -398,6 +398,14 @@ export interface VolundrSession {
   ownerId?: string;
   /** Who owns the session, by name, on a session shared with the caller (when known). */
   ownerName?: string;
+  /** The unit root this session runs in (a team's member, a workflow run's member). */
+  hostedBy?: string;
+  /** Set on a team's root: what the opening task was addressed to. */
+  team?: SessionTeam;
+  /** Set on a team's member: whether it is the one that leads. */
+  teamMember?: SessionTeamMember;
+  /** The owner plus everyone with an active grant on the session. */
+  peopleCount?: number;
   tenantId?: string;
   instanceId?: string;
   instanceName?: string;
@@ -410,6 +418,86 @@ export interface VolundrSession {
    * it, and only a host that records turn spans.
    */
   workedSeconds24h?: number;
+}
+
+/** Who the opening task of a team went to: the lead alone, or every agent. */
+export type SessionTeamTaskTo = 'lead' | 'everyone';
+export const SESSION_TEAM_TASK_TO: readonly SessionTeamTaskTo[] = ['lead', 'everyone'];
+
+/** A team's root: `taskTo` is null when the team started without a task. */
+export interface SessionTeam {
+  taskTo: SessionTeamTaskTo | null;
+}
+
+/** A team's member session. */
+export interface SessionTeamMember {
+  lead: boolean;
+}
+
+/** One agent of a team to start: its engine and persona; exactly one leads. */
+export interface StartTeamMember {
+  model: string;
+  definition?: string;
+  personaName?: string;
+  lead: boolean;
+}
+
+/**
+ * A team to start: one root session that hosts the room, a member session per agent, and
+ * the people granted into the room. `taskTo` is set exactly when `task` is.
+ */
+export interface StartTeamRequest {
+  name: string;
+  source: SessionSource;
+  task?: string;
+  taskTo?: SessionTeamTaskTo;
+  members: StartTeamMember[];
+  /** User ids granted the viewer role on the root. */
+  invitees?: string[];
+  launchSpec?: string;
+  credentialNames?: string[];
+  integrationIds?: string[];
+  resourceConfig?: Record<string, string | undefined>;
+  terminalRestricted?: boolean;
+  /** The Forge to start on; the aggregate resolves one from these as it does for a session. */
+  instanceId?: string | null;
+  targetTags?: string[];
+  targetMatch?: 'all' | 'any';
+}
+
+/** The started team: its root and a session per member. */
+export interface StartedTeam {
+  session: VolundrSession;
+  members: VolundrSession[];
+}
+
+/** An agent of a session's unit: a member session of a team, or the session itself. */
+export interface SessionMemberAgent {
+  sessionId: string;
+  name: string;
+  personaName: string;
+  model: string;
+  definition: string | null;
+  status: SessionStatus;
+  lead: boolean;
+}
+
+/** A person in a session's room: its owner, or someone with a grant. */
+export interface SessionMemberPerson {
+  userId: string;
+  displayName: string;
+  /** `owner` for the session's owner, otherwise the grant's role. */
+  role: string;
+  /** `active` for the owner, otherwise the grant's status. */
+  status: string;
+  /** Whether they are in the live room now; null when the session is not running. */
+  online: boolean | null;
+}
+
+/** Everyone in a session's room: its agents, then its people. */
+export interface SessionMembers {
+  agents: SessionMemberAgent[];
+  people: SessionMemberPerson[];
 }
 
 /**

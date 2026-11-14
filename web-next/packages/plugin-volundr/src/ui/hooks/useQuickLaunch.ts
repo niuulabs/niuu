@@ -7,6 +7,7 @@ import type {
   ForgeMcpSessionOptions,
   SessionDefinition,
   SessionSource,
+  StartTeamRequest,
   VolundrSession,
   VolundrTarget,
 } from '../../models/volundr.model';
@@ -76,28 +77,16 @@ export function useQuickLaunch() {
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  async function launch(
-    request: QuickLaunchRequest,
-    options: QuickLaunchOptions = {},
+  /** Creates the session(s), refreshes the lists, then takes the operator to the root session. */
+  async function run(
+    create: () => Promise<VolundrSession>,
+    failure: string,
+    options: QuickLaunchOptions,
   ): Promise<VolundrSession | null> {
     setError(null);
     setCreating(true);
     try {
-      const definition = request.definition;
-      const session = await volundr.startSession({
-        name: request.name,
-        source: request.source,
-        instanceId: request.instanceId,
-        model: request.model || (definition?.defaultModel ?? ''),
-        definition: definition?.key,
-        taskType: definition ? definitionToTaskType(definition.key) : undefined,
-        initialPrompt: request.initialPrompt?.trim() || undefined,
-        personaName: request.personaName?.trim() || undefined,
-        integrationIds: request.integrationIds,
-        forgeMcp: request.forgeMcp,
-        terminalRestricted: false,
-        workloadConfig: {},
-      });
+      const session = await create();
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ['volundr', 'sessions'] }),
         queryClient.invalidateQueries({ queryKey: ['volundr', 'stats'] }),
@@ -114,12 +103,51 @@ export function useQuickLaunch() {
       });
       return session;
     } catch (e) {
-      setError(errorText(e, 'Failed to create session'));
+      setError(errorText(e, failure));
       return null;
     } finally {
       setCreating(false);
     }
   }
 
-  return { launch, creating, error };
+  function launch(
+    request: QuickLaunchRequest,
+    options: QuickLaunchOptions = {},
+  ): Promise<VolundrSession | null> {
+    return run(
+      () => {
+        const definition = request.definition;
+        return volundr.startSession({
+          name: request.name,
+          source: request.source,
+          instanceId: request.instanceId,
+          model: request.model || (definition?.defaultModel ?? ''),
+          definition: definition?.key,
+          taskType: definition ? definitionToTaskType(definition.key) : undefined,
+          initialPrompt: request.initialPrompt?.trim() || undefined,
+          personaName: request.personaName?.trim() || undefined,
+          integrationIds: request.integrationIds,
+          forgeMcp: request.forgeMcp,
+          terminalRestricted: false,
+          workloadConfig: {},
+        });
+      },
+      'Failed to create session',
+      options,
+    );
+  }
+
+  /** Starts a team and opens its root, where the room is. */
+  function launchTeam(
+    request: StartTeamRequest,
+    options: QuickLaunchOptions = {},
+  ): Promise<VolundrSession | null> {
+    return run(
+      async () => (await volundr.startTeam(request)).session,
+      'Failed to start the team',
+      options,
+    );
+  }
+
+  return { launch, launchTeam, creating, error };
 }

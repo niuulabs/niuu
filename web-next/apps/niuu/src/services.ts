@@ -847,6 +847,10 @@ function toDomainSession(session: VolundrSession): Session {
     ...(session.ownerId ? { ownerId: session.ownerId } : {}),
     ...(session.ownerName ? { ownerName: session.ownerName } : {}),
     coordination: session.coordination,
+    ...(session.hostedBy ? { hostedBy: session.hostedBy } : {}),
+    ...(session.team ? { team: session.team } : {}),
+    ...(session.teamMember ? { teamMember: session.teamMember } : {}),
+    ...(session.peopleCount !== undefined ? { peopleCount: session.peopleCount } : {}),
     templateId: toSessionTemplateId(session),
     clusterId: toSessionClusterId(session),
     clusterName: session.instanceName ?? session.instanceId ?? undefined,
@@ -917,6 +921,7 @@ function buildSplitVolundrService(
     getSessionProjectPeople: (id, options) => forge.getSessionProjectPeople(id, options),
     getParticipantCandidates: (id, query, options) =>
       forge.getParticipantCandidates(id, query, options),
+    getTeamInviteCandidates: (query, options) => forge.getTeamInviteCandidates(query, options),
     inviteSessionParticipant: (id, invitation, options) =>
       forge.inviteSessionParticipant(id, invitation, options),
     acceptSessionInvitation: (id, options) => forge.acceptSessionInvitation(id, options),
@@ -937,6 +942,8 @@ function buildSplitVolundrService(
     getAdminSettings: () => forge.getAdminSettings(),
     updateAdminSettings: (data) => forge.updateAdminSettings(data),
     startSession: (config) => forge.startSession(config),
+    startTeam: (request) => forge.startTeam(request),
+    getSessionMembers: (id, options) => forge.getSessionMembers(id, options),
     evaluatePermissionAutoApproval: (sessionId, request) =>
       forge.evaluatePermissionAutoApproval(sessionId, request),
     connectSession: (config) => forge.connectSession(config),

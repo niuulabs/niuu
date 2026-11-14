@@ -1,0 +1,68 @@
+/* What a member of a room says after its name: its engine, or a person's standing. */
+.forge-room-member__detail {
+  flex-shrink: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  color: var(--color-text-muted);
+}
+
+/* The agent that leads the team. */
+.forge-room-member__badge {
+  flex-shrink: 0;
+  margin-left: auto;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--color-brand-300);
+}
+.forge-room-member__badge + .forge-room-worker__state {
+  margin-left: 0;
+}
+
+.forge-room-worker__state[data-status='quiet'] {
+  color: var(--color-text-faint);
+}
+
+.forge-room-member__note {
+  margin: 0;
+  padding: 7px 16px;
+  font-size: 11.5px;
+  color: var(--color-text-muted);
+}
+.forge-room-member__note--error {
+  color: var(--color-critical);
+}
+
+/* A unit's row says who is in it: a stack of one dot per agent and per person, then the
+   count in words. */
+.forge-session-row__unit {
+  display: inline-flex;
+  flex-shrink: 1;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+  color: var(--color-text-secondary);
+}
+.forge-unit-stack {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+}
+.forge-unit-stack__dot {
+  width: 9px;
+  height: 9px;
+  margin-left: -3px;
+  border: 1.5px solid var(--color-bg-secondary);
+  border-radius: 50%;
+  background: var(--agent-color);
+}
+.forge-unit-stack__dot:first-child {
+  margin-left: 0;
+}
+/* A person is a ring, an agent a filled dot. */
+.forge-unit-stack__dot[data-kind='person'] {
+  background: transparent;
+  border: 1.5px solid var(--agent-color);
+}

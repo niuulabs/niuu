@@ -3936,3 +3936,193 @@ describe('who is in a chat', () => {
     ).toBe('active');
   });
 });
+
+describe('teams', () => {
+  const source = { type: 'git' as const, repo: 'github.com/niuulabs/niuu', branch: 'dev' };
+  const members = [
+    { model: 'claude-sonnet', definition: 'skuldClaude', personaName: 'coordinator', lead: true },
+    { model: 'gpt-codex', definition: 'skuldCodex', personaName: '', lead: false },
+  ];
+
+  it('starts a team through POST /teams with the task and who gets it', async () => {
+    const client = makeClient();
+    client.post.mockResolvedValue({
+      session: {
+        id: 'root',
+        name: 'niuu',
+        status: 'starting',
+        model: 'claude-sonnet',
+        team: { task_to: 'lead' },
+        people_count: 1,
+      },
+      members: [
+        {
+          id: 'm1',
+          name: 'niuu-coordinator',
+          status: 'starting',
+          model: 'claude-sonnet',
+          hosted_by: 'root',
+          team_member: { lead: true },
+        },
+      ],
+    });
+
+    const started = await buildVolundrHttpAdapter(client).startTeam({
+      name: 'niuu',
+      source,
+      task: '  Fix the refresh bug  ',
+      taskTo: 'lead',
+      members,
+      integrationIds: ['i1'],
+    });
+
+    expect(client.post).toHaveBeenCalledExactlyOnceWith('/teams', {
+      name: 'niuu',
+      source,
+      task: 'Fix the refresh bug',
+      task_to: 'lead',
+      members: [
+        {
+          model: 'claude-sonnet',
+          definition: 'skuldClaude',
+          persona_name: 'coordinator',
+          lead: true,
+        },
+        { model: 'gpt-codex', definition: 'skuldCodex', persona_name: '', lead: false },
+      ],
+      integration_ids: ['i1'],
+      terminal_restricted: false,
+      instance_id: null,
+    });
+    expect(started.session).toMatchObject({ id: 'root', team: { taskTo: 'lead' }, peopleCount: 1 });
+    expect(started.members[0]).toMatchObject({ hostedBy: 'root', teamMember: { lead: true } });
+  });
+
+  it('starts the team on the Forge asked for, as a session does', () => {
+    const body = __testables.buildStartTeamBody({
+      name: 'niuu',
+      source,
+      members,
+      instanceId: 'thor',
+      targetTags: ['gpu'],
+      targetMatch: 'any',
+    });
+    expect(body).toMatchObject({ instance_id: 'thor', target_tags: ['gpu'], target_match: 'any' });
+    expect(__testables.buildStartTeamBody({ name: 'niuu', source, members })).toMatchObject({
+      instance_id: null,
+    });
+    expect(
+      __testables.buildStartTeamBody({ name: 'niuu', source, members, targetTags: [] }),
+    ).not.toHaveProperty('target_tags');
+  });
+
+  it('searches the org for people to invite before the team exists, on its Forge', async () => {
+    const client = makeClient();
+    client.get.mockResolvedValueOnce([{ user_id: 'zed', display_name: 'Zed', email: 'z@x.test' }]);
+
+    const found = await buildVolundrHttpAdapter(client).getTeamInviteCandidates('ze & co', {
+      instanceId: 'thor',
+    });
+
+    expect(client.get).toHaveBeenCalledWith(
+      '/participant-candidates?q=ze+%26+co&instance_id=thor',
+      {
+        signal: undefined,
+      },
+    );
+    expect(found).toEqual([{ userId: 'zed', displayName: 'Zed', email: 'z@x.test' }]);
+
+    client.get.mockResolvedValueOnce([]);
+    await buildVolundrHttpAdapter(client).getTeamInviteCandidates('x');
+    expect(client.get).toHaveBeenLastCalledWith('/participant-candidates?q=x', {
+      signal: undefined,
+    });
+  });
+
+  it('sends no task_to when the team starts without a task', () => {
+    const body = __testables.buildStartTeamBody({
+      name: 'niuu',
+      source,
+      task: '   ',
+      taskTo: 'everyone',
+      members,
+      invitees: ['u2'],
+    });
+    expect(body).not.toHaveProperty('task_to');
+    expect(body).toMatchObject({ task: '', invitees: ['u2'] });
+  });
+
+  it('reads who is in a session from its members route, on its own host', async () => {
+    const client = makeClient();
+    client.get.mockResolvedValueOnce({
+      agents: [
+        {
+          session_id: 'm1',
+          name: 'niuu-coder',
+          persona_name: null,
+          model: 'gpt-codex',
+          definition: null,
+          status: 'running',
+          lead: true,
+        },
+      ],
+      people: [
+        { user_id: 'u1', display_name: null, role: 'owner', status: 'active', online: true },
+        { user_id: 'u2', display_name: 'Sam K.', role: 'viewer', status: 'invited' },
+      ],
+    });
+
+    const members = await buildVolundrHttpAdapter(client).getSessionMembers('root', {
+      instanceId: 'thor',
+    });
+
+    expect(client.get).toHaveBeenCalledWith('/sessions/root/members?instance_id=thor', {
+      signal: undefined,
+    });
+    expect(members.agents).toEqual([
+      {
+        sessionId: 'm1',
+        name: 'niuu-coder',
+        personaName: '',
+        model: 'gpt-codex',
+        definition: null,
+        status: 'running',
+        lead: true,
+      },
+    ]);
+    expect(members.people).toEqual([
+      { userId: 'u1', displayName: '', role: 'owner', status: 'active', online: true },
+      { userId: 'u2', displayName: 'Sam K.', role: 'viewer', status: 'invited', online: null },
+    ]);
+  });
+
+  it('lets a members failure through', async () => {
+    const client = makeClient();
+    client.get.mockRejectedValueOnce(new ApiClientError('the room did not answer', 502));
+    await expect(buildVolundrHttpAdapter(client).getSessionMembers('root')).rejects.toThrow(
+      'the room did not answer',
+    );
+  });
+
+  it('reads a team root without a task and a session with no people count', () => {
+    const root = __testables.normalizeSession({
+      id: 'r',
+      name: 'r',
+      status: 'running',
+      model: 'm',
+      team: {},
+    } as never);
+    expect(root.team).toEqual({ taskTo: null });
+    expect(root.peopleCount).toBeUndefined();
+    expect(root.hostedBy).toBeUndefined();
+    expect(
+      __testables.normalizeSession({
+        id: 'm',
+        name: 'm',
+        status: 'running',
+        model: 'm',
+        team_member: {},
+      } as never).teamMember,
+    ).toEqual({ lead: false });
+  });
+});
