@@ -73,9 +73,14 @@ from volundr.domain.services.oauth_token_refresh import (
     DEFAULT_REQUEST_TIMEOUT_SECONDS,
     OAuthTokenRefreshService,
 )
+from volundr.domain.services.session_voice import (
+    SessionVoiceCredentialService,
+    VoiceProviderBinding,
+)
 from volundr.domain.services.workflow_execution_credentials import (
     WorkflowExecutionCredentialService,
 )
+from volundr.ports.realtime_voice import RealtimeCredentialMinterPort
 from volundr.ports.workflow_execution_credentials import ExecutionCredentialProjectionPort
 
 logger = logging.getLogger(__name__)
@@ -86,6 +91,10 @@ KEY_SOURCE_KEY_FILE = "key_file"
 
 class ForgeSessionCredentialsUnavailableError(RuntimeError):
     """Forge session credentials are enabled but no signing key is usable."""
+
+
+class SessionVoiceUnavailableError(RuntimeError):
+    """Session voice is enabled but Forge cannot mint credentials for it."""
 
 
 class MeshIdentityUnavailableError(RuntimeError):
@@ -175,6 +184,47 @@ def _create_forge_session_tokens(
         ttl_seconds=cfg.ttl_seconds,
         key_source=KEY_SOURCE_KEY_FILE,
     )
+
+
+def create_session_voice_service(
+    settings: Settings,
+    credential_store: CredentialStorePort,
+) -> SessionVoiceCredentialService | None:
+    """The minter of session voice credentials, or ``None`` when voice is disabled.
+
+    Disabled (``voice.enabled: false``) is the operator's decision to run without voice.
+    Enabled, every configured provider must build: the broker mints through Forge with
+    its session credential, so session credentials must be on, and each provider's
+    ``adapter`` must be a :class:`RealtimeCredentialMinterPort`. Anything else is fatal
+    at startup rather than a voice channel that fails on the first call.
+    """
+    cfg = settings.voice
+    if not cfg.enabled:
+        logger.info("Session voice: disabled (voice.enabled)")
+        return None
+    if not settings.forge_mcp.session_tokens.enabled:
+        raise SessionVoiceUnavailableError(
+            "voice.enabled is true but forge_mcp.session_tokens.enabled is false: the "
+            "session's broker mints its voice credentials through Forge with its session "
+            "credential. Enable forge_mcp.session_tokens, or set voice.enabled: false."
+        )
+    providers: dict[str, VoiceProviderBinding] = {}
+    for name, provider in cfg.providers.items():
+        minter = import_class(provider.adapter)(**provider.kwargs)
+        if not isinstance(minter, RealtimeCredentialMinterPort):
+            raise TypeError(
+                f"voice.providers.{name}.adapter {provider.adapter!r} is not a "
+                "RealtimeCredentialMinterPort; use "
+                "volundr.adapters.outbound.realtime_voice.OpenAIRealtimeMinter or "
+                "XaiRealtimeMinter, or a class implementing the port"
+            )
+        providers[name] = VoiceProviderBinding(
+            minter=minter,
+            credential_name=provider.credential_name,
+            credential_key=provider.credential_key,
+        )
+    logger.info("Session voice: minting credentials for %s", ", ".join(sorted(providers)))
+    return SessionVoiceCredentialService(credential_store, providers)
 
 
 def _create_mesh_certificate_issuer(
@@ -1035,6 +1085,24 @@ def _create_contributors(
 
         contributors.append(MemoryServerContributor(gateway_url=settings.memory.gateway_url))
         logger.info("Session contributor: memory_server (auto-wired)")
+
+    # Every session runs Skuld's voice channel when the operator turns voice on. A missing
+    # default persona or persona catalog is fatal here, never a session without voice.
+    if not _has_contributor("session_voice") and settings.voice.enabled:
+        from volundr.adapters.outbound.contributors.session_voice import (
+            SessionVoiceContributor,
+        )
+
+        contributors.append(
+            SessionVoiceContributor(
+                default_persona=settings.voice.default_persona,
+                persona_provider=ports.get("persona_provider"),
+            )
+        )
+        logger.info(
+            "Session contributor: session_voice (auto-wired, default persona %s)",
+            settings.voice.default_persona,
+        )
 
     # Auto-wire LocalMountContributor from local_mounts config
     lm = settings.local_mounts

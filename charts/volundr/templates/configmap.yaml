@@ -227,6 +227,24 @@ data:
       gateway_service_subject: {{ .Values.memory.gatewayServiceSubject | quote }}
       {{- end }}
     {{- end }}
+    {{- if .Values.voice.enabled }}
+    {{- if not $tokensOn }}
+    {{- fail "voice.enabled needs Forge session credentials (a session's voice channel mints its call credentials through Forge with them): enable workloadIdentity with signingKey.existingSecret, or set forgeMcp.session_tokens.signing_key_file. Or set voice.enabled: false" }}
+    {{- end }}
+    {{- if not .Values.voice.defaultPersona }}
+    {{- fail "voice.enabled needs voice.defaultPersona: the persona (with a voice: section) a session speaks with when its own persona has none" }}
+    {{- end }}
+    {{- if not .Values.voice.providers }}
+    {{- fail "voice.enabled needs voice.providers: at least one of openai or xai, with the credential holding the owner's API key" }}
+    {{- end }}
+
+    # Realtime voice calls with sessions: every session runs Skuld's voice channel, and Forge
+    # mints each call's provider credential from the owner's own key.
+    voice:
+      enabled: true
+      default_persona: {{ .Values.voice.defaultPersona | quote }}
+      providers: {{ toJson .Values.voice.providers }}
+    {{- end }}
     {{- $attestation := dict }}
     {{- range $key, $value := ((.Values.mesh | default dict).attestation | default dict) }}
     {{- if not (kindIs "invalid" $value) }}

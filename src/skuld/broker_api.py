@@ -74,6 +74,7 @@ from skuld.presented_durable import (
 from skuld.preview import PreviewMiddleware
 from skuld.room_role_port import RoomRoleResolutionError
 from skuld.service_manager import ServiceCreateRequest, ServiceStatus
+from skuld.voice.channel import register_voice_routes
 from skuld.websocket_auth import author_from_headers
 from skuld.workflow_steps import WorkflowOfferRefusedError, WorkflowStepNotHostedError
 from volundr.log_aggregate import aggregate_workspace_logs
@@ -1017,6 +1018,8 @@ async def get_preview_ports() -> dict:
 app.add_middleware(PreviewMiddleware, forwarder_provider=lambda: broker.preview_forwarder)
 register_forge_mcp_routes(app, lambda: broker, dependencies=_LOOPBACK_GUARD)
 register_memory_mcp_routes(app, lambda: broker, dependencies=_LOOPBACK_GUARD)
+# The session voice channel at /voice: owner-only, answered 404 while it is off.
+register_voice_routes(app, lambda: broker._voice_channel)
 
 # --------------------------------------------------------------------------- present-file
 #

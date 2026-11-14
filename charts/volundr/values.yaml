@@ -1180,6 +1180,34 @@ memory:
   # because the exchange only sets `act` when the workload is not the token's own subject.
   gatewayServiceSubject: ""
 
+# Realtime voice calls with ordinary sessions (the Lexi app's voice mode). Every session runs
+# Skuld's voice channel at /voice and Forge advertises it on the running session
+# (voice_endpoint, protocol lexi-agent-service-v1); Forge mints each call's short-lived provider
+# credential from the owner's own API key, which never enters a session pod. Needs Forge session
+# credentials (workloadIdentity with signingKey.existingSecret, or
+# forgeMcp.session_tokens.signing_key_file); the render refuses otherwise.
+# See docs/operator/session-voice.md.
+voice:
+  # -- Run the voice channel in every session this Forge launches.
+  enabled: false
+  # -- Persona (by name, in the owner's persona catalog) with a voice: section that a session
+  # speaks with when its own persona has none. Required when enabled; a launch fails when it is
+  # missing or has no voice.
+  defaultPersona: ""
+  # -- Realtime providers Forge mints for, by the name the phone asks for. Each is a minter
+  # adapter, its kwargs, and the owner's stored credential (owner type user) holding the API key:
+  #   openai:
+  #     adapter: volundr.adapters.outbound.realtime_voice.OpenAIRealtimeMinter
+  #     kwargs: {ttl_seconds: 600, timeout_seconds: 12}
+  #     credential_name: openai
+  #     credential_key: api_key
+  #   xai:
+  #     adapter: volundr.adapters.outbound.realtime_voice.XaiRealtimeMinter
+  #     kwargs: {ttl_seconds: 600, timeout_seconds: 12}
+  #     credential_name: xai
+  #     credential_key: api_key
+  providers: {}
+
 workloadIdentity:
   enabled: false
   issuer: ""

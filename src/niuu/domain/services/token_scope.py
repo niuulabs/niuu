@@ -103,6 +103,11 @@ FORGE_MESH_IDENTITY_SCOPE = "forge:mesh:identity"
 #: credential, ``GET /sessions/{id}/memory-context`` (own session only). Granted to every
 #: session; it reads nothing the session does not already know about itself.
 FORGE_MEMORY_SCOPE = "forge:memory"
+#: Mint a short-lived realtime voice credential for a call with the session's own owner
+#: (``POST /sessions/{id}/voice/client-secrets``, own session only). Forge mints it from
+#: the owner's provider key, which never reaches the session; the route also requires
+#: that the session's current launch runs the voice channel (``voice.enabled``).
+FORGE_SESSION_VOICE_SCOPE = "forge:session:voice"
 
 #: Ring the token's own owner's phone with a resident's ``call.request`` (a VoIP push
 #: from the Guild push gateway). It reaches no other owner, so any workload mapping may
@@ -162,6 +167,7 @@ FORGE_SESSION_SCOPES: frozenset[str] = frozenset(
         FORGE_SESSION_LIFECYCLE_SCOPE,
         FORGE_MESH_IDENTITY_SCOPE,
         FORGE_MEMORY_SCOPE,
+        FORGE_SESSION_VOICE_SCOPE,
     }
 )
 

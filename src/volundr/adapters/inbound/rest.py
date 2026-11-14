@@ -51,6 +51,11 @@ from niuu.domain.session_description import (
     SessionDescriptionPatch,
 )
 from niuu.domain.session_endpoint import public_session_endpoint
+from niuu.domain.session_voice import (
+    SESSION_VOICE_ENDPOINT_KIND,
+    SESSION_VOICE_PROTOCOL,
+    voice_endpoint_from_chat,
+)
 from niuu.domain.text_projection import projection_revision
 from niuu.forge_mcp.models import ForgeMcpGrant
 from niuu.room_access import ROOM_CALLER_SESSION_HEADER, ROOM_ROLE_HEADER
@@ -191,6 +196,7 @@ from volundr.domain.session_broker import (
     server_side_http_proxy_target,
     session_proxy_url,
 )
+from volundr.domain.session_launch_facts import LAUNCH_FACTS_KEY, voice_channel_launched
 from volundr.domain.session_participants import ParticipantStatus, SessionParticipant
 from volundr.domain.session_read_state import (
     SessionReadState,
@@ -934,6 +940,16 @@ class SessionCreate(BaseModel):
             )
         return value
 
+    @field_validator("workload_config")
+    @classmethod
+    def _no_launch_facts_in_workload_config(cls, value: dict) -> dict:
+        if LAUNCH_FACTS_KEY in value:
+            raise ValueError(
+                f"{LAUNCH_FACTS_KEY} is recorded by the session's launch and cannot be "
+                "set in workload_config"
+            )
+        return value
+
     @field_validator("persona_definition")
     @classmethod
     def _persona_definition_matches_its_digest(cls, value: dict | None) -> dict | None:
@@ -1449,6 +1465,40 @@ class SessionTeamMember(BaseModel):
     lead: bool = Field(description="True for the one member that leads the team")
 
 
+class SessionVoiceEndpoint(BaseModel):
+    """Where a session's realtime voice channel is served, and the wire it speaks."""
+
+    kind: str = Field(
+        description=f"Always {SESSION_VOICE_ENDPOINT_KIND!r}: the endpoint's kind",
+    )
+    protocol: str = Field(
+        description=f"The wire the endpoint speaks ({SESSION_VOICE_PROTOCOL})",
+    )
+    url: str = Field(
+        description=(
+            "The channel's address, beside the session's chat endpoint (http or https, or "
+            "relative to the Forge); the app opens the WebSocket on it and calls REST under "
+            "its /api"
+        ),
+    )
+
+
+def _session_voice_endpoint(
+    session: Session, chat_endpoint: str | None
+) -> SessionVoiceEndpoint | None:
+    """The session's voice endpoint: only while it runs a launch that serves the channel."""
+    if session.status != SessionStatus.RUNNING:
+        return None
+    if not voice_channel_launched(session.workload_config):
+        return None
+    url = voice_endpoint_from_chat(chat_endpoint)
+    if url is None:
+        return None
+    return SessionVoiceEndpoint(
+        kind=SESSION_VOICE_ENDPOINT_KIND, protocol=SESSION_VOICE_PROTOCOL, url=url
+    )
+
+
 def _session_team(session: Session) -> SessionTeam | None:
     marker = session.workload_config.get(TEAM_KEY)
     if not isinstance(marker, dict):
@@ -1509,6 +1559,13 @@ class SessionResponse(BaseModel):
     )
     code_endpoint: str | None = Field(
         description="Editor IDE URL (null when not running)",
+    )
+    voice_endpoint: SessionVoiceEndpoint | None = Field(
+        default=None,
+        description=(
+            "The session's realtime voice channel (lexi-agent-service-v1); null when the "
+            "session is not running or does not run one"
+        ),
     )
     a2a_card_url: str | None = Field(
         default=None,
@@ -1725,6 +1782,11 @@ class SessionResponse(BaseModel):
         the domain model does not hold: the caller reads it from the grants, for a whole
         listing in one query.
         """
+        chat_endpoint = _public_session_endpoint(
+            session.chat_endpoint,
+            str(session.id),
+            public_host=public_host,
+        )
         return cls(
             read_state=session.read_state,
             id=session.id,
@@ -1741,12 +1803,9 @@ class SessionResponse(BaseModel):
             people_count=people_count,
             source=session.source,
             status=session.status,
-            chat_endpoint=_public_session_endpoint(
-                session.chat_endpoint,
-                str(session.id),
-                public_host=public_host,
-            ),
+            chat_endpoint=chat_endpoint,
             code_endpoint=session.code_endpoint,
+            voice_endpoint=_session_voice_endpoint(session, chat_endpoint),
             a2a_card_url=_public_workload_url(
                 session,
                 "a2aCardUrl",

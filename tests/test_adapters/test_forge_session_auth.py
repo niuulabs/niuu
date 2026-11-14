@@ -19,6 +19,7 @@ from niuu.domain.services.token_scope import (
     FORGE_SESSION_MESSAGE_SCOPE,
     FORGE_SESSION_READ_SCOPE,
     FORGE_SESSION_SECRET_SCOPE,
+    FORGE_SESSION_VOICE_SCOPE,
 )
 from tests.support.forge_session import (
     OWNER,
@@ -203,6 +204,7 @@ class TestPolicyTable:
             FORGE_SESSION_LIFECYCLE_SCOPE,
             FORGE_MESH_IDENTITY_SCOPE,
             FORGE_MEMORY_SCOPE,
+            FORGE_SESSION_VOICE_SCOPE,
             None,
         }
         assert {policy.scope for policy in ROUTE_POLICIES} <= scopes

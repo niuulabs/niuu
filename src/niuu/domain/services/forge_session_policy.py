@@ -27,6 +27,7 @@ from niuu.domain.services.token_scope import (
     FORGE_SESSION_MESSAGE_SCOPE,
     FORGE_SESSION_READ_SCOPE,
     FORGE_SESSION_SECRET_SCOPE,
+    FORGE_SESSION_VOICE_SCOPE,
 )
 
 FORGE_PREFIX = "/api/v1/forge"
@@ -177,6 +178,9 @@ ROUTE_POLICIES: tuple[RoutePolicy, ...] = (
     # The memory gateway tells the session's project's deciders that a proposal the
     # session made waits for them, with the session's own credential.
     RoutePolicy("POST", f"{_S}/memory/proposals", FORGE_MEMORY_SCOPE, Binding.OWN),
+    # A short-lived realtime voice credential for a call with the session's owner, minted
+    # from the owner's provider key by Forge: the session's own voice channel only.
+    RoutePolicy("POST", f"{_S}/voice/client-secrets", FORGE_SESSION_VOICE_SCOPE, Binding.OWN),
     # The Forge-hosted MCP. Each tool re-enters this allow-list as a REST call.
     RoutePolicy("POST", f"{FORGE_PREFIX}/mcp", None, Binding.NONE),
 )

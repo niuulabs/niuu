@@ -12,6 +12,7 @@ from niuu.domain.services.token_scope import (
     FORGE_SESSION_MESSAGE_SCOPE,
     FORGE_SESSION_READ_SCOPE,
     FORGE_SESSION_SECRET_SCOPE,
+    FORGE_SESSION_VOICE_SCOPE,
 )
 from niuu.forge_mcp.models import ForgeMcpGrant
 from tests.conftest import InMemorySessionRepository, MockPodManager
@@ -71,6 +72,7 @@ class TestMintAtStart:
             FORGE_SESSION_SECRET_SCOPE,
             FORGE_MESH_IDENTITY_SCOPE,
             FORGE_MEMORY_SCOPE,
+            FORGE_SESSION_VOICE_SCOPE,
         )
         stored = await forge.sessions.get(session.id)
         assert stored.workload_config["forge_mcp"] == {
@@ -119,6 +121,7 @@ class TestMintAtStart:
             FORGE_SESSION_SECRET_SCOPE,
             FORGE_MESH_IDENTITY_SCOPE,
             FORGE_MEMORY_SCOPE,
+            FORGE_SESSION_VOICE_SCOPE,
             FORGE_SESSION_LIFECYCLE_SCOPE,
             FORGE_SESSION_MESSAGE_SCOPE,
         )

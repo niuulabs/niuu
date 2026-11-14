@@ -2228,3 +2228,33 @@ class TestUnitMembers:
 
         assert defaults.is_symlink()
         assert defaults.resolve() == (CHART_DIR / "values.yaml").resolve()
+
+
+@pytest.mark.skipif(shutil.which("helm") is None, reason="Helm is required")
+class TestVoiceTuning:
+    """voice: the session voice channel's tuning; Forge turns the channel on per launch."""
+
+    def test_unset_renders_no_voice_section(self):
+        assert "voice" not in _skuld_config()
+
+    def test_set_values_reach_the_broker_settings(self):
+        from skuld.config import VoiceConfig
+
+        config = _skuld_config(
+            "--set",
+            "voice.timeZone=Europe/Amsterdam",
+            "--set",
+            "voice.cardRecentTurns=4",
+            "--set",
+            "voice.sendConfirmSeconds=10",
+            "--set",
+            "voice.models.grok=grok-voice-3.0",
+            "--set",
+            "voice.models.gpt-realtime=gpt-realtime-2.1",
+        )
+        voice = VoiceConfig.model_validate(config["voice"])
+        assert voice.enabled is False
+        assert voice.time_zone == "Europe/Amsterdam"
+        assert voice.card_recent_turns == 4
+        assert voice.send_confirm_seconds == 10
+        assert voice.models["grok"] == "grok-voice-3.0"

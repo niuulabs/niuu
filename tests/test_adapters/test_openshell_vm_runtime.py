@@ -2,6 +2,7 @@
 
 import importlib
 import json
+import re
 import sys
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -81,7 +82,10 @@ def test_bootstrap_installs_docker_gateway_without_session_secrets(setup):
     assert "controller-only-secret" not in text
     assert module._SPEC not in text
     assert "docker cp" in text and "config preflight" in text
-    assert "k3s" not in text and "kube" not in text
+    # The bootstrap carries a freshly generated host key: random base64 may spell either
+    # word, so only the scripts and commands around the key material are checked.
+    words = re.sub(r"[A-Za-z0-9+/=]{40,}", "", text)
+    assert "k3s" not in words and "kube" not in words
     unit = next(f.content for f in machine.files if f.path.endswith(".service"))
     assert "\\n" not in unit and "User=root" in unit
     assert runtime.supports_reuse
