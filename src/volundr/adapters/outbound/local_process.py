@@ -42,6 +42,10 @@ from volundr.adapters.outbound.mesh_settings import (
     mesh_with_defaults,
     parse_mesh_settings,
 )
+from volundr.adapters.outbound.session_file_secret_injection import (
+    DEFAULT_ENV_MOUNT_PATH,
+    read_shell_exports,
+)
 from volundr.adapters.outbound.vm_hosted_unit import (
     HostedMemberLaunch,
     HostedUnitError,
@@ -1284,6 +1288,8 @@ class LocalProcessPodManager(PodManager):
             for entry in spec.pod_spec.env:
                 if name := entry.get("name"):
                     env[name] = entry.get("value", "")
+        # The session's credentials as its secret injection rendered them.
+        env.update(injected_credential_env(spec))
 
         env["SKULD__SESSION__ID"] = session_id
         env["SKULD__SESSION__NAME"] = session.name
@@ -1773,3 +1779,30 @@ class LocalProcessPodManager(PodManager):
                 ", ".join(s[:8] for s in reaped),
             )
         return self._active_sessions()
+
+
+def injected_credential_env(spec: SessionSpec) -> dict[str, str]:
+    """The environment the session's secret injection rendered for it, for a host process.
+
+    A container sources the rendered env file bound at ``DEFAULT_ENV_MOUNT_PATH``; a host
+    process gets its variables as its environment. A credential rendered as a file is bound
+    at a path inside a container, which a host process has no such place for: it is
+    refused, naming the path, rather than started without it.
+    """
+    if spec.pod_spec is None:
+        return {}
+    volumes = {volume.get("name"): volume for volume in spec.pod_spec.volumes}
+    env: dict[str, str] = {}
+    for mount in spec.pod_spec.volume_mounts:
+        host_path = (volumes.get(mount.get("name")) or {}).get("hostPath")
+        if not isinstance(host_path, dict):
+            continue
+        target = str(mount.get("mountPath") or "")
+        if target != DEFAULT_ENV_MOUNT_PATH:
+            raise ValueError(
+                f"the session's credentials include a file for {target}, which a session "
+                "running as a host process cannot be given; detach that connection, or run "
+                "the session on a container runtime"
+            )
+        env.update(read_shell_exports(Path(host_path["path"]).read_text()))
+    return env
