@@ -549,12 +549,14 @@ OPENSHELL_POD_MANAGER_ADAPTER = (
 LOCAL_RESIDENT_RUNTIME_ADAPTER = (
     "volundr.adapters.outbound.local_resident_runtime.LocalContainerResidentRuntimeController"
 )
+LOCAL_LOGIN_RUNNER_ADAPTER = "volundr.adapters.outbound.local_login_runner.LocalLoginRunner"
 MINI_RESIDENTS_DIR = "~/.niuu/residents"
 #: Local defaults an operator can replace by setting the variable themselves.
 _OPERATOR_OWNED_LOCAL_ENV = frozenset(
     {
         "RESIDENT_RUNTIMES",
         "CREDENTIAL_STORE",
+        "CREDENTIAL_ENROLLMENT_RUNNER",
         "MIMIR__DEPLOYMENT",
         "PROJECTS__MEMORY__DIRECTORY_ADAPTER",
         "PROJECTS__MEMORY__DIRECTORY_KWARGS",
@@ -743,6 +745,14 @@ def _resolve_local_pod_manager_env(settings: CLISettings) -> dict[str, str]:
             {
                 "adapter": ("volundr.adapters.outbound.file_credential_store.FileCredentialStore"),
                 "kwargs": {"base_dir": str(workspaces_dir.parent / "credentials")},
+            }
+        ),
+        # Subscription sign-in (Claude, Codex, Grok) runs the official CLI on this host,
+        # where local sessions run it too: Claude with the binary sessions use.
+        "CREDENTIAL_ENROLLMENT_RUNNER": json.dumps(
+            {
+                "adapter": LOCAL_LOGIN_RUNNER_ADAPTER,
+                "kwargs": {"claude_executable": str(kwargs.get("claude_binary") or "")},
             }
         ),
     }

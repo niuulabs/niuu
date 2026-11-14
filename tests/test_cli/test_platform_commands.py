@@ -16,6 +16,8 @@ from typer.testing import CliRunner
 from bifrost.config import BifrostConfig
 from cli.commands import platform as platform_module
 from cli.commands.platform import (
+    _OPERATOR_OWNED_LOCAL_ENV,
+    MINI_POD_MANAGER_ADAPTER,
     _build_init_config,
     _build_preflight_config,
     _build_up_callback,
@@ -733,6 +735,21 @@ class TestBuildInitConfig:
         ]
         assert resident_config["profiles"][0]["default_model"] == ("niuu/nvidia/nemotron-test")
         assert "FileCredentialStore" in json.loads(env["CREDENTIAL_STORE"])["adapter"]
+
+    def test_subscription_sign_in_runs_on_this_host_with_the_sessions_claude(self) -> None:
+        settings = CLISettings(
+            mode="mini",
+            pod_manager={"adapter": MINI_POD_MANAGER_ADAPTER, "claude_binary": "/opt/bin/claude"},
+        )
+
+        env = _resolve_local_pod_manager_env(settings)
+
+        runner = json.loads(env["CREDENTIAL_ENROLLMENT_RUNNER"])
+        assert runner == {
+            "adapter": "volundr.adapters.outbound.local_login_runner.LocalLoginRunner",
+            "kwargs": {"claude_executable": "/opt/bin/claude"},
+        }
+        assert "CREDENTIAL_ENROLLMENT_RUNNER" in _OPERATOR_OWNED_LOCAL_ENV
 
     def test_bifrost_config_stays_open_under_host_auth_none(self) -> None:
         """OWNER CONSTRAINT: host_auth.mode: none must not touch bifrost.auth_mode."""

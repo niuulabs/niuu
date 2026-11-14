@@ -8,15 +8,19 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import fcntl
 import json
 import os
 import pty
 import re
+import signal
 import struct
 import termios
+from collections.abc import Coroutine
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 from urllib.parse import urlparse
 
 ANSI_ESCAPE = re.compile(
@@ -30,6 +34,8 @@ CLAUDE_TOKEN_LIFETIME_DAYS = 365  # Duration documented by `claude setup-token`.
 # for a new `grok login`; the device flow issues no refresh token.
 GROK_TOKEN_LIFETIME_DAYS = 7
 DEFAULT_SHUTDOWN_TIMEOUT = 2.0
+#: Where the CLIs are in the login image. A worker run on a host is given the host's.
+CONTAINER_SEARCH_PATH = "/usr/local/bin:/usr/bin:/bin"
 
 
 async def stop_process(process: asyncio.subprocess.Process, timeout: float) -> None:
@@ -44,7 +50,11 @@ async def stop_process(process: asyncio.subprocess.Process, timeout: float) -> N
 
 
 async def claude_login(
-    root: Path, executable: str, interval: float, shutdown_timeout: float = DEFAULT_SHUTDOWN_TIMEOUT
+    root: Path,
+    executable: str,
+    interval: float,
+    shutdown_timeout: float = DEFAULT_SHUTDOWN_TIMEOUT,
+    search_path: str = CONTAINER_SEARCH_PATH,
 ) -> None:
     master, slave = pty.openpty()
     output_reader, output_writer = os.pipe()
@@ -52,7 +62,7 @@ async def claude_login(
     # instead of screen deltas that cannot be decoded by stripping ANSI codes.
     fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 8192, 0, 0))
     environment = {
-        "PATH": "/usr/local/bin:/usr/bin:/bin",
+        "PATH": search_path,
         "HOME": str(root),
         "CLAUDE_CONFIG_DIR": str(root / "claude"),
         "BROWSER": "/usr/bin/true",
@@ -146,14 +156,17 @@ def write_json(path: Path, value: dict) -> None:
 
 
 async def codex_login(
-    root: Path, executable: str, shutdown_timeout: float = DEFAULT_SHUTDOWN_TIMEOUT
+    root: Path,
+    executable: str,
+    shutdown_timeout: float = DEFAULT_SHUTDOWN_TIMEOUT,
+    search_path: str = os.defpath,
 ) -> None:
     home = root / "codex"
     home.mkdir(mode=0o700)
     (home / "config.toml").write_text('cli_auth_credentials_store = "file"\n')
     # Use an allowlist: never inherit the API service's credentials or an
     # operator's own CLI account into another user's login.
-    environment = {"PATH": os.defpath, "HOME": str(root), "CODEX_HOME": str(home)}
+    environment = {"PATH": search_path, "HOME": str(root), "CODEX_HOME": str(home)}
     process = await asyncio.create_subprocess_exec(
         executable,
         "app-server",
@@ -231,7 +244,10 @@ GROK_DEVICE_URL = re.compile(r"https://accounts\.x\.ai/oauth2/device\?user_code=
 
 
 async def grok_login(
-    root: Path, executable: str, shutdown_timeout: float = DEFAULT_SHUTDOWN_TIMEOUT
+    root: Path,
+    executable: str,
+    shutdown_timeout: float = DEFAULT_SHUTDOWN_TIMEOUT,
+    search_path: str = os.defpath,
 ) -> None:
     """``grok login --device-auth``: prints a verification URL and code, then waits.
 
@@ -242,7 +258,7 @@ async def grok_login(
     home = root / "grok"
     home.mkdir(mode=0o700)
     environment = {
-        "PATH": os.defpath,
+        "PATH": search_path,
         "HOME": str(root),
         "GROK_HOME": str(home),
         "NO_COLOR": "1",
@@ -315,18 +331,22 @@ async def run(
     ttl: float,
     interval: float = 0.1,
     shutdown_timeout: float = DEFAULT_SHUTDOWN_TIMEOUT,
+    search_path: str = "",
 ) -> None:
+    """Run one login. ``search_path`` is the CLI's ``PATH``; empty keeps each CLI's
+    container default."""
     os.umask(0o077)
+    path = {"search_path": search_path} if search_path else {}
     root.mkdir(mode=0o700, parents=True, exist_ok=True)
     write_json(root / "status.json", {"state": "pending"})
     try:
         async with asyncio.timeout(ttl):
             if method == "codex_device":
-                await codex_login(root, executable, shutdown_timeout)
+                await codex_login(root, executable, shutdown_timeout, **path)
             elif method == "claude_setup":
-                await claude_login(root, executable, interval, shutdown_timeout)
+                await claude_login(root, executable, interval, shutdown_timeout, **path)
             elif method == "grok_device":
-                await grok_login(root, executable, shutdown_timeout)
+                await grok_login(root, executable, shutdown_timeout, **path)
             else:
                 raise RuntimeError("unsupported_method")
             # The controller reads the secret over Kubernetes exec, persists it
@@ -360,10 +380,33 @@ def main() -> None:
     parser.add_argument("--ttl", type=float, required=True)
     parser.add_argument("--interval", type=float, default=0.1)
     parser.add_argument("--shutdown-timeout", type=float, default=DEFAULT_SHUTDOWN_TIMEOUT)
+    parser.add_argument("--search-path", default="")
     args = parser.parse_args()
     asyncio.run(
-        run(args.root, args.method, args.executable, args.ttl, args.interval, args.shutdown_timeout)
+        until_terminated(
+            run(
+                args.root,
+                args.method,
+                args.executable,
+                args.ttl,
+                args.interval,
+                args.shutdown_timeout,
+                args.search_path,
+            )
+        )
     )
+
+
+async def until_terminated(login: Coroutine[Any, Any, None]) -> None:
+    """Run *login*, cancelling it on SIGTERM so its CLI is stopped on the way out.
+
+    Each CLI runs in a session of its own, so a worker that simply died would leave it
+    running. A container or Job takes the CLI down with it; a host process does not.
+    """
+    task = asyncio.ensure_future(login)
+    asyncio.get_running_loop().add_signal_handler(signal.SIGTERM, task.cancel)
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
 
 
 if __name__ == "__main__":
