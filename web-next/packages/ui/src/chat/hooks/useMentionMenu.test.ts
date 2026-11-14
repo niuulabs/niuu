@@ -286,6 +286,29 @@ describe('useMentionMenu — selectItem', () => {
   });
 });
 
+describe("useMentionMenu — a team's room", () => {
+  it("offers the team's agent sessions and leaves out the room's host", () => {
+    const coder: RoomParticipant = {
+      peerId: 'member-1',
+      persona: 'coder',
+      participantType: 'skuld',
+    };
+    const host: RoomParticipant = { peerId: 'root', persona: 'host', participantType: 'skuld' };
+    const room = new Map([
+      [coder.peerId, coder],
+      [host.peerId, host],
+      [p2.peerId, p2],
+    ]);
+    const { result } = renderHook(() =>
+      useMentionMenu(null, null, null, room, undefined, false, 'root'),
+    );
+
+    act(() => result.current.handleChange('@', 1));
+
+    expect(result.current.items).toEqual([{ kind: 'agent', participant: coder }]);
+  });
+});
+
 describe('useMentionMenu — close', () => {
   it('close() closes the menu', () => {
     const { result } = renderHook(() => useMentionMenu(null, null, null, participants));

@@ -289,7 +289,7 @@ describe('ChatInput', () => {
     const ada = { peerId: 'p1', persona: 'Ada', participantType: 'ravn' };
     const participants = new Map([
       ['p1', ada],
-      ['p2', { peerId: 'p2', persona: 'Human', participantType: 'user' }],
+      ['p2', { peerId: 'p2', persona: 'Human', participantType: 'human' }],
     ]);
     render(
       <ChatInput {...defaultProps} onSendDirected={onSendDirected} participants={participants} />,
@@ -299,6 +299,28 @@ describe('ChatInput', () => {
     });
     fireEvent.click(screen.getByTestId('send-btn'));
     expect(onSendDirected).toHaveBeenCalledWith([ada], '@Ada @Ada @Human @Unknown check this', []);
+  });
+
+  it("names a team's agent sessions, and never the room's own host", () => {
+    const onSendDirected = vi.fn();
+    const coder = { peerId: 'member-1', persona: 'coder', participantType: 'skuld' };
+    const participants = new Map([
+      ['member-1', coder],
+      ['root', { peerId: 'root', persona: 'host', participantType: 'skuld' }],
+    ]);
+    render(
+      <ChatInput
+        {...defaultProps}
+        onSendDirected={onSendDirected}
+        participants={participants}
+        hostPeerId="root"
+      />,
+    );
+    fireEvent.change(screen.getByTestId('chat-textarea'), {
+      target: { value: '@coder @host take a look' },
+    });
+    fireEvent.click(screen.getByTestId('send-btn'));
+    expect(onSendDirected).toHaveBeenCalledWith([coder], '@coder @host take a look', []);
   });
 
   it('falls back to normal send when directed delivery is unavailable', () => {

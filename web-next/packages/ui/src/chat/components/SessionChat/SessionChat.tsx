@@ -1557,6 +1557,7 @@ function SessionChatView({
               chatEndpoint={chatEndpoint}
               availableCommands={availableCommands}
               participants={participants}
+              hostPeerId={hostPeerId}
               onFetchFiles={onFetchFiles}
             />
           </div>
