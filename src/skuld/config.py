@@ -17,7 +17,7 @@ import os
 from pathlib import Path
 from typing import Annotated, Any, Literal, Self
 
-from pydantic import AliasChoices, BaseModel, Field, field_validator, model_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator, model_validator
 from pydantic_settings import (
     BaseSettings,
     NoDecode,
@@ -1480,6 +1480,134 @@ class PeerInboxConfig(BaseModel):
     )
 
 
+class VoiceMemberConfig(BaseModel):
+    """One agent of a team's room, as a team call speaks it (``voice.members``)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    persona: str = Field(default="", description="The persona the agent plays; empty for none.")
+    lead: bool = Field(default=False, description="True for the one agent that leads the team.")
+    voices: dict[str, str] = Field(
+        description=(
+            "The agent's voice per persona voice key (grok-voice, openai-realtime): its "
+            "persona's voice.voices with the team launch's override applied. A call on a "
+            "provider the agent has no voice for speaks its lines in the host's voice and says so."
+        ),
+    )
+
+
+class VoiceConfig(BaseModel):
+    """The session voice channel: a realtime voice call with the session's owner.
+
+    The broker serves the Lexi app's agent-service wire (``lexi-agent-service-v1``) at
+    ``/voice`` (WebSocket) and ``/voice/api`` (REST), bound to this one session
+    (``skuld.voice``). The phone runs the realtime model and talks to the provider
+    directly; the broker gives it the voice persona, the call's instructions grounded in
+    this session, a short-lived provider credential Forge mints from the owner's key
+    (``forge:session:voice``), tools that act on this session, and the call record, which
+    goes into the session's own durable event log. Forge turns it on for every launch when
+    its ``voice.enabled`` is set. Only the session's owner is served.
+    """
+
+    #: A misspelt knob (SKULD__VOICE_CHANNEL__…) is an error, not a setting that does nothing.
+    #: Its own name (not ``voice``) because mini mode's services share one config file, and
+    #: Forge's ``voice:`` section there is Forge's.
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = Field(
+        default=False,
+        description="Serve the voice channel (SKULD__VOICE_CHANNEL__ENABLED; Forge sets it).",
+    )
+    default_persona: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "Portable persona document (schema_version, id, revision, definition) whose "
+            "voice: section the call uses when the session's own persona has none, or the "
+            "session plays no persona. Forge resolves it from its voice.default_persona at "
+            "launch (SKULD__VOICE_CHANNEL__DEFAULT_PERSONA, JSON). Enabled with neither is fatal."
+        ),
+    )
+    display_name: str = Field(
+        default="",
+        description="Name the voice introduces itself by; empty uses the persona's name.",
+    )
+    members: dict[str, VoiceMemberConfig] = Field(
+        default_factory=dict,
+        description=(
+            "On a team's room host: each agent by its name in the room, with its voices "
+            "(SKULD__VOICE_CHANNEL__MEMBERS, JSON; Forge renders it at the team's launch). "
+            "Empty on every other session."
+        ),
+    )
+    time_zone: str = Field(
+        default="UTC", description="IANA time zone for the date and time in the call's prompt."
+    )
+    models: dict[str, str] = Field(
+        default_factory=lambda: {"grok": "grok-voice-3.0", "gpt-realtime": "gpt-realtime-2.1"},
+        description="Realtime model per prompt provider (grok, gpt-realtime).",
+    )
+    mint_timeout_seconds: float = Field(
+        default=20.0,
+        gt=0,
+        description=(
+            "Timeout for one credential mint through Forge (Forge's own call to the "
+            "provider included). A timeout answers the phone with the error."
+        ),
+    )
+    send_confirm_seconds: float = Field(
+        default=15.0,
+        gt=0,
+        description=(
+            "How long send_to_this_session waits for the agent to take a message before "
+            "it answers 'queued': the message stays accepted and is delivered when the "
+            "agent is free. Bounded by how long the caller can wait on the line."
+        ),
+    )
+    tool_timeout_seconds: float = Field(
+        default=60.0,
+        gt=0,
+        description=(
+            "The time limit each voice tool advertises to the phone (timeoutMs). Must "
+            "exceed send_confirm_seconds, or a send would be cut off by the phone first."
+        ),
+    )
+    card_recent_turns: int = Field(
+        default=6,
+        ge=1,
+        description=(
+            "Most recent turns the call's instructions open with. The card says how many "
+            "earlier turns it leaves out; read_this_session_in_full reads them."
+        ),
+    )
+    card_turn_max_chars: int = Field(
+        default=1500,
+        ge=1,
+        description=(
+            "Characters of one turn the instructions carry, bounded by the realtime "
+            "model's instruction budget. A longer turn is cut, marked in the text, and "
+            "counted (cap telemetry voice.card_turn_max_chars)."
+        ),
+    )
+    full_read_max_chars: int = Field(
+        default=65536,
+        ge=1024,
+        description=(
+            "Characters one tool result may carry: the realtime client clamps a tool "
+            "result at 64 KiB. A full read that does not fit keeps the newest turns, says "
+            "how many it left out, and is counted (voice.full_read_max_chars)."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _send_fits_tool_limit(self) -> "VoiceConfig":
+        if self.send_confirm_seconds >= self.tool_timeout_seconds:
+            raise ValueError(
+                "voice.send_confirm_seconds must be below voice.tool_timeout_seconds, or the "
+                "phone gives up on send_to_this_session before it can answer"
+            )
+        return self
+
+
 class SkuldSettings(BaseSettings):
     """Skuld broker settings.
 
@@ -1775,6 +1903,7 @@ class SkuldSettings(BaseSettings):
     mcp_servers: list[dict[str, Any]] = Field(default_factory=list)
     forge_mcp: ForgeMcpConfig = Field(default_factory=ForgeMcpConfig)
     memory: MemoryConfig = Field(default_factory=MemoryConfig)
+    voice_channel: VoiceConfig = Field(default_factory=VoiceConfig)
     preview: PreviewConfig = Field(default_factory=PreviewConfig)
     secret_requests: SecretRequestsConfig = Field(default_factory=SecretRequestsConfig)
     ask: AskConfig = Field(default_factory=AskConfig)
@@ -1842,6 +1971,43 @@ class SkuldSettings(BaseSettings):
             raise ValueError(
                 f"memory.server_name and forge_mcp.server_name are both "
                 f"{self.memory.server_name!r}; give them different names"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _voice_can_serve(self) -> "SkuldSettings":
+        """The voice channel mints through Forge as the session and records into its log."""
+        if not self.voice_channel.enabled:
+            return self
+        missing = [
+            remedy
+            for absent, remedy in (
+                (
+                    not self.forge_mcp.token,
+                    "a Forge session credential (SKULD__FORGE_MCP__TOKEN or "
+                    "forge_mcp.token_file), which Forge mints for every launch",
+                ),
+                (not self.volundr_api_url, "volundr_api_url (where Forge is)"),
+                (
+                    not self.session.owner_id.strip(),
+                    "session.owner_id (only the owner is served)",
+                ),
+                (
+                    not self.event_log_enabled,
+                    "event_log_enabled: true (the call record is the session's event log)",
+                ),
+                (
+                    not self.history_hydration_enabled,
+                    "history_hydration_enabled: true (the call list is restored from it)",
+                ),
+            )
+            if absent
+        ]
+        if missing:
+            raise ValueError(
+                "voice_channel.enabled is true but the voice channel cannot serve without "
+                + "; ".join(missing)
+                + ". Fix these, or set SKULD__VOICE_CHANNEL__ENABLED=false"
             )
         return self
 

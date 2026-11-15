@@ -329,6 +329,9 @@ class TransportLifecycleMixin:
         # Ensure workspace directory exists
         os.makedirs(self.workspace_dir, exist_ok=True)
 
+        # The voice channel folds its call list from the durable history read below.
+        self._start_voice_channel()
+
         # Load conversation history from disk
         self._load_control_state()
         self._load_conversation_history()

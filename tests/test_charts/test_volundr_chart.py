@@ -2682,3 +2682,55 @@ class TestMemoryGateway:
         result = subprocess.run(command, capture_output=True, text=True)
         assert result.returncode != 0
         assert "memory.gatewayUrl needs Forge session credentials" in result.stderr
+
+
+_VOICE_PROVIDER = (
+    "voice.providers.openai.adapter=volundr.adapters.outbound.realtime_voice.OpenAIRealtimeMinter",
+    "voice.providers.openai.credential_name=openai",
+)
+
+
+def _voice_args(*sets: str) -> list[str]:
+    args: list[str] = []
+    for value in sets:
+        args += ["--set", value]
+    return args
+
+
+@pytest.mark.skipif(shutil.which("helm") is None, reason="Helm is required")
+class TestSessionVoice:
+    """voice: realtime voice calls with ordinary sessions."""
+
+    def test_off_renders_no_voice_section(self):
+        assert "voice" not in _rendered_configmap()
+
+    def test_on_renders_what_forge_validates(self):
+        from volundr.config import SessionVoiceConfig
+
+        config = _rendered_configmap(
+            *_voice_args("voice.enabled=true", "voice.defaultPersona=lexi", *_VOICE_PROVIDER),
+            *WORKLOAD_SIGNING_KEY,
+        )
+        voice = SessionVoiceConfig.model_validate(config["voice"])
+        assert voice.enabled is True
+        assert voice.default_persona == "lexi"
+        assert voice.providers["openai"].credential_name == "openai"
+        assert voice.providers["openai"].credential_key == "api_key"
+
+    def test_without_session_credentials_refuses_to_render(self):
+        stderr = _render_failure(
+            *_voice_args("voice.enabled=true", "voice.defaultPersona=lexi", *_VOICE_PROVIDER)
+        )
+        assert "voice.enabled needs Forge session credentials" in stderr
+
+    def test_without_a_default_persona_refuses_to_render(self):
+        stderr = _render_failure(
+            *_voice_args("voice.enabled=true", *_VOICE_PROVIDER), *WORKLOAD_SIGNING_KEY
+        )
+        assert "voice.enabled needs voice.defaultPersona" in stderr
+
+    def test_without_providers_refuses_to_render(self):
+        stderr = _render_failure(
+            *_voice_args("voice.enabled=true", "voice.defaultPersona=lexi"), *WORKLOAD_SIGNING_KEY
+        )
+        assert "voice.enabled needs voice.providers" in stderr

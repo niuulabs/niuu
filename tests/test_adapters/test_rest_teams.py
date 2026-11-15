@@ -7,7 +7,7 @@ authorization; only the pod manager, repositories, user directory and persona ca
 from __future__ import annotations
 
 from unittest.mock import AsyncMock
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from fastapi import FastAPI
@@ -73,6 +73,10 @@ def rig() -> TeamRig:
     return TeamRig()
 
 
+def uuid_of(session: dict):
+    return UUID(session["id"])
+
+
 def _post(client: TestClient, body: dict):
     return client.post(f"{PREFIX}/teams", json=body, headers=HEADERS)
 
@@ -131,6 +135,38 @@ class TestStartingATeam:
         assert len(rig.pod_manager.start_calls) == 1
 
 
+class TestVoices:
+    async def test_a_voice_is_trimmed_stored_and_a_custom_voice_id_is_allowed(self):
+        rig = TeamRig(voice_enabled=True)
+        members = [
+            {"model": "gpt-5", "lead": True, "voices": {"grok-voice": " my-cloned-voice "}},
+            {"model": "gpt-5", "persona_name": "coder", "voices": {"openai-realtime": "cedar"}},
+        ]
+
+        response = _post(_client(rig), _body(members=members))
+
+        assert response.status_code == 201, response.text
+        stored = await rig.repository.list_hosted(uuid_of(response.json()["session"]))
+        voices = [m.workload_config["team_member"]["voices"] for m in stored]
+        assert sorted(voices, key=str) == [
+            {"grok-voice": "my-cloned-voice"},
+            {"openai-realtime": "cedar"},
+        ]
+
+    async def test_a_repeated_voice_is_422_naming_the_agents_and_leaves_nothing(self):
+        rig = TeamRig(voice_enabled=True)
+        members = [
+            {"model": "gpt-5", "lead": True, "voices": {"grok-voice": "rex"}},
+            {"model": "gpt-5", "voices": {"grok-voice": "rex"}},
+        ]
+
+        response = _post(_client(rig), _body(members=members))
+
+        assert response.status_code == 422
+        assert "agent and agent-2" in response.json()["detail"]
+        assert await rig.repository.list() == []
+
+
 class TestRefusals:
     @pytest.mark.parametrize(
         ("body", "named"),
@@ -146,6 +182,14 @@ class TestRefusals:
             ),
             (_body(workload_config={"mimir": {}}), "takes only host_selector"),
             (_body(persona="coder"), "persona"),
+            (
+                _body(members=[{"model": "gpt-5", "lead": True, "voices": {"eleven": "x"}}]),
+                "unknown voice key(s) eleven",
+            ),
+            (
+                _body(members=[{"model": "gpt-5", "lead": True, "voices": {"grok-voice": " "}}]),
+                "names no voice for grok-voice",
+            ),
         ],
     )
     async def test_a_malformed_request_is_422_and_creates_nothing(
@@ -171,6 +215,10 @@ class TestRefusals:
                 "2 members are marked lead",
             ),
             (_body(invitees=["bo", "bo"]), "lists a person twice"),
+            (
+                _body(members=[{"model": "gpt-5", "lead": True, "voices": {"grok-voice": "ara"}}]),
+                "voice is not enabled on this Forge",
+            ),
             (_body(invitees=["zed"]), "cannot invite user 'zed'"),
             (
                 _body(members=[{"model": "gpt-5", "lead": True, "persona_name": "ghost"}]),

@@ -344,6 +344,34 @@ forgeMcp:
   # Forge server, so both engines are bounded by it. Must exceed secretRequests.waitMaxS and ask.waitMaxS.
   toolTimeoutS: null
 
+# The session voice channel (skuld.voice): a realtime voice call with the session's owner,
+# served at /voice beside the chat WebSocket. Forge turns it on per launch when its own
+# voice.enabled is set (env SKULD__VOICE_CHANNEL__ENABLED and SKULD__VOICE_CHANNEL__DEFAULT_PERSONA); these
+# values only tune it. Null keeps the broker default. See docs/operator/session-voice.md.
+voice:
+  # -- Name the voice introduces itself by (voice.display_name). Null: the persona's name.
+  displayName: null
+  # -- IANA time zone for the date and time in the call's prompt (voice.time_zone). Null: UTC.
+  timeZone: null
+  # -- Realtime model per prompt provider, e.g. {grok: grok-voice-3.0, gpt-realtime: gpt-realtime-2.1}
+  # (voice.models). Null keeps the broker's models.
+  models: null
+  # -- Seconds one credential mint through Forge may take (voice.mint_timeout_seconds). Null: 20.
+  mintTimeoutSeconds: null
+  # -- Seconds send_to_this_session waits for the agent to take a message before it answers
+  # "queued" (voice.send_confirm_seconds). Null: 15. Must stay below toolTimeoutSeconds.
+  sendConfirmSeconds: null
+  # -- Time limit each voice tool advertises to the phone (voice.tool_timeout_seconds). Null: 60.
+  toolTimeoutSeconds: null
+  # -- Most recent turns the call's instructions open with (voice.card_recent_turns). Null: 6.
+  cardRecentTurns: null
+  # -- Characters of one turn in the call's instructions; a longer turn is cut, marked and counted
+  # (voice.card_turn_max_chars). Null: 1500.
+  cardTurnMaxChars: null
+  # -- Characters one tool result may carry; the realtime client clamps tool results at 64 KiB
+  # (voice.full_read_max_chars). Null: 65536.
+  fullReadMaxChars: null
+
 # request_secret / request-secret: the agent asks the user for a secret through a masked chat card.
 secretRequests:
   # -- Seconds between checks of whether the user answered the card (secret_requests.poll_interval_s).

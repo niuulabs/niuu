@@ -100,6 +100,7 @@ from volundr.adapters.inbound.rest_session_participants import (
     invitations_refused,
 )
 from volundr.adapters.inbound.rest_session_people import create_session_people_router
+from volundr.adapters.inbound.rest_session_voice import create_session_voice_router
 from volundr.adapters.inbound.rest_teams import create_teams_router
 from volundr.adapters.inbound.rest_trace import create_trace_router
 from volundr.adapters.inbound.rest_tracker import create_canonical_tracker_router
@@ -201,6 +202,7 @@ from volundr.composition_builders import (  # noqa: F401
     create_oauth_client_registry,
     create_presented_file_store,
     create_project_memory,
+    create_session_voice_service,
     integration_database_pool,
     require_memory_credentials,
     require_presented_file_uploads,
@@ -1103,6 +1105,8 @@ def create_app(
 
             # Credential store (pluggable: memory, Vault, Infisical)
             credential_store = _create_credential_store(settings)
+            # Misconfigured voice is fatal here, not on a session's first call.
+            session_voice_service = create_session_voice_service(settings, credential_store)
             compute_provider = None
             compute_pool = None
             compute_pool_task = None
@@ -2449,6 +2453,11 @@ def create_app(
                 create_mesh_identity_router(mesh_identity_service, prefix="/api/v1/forge")
             )
             app.include_router(
+                create_session_voice_router(
+                    session_voice_service, session_service, prefix="/api/v1/forge"
+                )
+            )
+            app.include_router(
                 create_memory_context_router(
                     MemoryContextService(
                         project_service.repository if project_service is not None else None,
@@ -2516,6 +2525,8 @@ def create_app(
                             runtime_backend, settings.pod_manager.room_role_source
                         ),
                         persona_provider=session_persona_provider,
+                        voice_enabled=settings.voice.enabled,
+                        voice_default_persona=settings.voice.default_persona,
                     ),
                     session_participant_service,
                     server_public_host=settings.server_public_host,

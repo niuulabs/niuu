@@ -424,3 +424,147 @@ class TestWhatTheRuntimeIsGiven:
             assert "workflowSteps" not in launch_.spec.values
         announced = [launch_.spec.values["mesh"].get("announce") for launch_ in launches]
         assert [a["persona"] for a in announced] == ["architect", "coder"]
+
+
+class TestTheVoicesOfATeamCall:
+    async def test_a_launch_voice_is_stored_on_its_member_and_only_when_given(self):
+        rig = TeamRig(voice_enabled=True)
+        members = [
+            TeamMemberSpec(model="gpt-5", persona_name="coder", lead=True),
+            TeamMemberSpec(model="gpt-5", persona_name="alto", voices={"grok-voice": "ara"}),
+        ]
+
+        team = await _start(rig, members=members)
+
+        assert team.members[0].workload_config[TEAM_MEMBER_KEY] == {"lead": True, "name": "Coder"}
+        assert team.members[1].workload_config[TEAM_MEMBER_KEY] == {
+            "lead": False,
+            "name": "Alto",
+            "voices": {"grok-voice": "ara"},
+        }
+
+    async def test_a_repeat_the_launch_resolves_by_picking_another_voice_starts_the_team(self):
+        rig = TeamRig(voice_enabled=True)
+        members = [
+            TeamMemberSpec(model="gpt-5", persona_name="alto", lead=True),
+            TeamMemberSpec(model="gpt-5", persona_name="tenor"),
+        ]
+
+        # Both play rex on grok-voice: the launch must pick another for one of them.
+        with pytest.raises(TeamError):
+            await rig.service.start_team(launch(members=members), OWNER_PRINCIPAL)
+
+        members[1] = TeamMemberSpec(
+            model="gpt-5", persona_name="tenor", voices={"grok-voice": "leo"}
+        )
+        team = await _start(rig, members=members)
+
+        assert len(team.members) == 2
+
+    async def test_two_agents_with_one_voice_are_refused_naming_both_the_key_and_the_remedy(self):
+        rig = TeamRig(voice_enabled=True)
+        members = [
+            TeamMemberSpec(model="gpt-5", persona_name="alto", lead=True),
+            TeamMemberSpec(model="gpt-5", persona_name="tenor"),
+        ]
+
+        with pytest.raises(TeamError) as refused:
+            await rig.service.start_team(launch(members=members), OWNER_PRINCIPAL)
+
+        message = str(refused.value)
+        assert "Alto and Tenor" in message
+        assert "grok-voice voice 'rex'" in message
+        assert "launch voices (voices.grok-voice)" in message
+        assert await _sessions(rig) == []
+        assert rig.pod_manager.start_calls == []
+
+    async def test_an_agent_with_the_hosts_voice_is_refused_naming_the_host(self):
+        rig = TeamRig(voice_enabled=True)
+        members = [TeamMemberSpec(model="gpt-5", persona_name="echo", lead=True)]
+
+        with pytest.raises(TeamError, match="voice.default_persona.* and Echo .* 'eve'"):
+            await rig.service.start_team(launch(members=members), OWNER_PRINCIPAL)
+
+        assert await _sessions(rig) == []
+
+    async def test_a_launch_voice_overrides_the_personas_and_clears_the_clash(self):
+        rig = TeamRig(voice_enabled=True)
+        members = [
+            TeamMemberSpec(
+                model="gpt-5", persona_name="echo", lead=True, voices={"grok-voice": "ara"}
+            )
+        ]
+
+        team = await _start(rig, members=members)
+
+        assert team.members[0].workload_config[TEAM_MEMBER_KEY]["voices"] == {"grok-voice": "ara"}
+
+    async def test_a_launch_voice_that_repeats_a_launch_voice_is_refused(self):
+        rig = TeamRig(voice_enabled=True)
+        members = [
+            TeamMemberSpec(model="gpt-5", lead=True, voices={"openai-realtime": "cedar"}),
+            TeamMemberSpec(model="gpt-5", voices={"openai-realtime": "cedar"}),
+        ]
+
+        with pytest.raises(TeamError, match=r"agent and agent-2 .* openai-realtime voice 'cedar'"):
+            await rig.service.start_team(launch(members=members), OWNER_PRINCIPAL)
+
+    async def test_one_voice_name_on_two_providers_is_not_a_repeat(self):
+        rig = TeamRig(voice_enabled=True)
+        members = [
+            TeamMemberSpec(
+                model="gpt-5",
+                lead=True,
+                voices={"grok-voice": "ara", "openai-realtime": "ara"},
+            ),
+        ]
+
+        team = await _start(rig, members=members)
+
+        assert len(team.members) == 1
+
+    async def test_an_agent_with_no_voice_is_allowed_and_clashes_with_nobody(self):
+        rig = TeamRig(voice_enabled=True)
+        members = [
+            TeamMemberSpec(model="gpt-5", lead=True),
+            TeamMemberSpec(model="gpt-5"),
+        ]
+
+        team = await _start(rig, members=members)
+
+        assert len(team.members) == 2
+
+    async def test_a_voice_override_is_refused_when_this_forge_has_no_voice(self):
+        rig = TeamRig(voice_enabled=False)
+        members = [TeamMemberSpec(model="gpt-5", lead=True, voices={"grok-voice": "ara"})]
+
+        with pytest.raises(TeamError, match="voice is not enabled on this Forge.*agent"):
+            await rig.service.start_team(launch(members=members), OWNER_PRINCIPAL)
+
+        assert await _sessions(rig) == []
+
+    async def test_without_voice_the_checks_are_skipped_entirely(self):
+        rig = TeamRig(voice_enabled=False, voice_default_persona="")
+        members = [
+            TeamMemberSpec(model="gpt-5", persona_name="alto", lead=True),
+            TeamMemberSpec(model="gpt-5", persona_name="tenor"),
+        ]
+
+        team = await _start(rig, members=members)
+
+        assert len(team.members) == 2
+
+    async def test_a_host_persona_missing_from_the_catalog_is_refused(self):
+        rig = TeamRig(voice_enabled=True, voice_default_persona="ghost")
+
+        with pytest.raises(TeamError, match="'ghost' is not in your persona catalog"):
+            await rig.service.start_team(launch(), OWNER_PRINCIPAL)
+
+        assert await _sessions(rig) == []
+
+    async def test_voice_needs_a_persona_catalog_to_read_the_hosts_voices(self):
+        rig = TeamRig(voice_enabled=True, persona_provider=None)
+        members = [TeamMemberSpec(model="gpt-5", lead=True)]
+
+        with pytest.raises(TeamError, match="no persona catalog"):
+            await rig.service.start_team(launch(members=members), OWNER_PRINCIPAL)

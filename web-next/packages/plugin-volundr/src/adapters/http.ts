@@ -695,6 +695,7 @@ function buildStartTeamBody(request: StartTeamRequest): Record<string, unknown> 
       definition: member.definition,
       persona_name: member.personaName ?? '',
       lead: member.lead,
+      ...(member.voices && Object.keys(member.voices).length ? { voices: member.voices } : {}),
     })),
     invitees: request.invitees,
     launch_spec: request.launchSpec,

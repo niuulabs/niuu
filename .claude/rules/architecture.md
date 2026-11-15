@@ -174,7 +174,11 @@ principal for "this one session".
 - Its `scopes` are bounded to its own family, `FORGE_SESSION_SCOPES`:
   `forge:notify`, `forge:session:read`, `forge:memory` and `forge:session:secret` (ask the
   session's own owner for a secret and claim it once; supplying or declining a request stays
-  the owner's alone and is closed to every scoped token) for every session, plus
+  the owner's alone and is closed to every scoped token) and `forge:session:voice` (mint a
+  short-lived realtime credential for a voice call with the session's own owner, from the
+  owner's provider key, which never leaves Forge; `POST …/sessions/{id}/voice/client-secrets`,
+  own session only, and refused unless the session's current launch runs the voice channel,
+  `docs/operator/session-voice.md`) for every session, plus
   `forge:session:message` / `forge:session:lifecycle` only through an operator
   grant. The family is part of `KNOWN_WORKLOAD_SCOPES` and keyed by
   `SCOPES_BY_TOKEN_USE` (`src/niuu/domain/services/token_scope.py`) — a

@@ -35,6 +35,7 @@ from typing import Any
 
 from niuu.adapters.mesh.attested import refusal_counts
 from niuu.cap_telemetry import record_degraded
+from niuu.domain.message_author import AUTHOR_KEY, MessageAuthor
 from niuu.domain.peer_message import (
     PEER_MESSAGE_FRAME,
     PeerKind,
@@ -142,6 +143,19 @@ class PeerInboxEntry:
     #: Who the mesh verified sent it; ``None`` when the mesh verified nothing (signing is off,
     #: or the message did not come over the mesh), in which case the sender is only claimed.
     verified: SenderIdentity | None = None
+    #: The verified person this message is from, when the room host that relayed it vouched
+    #: for one (a person speaking through the host). It is delivered as that person's own
+    #: turn, not as a peer message; ``None`` for every other message.
+    author: MessageAuthor | None = None
+    #: Text only the model reads ahead of the message, from the room host that relayed it;
+    #: empty for every other message.
+    model_note: str = ""
+
+    @property
+    def directed(self) -> bool:
+        """The room host relayed a person's message, or told the model something about it:
+        it is delivered as a user turn of its own."""
+        return self.author is not None or bool(self.model_note)
 
     @property
     def identity(self) -> tuple[str, str]:
@@ -164,6 +178,8 @@ class PeerInboxEntry:
             "injected": self.injected,
             "consumed_by": self.consumed_by,
             **({"verified": self.verified.to_wire()} if self.verified is not None else {}),
+            **({AUTHOR_KEY: self.author.to_dict()} if self.author is not None else {}),
+            **({"model_note": self.model_note} if self.model_note else {}),
         }
 
     @classmethod
@@ -178,12 +194,17 @@ class PeerInboxEntry:
         if not isinstance(consumed_by, str):
             raise PeerMessageError("a durable peer message frame's 'consumed_by' must be text")
         verified = payload.get("verified")  # absent in frames written before signing
+        model_note = payload.get("model_note", "")  # absent in frames written before directed turns
+        if not isinstance(model_note, str):
+            raise PeerMessageError("a durable peer message frame's 'model_note' must be text")
         return cls(
             envelope=PeerMessage.from_wire(payload.get("envelope")),
             accepted_at=accepted_at,
             injected=injected,
             consumed_by=consumed_by,
             verified=None if verified is None else SenderIdentity.from_wire(verified),
+            author=MessageAuthor.from_wire(payload.get(AUTHOR_KEY)),
+            model_note=model_note,
         )
 
 
@@ -311,13 +332,17 @@ class PeerInboxMixin:
         *,
         channel: str | None = None,
         verified: SenderIdentity | None = None,
+        author: MessageAuthor | None = None,
+        model_note: str = "",
     ) -> PeerAcceptance:
         """Hold the message durably, then trigger its delivery. Raises when it is refused.
 
         Returns once Forge has confirmed the message in the session's event log, not when the
         harness has read it. A message already held (same ``message_id``) changes nothing and
         is reported as a duplicate. ``channel`` names how it arrived when the path knows
-        better than the envelope (the mesh does).
+        better than the envelope (the mesh does). ``author`` and ``model_note`` are what a
+        room host vouched for about the message; the caller has checked the host may vouch
+        (the mesh adapter does), and the message is then delivered as that person's own turn.
         """
         via = channel or peer_channel(envelope)
         try:
@@ -341,6 +366,8 @@ class PeerInboxMixin:
                 accepted_at=datetime.now(UTC).isoformat(),
                 injected=False,
                 verified=verified,
+                author=author,
+                model_note=model_note,
             )
             try:
                 await self._record_peer_entries([entry])
@@ -499,6 +526,11 @@ class PeerInboxMixin:
                 waiting = [e for e in waiting if e.envelope.sender.kind is not PeerKind.PERSON]
                 if not waiting:
                     return True
+            # A person's message relayed by a room host is that person's own turn.
+            directed = [e for e in waiting if e.directed]
+            if directed:
+                await self._hand_directed_turns_to_agent(directed)
+                return True
             message_ids = [entry.envelope.message_id for entry in waiting]
             turn_id = peer_turn_id(str(self.session_id), message_ids)
             room = self._room_turns_are_shown_in()
@@ -533,6 +565,49 @@ class PeerInboxMixin:
             self._watch_peer_delivery(task, turn_id, message_ids), f"peer-inbox-delivered-{turn_id}"
         )
         return True
+
+    async def _hand_directed_turns_to_agent(self, entries: list[PeerInboxEntry]) -> None:
+        """Give the agent each directed message as the user turn it is, one turn per message.
+
+        Called at a turn boundary with the inbox lock held. The turn is recorded and shown
+        like a message typed by its author (the verified person the room host vouched for),
+        with the host's ``model_note`` read by the model ahead of it and never shown. Each
+        message is marked handed over durably before its turn is submitted; one that cannot
+        be handed over goes back to waiting and the error is raised, the messages after it
+        untouched. Whatever else is waiting is handed over at the next boundary, which this
+        turn's end is.
+        """
+        room = self._room_turns_are_shown_in()
+        self._turn_kept_from_room = bool(room) and all(
+            entry.envelope.room_id != room for entry in entries
+        )
+        for entry in entries:
+            message_id = entry.envelope.message_id
+            turn_id = peer_turn_id(str(self.session_id), [message_id])
+            entry.injected = True
+            try:
+                await self._record_peer_entries([entry])
+                await self._ensure_transport_started()
+                task = await self._submit_user_turn(
+                    entry.envelope.content,
+                    msg_id=turn_id,
+                    request_id=None,
+                    source=PEER_TURN_SOURCE,
+                    extra_metadata={"peer_messages": [message_id]},
+                    author=entry.author,
+                    model_note=entry.model_note,
+                )
+            except Exception:
+                self._turn_kept_from_room = False
+                await self._return_to_waiting([entry])
+                raise
+            self._count_peer_message(
+                entry.envelope, peer_channel(entry.envelope), OUTCOME_DELIVERED
+            )
+            self._spawn_peer_inbox_task(
+                self._watch_peer_delivery(task, turn_id, [message_id]),
+                f"peer-inbox-delivered-{turn_id}",
+            )
 
     async def _return_to_waiting(self, entries: list[PeerInboxEntry]) -> None:
         """The harness did not get these: put them back, durably, so a boundary retries."""
