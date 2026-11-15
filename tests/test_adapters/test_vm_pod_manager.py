@@ -2131,6 +2131,43 @@ async def test_a_cold_start_without_a_selector_reserves_with_the_empty_one(setup
     assert _ledger(repository)[1].host_selector == HostSelector()
 
 
+@pytest.mark.parametrize(
+    ("mesh", "expected"),
+    [
+        # nng with no discovery: a lone session could find no peer, so it gets no mesh.
+        ({"enabled": True}, {}),
+        (
+            {"enabled": True, "attestation": {"required": False}},
+            {"SKULD__MESH__ATTESTATION__REQUIRED": "false"},
+        ),
+        # Discovery the operator configured, or a transport with its own, is kept.
+        (
+            {"enabled": True, "discovery_adapters": [{"adapter": "static", "peers": []}]},
+            {
+                "SKULD__MESH__ENABLED": "true",
+                "SKULD__MESH__DISCOVERY_ADAPTERS": '[{"adapter": "static", "peers": []}]',
+            },
+        ),
+        (
+            {"enabled": True, "transport": "nats"},
+            {"SKULD__MESH__ENABLED": "true", "SKULD__MESH__TRANSPORT": "nats"},
+        ),
+    ],
+)
+async def test_a_session_alone_in_its_machine_joins_no_nng_mesh_without_discovery(
+    mesh, expected
+) -> None:
+    manager = VmPodManager(profile="p", pool_id="pool", max_machines=1, mesh=mesh)
+    spec = SessionSpec(values={"env": {}}, pod_spec=PodSpecAdditions())
+
+    with pytest.raises(RuntimeError):
+        await manager.start(
+            Session(id=uuid4(), name="s", model="m", owner_id="o", tenant_id="t"), spec
+        )
+
+    assert spec.values["env"] == expected
+
+
 async def test_the_mesh_setting_is_put_in_every_sessions_env_before_a_runtime_sees_it() -> None:
     manager = VmPodManager(
         profile="p", pool_id="pool", max_machines=1, mesh={"attestation": {"required": False}}

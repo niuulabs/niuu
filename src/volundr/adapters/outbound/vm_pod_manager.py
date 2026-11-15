@@ -12,6 +12,7 @@ from niuu.observability import get_observability
 from niuu.ports.session_proxy import SessionProxyTarget
 from volundr.adapters.outbound.mesh_settings import (
     add_mesh_env_to_spec,
+    mesh_is_nng,
     mesh_with_defaults,
     parse_mesh_settings,
     require_unit_mesh,
@@ -664,6 +665,21 @@ class VmPodManager(PodManager):
             {"discovery_adapters": [{"adapter": "registry", "path": UNIT_MESH_REGISTRY}]},
         )
 
+    def _single_mesh(self) -> dict:
+        """The mesh settings of a session that is not a workflow run's unit.
+
+        Only a unit's Skulds can find each other over nng here: they share a machine and its
+        registry file. A session alone in its machine or slot has no peer it could discover
+        (slots do not share a network), and Skuld refuses an nng mesh without discovery
+        rather than run alone, so such a session gets the operator's other mesh settings
+        without ``enabled``. A mesh on a transport with its own discovery, or one the
+        operator gave discovery, is passed as configured.
+        """
+        mesh = self._mesh
+        if not mesh_is_nng(mesh) or mesh.get("discovery_adapters") or mesh.get("adapters"):
+            return mesh
+        return {key: value for key, value in mesh.items() if key != "enabled"}
+
     async def _runtime_for_start(self, session: Session) -> VmRuntime:
         """The runtime that will run ``session``, before its machine is claimed."""
         _, repository, legacy_runtime = self._configured()
@@ -726,7 +742,7 @@ class VmPodManager(PodManager):
     async def start(self, session: Session, spec: SessionSpec) -> PodStartResult:
         # Every runtime builds the session's environment from the spec's `env`.
         unit = bool(self._unit_member_ids(session))
-        add_mesh_env_to_spec(spec, self._unit_mesh(session.id) if unit else self._mesh)
+        add_mesh_env_to_spec(spec, self._unit_mesh(session.id) if unit else self._single_mesh())
         service, repository, legacy_runtime = self._configured()
         async with self._locks.setdefault(session.id, asyncio.Lock()):
             self._begin_progress(session.id)
