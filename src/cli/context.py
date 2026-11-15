@@ -91,6 +91,21 @@ def login_for(
     )
 
 
+def access_token(context: ResolvedContext, store: CredentialStore | None = None) -> str | None:
+    """The bearer for this context: its login's access token, refreshed when expired."""
+    import asyncio
+
+    from cli.auth.oidc import LoginError, fresh_access_token
+
+    store = store or CredentialStore()
+    if login_for(context, store) is None:
+        return None
+    try:
+        return asyncio.run(fresh_access_token(store))
+    except LoginError as exc:
+        raise ContextError(str(exc)) from exc
+
+
 def refresher(tokens: StoredTokens | None, store: CredentialStore) -> Any:
     """A refresh for tokens that know their issuer and client, else none."""
     if not tokens or not tokens.refresh_token or not tokens.issuer or not tokens.client_id:

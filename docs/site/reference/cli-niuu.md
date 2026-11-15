@@ -130,7 +130,7 @@ niuu [OPTIONS] COMMAND [ARGS]...
 | [`join`](#niuu-join) | Join this machine to a Platform using a pairing code from an operator. |
 | [`leave`](#niuu-leave) | Remove this machine from the Platform it previously joined. |
 | [`login`](#niuu-login) | Authenticate with the Niuu platform. |
-| [`logout`](#niuu-logout) | Clear stored credentials. |
+| [`logout`](#niuu-logout) | Revoke the login at its issuer and remove it from this machine. |
 | [`platform`](#niuu-platform) | Manage the platform (up, down, status, init). `niuu up\|down\|status` are shortcuts for these with default flags. |
 | [`remote`](#niuu-remote) | Join other machines to a Forge as compute hosts, over your own SSH. |
 | [`runs`](#niuu-runs) | Manage runs. |
@@ -349,7 +349,7 @@ niuu login [OPTIONS]
 
 #### `niuu logout`
 
-Clear stored credentials.
+Revoke the login at its issuer and remove it from this machine.
 
 ```bash
 niuu logout [OPTIONS]

@@ -23,6 +23,52 @@ logger = logging.getLogger(__name__)
 PKCE_VERIFIER_LENGTH = 64
 CALLBACK_TIMEOUT_SECONDS = 120
 LOCAL_CALLBACK_HOST = "127.0.0.1"
+#: ``offline_access`` asks for a refresh token that outlives the browser session's idle
+#: timeout (Keycloak's is 30 minutes), so a CLI login survives a lunch break.
+DEFAULT_SCOPES = "openid profile email offline_access"
+LOGIN_AGAIN = "Run `niuu login`."
+
+
+class LoginError(RuntimeError):
+    """The stored login could not be turned into a usable access token."""
+
+
+class LoginExpiredError(LoginError):
+    """The issuer refused to refresh the login; only a new `niuu login` helps."""
+
+
+class TokenRefreshError(LoginError):
+    """The issuer could not be asked, or answered with an error that is not a refusal."""
+
+
+def _oauth_error(resp: httpx.Response) -> str:
+    """The OAuth error a token or revocation endpoint answered, for the message."""
+    try:
+        body = resp.json()
+    except ValueError:
+        return f"HTTP {resp.status_code}: {resp.text.strip()[:200] or 'empty body'}"
+    error = body.get("error", f"HTTP {resp.status_code}")
+    description = body.get("error_description", "")
+    return f"{error}: {description}" if description else str(error)
+
+
+async def fresh_access_token(store: CredentialStore) -> str | None:
+    """The stored access token, refreshed first when it has already expired.
+
+    ``None`` only when nobody is logged in. An expired login that cannot be refreshed
+    raises: sending its token would only earn a 401 that hides the cause.
+    """
+    tokens = store.load()
+    if tokens is None:
+        return None
+    if not tokens.expires_at or tokens.expires_at > time.time():
+        return tokens.access_token
+    if not (tokens.refresh_token and tokens.issuer and tokens.client_id):
+        raise LoginExpiredError(
+            f"Your niuu login has expired and has no refresh token. {LOGIN_AGAIN}"
+        )
+    client = OIDCClient(issuer=tokens.issuer, client_id=tokens.client_id, credential_store=store)
+    return await client.refresh()
 
 
 def generate_pkce_pair() -> tuple[str, str]:
@@ -52,7 +98,7 @@ class OIDCClient:
         self,
         issuer: str,
         client_id: str,
-        scopes: str = "openid profile email",
+        scopes: str = DEFAULT_SCOPES,
         credential_store: CredentialStore | None = None,
     ) -> None:
         self._issuer = issuer.rstrip("/")
@@ -173,18 +219,17 @@ class OIDCClient:
             client_id=self._client_id,
         )
 
-    async def refresh(self) -> str | None:
-        """Refresh the access token using stored refresh_token.
+    async def refresh(self) -> str:
+        """Refresh the access token with the stored refresh token, and store the result.
 
-        Returns the new access token, or None if refresh fails.
+        Raises ``LoginExpiredError`` when the issuer refuses the refresh token (expired,
+        revoked, session ended) and ``TokenRefreshError`` when it cannot be asked.
         """
         tokens = self._credential_store.load()
         if not tokens or not tokens.refresh_token:
-            return None
+            raise LoginExpiredError(f"There is no niuu login to refresh. {LOGIN_AGAIN}")
 
-        discovery = await self.discover()
-        token_endpoint = discovery["token_endpoint"]
-
+        token_endpoint = (await self.discover())["token_endpoint"]
         try:
             async with httpx.AsyncClient(timeout=15.0) as client:
                 resp = await client.post(
@@ -195,11 +240,19 @@ class OIDCClient:
                         "refresh_token": tokens.refresh_token,
                     },
                 )
-                resp.raise_for_status()
-                data = resp.json()
-        except Exception:
-            logger.debug("token refresh failed", exc_info=True)
-            return None
+        except httpx.HTTPError as exc:
+            raise TokenRefreshError(
+                f"Could not reach {token_endpoint} to refresh the niuu login: {exc}"
+            ) from exc
+        if resp.status_code in (400, 401):
+            raise LoginExpiredError(
+                f"Your niuu login can no longer be refreshed ({_oauth_error(resp)}). {LOGIN_AGAIN}"
+            )
+        if resp.is_error:
+            raise TokenRefreshError(
+                f"{token_endpoint} failed to refresh the niuu login ({_oauth_error(resp)})."
+            )
+        data = resp.json()
 
         expires_at = 0.0
         if "expires_in" in data:
@@ -217,9 +270,45 @@ class OIDCClient:
         self._credential_store.store(new_tokens)
         return new_tokens.access_token
 
-    def logout(self) -> None:
-        """Clear all stored credentials."""
-        self._credential_store.clear()
+    async def logout(self) -> None:
+        """Revoke the stored login at the issuer, then remove it here.
+
+        The local login is removed even when revocation fails, and the failure raises
+        ``TokenRefreshError`` so the caller can say the issuer still holds it.
+        """
+        tokens = self._credential_store.load()
+        if not tokens or not tokens.refresh_token:
+            self._credential_store.clear()
+            return
+        try:
+            await self._revoke(tokens.refresh_token)
+        finally:
+            self._credential_store.clear()
+
+    async def _revoke(self, refresh_token: str) -> None:
+        discovery = await self.discover()
+        endpoint = discovery.get("revocation_endpoint")
+        if not endpoint:
+            raise TokenRefreshError(
+                f"{self._issuer} publishes no revocation_endpoint, so the login stays "
+                "valid there until it expires."
+            )
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                resp = await client.post(
+                    endpoint,
+                    data={
+                        "token": refresh_token,
+                        "token_type_hint": "refresh_token",
+                        "client_id": self._client_id,
+                    },
+                )
+        except httpx.HTTPError as exc:
+            raise TokenRefreshError(
+                f"Could not reach {endpoint} to revoke the login: {exc}"
+            ) from exc
+        if resp.is_error:
+            raise TokenRefreshError(f"{endpoint} did not revoke the login ({_oauth_error(resp)}).")
 
     def whoami(self) -> dict[str, Any] | None:
         """Decode the stored id_token and return user claims, or None."""

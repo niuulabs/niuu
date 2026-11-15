@@ -13,7 +13,16 @@ from typer.testing import CliRunner
 from cli.app import build_app
 from cli.auth.credentials import StoredTokens
 from cli.config import CLISettings, ContextConfig, persist_contexts
-from cli.context import ContextError, active, contexts, find, local_url, login_for, refresher
+from cli.context import (
+    ContextError,
+    access_token,
+    active,
+    contexts,
+    find,
+    local_url,
+    login_for,
+    refresher,
+)
 from cli.registry import PluginRegistry
 from niuu.ports.plugin import CLITarget, ServicePlugin
 
@@ -132,6 +141,66 @@ class TestLoginFor:
         store = type("Store", (), {"load": unreadable})()
         with pytest.raises(ContextError, match="run `niuu login` again"):
             login_for(find(CLISettings(), "local"), store)
+
+    def test_access_token_refreshes_an_expired_login(self, tmp_path, monkeypatch) -> None:
+        import time
+
+        import httpx
+        import respx
+
+        from cli.auth.credentials import CredentialStore
+
+        monkeypatch.setenv("NIUU_CREDENTIAL_KEY", "test-key")
+        store = CredentialStore(path=tmp_path / "login")
+        store.store(
+            StoredTokens(
+                access_token="old",
+                refresh_token="r",
+                issuer="https://kc",
+                client_id="cli",
+                expires_at=time.time() - 1,
+            )
+        )
+        with respx.mock:
+            respx.get("https://kc/.well-known/openid-configuration").mock(
+                return_value=httpx.Response(200, json={"token_endpoint": "https://kc/token"})
+            )
+            respx.post("https://kc/token").mock(
+                return_value=httpx.Response(200, json={"access_token": "new", "expires_in": 300})
+            )
+            assert access_token(find(CLISettings(), "local"), store) == "new"
+
+    def test_access_token_of_a_refused_login_is_a_context_error(self, tmp_path, monkeypatch):
+        import time
+
+        import httpx
+        import respx
+
+        from cli.auth.credentials import CredentialStore
+
+        monkeypatch.setenv("NIUU_CREDENTIAL_KEY", "test-key")
+        store = CredentialStore(path=tmp_path / "login")
+        store.store(
+            StoredTokens(
+                access_token="old",
+                refresh_token="r",
+                issuer="https://kc",
+                client_id="cli",
+                expires_at=time.time() - 1,
+            )
+        )
+        with respx.mock:
+            respx.get("https://kc/.well-known/openid-configuration").mock(
+                return_value=httpx.Response(200, json={"token_endpoint": "https://kc/token"})
+            )
+            respx.post("https://kc/token").mock(
+                return_value=httpx.Response(400, json={"error": "invalid_grant"})
+            )
+            with pytest.raises(ContextError, match="can no longer be refreshed"):
+                access_token(find(CLISettings(), "local"), store)
+
+    def test_access_token_without_a_login(self) -> None:
+        assert access_token(find(CLISettings(), "local"), self._store(None)) is None
 
     def test_refresher_needs_issuer_and_client(self) -> None:
         store = self._store(None)

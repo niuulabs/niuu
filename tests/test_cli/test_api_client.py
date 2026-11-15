@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import httpx
+import pytest
 import respx
 
 from cli.api.client import APIClient
@@ -85,25 +86,17 @@ class TestAPIClientTokenRefresh:
             resp = await client.get("/data")
         assert resp.status_code == 401
 
-    async def test_401_refresh_fails_returns_401(self) -> None:
-        async def bad_refresh() -> str | None:
-            return None
+    async def test_401_refresh_raises_instead_of_returning_401(self) -> None:
+        from cli.auth.oidc import LoginExpiredError
 
-        client = APIClient(base_url=BASE, access_token="old", refresh_token_fn=bad_refresh)
+        async def expired() -> str:
+            raise LoginExpiredError("Your niuu login can no longer be refreshed. Run `niuu login`.")
+
+        client = APIClient(base_url=BASE, access_token="old", refresh_token_fn=expired)
         with respx.mock:
             respx.get(f"{BASE}/data").mock(return_value=httpx.Response(401))
-            resp = await client.get("/data")
-        assert resp.status_code == 401
-
-    async def test_401_refresh_raises_returns_401(self) -> None:
-        async def raise_refresh() -> str:
-            raise RuntimeError("network error")
-
-        client = APIClient(base_url=BASE, access_token="old", refresh_token_fn=raise_refresh)
-        with respx.mock:
-            respx.get(f"{BASE}/data").mock(return_value=httpx.Response(401))
-            resp = await client.get("/data")
-        assert resp.status_code == 401
+            with pytest.raises(LoginExpiredError, match="niuu login"):
+                await client.get("/data")
 
     async def test_set_token(self) -> None:
         client = APIClient(base_url=BASE, access_token="old")

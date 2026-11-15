@@ -47,6 +47,36 @@ class TestGuildPair:
         assert result.exit_code == 1
         assert "run `niuu login` again" in result.output
 
+    def test_an_expired_login_is_refreshed_before_minting(self) -> None:
+        app = _build_test_app()
+        tokens = StoredTokens(access_token="old", expires_at=1.0)
+        minted = {"code": "c", "expiresAt": "2024-01-01T00:10:00Z"}
+        with (
+            patch("cli.auth.credentials.CredentialStore.load", return_value=tokens),
+            patch("cli.auth.oidc.OIDCClient.refresh", AsyncMock(return_value="fresh")),
+            patch("cli.api.guild.mint_pairing_code", AsyncMock(return_value=minted)) as mint_mock,
+        ):
+            result = runner.invoke(app, ["guild", "pair", "https://guild.example.com"])
+        assert result.exit_code == 1
+        assert "has no refresh token" in result.output
+        mint_mock.assert_not_awaited()
+
+        tokens = StoredTokens(
+            access_token="old",
+            refresh_token="r",
+            issuer="https://kc",
+            client_id="cli",
+            expires_at=1.0,
+        )
+        with (
+            patch("cli.auth.credentials.CredentialStore.load", return_value=tokens),
+            patch("cli.auth.oidc.OIDCClient.refresh", AsyncMock(return_value="fresh")),
+            patch("cli.api.guild.mint_pairing_code", AsyncMock(return_value=minted)) as mint_mock,
+        ):
+            result = runner.invoke(app, ["guild", "pair", "https://guild.example.com"])
+        assert result.exit_code == 0, result.output
+        assert mint_mock.await_args.kwargs["access_token"] == "fresh"
+
     def test_mints_and_prints_the_code(self) -> None:
         app = _build_test_app()
         tokens = StoredTokens(access_token="operator-token")

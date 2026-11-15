@@ -106,11 +106,69 @@ class TestIdentityCommands:
         assert result.exit_code == 1
         assert "issuer" in result.output.lower()
 
-    def test_logout(self) -> None:
+    def test_logout_without_a_login(self, tmp_path, monkeypatch) -> None:
+        monkeypatch.setenv("NIUU_HOME", str(tmp_path))
         app, _, _ = _build_test_app()
         result = runner.invoke(app, ["logout"])
         assert result.exit_code == 0
-        assert "logged out" in result.output.lower()
+        assert "not logged in" in result.output.lower()
+
+    def _login(self, tmp_path, monkeypatch, **fields):
+        from cli.auth.credentials import CredentialStore, StoredTokens
+
+        monkeypatch.setenv("NIUU_HOME", str(tmp_path))
+        monkeypatch.setenv("NIUU_CREDENTIAL_KEY", "test-key")
+        store = CredentialStore()
+        store.store(StoredTokens(**{"access_token": "a", "refresh_token": "r", **fields}))
+        return store
+
+    def test_logout_revokes_the_login_at_its_issuer(self, tmp_path, monkeypatch) -> None:
+        import httpx
+        import respx
+
+        store = self._login(tmp_path, monkeypatch, issuer="https://kc/r", client_id="cli")
+        with respx.mock:
+            respx.get("https://kc/r/.well-known/openid-configuration").mock(
+                return_value=httpx.Response(
+                    200,
+                    json={"token_endpoint": "https://kc/t", "revocation_endpoint": "https://kc/x"},
+                )
+            )
+            revoke = respx.post("https://kc/x").mock(return_value=httpx.Response(200))
+            result = runner.invoke(_build_test_app()[0], ["logout"])
+        assert result.exit_code == 0, result.output
+        assert result.output.strip() == "Logged out."
+        assert revoke.called
+        assert store.load() is None
+
+    def test_logout_says_when_the_issuer_still_holds_the_login(self, tmp_path, monkeypatch):
+        import httpx
+        import respx
+
+        store = self._login(tmp_path, monkeypatch, issuer="https://kc/r", client_id="cli")
+        with respx.mock:
+            respx.get("https://kc/r/.well-known/openid-configuration").mock(
+                side_effect=httpx.ConnectError("refused")
+            )
+            result = runner.invoke(_build_test_app()[0], ["logout"])
+        assert result.exit_code == 1
+        assert "the issuer still holds the login" in result.output
+        assert store.load() is None
+
+    def test_logout_of_a_login_without_issuer(self, tmp_path, monkeypatch) -> None:
+        store = self._login(tmp_path, monkeypatch)
+        result = runner.invoke(_build_test_app()[0], ["logout"])
+        assert result.exit_code == 0
+        assert "named no issuer, so it was not revoked" in result.output
+        assert store.load() is None
+
+    def test_logout_of_an_unreadable_login(self, tmp_path, monkeypatch) -> None:
+        monkeypatch.setenv("NIUU_HOME", str(tmp_path))
+        (tmp_path / "login").write_bytes(b"garbage")
+        result = runner.invoke(_build_test_app()[0], ["logout"])
+        assert result.exit_code == 0
+        assert "unreadable, so it was not revoked" in result.output
+        assert not (tmp_path / "login").exists()
 
     def test_whoami_not_authenticated(self) -> None:
         app, _, _ = _build_test_app()

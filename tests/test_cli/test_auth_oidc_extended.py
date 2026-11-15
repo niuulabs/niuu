@@ -13,6 +13,7 @@ import respx
 
 from cli.auth.credentials import CredentialStore, StoredTokens
 from cli.auth.oidc import (
+    LoginExpiredError,
     OIDCClient,
     _make_callback_handler,
 )
@@ -295,8 +296,8 @@ class TestOIDCClientRefreshEdgeCases:
         store = CredentialStore(path=tmp_path / "creds")
         store.store(StoredTokens(access_token="old", refresh_token="", issuer="x"))
         client = OIDCClient(issuer="x", client_id="cli", credential_store=store)
-        result = await client.refresh()
-        assert result is None
+        with pytest.raises(LoginExpiredError, match="niuu login"):
+            await client.refresh()
 
     @pytest.mark.asyncio
     async def test_refresh_preserves_old_refresh_token_if_not_returned(

@@ -2,13 +2,10 @@
 
 from __future__ import annotations
 
-import logging
 from collections.abc import AsyncGenerator
 from typing import Any
 
 import httpx
-
-logger = logging.getLogger(__name__)
 
 REQUEST_TIMEOUT_SECONDS = 30.0
 
@@ -17,7 +14,8 @@ class APIClient:
     """Async httpx wrapper with Bearer auth and transparent token refresh.
 
     On a 401 response the client calls ``refresh_token_fn`` (if provided),
-    replaces the cached access token and retries the request **once**.
+    replaces the cached access token and retries the request **once**. A refresh that
+    fails raises (``cli.auth.oidc.LoginError``) instead of handing back the 401.
     """
 
     def __init__(
@@ -45,17 +43,11 @@ class APIClient:
         return {}
 
     async def _maybe_refresh(self) -> bool:
-        """Attempt to refresh the access token. Returns True on success."""
+        """Refresh the access token; False when this client has no way to refresh."""
         if self._refresh_token_fn is None:
             return False
-        try:
-            new_token = await self._refresh_token_fn()
-            if new_token:
-                self._access_token = new_token
-                return True
-        except Exception:
-            logger.debug("token refresh failed", exc_info=True)
-        return False
+        self._access_token = await self._refresh_token_fn()
+        return True
 
     async def request(
         self,

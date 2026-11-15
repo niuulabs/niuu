@@ -275,10 +275,34 @@ def build_app(
 
     @app.command()
     def logout() -> None:
-        """Clear stored credentials."""
-        from cli.auth.credentials import CredentialStore
+        """Revoke the login at its issuer and remove it from this machine."""
+        import asyncio
 
-        CredentialStore().clear()
+        import httpx
+
+        from cli.auth.credentials import CredentialReadError, CredentialStore
+        from cli.auth.oidc import LoginError, OIDCClient
+
+        store = CredentialStore()
+        try:
+            tokens = store.load()
+        except CredentialReadError:
+            store.clear()
+            typer.echo("Logged out. The stored login was unreadable, so it was not revoked.")
+            return
+        if tokens is None:
+            typer.echo("Not logged in.")
+            return
+        if not (tokens.issuer and tokens.client_id):
+            store.clear()
+            typer.echo("Logged out. The login named no issuer, so it was not revoked.")
+            return
+        oidc = OIDCClient(issuer=tokens.issuer, client_id=tokens.client_id, credential_store=store)
+        try:
+            asyncio.run(oidc.logout())
+        except (LoginError, httpx.HTTPError) as exc:
+            typer.echo(f"Logged out here, but the issuer still holds the login: {exc}", err=True)
+            raise typer.Exit(1) from None
         typer.echo("Logged out.")
 
     @app.command()
@@ -391,15 +415,15 @@ def build_app(
     # Plugin workflow commands (top-level, registered by each plugin). Each one talks
     # to the active context, resolved when its command runs.
     def _cli_target() -> CLITarget:
-        from cli.context import ContextError, active, login_for
+        from cli.context import ContextError, access_token, active
 
         try:
             context = active(settings)
-            tokens = login_for(context)
+            token = access_token(context)
         except ContextError as exc:
             typer.echo(f"error: {exc}", err=True)
             raise typer.Exit(1) from None
-        return CLITarget(base_url=context.url, auth_token=tokens.access_token if tokens else None)
+        return CLITarget(base_url=context.url, auth_token=token)
 
     for name, plugin in sorted(registry.plugins.items()):
         plugin.set_cli_target(_cli_target)

@@ -364,6 +364,19 @@ class TestHosts:
         assert "error: boom" in result.output
         assert "No hosts. Join one" in result.output
 
+    def test_an_expired_login_is_named_not_a_401(self) -> None:
+        from cli.auth.oidc import LoginExpiredError
+
+        fake = FakeNiuuHost()
+
+        async def overview(_: str) -> dict[str, Any]:
+            raise LoginExpiredError("Your niuu login can no longer be refreshed. Run `niuu login`.")
+
+        fake.overview = overview  # type: ignore[method-assign]
+        result, _ = _invoke(fake, ["hosts"])
+        assert result.exit_code == 1
+        assert "can no longer be refreshed" in result.output
+
     def test_unused_codes_and_no_connection(self) -> None:
         fake = FakeNiuuHost()
         fake.hosts = [_host(connection=None)]

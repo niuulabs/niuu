@@ -73,12 +73,13 @@ def _parse_slots(raw: str) -> tuple[int | None, bool]:
 
 def _run(main: Callable[[], Coroutine[Any, Any, None]]) -> None:
     from cli.api.compute_hosts import ForgeAPIError
+    from cli.auth.oidc import LoginError
     from cli.context import ContextError
     from cli.services.remote_hosts import RemoteError
 
     try:
         asyncio.run(main())
-    except (RemoteError, ForgeAPIError, ContextError) as exc:
+    except (RemoteError, ForgeAPIError, ContextError, LoginError) as exc:
         _fail(str(exc))
 
 
