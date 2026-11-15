@@ -114,7 +114,8 @@ async def test_start_creates_the_slot_then_places_the_session_in_it(slots):
     tunnel = runtime._guest_access.open_tunnel.await_args.kwargs
     assert tunnel["remote_host"] == "10.249.0.6" and tunnel["key"] == key
     assert (tunnel["reverse_bind_host"], tunnel["reverse_port"]) == ("127.0.0.1", 18101)
-    launch = json.loads(payloads[3])
+    assert programs[3].split()[-4:-2] == ["127.0.0.1", "18101"]
+    launch = json.loads(payloads[4])
     assert launch["allocation_id"] == str(lease.id)
     assert launch["slot"]["skuld"] == "niuu-slot-1-skuld"
     assert launch["environment"]["SKULD__HOST"] == "0.0.0.0"

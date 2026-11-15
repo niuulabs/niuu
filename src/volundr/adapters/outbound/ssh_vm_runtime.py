@@ -320,6 +320,28 @@ with os.fdopen(marker,'w') as written:
     written.write(allocation)
 """
 
+#: Wait until Forge's end of the tunnel accepts on the guest. argv: host, port, the
+#: seconds to wait, the seconds between tries.
+_AWAIT_CALLBACKS = r"""
+import socket, sys, time
+host, port, timeout, poll = sys.argv[1], int(sys.argv[2]), float(sys.argv[3]), float(sys.argv[4])
+deadline = time.monotonic() + timeout
+while True:
+    try:
+        socket.create_connection((host, port), timeout=poll).close()
+        break
+    except OSError as exc:
+        if time.monotonic() >= deadline:
+            print('__STAGE__callbacks', file=sys.stderr)
+            print('__DETAIL__Forge is not reachable through the tunnel at ' + host + ':'
+                + str(port) + ' after ' + str(timeout) + 's (' + str(exc) + '); raise '
+                'connect_timeout_seconds or check the tunnel', file=sys.stderr)
+            sys.exit(1)
+        time.sleep(poll)
+""".replace("__STAGE__", vm_slot_supervisor.STAGE_PREFIX).replace(
+    "__DETAIL__", vm_slot_supervisor.DETAIL_PREFIX
+)
+
 _SESSION_FILES = r"""
 import json, os, pathlib, sys, tempfile
 for item in json.load(sys.stdin):
@@ -1531,8 +1553,32 @@ class SshContainerVmRuntime(BrokeredCredentialPodManager, VmRuntime):
         await self._restore_data(lease, bootstrap)
         self._step(lease, "guest_tunnel", "Opening the tunnel to Forge")
         await self.target(lease, bootstrap)
+        await self._await_callbacks(lease, bootstrap)
         payload = await self._launch_payload(lease, bootstrap, layout)
         await self._launch_skuld(lease, bootstrap, payload)
+
+    async def _await_callbacks(self, lease: SlotLease, bootstrap: MachineBootstrap) -> None:
+        """Wait on the guest until Forge's end of the tunnel answers there.
+
+        The tunnel starts in the background, and a broker calls Forge as it starts (its
+        workload token exchange), so the broker waits for it: as long as SSH may take to
+        connect (``connect_timeout_seconds``); past that the start fails, naming the port.
+        """
+        ends = self._tunnel_ends(self._layout(lease))
+        host = "127.0.0.1" if ends["reverse_bind_host"] == "0.0.0.0" else ends["reverse_bind_host"]
+        await self._guest_access.execute(
+            lease,
+            bootstrap,
+            self._python(
+                _AWAIT_CALLBACKS,
+                host,
+                str(ends["reverse_port"]),
+                str(self._connect_timeout),
+                str(self._poll),
+            ),
+            safe_error_prefix=vm_slot_supervisor.STAGE_PREFIX,
+            safe_detail_prefix=vm_slot_supervisor.DETAIL_PREFIX,
+        )
 
     async def _launch_payload(
         self,

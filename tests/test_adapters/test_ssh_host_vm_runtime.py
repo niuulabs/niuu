@@ -308,22 +308,25 @@ async def test_start_runs_the_slot_agents_unpacks_skuld_then_starts_it_as_the_sl
     assert commands[0] == runtime._python(runtime._supervisor, "up")
     # The slot keeps no holder container: its namespace is the supervisor's own.
     assert json.loads(calls[0].kwargs["data"])["holder"] is None
+    # Skuld starts only once Forge's end of the tunnel answers on the host.
+    reverse_port = runtime._tunnel_ends(runtime._layout(lease))["reverse_port"]
+    assert commands[3].split()[-4:-2] == ["127.0.0.1", str(reverse_port)]
     # Before anything is fetched: the images no slot uses go, the release's stays.
-    assert commands[3] == runtime._python(
+    assert commands[4] == runtime._python(
         programs.PRUNE, "/var/lib/niuu/host-images", json.dumps([IMAGE]), "/proc"
     )
-    pods = json.loads(calls[4].kwargs["data"])
-    assert commands[4] == runtime._python(programs.PODS_START)
+    pods = json.loads(calls[5].kwargs["data"])
+    assert commands[5] == runtime._python(programs.PODS_START)
     assert "containers_only" not in pods and pods["pods"]["images"] == {}
-    assert commands[5] == runtime._python(
+    assert commands[6] == runtime._python(
         programs.IMAGE,
         IMAGE,
         "/var/lib/niuu/host-images",
         json.dumps(_SESSION_IMAGE_WRAPPERS),
         json.dumps(CLAIM),
     )
-    assert commands[6] == runtime._python(module._HOST_START)
-    started = json.loads(calls[6].kwargs["data"])
+    assert commands[7] == runtime._python(module._HOST_START)
+    started = json.loads(calls[7].kwargs["data"])
     host_spec = started["host"]
     key = f"{lease.id}-slot-2"
     assert host_spec["pidfile"] == f"/run/niuu/host-sessions/{key}.pid"
