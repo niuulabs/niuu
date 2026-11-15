@@ -24,7 +24,7 @@ uv run python scripts/check_quickstart.py --niuu .venv/bin/niuu
 The test installs nothing itself. It requires Git, curl, Bash, and a real Claude
 CLI. The release workflow installs a pinned Claude CLI, currently 2.1.181.
 It creates temporary configuration, database, state, and workspace paths and
-selects unused loopback ports. It preserves the user's home and authentication. Mímir also uses a temporary store,
+selects unused loopback ports. It preserves the user's home and authentication. Memory also uses a temporary store,
 so the knowledge example never writes to the user's normal knowledge base.
 
 It checks:
@@ -33,7 +33,7 @@ It checks:
 - real embedded PostgreSQL startup, migrations, and `/health`;
 - delivery of the web UI and the documented Claude runtime definition;
 - the HTTP examples for model catalogs, providers, service discovery, and sessions;
-- real Mímir source ingestion and readback from the knowledge guide;
+- real Memory source ingestion and readback from the knowledge guide;
 - creation of a blank session through Forge and its running state;
 - stopping that session and shutting down the foreground platform with SIGINT
   (the signal sent by Ctrl+C).
@@ -94,9 +94,9 @@ does not validate release packaging.
 
 The rewritten service guides were exercised against a fresh isolated source host
 on macOS ARM64. Model/catalog/health reads, instance and target discovery, session
-reads, and Mímir ingestion/readback passed. Raw source ingestion returned no
+reads, and Memory ingestion/readback passed. Raw source ingestion returned no
 synthesized pages, and knowledge search returned an empty result; the guide now
-explains that distinction. Ting workflow reads returned HTTP 401 without caller
+explains that distinction. Workflow engine reads returned HTTP 401 without caller
 authentication, as documented.
 
 All Bash blocks also passed shell-syntax checks, including the generated CLI
@@ -105,7 +105,7 @@ or deployment. The release docs job repeats this check.
 
 The source umbrella chart passed dependency resolution, Helm lint, and rendering
 in a temporary copy. No cluster deployment was performed. The strict site build
-passed after generating the Völundr OpenAPI file. The landing page was inspected
+passed after generating the Forge OpenAPI file. The landing page was inspected
 in the browser; existing onboarding URLs remain available as forwarding pages.
 
 ## Maintaining the guide

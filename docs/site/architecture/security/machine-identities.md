@@ -32,10 +32,6 @@ flowchart LR
   F -- "SSH through the tunnel,<br/>pinned to the host key" --> H
 ```
 
-A node and a guest call *in* over HTTPS with a signature instead of a bearer. A
-registered host calls nothing over HTTP: it keeps an SSH tunnel open, and Forge reaches
-back through it.
-
 ## Joined nodes (`niuu join`)
 
 | Aspect | Rule |
@@ -48,7 +44,7 @@ back through it.
 | Replay | `UPDATE … WHERE last_request_at IS NULL OR last_request_at < $ts` (`try_advance_watermark`): one atomic statement |
 | Skew | `niuu.node_join.clock_skew_seconds`, default 30 s |
 | Rejection | The same 401 for unknown or malformed id, missing headers, bad signature, stale timestamp or replay |
-| Enforcement points | The route dependency; `PATRevocationMiddleware`'s exemption; the Platform (Guild) chart's Envoy `jwt_authn` bypass, an exact `safe_regex` |
+| Enforcement points | The route dependency; `PATRevocationMiddleware`'s exemption; the Platform chart's (`charts/guild`) Envoy `jwt_authn` bypass, an exact `safe_regex` |
 
 ## VM guests (metadata credentials)
 

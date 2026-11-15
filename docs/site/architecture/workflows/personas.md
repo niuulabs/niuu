@@ -12,7 +12,7 @@ how much it may change, and which events it takes in and gives back.
   event contract is what routes work to it and turns its verdict into the next event.
 - When a workflow is saved or launched, each persona is **pinned** by revision and digest, and
   its full document is copied into the run. Forge checks the digest and plays it verbatim.
-- Three personas ship built in: `coder`, `reviewer`, `security-auditor`. A team is just a
+- Three personas ship built in: `coder`, `reviewer`, `security-auditor`. A team is a
   workflow that puts several personas on stages; there is no separate team object.
 
 ## How it fits
@@ -25,11 +25,8 @@ flowchart LR
     S --> W[Workflow save:<br/>pin id + revision + digest]
     W --> SN[Run snapshot:<br/>persona_definitions]
     SN --> F[Forge session create:<br/>persona_definition + model]
-    F --> SK[Skuld: instructions + permission mode<br/>applied to the harness]
+    F --> SK[Session gateway: instructions + permission mode<br/>applied to the harness]
 ```
-
-The pin is what makes a run reproducible: editing a persona changes the next launch, never a
-run already going.
 
 ## The document
 
@@ -76,7 +73,7 @@ Personas once shipped for planning, research and delivery are archived (listed i
 | Save | Every `personaId` must be declared in `persona_dependencies`; each is pinned to `{id, revision, digest}` |
 | Launch | The run's snapshot carries the full document per alias (`persona_definitions`); a member with no pin is refused |
 | Session | Forge gets `persona_definition`, `model` (stage → launch → `dispatch.default_model`), the alias, event filters and topics; an optional `systemPromptExtra` is appended |
-| Offer | The member's Skuld reads the same contract to decide if an offer is its own |
+| Offer | The member's session gateway reads the same contract to decide if an offer is its own |
 
 ## Levers
 
@@ -112,4 +109,4 @@ Personas once shipped for planning, research and delivery are archived (listed i
 
 - [Workflows overview](index.md)
 - [Runs, steps and gates](runs.md)
-- [Skuld runtimes](../skuld/runtimes.md) — the harness a persona runs on
+- [Session gateway runtimes](../session-gateway/runtimes.md) — the harness a persona runs on

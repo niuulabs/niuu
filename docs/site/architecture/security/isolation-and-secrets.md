@@ -1,7 +1,6 @@
 # Isolation and secrets
 
-What a running session can touch, and how integration secrets reach it without the
-session ever holding more than it needs.
+What a running session can touch, and how integration secrets reach it.
 
 ## In one minute
 
@@ -27,8 +26,7 @@ flowchart LR
   P -. "ask owner for a secret<br/>forge:session:secret" .-> F[Forge]
 ```
 
-The launch path never copies a secret value into Forge's own records: the contributor
-names credentials, and the injection adapter has the store render them into the session.
+The launch path never copies a secret value into Forge's own records.
 
 ## Runtimes compared
 

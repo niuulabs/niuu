@@ -26,7 +26,7 @@ class MimirPlugin(ServicePlugin):
     def register_service(self) -> ServiceDefinition:
         return ServiceDefinition.hosted(
             name="mimir",
-            description="Knowledge service",
+            description="Memory: knowledge sources, pages and retrieval",
             default_enabled=True,
         )
 

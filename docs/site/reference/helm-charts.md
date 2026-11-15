@@ -28,7 +28,7 @@ helm show chart ./charts/niuu
 helm show values ./charts/volundr
 ```
 
-Inside umbrella values, the Völundr fields are nested under `volundr`. Within the
+Inside umbrella values, the Forge fields are nested under `volundr`. Within the
 standalone chart they are at the root. The same distinction applies to the other
 subcharts. Aliases such as `mimir-shared` have their own values trees.
 

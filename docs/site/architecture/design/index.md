@@ -1,6 +1,6 @@
 # Design principles
 
-The handful of rules every Niuu package follows, and why the system stops instead of quietly getting worse.
+The rules every Niuu package follows.
 
 ## In one minute
 
@@ -8,7 +8,7 @@ The handful of rules every Niuu package follows, and why the system stops instea
 - **Adapters are picked by config.** A config block names a class path in `adapter:` and its constructor arguments in `kwargs:`. Swapping an implementation is a config change, not a code change.
 - **Fail loud.** A configured thing that cannot work is fatal: it raises with the remedy in the message. Nothing falls back to a weaker path.
 - **No hidden limits.** A cap (tokens, turns, retries, lengths) exists only when something real bounds it, and a hit raises or logs at error level and is counted.
-- **Config first, one-way imports.** Every knob is a field on a settings model. `niuu` is shared; Forge (Völundr) and Ting import from it and never from each other.
+- **Config first, one-way imports.** Every knob is a field on a settings model. `niuu` is shared; Forge and the workflow engine import from it and never from each other.
 
 ## How it fits
 
@@ -25,14 +25,12 @@ flowchart LR
     adapter -. "cap reached" .-> cap["niuu.cap_telemetry<br/>error log + counter"]
 ```
 
-Read it left to right: configuration becomes a typed settings object, the composition root turns its `adapter:` entries into instances, and the domain only ever sees the port. The dotted lines are the two ways a component tells you something is wrong; there is no third, silent one.
-
 ## The principles
 
 | Principle | The rule in one line | Page |
 |---|---|---|
 | Hexagonal layout | Domain depends on ports; adapters implement ports; only composition roots import everything | [Layers and boundaries](layers.md) |
-| Module boundaries | `niuu` ← `volundr`, `niuu` ← `ting`; Ting never imports Volundr; Ravn judges, Skuld transports, Niuu provides mechanics | [Layers and boundaries](layers.md) |
+| Module boundaries | `niuu` ← `volundr`, `niuu` ← `ting`; the workflow engine never imports Forge; the agent runtime judges, the session gateway transports, Niuu provides mechanics | [Layers and boundaries](layers.md) |
 | Dynamic adapters | `adapter:` class path + `kwargs:`; no `if/elif` on adapter names | [Config and adapters](config-and-adapters.md) |
 | Config first | No bare `os.environ` reads for behaviour; no magic numbers | [Config and adapters](config-and-adapters.md) |
 | No fallbacks | Configured but impossible is fatal, never degraded | [Fail loud](fail-loud.md) |
@@ -40,14 +38,12 @@ Read it left to right: configuration becomes a typed settings object, the compos
 
 ## What enforces them
 
-Some rules are checked by tests on every CI run; the rest are review rules.
-
 | Rule | Enforced by |
 |---|---|
-| Ting and Volundr never import each other; `niuu` imports neither | [`tests/test_infrastructure/test_package_boundaries.py`](https://github.com/niuulabs/niuu/blob/dev/tests/test_infrastructure/test_package_boundaries.py) (AST scan of every import) |
-| `niuu`, `personas`, `mimir`, `tracker` never import Ravn, nor name a Ravn module in a string | same file |
+| The workflow engine and Forge never import each other; `niuu` imports neither | [`tests/test_infrastructure/test_package_boundaries.py`](https://github.com/niuulabs/niuu/blob/dev/tests/test_infrastructure/test_package_boundaries.py) (AST scan of every import) |
+| `niuu`, `personas`, `mimir`, `tracker` never import the agent runtime, nor name a `ravn` module in a string | same file |
 | Domain layers never read the process environment | same file (`test_domain_layers_do_not_read_process_environment`) |
-| Shared collaboration imports no Ravn, Skuld or FastAPI | [`tests/test_niuu/test_collaboration_boundaries.py`](https://github.com/niuulabs/niuu/blob/dev/tests/test_niuu/test_collaboration_boundaries.py) |
+| Shared collaboration imports no `ravn`, `skuld` or FastAPI | [`tests/test_niuu/test_collaboration_boundaries.py`](https://github.com/niuulabs/niuu/blob/dev/tests/test_niuu/test_collaboration_boundaries.py) |
 | No behavioural `os.environ` read outside an explicit allowlist | [`tests/test_infrastructure/test_config_first.py`](https://github.com/niuulabs/niuu/blob/dev/tests/test_infrastructure/test_config_first.py) |
 | Example configs only use keys the settings models define | [`tests/test_infrastructure/test_example_configs.py`](https://github.com/niuulabs/niuu/blob/dev/tests/test_infrastructure/test_example_configs.py) |
 | Migrations have one source | [`tests/test_charts/test_migrations_single_source.py`](https://github.com/niuulabs/niuu/blob/dev/tests/test_charts/test_migrations_single_source.py) |
@@ -55,7 +51,7 @@ Some rules are checked by tests on every CI run; the rest are review rules.
 
 ## Levers: swapping an implementation
 
-An operator changes *which* implementation runs by changing one config block. Examples from the Forge chart ([`charts/volundr/values.yaml`](https://github.com/niuulabs/niuu/blob/dev/charts/volundr/values.yaml)):
+Examples from the Forge chart ([`charts/volundr/values.yaml`](https://github.com/niuulabs/niuu/blob/dev/charts/volundr/values.yaml)):
 
 | Knob | Default (mini / chart) | Production example | What it changes |
 |---|---|---|---|
@@ -79,7 +75,7 @@ credentialStore:
       secretKey: token
 ```
 
-Changing provider is a deploy, never a runtime branch: there is no list of "try this, then that". If OpenBao is unreachable, Forge fails; it does not fall back to memory.
+If OpenBao is unreachable, Forge fails; it does not fall back to memory.
 
 ## Tradeoffs
 
@@ -100,9 +96,3 @@ Changing provider is a deploy, never a runtime branch: there is no list of "try 
 | Cap and degradation telemetry | [`src/niuu/cap_telemetry.py`](https://github.com/niuulabs/niuu/blob/dev/src/niuu/cap_telemetry.py) |
 | Limits register | [`docs/operator/limits.md`](https://github.com/niuulabs/niuu/blob/dev/docs/operator/limits.md), [`docs/operator/forge-limits.md`](https://github.com/niuulabs/niuu/blob/dev/docs/operator/forge-limits.md) |
 | Architecture tests | [`tests/test_infrastructure/`](https://github.com/niuulabs/niuu/tree/dev/tests/test_infrastructure) |
-
-## Related
-
-- [Layers and boundaries](layers.md) — the package tree, ports and composition roots
-- [Config and adapters](config-and-adapters.md) — settings models, `adapter:` blocks, chart rendering
-- [Fail loud](fail-loud.md) — no fallbacks, no hidden limits, and where a hit shows up

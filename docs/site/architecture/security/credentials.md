@@ -14,16 +14,15 @@ reaches and how it dies.
   whoever could edit it could mint authority.
 - A scope means something only where a route calls `require_scope(...)`. A test fails if
   the allowlist and the enforcement points drift apart.
-- Personal access tokens (PATs) are an existing, sanctioned exception for automation that
-  has no browser session. They are not the way to give workloads authority; workload
-  identity is.
+- Personal access tokens (PATs) are a sanctioned exception for automation with no browser
+  session. Workloads get authority through workload identity, not PATs.
 
 ## The matrix
 
 | Credential | Held by | Issued / signed by | Lifetime | Carries | Revoked by |
 |---|---|---|---|---|---|
 | OIDC user token | A person (browser, CLI, app) | The configured identity provider | The provider's setting | Roles, mapped by `identity.roleMapping` | The provider (logout, expiry) |
-| Personal access token (PAT) | A person's automation, e.g. Ting's dispatcher acting as that person | `pat.token_issuer_adapter`: `MemoryTokenIssuer` (HS256, default) or `KeycloakTokenIssuer` (token exchange) | `pat.ttl_days`, default 365 | The owner's full authority, unless minted with scopes | Revoking the PAT (table `personal_access_tokens`) |
+| Personal access token (PAT) | A person's automation, e.g. the workflow engine's dispatcher acting as that person | `pat.token_issuer_adapter`: `MemoryTokenIssuer` (HS256, default) or `KeycloakTokenIssuer` (token exchange) | `pat.ttl_days`, default 365 | The owner's full authority, unless minted with scopes | Revoking the PAT (table `personal_access_tokens`) |
 | Scoped workload token (`valkyrie_build`) | A workload that must do one named thing | The workload-identity exchange, `POST /api/v1/tokens/workload/exchange` | `workload_identity.token_ttl_seconds`, default 900 s (60–3600) | `scopes` from the exchange-grantable family | Expiry |
 | Plain workload token | A workload without requested scopes | The same exchange | The same | The mapping's `roles` (default `volundr:developer`) | Expiry |
 | Session credential (`forge_session`) | One session's broker, for the Forge MCP | Forge, at every launch | Bound to the launch; `exp` backstop `forge_mcp.session_tokens.ttl_seconds`, default 30 days | `FORGE_SESSION_SCOPES`, role `volundr:developer`, never admin | Restarting, stopping or archiving the session |
@@ -78,7 +77,7 @@ flowchart LR
 ## PATs
 
 A PAT is a long-lived JWT for automation that must call as a person with no browser
-session. It is an exception to "no custom tokens", kept narrow:
+session. It is an exception to "no custom tokens":
 
 | Fact | Detail |
 |---|---|

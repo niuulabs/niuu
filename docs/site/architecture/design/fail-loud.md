@@ -1,14 +1,13 @@
 # Fail loud
 
-When something configured cannot be done, Niuu stops and says why. It never switches to a weaker path, and it never lets a limit cut work off without counting it.
+When something configured cannot be done, Niuu stops and says why.
 
 ## In one minute
 
-- **Configured but impossible is fatal.** The error names the knob and the fix. A degraded path that keeps running is not allowed.
+- **Configured but impossible is fatal.** The error names the knob and the fix.
 - **Only two escapes:** the operator configured "do without" (`enabled: false`), or an optional read whose absence is normal and reported ("no checkpoint yet"). A second configured implementation is *not* an escape.
 - **A cap needs a real bound** (a context window, a provider's message size, a deadline). If you cannot name it, the cap does not go in.
 - **A hit is loud and counted** through `niuu.cap_telemetry`: an error log naming the knob, and a counter (`ravn.cap.hits`).
-- For an operator: a service that refuses to start or a call that raises is the design working. The message tells you what to change.
 
 ## How it fits
 
@@ -26,7 +25,7 @@ flowchart TD
     must -- yes --> deg["record_degraded<br/>error log + counter, continue"]
 ```
 
-There is no edge from "cannot work" to "run something else". Changing provider is a deploy, not a runtime branch.
+Changing provider is a deploy, not a runtime branch.
 
 ## Why: the incidents behind the rules
 
@@ -41,8 +40,6 @@ Each was found by an operator, late, never by a signal.
 | A 3-turn cap on case continuations | Stopped a case on the turn it asked the operator a question; the question was never saved and the reply became an unrelated task | Hours |
 | A failed memory search returning `None` | Read as "no matching lesson", so the same lesson was recorded again and again | Weeks |
 
-A fallback turns a one-line failure into a data problem that takes weeks to find. Stopping is strictly better.
-
 ## What it looks like in the code
 
 | Where | What is refused | The message tells you to |
@@ -51,15 +48,15 @@ A fallback turns a one-line failure into a data problem that takes weeks to find
 | Identity vs auth mode ([`service_runtime.py`](https://github.com/niuulabs/niuu/blob/dev/src/niuu/service_runtime.py)) | `auth_mode: oidc` or `none` with an adapter that trusts Envoy headers | Pick the mode that matches the adapter |
 | Mesh transport ([`transport_builder.py`](https://github.com/niuulabs/niuu/blob/dev/src/niuu/mesh/transport_builder.py)) | A transport that cannot be imported or constructed → `TransportBuildError` | Install the package, or configure another transport |
 | Mesh attestation ([`niuu/mesh/config.py`](https://github.com/niuulabs/niuu/blob/dev/src/niuu/mesh/config.py)) | A peer that cannot get a certificate does not start its mesh | Fix identity, or set `mesh.attestation.required: false` (a decision) |
-| Skuld waits ([`skuld/config.py`](https://github.com/niuulabs/niuu/blob/dev/src/skuld/config.py)) | `ask.wait_max_s` not shorter than the engine's MCP timeouts → startup fails | Lower the wait or raise the timeout |
+| Session gateway waits ([`skuld/config.py`](https://github.com/niuulabs/niuu/blob/dev/src/skuld/config.py)) | `ask.wait_max_s` not shorter than the engine's MCP timeouts → startup fails | Lower the wait or raise the timeout |
 | CLI plugins ([`cli/registry.py`](https://github.com/niuulabs/niuu/blob/dev/src/cli/registry.py)) | An installed or configured plugin that fails to load → `PluginLoadError` | Fix it, or set `plugins.enabled.<name>: false` |
-| Bifröst routing ([`bifrost/config.py`](https://github.com/niuulabs/niuu/blob/dev/src/bifrost/config.py)) | `routing_strategy: failover`: a request is served by one provider, never retried on another | Set `direct` or another selection strategy |
+| Model gateway routing ([`bifrost/config.py`](https://github.com/niuulabs/niuu/blob/dev/src/bifrost/config.py)) | `routing_strategy: failover`: a request is served by one provider, never retried on another | Set `direct` or another selection strategy |
 | Forge event pipeline ([`volundr/main.py`](https://github.com/niuulabs/niuu/blob/dev/src/volundr/main.py)) | An audit subscriber that cannot start, or `event_pipeline.rabbitmq.enabled` with no aio-pika or no broker | Fix it, or turn the sink off |
-| Skuld Telegram ([`skuld/chronicle.py`](https://github.com/niuulabs/niuu/blob/dev/src/skuld/chronicle.py)) | `telegram.enabled` that cannot start (credentials, library, topic) fails the session's startup | Fix the credential or topic, or set `telegram.topic_mode: shared_chat` by decision |
+| Session gateway Telegram ([`skuld/chronicle.py`](https://github.com/niuulabs/niuu/blob/dev/src/skuld/chronicle.py)) | `telegram.enabled` that cannot start (credentials, library, topic) fails the session's startup | Fix the credential or topic, or set `telegram.topic_mode: shared_chat` by decision |
 
 ## Recording a hit: `niuu.cap_telemetry`
 
-One module, one set of counters. Do not add a parallel counter or log format.
+Do not add a parallel counter or log format.
 
 | Call | When | Log | Counter | Then |
 |---|---|---|---|---|
@@ -88,7 +85,7 @@ One module, one set of counters. Do not add a parallel counter or log format.
 | Error log line | `cap hit [<knob>]: …`, `degraded [<path>]: …` |
 | OpenTelemetry counter | `ravn.cap.hits` (attr `ravn.cap.knob`), `ravn.degraded` (attr `ravn.degraded.path`), `ravn.retries` (attr `ravn.retry.path`) |
 | Prometheus | `ravn_cap_hits_total` and friends, via the process's OTLP pipeline |
-| `GET /health` → `caps` | `health_counts()` → `cap_hits_total`, `cap_hits.<knob>`, `degraded_total`, `degraded.<path>`, `retries_total`, served by Forge, Skuld, Bifröst, Ting and the Niuu host. Counts are per process and reset on restart |
+| `GET /health` → `caps` | `health_counts()` → `cap_hits_total`, `cap_hits.<knob>`, `degraded_total`, `degraded.<path>`, `retries_total`, served by Forge, the session gateway, the model gateway, the workflow engine and the Niuu host. Counts are per process and reset on restart |
 
 Every cap that remains is listed with its real bound and decision in the limits registers: [`docs/operator/limits.md`](https://github.com/niuulabs/niuu/blob/dev/docs/operator/limits.md) (shared and non-Forge) and [`docs/operator/forge-limits.md`](https://github.com/niuulabs/niuu/blob/dev/docs/operator/forge-limits.md). Add a row when you add or keep a cap.
 
@@ -96,7 +93,7 @@ Every cap that remains is listed with its real bound and decision in the limits 
 
 | Resource | Real bound | So |
 |---|---|---|
-| Model output tokens | The model's context window, the request timeout | Send no `max_tokens` where the API allows; where required, ask the vendor (Bifröst's Anthropic adapter reads the limit from the Models API) or make the operator's knob required, with no default |
+| Model output tokens | The model's context window, the request timeout | Send no `max_tokens` where the API allows; where required, ask the vendor (the model gateway's Anthropic adapter reads the limit from the Models API) or make the operator's knob required, with no default |
 | Turns, iterations, attempts | A wall-clock deadline, an operator budget, or the agent's own decision | Bound by that; a count only where retrying is pointless past it, and exhausting it raises |
 | Retries | Whether a retry can change the outcome | Never retry a deterministic failure (truncation, validation) |
 | Lengths, excerpts | A downstream hard limit (prompt budget, column size, Telegram's 4096 UTF-16 units) | Use that limit; mark and count the cut |
@@ -106,7 +103,7 @@ Every cap that remains is listed with its real bound and decision in the limits 
 | Knob | Default | What it changes | Where it is set |
 |---|---|---|---|
 | `forge_mcp.session_tokens.enabled` | `true` | `false` runs sessions without scoped Forge credentials, by decision | Forge config |
-| `mesh.attestation.required` | `true` | `false` runs an unauthenticated mesh, by decision | Forge / Skuld mesh config |
+| `mesh.attestation.required` | `true` | `false` runs an unauthenticated mesh, by decision | Forge / session gateway mesh config |
 | Each cap's own knob | see the limits registers | The bound itself | Per component config |
 
 ## In review: reject on sight

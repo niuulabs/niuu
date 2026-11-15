@@ -1,7 +1,6 @@
 # Runs, steps and gates
 
-How a run moves through its graph: Ting offers work, members of the run pick it up,
-gates wait for a person, and an end node completes the run.
+How a run moves through its graph.
 
 ## In one minute
 
@@ -14,16 +13,16 @@ gates wait for a person, and an end node completes the run.
   author sets `maxIterations`.
 - **Gates** wait for a person. Only a gate with `mode: automated_approval` may be answered by
   an agent; any other gate refuses an agent's decision.
-- A stuck step is **flagged, not guessed**: overdue, unclaimed, unclosed, session gone or
+- A stuck step is **flagged**: overdue, unclaimed, unclosed, session gone or
   unit stopped each reach the owner once through the notification feed.
 
 ## How it fits
 
 ```mermaid
 sequenceDiagram
-    participant T as Ting step engine
-    participant R as Run root (Skuld, no agent)
-    participant M as Member session (Skuld + harness)
+    participant T as Workflow step engine
+    participant R as Run root (session gateway, no agent)
+    participant M as Member session (session gateway + harness)
     participant F as Forge
     T->>T: next_actions(ledger, event) → offer
     T->>R: publish signed offer (POST room/offer)
@@ -36,9 +35,8 @@ sequenceDiagram
     T->>T: verdict → outcome event → next offer / gate / end
 ```
 
-Ting never joins the mesh and never relays conversation. It hands offers to the run's root
-and records what the members report, which reaches it through Forge's activity stream (and,
-after an outage, from each session's durable log).
+The workflow engine never joins the mesh or relays conversation. After an outage it reads members'
+reports back from each session's durable log.
 
 ## Offers, pickups and joins
 
@@ -51,9 +49,9 @@ after an outage, from each session's durable log).
 | `reviewVerdictPolicy` | A quorum: every reviewer that picked the work up must deliver before the node is offered, whatever the join mode |
 | `executionMode: sequential` | One offer or working pickup in the node at a time |
 | `executionMode: parallel` (default) | Up to `maxConcurrent`, unbounded when unset |
-| One step per member | A member's Skuld refuses an offer while it holds a step, so an offer queues (`pending`) until its members are free |
+| One step per member | A member's session gateway refuses an offer while it holds a step, so an offer queues (`pending`) until its members are free |
 
-A pickup is a step of its own, so a join counts the members that actually picked the work up,
+A pickup is a step of its own, so a join counts the members that picked the work up,
 not every member the graph lists.
 
 ## The ledger
@@ -84,7 +82,7 @@ owner through the notification feed unless the node sets `pendingBehavior: silen
 ## The review surface
 
 A review is read back from the ledger: each opening of a gate is a revision, with the outcome
-fields that stood when it opened and what the person decided. Ting stores nothing else for it.
+fields that stood when it opened and what the person decided. The workflow engine stores nothing else for it.
 `GET /api/v1/ting/work/reviews` lists everything waiting on a person across their projects.
 
 | Board gate column field | What a person sees |
@@ -95,7 +93,7 @@ fields that stood when it opened and what the person decided. Ting stores nothin
 | `panels` | Replaces the defaults: `document`, `file`, `link`, `page`, `diff`, `files`, `pullRequest`, `summary`, each sourced from an outcome field, a workspace file or a URL |
 
 Extra widgets come from module packages (`review_widgets.module_manifest_files`); one that
-cannot be read stops Ting at startup.
+cannot be read stops the workflow engine at startup.
 
 ## Rework, failure and the end
 
@@ -113,7 +111,7 @@ execution (`workflow_execution.enabled`, off by default): it fans out child work
 them (`joined` or `blocked`), and polls the configured wait observers per condition type
 (`timer` ships; `forge.*` checks and merge observers come with the code-delivery extension).
 A satisfied wait closes its step as `observed`. It needs workload identity outside anonymous
-local mode, because children are launched with Ting-issued workload credentials.
+local mode, because children are launched with workload credentials the workflow engine issues.
 
 ## Stuck steps and recovery
 
@@ -142,24 +140,24 @@ uses the new head. Project boards pin a version per workflow too.
 
 | Knob | Default | What it changes | Where it is set |
 |---|---|---|---|
-| `workflow_steps.step_deadline_seconds` | `14400` (4 h) | How long an offer may wait and a pickup may stay active before it is overdue | Ting config / chart `workflowSteps` |
-| `workflow_steps.pickup_grace_seconds` | `300` | When an unpicked offer is flagged and republished (never a cap) | Ting config |
-| `workflow_steps.stuck.enabled` | `true` | Run the stuck-step sweep; `false` is a decision to go without it | Ting config |
-| `workflow_steps.stuck.sweep_interval_seconds` | `120` | How long a stuck step can go unflagged | Ting config |
-| `workflow_steps.catch_up_page_size` | `200` | Page size when reading back session logs after an outage; bounds nothing | Ting config |
+| `workflow_steps.step_deadline_seconds` | `14400` (4 h) | How long an offer may wait and a pickup may stay active before it is overdue | Workflow engine config / chart `workflowSteps` |
+| `workflow_steps.pickup_grace_seconds` | `300` | When an unpicked offer is flagged and republished (never a cap) | Workflow engine config |
+| `workflow_steps.stuck.enabled` | `true` | Run the stuck-step sweep; `false` is a decision to go without it | Workflow engine config |
+| `workflow_steps.stuck.sweep_interval_seconds` | `120` | How long a stuck step can go unflagged | Workflow engine config |
+| `workflow_steps.catch_up_page_size` | `200` | Page size when reading back session logs after an outage; bounds nothing | Workflow engine config |
 | `deadlineSeconds` (node) | unset | Per-node deadline; the only deadline gates, waits and subworkflows get | Workflow document |
 | `maxIterations` (rework edge) | unset | Round cap on one rework loop | Workflow document |
-| `workflow_execution.enabled` | `false` | Durable fan-out/join and waits for `subworkflow` and `wait` nodes, plus the A2A child gateway | Ting config / chart `workflowExecution` |
-| `workflow_execution.wait_observers` | chart: `timer` | Which wait conditions can be observed | Ting config |
-| `workflow_execution.default_deadline_seconds` | `86400` | Deadline of a durable execution | Ting config |
-| `review_widgets.module_manifest_files` | `[]` | Extra review widgets for gate panels | Ting config |
+| `workflow_execution.enabled` | `false` | Durable fan-out/join and waits for `subworkflow` and `wait` nodes, plus the A2A child gateway | Workflow engine config / chart `workflowExecution` |
+| `workflow_execution.wait_observers` | chart: `timer` | Which wait conditions can be observed | Workflow engine config |
+| `workflow_execution.default_deadline_seconds` | `86400` | Deadline of a durable execution | Workflow engine config |
+| `review_widgets.module_manifest_files` | `[]` | Extra review widgets for gate panels | Workflow engine config |
 
 ## Tradeoffs
 
 | Choice | Gains | Costs |
 |---|---|---|
 | Pure engine over a ledger | Replayable, testable, no hidden state | Every decision is a DB transaction per run |
-| Offers on the run's mesh, not direct delivery | Members decide by persona and filters; no Ting-side routing | An offer is only published once every member of its topic reports listening |
+| Offers on the run's mesh, not direct delivery | Members decide by persona and filters; no routing in the workflow engine | An offer is only published once every member of its topic reports listening |
 | Run = one unit (members fixed at start) | Root and members start together; one place to look | A member cannot be added to a running run |
 | No default round limit | Loops end on the work's own verdicts | A loop that never converges runs until an operator aborts it |
 
@@ -182,4 +180,4 @@ uses the new head. Project boards pin a version per workflow too.
 ## Related
 
 - [Workflows overview](index.md)
-- [Skuld — the session gateway](../skuld/index.md) — how a member takes an offer and closes a step
+- [Session gateway](../session-gateway/index.md) — how a member takes an offer and closes a step

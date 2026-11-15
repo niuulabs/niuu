@@ -267,7 +267,7 @@ home:
             width: 2000
             height: 1220
             caption: A resident keeps a responsibility, with no prompt needed. A schedule, an event, a ticket, a message or a reading from a machine can set it off.
-            alt: The Resident console, with a roster of residents and Sigrun's report, reading Simpler now, 2 duplicate tools retired
+            alt: The Resident console, with a roster of residents and a resident's report, reading Simpler now, 2 duplicate tools retired
       - id: scale
         step: Scale
         label: Runtimes · Security & governance · Observability

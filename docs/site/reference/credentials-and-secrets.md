@@ -17,7 +17,7 @@ Finish the browser login and confirm that the second command returns `OK` with
 a successful exit code. Then start Niuu and choose **Claude Code** in the launch
 wizard. Leave **Credentials** and **Integrations** empty for this local exercise.
 
-The local adapter launches Skuld under the same OS account. Its Claude transport
+The local adapter launches the session gateway under the same OS account. Its Claude transport
 uses subscription authentication by default. It removes `ANTHROPIC_API_KEY` and
 `ANTHROPIC_AUTH_TOKEN` from the Claude child environment in that mode, so merely
 exporting an API key does not switch this runtime to API billing.
