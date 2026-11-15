@@ -97,7 +97,8 @@ class HostExecution:
     label: str
     supports_slots: bool
     requires_root_daemon: bool
-    slot_limits: SlotLimits | None
+    #: The per-slot limits on a host of each platform it runs (``None``: no limits).
+    slot_limits: Mapping[HostPlatform, SlotLimits | None]
     forge_public_key: str
     ssh_user: str
     platforms: frozenset[HostPlatform]
@@ -469,13 +470,10 @@ class ComputeHostService:
         ]
 
     def suggestion(self, host: RegisteredHost) -> tuple[int, tuple[str, ...]] | None:
-        if host.platform is HostPlatform.DARWIN:
-            # No per-slot limits on a Mac to size its slots from.
-            return None
         execution = self._executions.get(host.execution)
         return suggest_slots(
             host.facts,
-            execution.slot_limits if execution is not None else None,
+            _limits(execution, host.platform),
             reserved_cpu=self._reserved_cpu,
             reserved_memory_mib=self._reserved_memory,
         )
@@ -851,13 +849,9 @@ class ComputeHostService:
         execution = self._executions.get(host.execution)
         if not _many_slots(host.platform, execution) and host.slots != 1:
             return (f"{MACOS_ONE_SLOT}; this host is set to {host.slots} slots: set it to 1",)
-        if host.platform is HostPlatform.DARWIN:
-            # A Mac's sessions have no CPU or memory limits, so no per-slot size bounds how
-            # many it holds: that is the operator's call.
-            return ()
         suggestion = suggest_slots(
             facts,
-            execution.slot_limits if execution is not None else None,
+            _limits(execution, host.platform),
             reserved_cpu=self._reserved_cpu,
             reserved_memory_mib=self._reserved_memory,
         )
@@ -894,6 +888,13 @@ def _joining_platform(facts: Mapping[str, JsonValue]) -> HostPlatform:
             f"The host reported platform {value!r}; only Linux and macOS hosts can join, with "
             "the join.sh this Forge serves"
         ) from None
+
+
+def _limits(execution: HostExecution | None, platform: HostPlatform) -> SlotLimits | None:
+    """The per-slot limits slot counts are sized from on ``platform`` (a Mac has none)."""
+    if execution is None:
+        return None
+    return execution.slot_limits.get(platform)
 
 
 def _many_slots(platform: HostPlatform, execution: HostExecution | None) -> bool:

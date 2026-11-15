@@ -598,7 +598,7 @@ def test_registered_hosts_describe_each_execution_with_its_runtime_limits_and_ss
         label="Container (Docker)",
         supports_slots=True,
         requires_root_daemon=True,
-        slot_limits=limits,
+        slot_limits={HostPlatform.LINUX: limits},
         forge_public_key=accesses["vm"].public_key,
         ssh_user="ubuntu",
         platforms=LINUX_ONLY,
@@ -610,7 +610,7 @@ def test_registered_hosts_describe_each_execution_with_its_runtime_limits_and_ss
     assert (host.supports_slots, host.requires_root_daemon, host.slot_limits) == (
         False,
         False,
-        None,
+        {HostPlatform.LINUX: None},
     )
     assert (host.forge_public_key, host.ssh_user) == (accesses["vm-b"].public_key, "niuu")
     assert host.refusal is None and host.exclusive_only
@@ -1075,7 +1075,10 @@ def test_the_inspector_uses_the_uid_base_of_the_hosts_own_platform(tmp_path):
     assert hosts.inspector._uid_base_for(linux) == 62000
     assert hosts.inspector._uid_base_for(mac) == 71000
     described = hosts.executions[name]
-    assert described.slot_limits == linux_limits
+    assert described.slot_limits == {
+        HostPlatform.LINUX: linux_limits,
+        HostPlatform.DARWIN: mac_limits,
+    }
     assert described.platforms == {HostPlatform.LINUX, HostPlatform.DARWIN}
 
 
@@ -1112,7 +1115,7 @@ async def _close(components) -> None:
 
 
 async def test_the_built_in_catalog_composes_shared_mac_slots_beside_linux(tmp_path):
-    """Both platforms separate slots; only Linux limits them, so Forge still starts."""
+    """Both platforms separate slots, each with its own limits (a Mac has none)."""
     config = _builtin_config(
         tmp_path, session_images={"linux": LINUX_PINNED, "darwin": DARWIN_PINNED}
     )
@@ -1123,7 +1126,7 @@ async def test_the_built_in_catalog_composes_shared_mac_slots_beside_linux(tmp_p
         runtime = components.runtimes[components.default_plan.plan_digest]
         linux = runtime.for_platform(HostPlatform.LINUX)
         assert runtime.slot_platforms == {HostPlatform.LINUX, HostPlatform.DARWIN}
-        assert runtime.slot_limits == linux.slot_limits
+        assert runtime.slot_limits_for(HostPlatform.LINUX) == linux.slot_limits
     finally:
         await _close(components)
 
@@ -1154,7 +1157,7 @@ async def test_the_built_in_catalog_composes_real_linux_and_mac_runtimes(tmp_pat
         assert linux._host_prepared and mac._host_prepared
         assert runtime.host_platforms == {HostPlatform.LINUX, HostPlatform.DARWIN}
         assert runtime.supports_slots
-        assert runtime.slot_limits == linux.slot_limits
+        assert runtime.slot_limits_for(HostPlatform.LINUX) == linux.slot_limits
 
         hosts = module.build_registered_hosts(
             ComputeConfig(

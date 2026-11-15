@@ -161,7 +161,9 @@ def build_registered_hosts(
             supports_slots=runtime.supports_slots,
             slot_platforms=runtime.slot_platforms,
             requires_root_daemon=runtime.requires_root_daemon,
-            slot_limits=runtime.slot_limits,
+            slot_limits={
+                platform: runtime.slot_limits_for(platform) for platform in runtime.host_platforms
+            },
             forge_public_key=access.public_key,
             ssh_user=access.principal,
             platforms=runtime.host_platforms,
@@ -183,7 +185,7 @@ def build_registered_hosts(
 
     def uid_base_for(host):
         # The uid the host's own platform runs its slots at (a Mac's runtime may differ).
-        limits = offered(runtimes, host).for_platform(host.platform).slot_limits
+        limits = offered(runtimes, host).slot_limits_for(host.platform)
         return limits.uid_base if limits is not None else None
 
     def runtime_for(host):

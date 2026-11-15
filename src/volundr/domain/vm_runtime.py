@@ -196,6 +196,10 @@ class VmRuntime(ABC):
         """The per-slot limits sessions run under, when the runtime separates slots."""
         return None
 
+    def slot_limits_for(self, platform: HostPlatform) -> SlotLimits | None:
+        """The per-slot limits on a host of ``platform`` (a runtime runs one platform's)."""
+        return self.slot_limits
+
     @property
     def requires_root_daemon(self) -> bool:
         """Whether sessions run under a root daemon on the machine (root Docker, say).
