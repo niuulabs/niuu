@@ -1973,8 +1973,8 @@ class HostModeRuntime(SshContainerVmRuntime):
 
     #: The registered-host audit of this runtime's platform (``host_checks``).
     _audit_program: str = ""
-    # A host session clones as its slot's user (``host_session_programs.prepare_storage``),
-    # which reads no integration token.
+    # A host session clones as its slot's user (``host_session_programs.prepare_storage``);
+    # a runtime whose start program passes it the integration's token turns this on.
     _clones_with_integration_token = False
 
     def __init__(

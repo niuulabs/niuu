@@ -453,8 +453,14 @@ containers). The container runtime's clone reads it through a credential helper,
 and so does the session's own Git (`GIT_TOKEN_FILE`, a repository-scoped
 `credential.<url>.helper`), on every fetch and push. The token never enters the
 launch file, a URL or the repository's config. A token that was not rendered
-fails the start at stage `clone`. Host-mode and OpenShell runtimes clone with
-their own programs and do not read this token.
+fails the start at stage `clone`. The Linux host-mode runtime reads the same
+token: root reads the rendered file (whichever user the agent wrote it as) and the
+clone, run as the slot's user, gets it through its environment and a
+repository-scoped credential helper; the repository is then configured as the
+container runtime's is, and the session gets the same `GIT_TOKEN_FILE` environment.
+A token that was not rendered fails the start at stage `host-workspace`. The Mac
+host runtime and the OpenShell runtimes clone with their own programs and do not
+read this token.
 
 Credential files live outside the archived workspace/home and are deleted with the
 VM. PVCs, ConfigMap/Secret volumes, `valueFrom` env and workspace host-path sources

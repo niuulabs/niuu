@@ -18,7 +18,10 @@ FALLBACK_TOOLS = ("gh", "glab", "uv", "uvx", "node", "npm", "npx")
 #: ``prepare_storage`` checks the allocation marker, gives the slot its workspace and
 #: home, clones the repository as the slot's user (root never writes into storage the
 #: slot owns) and hands everything in the storage to the slot, and ``require_nix``
-#: refuses a session that expects Nix on a machine without its daemon.
+#: refuses a session that expects Nix on a machine without its daemon. With ``git`` (the
+#: attached integration's username, its token as root read it, and the settings the
+#: session's own Git reads it with) the clone reads the token from its environment
+#: through a repository-scoped credential helper: never a URL, the config or a file.
 SLOT_STORAGE = r"""
 import os, pathlib, subprocess
 def owned(path, mode, uid):
@@ -37,7 +40,7 @@ def owned(path, mode, uid):
             os.close(fd)
     finally:
         os.close(parent)
-def prepare_storage(root, marker, uid, repo, branch, keep_owners=()):
+def prepare_storage(root, marker, uid, repo, branch, keep_owners=(), git=None):
     root = pathlib.Path(root)
     found = root / '.allocation'
     if not found.exists():
@@ -47,11 +50,25 @@ def prepare_storage(root, marker, uid, repo, branch, keep_owners=()):
     workspace, home = root / 'workspace', root / 'home'
     owned(str(workspace), 0o700, uid)
     owned(str(home), 0o700, uid)
+    as_slot = {'user': uid, 'group': uid, 'extra_groups': [], 'cwd': str(home),
+        'stdout': subprocess.DEVNULL, 'check': True}
+    plain = {'PATH': '/usr/bin:/bin', 'HOME': str(home), 'GIT_TERMINAL_PROMPT': '0'}
     if repo and not os.path.lexists(str(workspace / '.git')):
-        args = ['git', 'clone', *(['--branch', branch] if branch else []), '--', repo,
+        config, env = [], dict(plain)
+        if git:
+            config = ['-c', 'credential.helper=', '-c', 'credential.useHttpPath=true',
+                '-c', 'credential.' + repo + '.helper=!f() { [ "$1" = get ] || return 0; '
+                '[ -n "$NIUU_GIT_TOKEN" ] || return 1; printf "username=%s\\npassword=%s\\n" '
+                '"$NIUU_GIT_USERNAME" "$NIUU_GIT_TOKEN"; }; f']
+            env.update(NIUU_GIT_USERNAME=git['username'], NIUU_GIT_TOKEN=git['token'])
+        args = ['git', *config, 'clone', *(['--branch', branch] if branch else []), '--', repo,
             str(workspace)]
-        subprocess.run(args, check=True, stdout=subprocess.DEVNULL, user=uid, group=uid,
-            extra_groups=[], cwd=str(home), env={'PATH': '/usr/bin:/bin', 'HOME': str(home)})
+        subprocess.run(args, env=env, **as_slot)
+    if repo and git:
+        # What the session's own Git reads the token with, on every fetch and push.
+        for key, value in git['settings']:
+            subprocess.run(['git', 'config', '--file', str(workspace / '.git' / 'config'),
+                key, value], env=plain, **as_slot)
     # -h: a link the session left in its storage names its own path, never a target.
     # Container storage keeps the owners its subordinate ids gave it.
     prune = [a for path in keep_owners for a in ('-path', str(root / path), '-prune', '-o')]
