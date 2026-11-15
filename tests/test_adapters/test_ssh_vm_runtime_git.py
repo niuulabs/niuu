@@ -258,6 +258,8 @@ class TestGuestClone:
             REPO,
             str(tmp_path / "session" / "workspace"),
         ]
+        config_file = str(tmp_path / "session" / "workspace" / ".git" / "config")
+        assert all(call[:3] == ["config", "--file", config_file] for call in git_calls[1:])
         settings = {call[3]: call[4] for call in git_calls[1:]}
         # Inside the session's containers the token is at its own path, read on every use.
         assert settings["niuu.gitTokenFile"] == TOKEN_FILE

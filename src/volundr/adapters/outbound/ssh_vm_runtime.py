@@ -250,8 +250,11 @@ if p['repo'] and not (workspace/'.git').exists():
              '"$(git config niuu.gitUsername)" "$token"; }; f')]
         settings+=[(k,g[v]) for k,v in (('user.name','user_name'),('user.email','user_email'),
             ('niuu.baseBranch','base_branch')) if g[v]]
+    # Written to the file itself: root opening a slot user's repository is refused as
+    # dubious ownership, and the file needs no repository discovery.
     for key,value in settings:
-        run('git','-C',str(workspace),'config',key,value,stage='clone-config')
+        run('git','config','--file',str(workspace/'.git'/'config'),key,value,
+            stage='clone-config')
 # -h: a link the session left in its storage names its own path, never a target.
 owner=f"{s['uid']}:{s['uid']}" if s else '1000:1000'
 run('chown','-R','-h',owner,str(root),stage='chown')
