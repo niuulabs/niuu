@@ -101,6 +101,14 @@ _MOUNT_KEYS = {"name", "mountPath", "readOnly"}
 #: Directory symlinks in the session images: in the Skuld image ``/var/run`` is ``/run``.
 _DEFAULT_IMAGE_PATH_LINKS = {"/var/run": "/run"}
 
+#: The credential helper of a session's Git environment (the Skuld chart's
+#: ``skuld.gitCredentialEnv``): the token is read from its file on every request.
+_GIT_ENV_HELPER = (
+    '!f() { [ "$1" = get ] || return 0; token=$(cat "$GIT_TOKEN_FILE") || return 1; '
+    '[ -n "$token" ] || return 1; printf "username=%s\\npassword=%s\\n" "$GIT_USERNAME" '
+    '"$token"; }; f'
+)
+
 logger = logging.getLogger(__name__)
 
 # Passed as a fixed program; session-controlled values arrive as JSON on stdin.
@@ -116,16 +124,17 @@ root=pathlib.Path(s['data_root'] if s else '/var/lib/niuu/session')
 marker=root/'.allocation'
 name=s['skuld'] if s else 'niuu-skuld'
 labels=s['labels'] if s else ['compute.niuu.io/allocation='+p['allocation_id']]
+def report(stage,detail):
+    # Only the step's name and a fixed detail leave the guest: its output may hold secrets.
+    print('__STAGE__'+stage[:64],file=sys.stderr)
+    print('__DETAIL__'+base64.b64encode(detail.encode()).decode(),file=sys.stderr)
 def run(*args, env=None, stage=None):
     try:
         return subprocess.run(args,check=True,stdout=subprocess.DEVNULL,
             env={**os.environ,**(env or {})})
     except subprocess.CalledProcessError as e:
-        # Only the step's name and exit code leave the guest: its output may hold secrets.
         if stage:
-            print('__STAGE__'+stage[:64],file=sys.stderr)
-            detail=base64.b64encode(('exit code '+str(e.returncode)).encode()).decode()
-            print('__DETAIL__'+detail,file=sys.stderr)
+            report(stage,'exit code '+str(e.returncode))
         raise
 def owned(container):
     r=subprocess.run(['docker','container','inspect',container],capture_output=True,text=True)
@@ -209,11 +218,40 @@ workspace.mkdir(exist_ok=True)
 for u in missing:
     u['home'].mkdir(parents=True,exist_ok=True)
 if p['repo'] and not (workspace/'.git').exists():
-    args=['git','clone']
+    # The attached integration's token, rendered by the session's secret injection into
+    # one of its mounts: read through a credential helper, never put in a URL or config.
+    g=p.get('git')
+    config,clone_env=[],{'GIT_TERMINAL_PROMPT':'0'}
+    if g:
+        mount=next(m for m in [*p.get('secret_mounts',[]),*p.get('volume_mounts',[])]
+            if m['target']==g['token_mount'])
+        token=pathlib.Path(mount['source'],g['token_path'])
+        if not token.is_file() or not token.stat().st_size:
+            report('clone','the Git integration token was not rendered')
+            raise RuntimeError('The Git integration token was not rendered')
+        config=['-c','credential.helper=','-c','credential.useHttpPath=true',
+            '-c','credential.'+p['repo']+'.helper=!f() { [ "$1" = get ] || return 0; '
+            'token=$(cat "$NIUU_GIT_TOKEN_FILE") || return 1; [ -n "$token" ] || return 1; '
+            'printf "username=%s\\npassword=%s\\n" "$NIUU_GIT_USERNAME" "$token"; }; f']
+        clone_env.update(NIUU_GIT_TOKEN_FILE=str(token),NIUU_GIT_USERNAME=g['username'])
+    args=['git',*config,'clone']
     if p['branch']:
         args.extend(['--branch',p['branch']])
     args.extend(['--',p['repo'],str(workspace)])
-    run(*args,stage='clone')
+    run(*args,env=clone_env,stage='clone')
+    # What the session's own Git uses afterwards: the token's path in its containers.
+    settings=[]
+    if g:
+        settings=[('niuu.gitTokenFile',g['token_file']),('niuu.gitUsername',g['username']),
+            ('credential.helper',''),('credential.useHttpPath','true'),
+            ('credential.'+p['repo']+'.helper','!f() { [ "$1" = get ] || return 0; '
+             'token=$(cat "$(git config niuu.gitTokenFile)") || return 1; '
+             '[ -n "$token" ] || return 1; printf "username=%s\\npassword=%s\\n" '
+             '"$(git config niuu.gitUsername)" "$token"; }; f')]
+        settings+=[(k,g[v]) for k,v in (('user.name','user_name'),('user.email','user_email'),
+            ('niuu.baseBranch','base_branch')) if g[v]]
+    for key,value in settings:
+        run('git','-C',str(workspace),'config',key,value,stage='clone-config')
 # -h: a link the session left in its storage names its own path, never a target.
 owner=f"{s['uid']}:{s['uid']}" if s else '1000:1000'
 run('chown','-R','-h',owner,str(root),stage='chown')
@@ -634,6 +672,10 @@ class SshContainerVmRuntime(BrokeredCredentialPodManager, VmRuntime):
     _layout_class: type[SlotLayout] = SlotLayout
     #: Whether ``slot_isolation`` applies: runtimes with their own sandbox refuse it.
     _separates_slots = True
+    #: Whether this runtime's start program clones with the attached Git integration's
+    #: token file (``_START``). Runtimes that clone with their own program say no and get
+    #: neither the token's location nor the Git environment.
+    _clones_with_integration_token = True
 
     def _layout(self, lease: AllocationRef) -> SlotLayout | None:
         """The lease's slot, or ``None`` for the whole VM without slot isolation."""
@@ -750,11 +792,13 @@ class SshContainerVmRuntime(BrokeredCredentialPodManager, VmRuntime):
             layout["volume_mounts"].append(
                 {"source": _FORGE_SESSION_DIR, "target": _FORGE_SESSION_TARGET, "readonly": True}
             )
+        git = self._session_git(session, spec, layout)
         launch = {
             "image": self._image,
             "environment": env,
-            "repo": session.source.repo,
+            "repo": git["repo_url"] if git else session.source.repo,
             "branch": session.source.branch,
+            **({"git": git} if git else {}),
             "secret_mounts": layout["secret_mounts"],
             "volume_mounts": layout["volume_mounts"],
             "directories": layout["directories"],
@@ -845,6 +889,7 @@ class SshContainerVmRuntime(BrokeredCredentialPodManager, VmRuntime):
             }
         )
         env.update(self._preview_env(member_ports))
+        env.update(self._git_environment(spec))
         for source, target in [
             ("systemPrompt", "SYSTEM_PROMPT"),
             ("initialPrompt", "INITIAL_PROMPT"),
@@ -860,6 +905,65 @@ class SshContainerVmRuntime(BrokeredCredentialPodManager, VmRuntime):
         if any(not k or "=" in k or any(c.isspace() for c in k) or "\x00" in k for k in env):
             raise ValueError("Invalid VM environment variable name")
         return env
+
+    def _session_git(self, session: Session, spec: SessionSpec, layout: dict) -> dict | None:
+        """Where the clone finds the attached Git integration's token, or None without one.
+
+        The Git contributor names the token file's path inside the session's containers
+        (the secret injection renders it there, on a VM through its guest agent). The clone
+        runs on the guest before any container, so it reads the file through the mount
+        that holds it. A token on no mount of the session can never be read: refused.
+        """
+        if not self._clones_with_integration_token or not session.source.repo:
+            return None
+        values = spec.values.get("git") or {}
+        credentials = values.get("credentials") or {}
+        token_file = credentials.get("tokenFile") or ""
+        if not token_file:
+            return None
+        path = PurePosixPath(token_file)
+        holders = [
+            mount
+            for mount in (*layout["secret_mounts"], *layout["volume_mounts"])
+            if PurePosixPath(mount["target"]) in path.parents
+        ]
+        if not holders:
+            raise ValueError(
+                f"The session's Git integration token {token_file!r} is on no mount of the "
+                "VM session; the secret injection must render it into a mounted volume"
+            )
+        mount = max(holders, key=lambda m: len(PurePosixPath(m["target"]).parts))
+        return {
+            "repo_url": values["repoUrl"],
+            "token_file": token_file,
+            "token_mount": mount["target"],
+            "token_path": str(path.relative_to(mount["target"])),
+            "username": credentials["username"],
+            "user_name": values.get("userName") or "",
+            "user_email": values.get("userEmail") or "",
+            "base_branch": values.get("baseBranch") or "",
+        }
+
+    def _git_environment(self, spec: SessionSpec) -> dict[str, str]:
+        """The Git credential environment of a Skuld, as the Skuld chart gives its broker.
+
+        Git run anywhere in the session (outside the workspace too, and its sidecars'
+        tools) reads the injected token through this helper, keyed to the repository.
+        """
+        if not self._clones_with_integration_token:
+            return {}
+        values = spec.values.get("git") or {}
+        credentials = values.get("credentials") or {}
+        token_file = credentials.get("tokenFile") or ""
+        if not token_file:
+            return {}
+        return {
+            "GIT_USERNAME": credentials["username"],
+            "GIT_TOKEN_FILE": token_file,
+            "GIT_CONFIG_COUNT": "1",
+            "GIT_CONFIG_KEY_0": f"credential.{values['repoUrl']}.helper",
+            "GIT_CONFIG_VALUE_0": _GIT_ENV_HELPER,
+        }
 
     def _add_members(self, session: Session, launch: dict, entries: list[dict]) -> None:
         """Put a run's members into the unit's launch payload.
@@ -1816,6 +1920,9 @@ class HostModeRuntime(SshContainerVmRuntime):
 
     #: The registered-host audit of this runtime's platform (``host_checks``).
     _audit_program: str = ""
+    # A host session clones as its slot's user (``host_session_programs.prepare_storage``),
+    # which reads no integration token.
+    _clones_with_integration_token = False
 
     def __init__(
         self, *, nix: bool = True, session_start_timeout_seconds: float = 30, **kwargs
