@@ -60,6 +60,7 @@ from volundr.adapters.outbound.vm_slot_layout import (
     SESSION_SECRETS,
     SlotLayout,
 )
+from volundr.adapters.outbound.vm_slot_supervisor import DETAIL_PREFIX, STAGE_PREFIX
 from volundr.domain.compute import AllocationRef, MachineBootstrap, SlotLease
 from volundr.domain.models import Session
 from volundr.domain.vm_runtime import SessionImages
@@ -187,11 +188,24 @@ while True:
 """
 
 # Start (or keep) the slot's host session. Stdin: the placed launch payload with
-# its ``host`` section. Exit 0 once the session's PID 1 runs.
+# its ``host`` section. Exit 0 once the session's PID 1 runs. A failure names its step
+# (``__STAGE__``) and a reason this program wrote (``__DETAIL__``): a failed command's
+# exit code, never its output or arguments, which may carry the repository's URL or a
+# credential. Anything unforeseen still names its step and its exception type.
 _HOST_START = (
     SLOT_STORAGE
     + r"""
-import json, os, pathlib, signal, subprocess, sys, time
+import base64, json, os, pathlib, signal, subprocess, sys, time
+stage = ['payload']
+def report(detail):
+    print('__STAGE__host-' + stage[0], file=sys.stderr)
+    print('__DETAIL__' + base64.b64encode(detail.encode()).decode(), file=sys.stderr)
+def fail(detail):
+    report(detail)
+    sys.exit(1)
+def unforeseen(kind, value, trace):
+    report(kind.__name__ + ' while starting the host session; its details stay on the VM')
+sys.excepthook = unforeseen
 p = json.load(sys.stdin)
 s, h = p['slot'], p['host']
 pidfile = pathlib.Path(h['pidfile'])
@@ -211,21 +225,31 @@ def end(pid):
             time.sleep(h['poll'])
         if not os.path.exists('/proc/%d' % pid):
             return
-    raise RuntimeError('The previous host session survived SIGKILL')
+    fail('The previous host session survived SIGKILL')
+stage[0] = 'relaunch'
 current = running()
 if current and not p.get('relaunch'):
     sys.exit(0)
 if current:
     # A new launch replaced the Forge session credential the running broker read.
     end(current)
+stage[0] = 'workspace'
 root = pathlib.Path(s['data_root'])
-prepare_storage(root, s['marker'], s['uid'], p['repo'], p['branch'], h['keep_owners'])
+try:
+    prepare_storage(root, s['marker'], s['uid'], p['repo'], p['branch'], h['keep_owners'])
+except subprocess.CalledProcessError as exc:
+    step = ("git clone of the session's repository" if exc.cmd[0] == 'git'
+        else "giving the slot its storage (" + exc.cmd[0] + ")")
+    fail(step + ' exited ' + str(exc.returncode))
+except (RuntimeError, OSError) as exc:
+    fail(str(exc))
 for directory in h['private']:
     owned(directory, 0o700, s['uid'])
 c = h['containers']
 if c:
+    stage[0] = 'containers'
     if not os.path.exists('/usr/bin/podman') or not os.path.exists('/usr/bin/newuidmap'):
-        raise RuntimeError('Rootless containers need podman and uidmap on the VM; install '
+        fail('Rootless containers need podman and uidmap on the VM; install '
             'them through the machine profile or set compute.runtime.kwargs.containers: null')
     first, last = c['first'], c['first'] + c['count'] - 1
     present = []
@@ -235,17 +259,20 @@ if c:
         for e in entries:
             start, end = int(e[1]), int(e[1]) + int(e[2]) - 1
             if e[0] != h['user'] and start <= last and first <= end:
-                raise RuntimeError(name + ' gives ' + e[0] + ' ids overlapping slot ' + h['user']
+                fail(name + ' gives ' + e[0] + ' ids overlapping slot ' + h['user']
                     + '; move compute.runtime.kwargs.containers.subordinate_id_base')
         if ours and ours != [[h['user'], str(first), str(c['count'])]]:
-            raise RuntimeError(name + ' holds other ids for ' + h['user'])
+            fail(name + ' holds other ids for ' + h['user'])
         present.append(bool(ours))
     if present == [True, False] or present == [False, True]:
-        raise RuntimeError('/etc/subuid and /etc/subgid disagree for ' + h['user'])
+        fail('/etc/subuid and /etc/subgid disagree for ' + h['user'])
     if not any(present):
         span = '%d-%d' % (first, last)
-        subprocess.run(['usermod', '--add-subuids', span, '--add-subgids', span, h['user']],
-            check=True)
+        added = subprocess.run(['usermod', '--add-subuids', span, '--add-subgids', span,
+            h['user']])
+        if added.returncode:
+            fail('usermod giving ' + h['user'] + ' ids ' + span + ' exited '
+                + str(added.returncode))
     shim = pathlib.Path(h['bin']) / 'docker'
     if not shim.exists():
         shim.parent.mkdir(parents=True, exist_ok=True, mode=0o755)
@@ -254,7 +281,12 @@ if c:
         temporary.chmod(0o755)
         os.replace(temporary, shim)
 if h['nix']:
-    require_nix('machine')
+    stage[0] = 'nix'
+    try:
+        require_nix('machine')
+    except RuntimeError as exc:
+        fail(str(exc))
+stage[0] = 'mounts'
 for item in h['mounts']:
     target = pathlib.Path(item['target'])
     # Mountpoints only: in the VM's own tree they stay empty and root-owned.
@@ -263,6 +295,7 @@ for item in h['mounts']:
     elif not target.exists():
         target.parent.mkdir(parents=True, exist_ok=True)
         target.touch()
+stage[0] = 'launch'
 for directory in (pidfile.parent, pathlib.Path(h['log']).parent):
     directory.mkdir(parents=True, exist_ok=True, mode=0o700)
 pidfile.unlink(missing_ok=True)
@@ -286,10 +319,18 @@ scope = h['scope_prefix'] + '%d.scope' % time.time_ns()
 init = subprocess.Popen(['systemd-run', '--scope', '--quiet', '--collect', '--unit', scope,
     '--slice', s['slice'], '--property', 'Delegate=yes', sys.executable, '-I', str(program)],
     stdin=subprocess.PIPE, stdout=log, stderr=log, start_new_session=True, close_fds=True)
-init.communicate(json.dumps(spec).encode(), timeout=h['start_timeout'])
-if init.returncode or not running():
-    raise RuntimeError('The host session did not start; see ' + h['log'] + ' on the VM')
-"""
+try:
+    init.communicate(json.dumps(spec).encode(), timeout=h['start_timeout'])
+except subprocess.TimeoutExpired:
+    fail('The host session did not finish starting within %gs; raise '
+        'compute.runtime.kwargs.session_start_timeout_seconds or see %s on the VM'
+        % (h['start_timeout'], h['log']))
+if init.returncode:
+    fail('The host session exited %d while starting; see %s on the VM'
+        % (init.returncode, h['log']))
+if not running():
+    fail('The host session was not running after its start; see %s on the VM' % h['log'])
+""".replace("__STAGE__", STAGE_PREFIX).replace("__DETAIL__", DETAIL_PREFIX)
 )
 
 # Stop the slot's host session and withdraw its subordinate ids. argv: the stop spec
@@ -770,6 +811,8 @@ class SshHostVmRuntime(HostModeRuntime):
                 bootstrap,
                 self._python(_HOST_START),
                 data=json.dumps({**unit, "environment": environment, "host": host}).encode(),
+                safe_error_prefix=STAGE_PREFIX,
+                safe_detail_prefix=DETAIL_PREFIX,
             )
 
     async def prune_host(self, lease: AllocationRef, bootstrap: MachineBootstrap) -> None:

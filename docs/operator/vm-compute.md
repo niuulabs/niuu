@@ -1073,6 +1073,13 @@ When ssh itself fails (exit 255), the guest stage and the session error carry th
 OpenSSH client's own reason (a timeout, a refused key, a changed host key). Nothing
 else from the guest command's stderr is shown, since it may carry credentials.
 
+A host-mode session whose Skuld does not start names the step that failed
+(`host-workspace`, `host-containers`, `host-nix`, `host-mounts`, `host-launch`) and
+the reason the start program wrote: its own check (`Session storage was not
+prepared`), a failed command's exit code (`git clone of the session's repository
+exited 128`, never the repository's URL or the command's output), or Skuld's exit
+and the path of its log on the VM.
+
 **Draining.** Under **Replace VM**, a machine takes new sessions until it has served
 **Sessions before replacement** (`max_sessions_per_machine`; unset means one per
 slot) or reached **Machine lifetime (seconds)** (`max_machine_age_seconds`; unset

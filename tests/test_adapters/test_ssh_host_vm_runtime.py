@@ -22,8 +22,9 @@ import pytest
 from tests.test_adapters.test_ssh_vm_runtime_slots import ISOLATION, SlotView
 from volundr.adapters.outbound import linux_guest_programs as programs
 from volundr.adapters.outbound import ssh_host_vm_runtime as module
-from volundr.adapters.outbound import ssh_vm_runtime
+from volundr.adapters.outbound import ssh_vm_runtime, vm_slot_supervisor
 from volundr.adapters.outbound.host_checks import AUDIT_SH
+from volundr.adapters.outbound.ssh_guest_access import SshGuestAccess
 from volundr.adapters.outbound.ssh_host_vm_runtime import SshHostVmRuntime
 from volundr.adapters.outbound.ssh_vm_runtime import SlotNotCleanError
 from volundr.domain.compute import Machine, MachineBootstrap, MachineState
@@ -31,7 +32,7 @@ from volundr.domain.guest_access import GuestCommandResult
 from volundr.domain.models import GitSource, PodSpecAdditions, Session, SessionSpec
 from volundr.domain.services.host_access_key import generate_host_access_key
 from volundr.domain.session_runtimes import SessionRuntimeKind
-from volundr.domain.vm_runtime import SessionImages
+from volundr.domain.vm_runtime import SessionImages, VmRuntimeStageError
 
 IMAGE = "ghcr.io/niuulabs/openshell@sha256:" + "a" * 64
 DIGEST = "a" * 64
@@ -326,6 +327,9 @@ async def test_start_runs_the_slot_agents_unpacks_skuld_then_starts_it_as_the_sl
         json.dumps(CLAIM),
     )
     assert commands[7] == runtime._python(module._HOST_START)
+    # A failed start names its step and reason, through the slot supervisor's prefixes.
+    assert calls[7].kwargs["safe_error_prefix"] == vm_slot_supervisor.STAGE_PREFIX
+    assert calls[7].kwargs["safe_detail_prefix"] == vm_slot_supervisor.DETAIL_PREFIX
     started = json.loads(calls[7].kwargs["data"])
     host_spec = started["host"]
     key = f"{lease.id}-slot-2"
@@ -542,6 +546,76 @@ async def test_a_fetched_image_is_described_with_its_unpacked_root(host):
 @pytest.mark.parametrize("name", ["_HOST_INIT", "_HOST_START", "_HOST_STOP"])
 def test_the_host_programs_parse(name):
     ast.parse(getattr(module, name))
+
+
+def _failed_start(tmp_path: Path, storage: str | None = None) -> VmRuntimeStageError:
+    """Run ``_HOST_START`` up to its workspace step and read its failure as Forge does.
+
+    ``storage`` replaces ``prepare_storage`` with a function of that body, so a step that
+    needs root can fail as it would on the VM.
+    """
+    program = module._HOST_START
+    if storage is not None:
+        program = program.replace(
+            "prepare_storage(root, s['marker']",
+            "replaced_storage(root, s['marker']",
+        ).replace(
+            "stage = ['payload']",
+            f"def replaced_storage(*args):\n    {storage}\nstage = ['payload']",
+        )
+    payload = {
+        "slot": {"netns": "niuu-slot-0", "data_root": str(tmp_path), "marker": "m", "uid": 0},
+        "host": {
+            "pidfile": str(tmp_path / "run" / "s.pid"),
+            "keep_owners": [],
+            "stop_timeout": 1,
+            "poll": 0.01,
+        },
+        "repo": "https://x:s3cr3t@github.com/jve/private.git",
+        "branch": "main",
+    }
+    completed = subprocess.run(
+        [sys.executable, "-I", "-c", program],
+        input=json.dumps(payload).encode(),
+        capture_output=True,
+    )
+    assert completed.returncode == 1
+    with pytest.raises(VmRuntimeStageError) as raised:
+        SshGuestAccess._raise_command_error(
+            completed.returncode,
+            completed.stderr,
+            safe_error_prefix=vm_slot_supervisor.STAGE_PREFIX,
+            safe_detail_prefix=vm_slot_supervisor.DETAIL_PREFIX,
+        )
+    return raised.value
+
+
+def test_a_start_without_prepared_storage_says_so(tmp_path):
+    error = _failed_start(tmp_path)
+
+    assert error.stage == "host-workspace"
+    assert error.diagnostic == "Session storage was not prepared"
+
+
+def test_a_failed_clone_names_its_exit_code_and_never_the_repository(tmp_path):
+    error = _failed_start(
+        tmp_path,
+        "raise subprocess.CalledProcessError(128, ['git', 'clone', '--', args[3], '/w'])",
+    )
+
+    assert error.stage == "host-workspace"
+    assert error.diagnostic == "git clone of the session's repository exited 128"
+    assert "s3cr3t" not in str(error) and "github.com" not in str(error)
+
+
+def test_an_unforeseen_failure_names_its_step_and_type_but_not_its_text(tmp_path):
+    error = _failed_start(tmp_path, "raise KeyError('token=s3cr3t')")
+
+    assert error.stage == "host-workspace"
+    assert error.diagnostic == (
+        "KeyError while starting the host session; its details stay on the VM"
+    )
+    assert "s3cr3t" not in str(error)
 
 
 def test_the_session_starts_in_a_delegated_scope_not_beside_a_holder_container():
