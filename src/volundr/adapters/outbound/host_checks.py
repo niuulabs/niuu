@@ -188,7 +188,9 @@ while [ "$n" -lt "$slots" ]; do
     for dir in /private/tmp /private/var/tmp /private/var/folders /Users/Shared \
         /var/lib/niuu/slots /var/run/niuu/slots; do
       [ -d "$dir" ] || continue
-      find "$dir" -xdev -uid "$uid" -prune 2>/dev/null | while read -r path; do
+      # macOS keeps each user's folder skeleton in /private/var/folders flagged sunlnk:
+      # not even root may remove it, and no user can set the flag. What is in it counts.
+      find "$dir" -xdev -uid "$uid" ! -flags +sunlnk -prune 2>/dev/null | while read -r path; do
         echo "finding $path is owned by uid $uid"
       done
     done

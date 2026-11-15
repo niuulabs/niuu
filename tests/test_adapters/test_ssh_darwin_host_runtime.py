@@ -278,7 +278,10 @@ def _remove_owned(tmp_path, stderr: str, exit_code: int) -> subprocess.Completed
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     fake = bin_dir / "find"
-    fake.write_text(f"#!/bin/sh\nprintf '%s' {shlex.quote(stderr)} >&2\nexit {exit_code}\n")
+    fake.write_text(
+        f'#!/bin/sh\nprintf "%s " "$@" > {shlex.quote(str(tmp_path / "args"))}\n'
+        f"printf '%s' {shlex.quote(stderr)} >&2\nexit {exit_code}\n"
+    )
     fake.chmod(0o755)
     program = programs._SLOT_COMMON + "\nremove_owned('/private/var/folders', 61000)\n"
     return subprocess.run(
@@ -287,6 +290,27 @@ def _remove_owned(tmp_path, stderr: str, exit_code: int) -> subprocess.Completed
         text=True,
         env={**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}"},
     )
+
+
+def test_slot_down_keeps_the_folder_skeleton_macos_will_not_let_root_remove(tmp_path):
+    result = _remove_owned(tmp_path, "", 0)
+
+    assert result.returncode == 0, result.stderr
+    assert (tmp_path / "args").read_text().split() == [
+        "/private/var/folders",
+        "-xdev",
+        "-uid",
+        "61000",
+        "!",
+        "-flags",
+        "+sunlnk",
+        "-prune",
+        "-exec",
+        "rm",
+        "-rf",
+        "{}",
+        "+",
+    ]
 
 
 def test_slot_down_passes_over_directories_root_may_not_read(tmp_path):

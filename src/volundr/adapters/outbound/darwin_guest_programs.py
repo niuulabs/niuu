@@ -169,10 +169,12 @@ def processes(uid):
 #: root over SSH unless sshd has Full Disk Access. The slot user cannot write there either.
 UNREADABLE = ('Operation not permitted', 'Permission denied')
 def remove_owned(base, uid):
-    # Remove what uid owns under base. A directory root may not read is no failure: the
-    # darwin audit that follows lists anything uid still owns. Any other error is.
-    r = subprocess.run(['find', base, '-xdev', '-uid', str(uid), '-prune', '-exec', 'rm', '-rf',
-        '{}', '+'], capture_output=True, text=True)
+    # Remove what uid owns under base, but not the folder skeleton macOS keeps for every
+    # user (flagged sunlnk: not even root may remove it); what is in the skeleton goes. A
+    # directory root may not read is no failure: the darwin audit that follows lists
+    # anything uid still owns. Any other error is.
+    r = subprocess.run(['find', base, '-xdev', '-uid', str(uid), '!', '-flags', '+sunlnk',
+        '-prune', '-exec', 'rm', '-rf', '{}', '+'], capture_output=True, text=True)
     if r.returncode == 0:
         return
     errors = [line for line in r.stderr.splitlines() if line.strip()]

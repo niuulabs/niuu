@@ -416,6 +416,10 @@ class TestMacAudit:
             "macOS hosts run one slot, but this one is set to 2",
         )
 
+    def test_the_folder_skeleton_macos_keeps_for_a_user_is_not_a_leftover(self):
+        # The skeleton is flagged sunlnk (not even root may remove it); BSD find skips it.
+        assert '-uid "$uid" ! -flags +sunlnk -prune' in DARWIN_AUDIT_SH
+
     def test_a_host_that_is_not_a_mac(self, tmp_path):
         findings = self._run(tmp_path, {"uname": "echo Linux"}, "61000", "1", "", "2048", "check")
         assert findings == (
