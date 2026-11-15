@@ -3,6 +3,7 @@
 import asyncio
 import io
 import json
+import socket
 import subprocess
 import sys
 import tarfile
@@ -222,7 +223,9 @@ async def test_start_restores_archive_then_uses_persisted_launch_payload(setup):
     calls = runtime._guest_access.execute.await_args_list
     assert json.loads(calls[0].kwargs["data"])[0]["path"] == module._LAUNCH
     assert "stdin" in calls[1].kwargs
-    assert json.loads(calls[2].kwargs["data"])["allocation_id"] == str(lease.id)
+    # Skuld starts only once Forge's end of the tunnel answers on the guest.
+    assert calls[2].args[2].split()[-4:] == ["127.0.0.1", "18080", "10", "2"]
+    assert json.loads(calls[3].kwargs["data"])["allocation_id"] == str(lease.id)
     runtime.target.assert_awaited_once()
     archive.unlink()
     runtime._guest_access.execute.reset_mock()
@@ -303,7 +306,7 @@ async def test_start_without_a_reporter_names_no_steps(setup):
     await runtime.start(lease, bootstrap)
 
     assert runtime._report_startup is None
-    assert runtime._guest_access.execute.await_count == 3
+    assert runtime._guest_access.execute.await_count == 4
 
 
 async def test_explicit_ssh_bootstrap_uses_tofu_once_then_strict_pin(setup, tmp_path):
@@ -1142,3 +1145,37 @@ async def test_audit_slot_needs_a_runtime_that_keeps_slots(tmp_path):
         await runtime._audit_slot(lease, MachineBootstrap(), "echo audit", 0)
 
     runtime._guest_access.execute.assert_not_awaited()
+
+
+def _await_callbacks(port: int, timeout: float) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        [
+            sys.executable,
+            "-I",
+            "-c",
+            module._AWAIT_CALLBACKS,
+            "127.0.0.1",
+            str(port),
+            str(timeout),
+            "0.05",
+        ],
+        capture_output=True,
+        text=True,
+    )
+
+
+def test_skuld_waits_until_forges_end_of_the_tunnel_answers():
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        listener.listen()
+        assert _await_callbacks(listener.getsockname()[1], 1).returncode == 0
+
+
+def test_a_tunnel_that_never_answers_fails_the_start_naming_the_port():
+    with socket.socket() as unused:
+        unused.bind(("127.0.0.1", 0))
+        port = unused.getsockname()[1]
+    result = _await_callbacks(port, 0.2)
+    assert result.returncode == 1
+    assert f"{vm_slot_supervisor.STAGE_PREFIX}callbacks" in result.stderr
+    assert f"127.0.0.1:{port}" in result.stderr and "connect_timeout_seconds" in result.stderr
