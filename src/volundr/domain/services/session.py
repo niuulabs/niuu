@@ -647,8 +647,8 @@ class SessionService:
         if startup_failed:
             logger.error(
                 "Session %s failed to start: its broker reported %s",
-                session_id,
-                session.error,
+                _sanitize_log(session_id),
+                _sanitize_log(session.error),
             )
             if self._broadcaster is not None:
                 await self._broadcaster.publish_session_updated(updated)

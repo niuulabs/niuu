@@ -14,8 +14,10 @@ WORKDIR /opt/gbrain
 # them: proxy-addr 2.0.8 (GHSA-jqcg-44mw-7w3h, upstream bafdd269),
 # @modelcontextprotocol/sdk 1.32.0 (GHSA-6qxp-vccf-f47h, GHSA-22jm-h49p-29qw,
 # GHSA-46jr-4wx8-v453, GHSA-6prh-2h8m-c8cw, GHSA-rvq5-wwqv-78pq), and overrides for
-# body-parser 2.4.0, zod 4.6.7, fast-uri 3.1.9, hono 4.13.13, ip-address 10.7.4,
-# qs 6.16.1 (GHSA-6pq8-jhm2-2vcw) and @hono/node-server 2.1.3 (GHSA-rmxm-3fg6-px4f).
+# body-parser 2.4.0, zod 4.6.7, fast-uri 3.1.9, hono 4.13.16, ip-address 10.7.4,
+# qs 6.16.1 (GHSA-6pq8-jhm2-2vcw), @hono/node-server 2.1.6 (GHSA-rmxm-3fg6-px4f,
+# GHSA-jpvv-r467-5p4w, GHSA-qv5m-9pm6-hqp3), fast-xml-parser 5.12.0 (GHSA-474x-hrwr-fgx4)
+# and fast-xml-builder ^1.3.1, which that parser requires.
 # The frozen install below rejects the result if the patched lockfile is inconsistent.
 COPY containers/gbrain/security-deps.patch /tmp/security-deps.patch
 RUN git init && git remote add origin https://github.com/garrytan/gbrain.git \

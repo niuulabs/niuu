@@ -1982,6 +1982,33 @@ async def test_the_most_occupied_machine_is_preferred_over_an_older_empty_one(sl
     assert repository.leases[first.id].state == LeaseState.IDLE
 
 
+@pytest.mark.parametrize("state", [LeaseState.PROVISIONING, LeaseState.READY])
+async def test_a_machine_still_being_claimed_takes_the_next_session_in_a_free_slot(
+    slot_pool, state
+):
+    # Two sessions started together: the first claimed the machine, which is not idle yet.
+    manager, pool, repository, _ = slot_pool
+    first, second = await _warm_two_machines(pool, repository)
+    taken = await manager._claim_warm(_a_session(), SPEC)
+    assert taken.id == first.id
+    repository.leases[first.id] = repository.leases[first.id].model_copy(update={"state": state})
+
+    placed = await manager._claim_warm(_a_session(), SPEC)
+
+    assert (placed.id, placed.binding.slot) == (first.id, 1)
+
+
+@pytest.mark.parametrize("state", [LeaseState.DRAINING, LeaseState.FAILED, LeaseState.QUARANTINED])
+async def test_a_machine_that_offers_no_slots_takes_no_session(slot_pool, state):
+    manager, pool, repository, _ = slot_pool
+    first, second = await _warm_two_machines(pool, repository)
+    repository.leases[first.id] = first.model_copy(update={"state": state})
+
+    placed = await manager._claim_warm(_a_session(), SPEC)
+
+    assert placed.id == second.id
+
+
 async def test_a_stop_intent_on_any_slot_hides_the_machines_free_slots(slot_pool):
     manager, pool, repository, _ = slot_pool
     first, second = await _warm_two_machines(pool, repository)

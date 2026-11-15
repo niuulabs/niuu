@@ -249,7 +249,7 @@ def parse_portable_persona(value: str | bytes | Mapping[str, Any]) -> PortablePe
         value = value.decode("utf-8")
     if isinstance(value, str):
         try:
-            loaded = yaml.load(value, Loader=_StrictSafeLoader)
+            loaded = _load_strict_yaml(value)
         except yaml.YAMLError as exc:
             raise PersonaDocumentError(f"Invalid persona YAML: {exc}") from exc
         if not isinstance(loaded, dict):
@@ -283,7 +283,7 @@ def persona_definition_from_mapping(definition: Mapping[str, Any]) -> PortablePe
 def parse_persona_definition_yaml(text: str) -> PortablePersonaDefinition:
     """Parse persona YAML as its author wrote it; see :func:`persona_definition_from_mapping`."""
     try:
-        loaded = yaml.load(text, Loader=_StrictSafeLoader)
+        loaded = _load_strict_yaml(text)
     except yaml.YAMLError as exc:
         raise PersonaDocumentError(f"Invalid persona YAML: {exc}") from exc
     if not isinstance(loaded, dict):
@@ -548,6 +548,19 @@ _produced_events = produced_event_types
 
 class _StrictSafeLoader(yaml.SafeLoader):
     """Safe YAML loader that rejects duplicate mapping keys."""
+
+
+def _load_strict_yaml(text: str) -> Any:
+    """Load one YAML document with the safe, duplicate-rejecting loader.
+
+    Builds only plain YAML types (``SafeLoader`` constructors); never arbitrary
+    Python objects.
+    """
+    loader = _StrictSafeLoader(text)
+    try:
+        return loader.get_single_data()
+    finally:
+        loader.dispose()
 
 
 def _construct_unique_mapping(

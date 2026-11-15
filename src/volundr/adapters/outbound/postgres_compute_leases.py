@@ -334,8 +334,10 @@ class PostgresComputeLeaseRepository(ComputeLeaseRepository):
             if policy.paused or policy.drain:
                 raise ComputeCapacityError("Compute pool admission is paused")
             current = await self.get(machine.id)
-            if current is None or current.state is not LeaseState.IDLE:
-                raise ComputeLeaseBusyError("Standby allocation is no longer idle")
+            if current is None:
+                raise ComputeLeaseBusyError("Standby allocation is gone")
+            # A machine still provisioning or just ready takes sessions in its free slots
+            # too; ``usable_slots`` refuses every state that offers none.
             bindings = await self.slots(machine.id)
             if usable_slots(current, bindings, policy, datetime.now(UTC)) < 1:
                 raise ComputeLeaseBusyError("Standby allocation has no usable slot")

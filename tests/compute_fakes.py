@@ -44,7 +44,11 @@ class LeaseRepository:
 
     async def bind(self, machine, binding):
         assert self.locked == machine.id
-        assert self.leases[machine.id].state == LeaseState.IDLE
+        assert self.leases[machine.id].state in {
+            LeaseState.PROVISIONING,
+            LeaseState.READY,
+            LeaseState.IDLE,
+        }
         self.bindings[binding.id] = binding
         updated = self.leases[machine.id].model_copy(update={"idle_since": None})
         self.leases[machine.id] = updated

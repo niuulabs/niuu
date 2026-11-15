@@ -58,30 +58,30 @@ COPY vendor/ /app/vendor/
 RUN uv build --wheel --out-dir /dist
 
 # ---------------------------------------------------------------------------
-# gh v2.103.3 requires klauspost/compress v1.20.3 in its go.mod
-# (GO-2026-6865, fixed in v1.20.2) and golang.org/x/net v0.60.0 (GO-2026-6603/6604/
-# 6611/6612), so no module override is needed. Build it from the checksum-verified
-# source with Go 1.27.3, which satisfies its `toolchain go1.27.3`, to keep the
-# version pinned and the toolchain current.
+# gh v2.104.0 requires klauspost/compress v1.20.4 (GO-2026-6865, fixed in v1.20.2),
+# go.opentelemetry.io/otel v1.47.0 (GHSA-q7gw-24fr-5p69) and golang.org/x/net
+# v0.60.0 or later, so no module override is needed. Build it from the
+# checksum-verified source with Go 1.27.4, which satisfies its `toolchain go1.27.4`
+# (GO-2026-6859), to keep the version pinned and the toolchain current.
 # ---------------------------------------------------------------------------
-FROM --platform=$BUILDPLATFORM golang:1.27.3-alpine3.23@sha256:5d5113301ffcac84e2bfb20c42648803fecaea6789c89bb9b66884e18cbb30a7 AS gh-build
+FROM --platform=$BUILDPLATFORM golang:1.27.4-alpine3.23@sha256:146e3b9c7c1e2ec3d3f5348c8a686151a75e1976e50efac9fc022ebe446a9a82 AS gh-build
 ARG TARGETARCH
 WORKDIR /src
-RUN wget -q https://github.com/cli/cli/archive/refs/tags/v2.103.3.tar.gz -O /tmp/gh.tar.gz \
-    && echo "bb148138a3a2fe023e57c78042fe3b42fc09171c0e8fff4cf983b227b7a2eade  /tmp/gh.tar.gz" | sha256sum -c - \
+RUN wget -q https://github.com/cli/cli/archive/refs/tags/v2.104.0.tar.gz -O /tmp/gh.tar.gz \
+    && echo "779060cbdc5a354fa2fc8afb56e9277f64a29ac599daefd941558356509081e4  /tmp/gh.tar.gz" | sha256sum -c - \
     && tar -xzf /tmp/gh.tar.gz --strip-components=1 \
     && CGO_ENABLED=0 GOOS=linux GOARCH=$TARGETARCH go build -trimpath \
-        -ldflags '-s -w -X github.com/cli/cli/v2/internal/build.Version=2.103.3-niuu.1 -X github.com/cli/cli/v2/internal/build.Date=2026-10-26' \
+        -ldflags '-s -w -X github.com/cli/cli/v2/internal/build.Version=2.104.0-niuu.1 -X github.com/cli/cli/v2/internal/build.Date=2026-11-12' \
         -o /out/gh ./cmd/gh
 
 # ---------------------------------------------------------------------------
 # glab v1.128.0 is the first release with brotli 1.2.7 (GO-2026-6888). Its
-# release binaries may predate Go 1.27.3 (GO-2026-6809), so build the same
-# release from source with Go 1.27.3; the module proxy download is verified
+# release binaries may predate Go 1.27.4 (GO-2026-6809, GO-2026-6859), so build the
+# same release from source with Go 1.27.4; the module proxy download is verified
 # against sum.golang.org. Return to the release .deb once one is built with a
 # patched Go.
 # ---------------------------------------------------------------------------
-FROM --platform=$BUILDPLATFORM golang:1.27.3-alpine3.23@sha256:5d5113301ffcac84e2bfb20c42648803fecaea6789c89bb9b66884e18cbb30a7 AS glab-build
+FROM --platform=$BUILDPLATFORM golang:1.27.4-alpine3.23@sha256:146e3b9c7c1e2ec3d3f5348c8a686151a75e1976e50efac9fc022ebe446a9a82 AS glab-build
 ARG TARGETARCH
 ARG GLAB_VERSION=1.128.0
 RUN cd "$(go mod download -json gitlab.com/gitlab-org/cli@v${GLAB_VERSION} | sed -n 's/.*"Dir": "\(.*\)".*/\1/p')" \
