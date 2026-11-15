@@ -870,3 +870,54 @@ def test_a_post_defaults_have_no_persona_or_time():
     post = RoomPost(post_id="1", speaker="A", kind=PostKind.ANSWER, text="x")
 
     assert (post.persona, post.created_at) == ("", "")
+
+
+class TestRoomContext:
+    def test_persona_get_carries_the_room_its_agents_and_their_voices(self):
+        room = FakeRoom(
+            members=(
+                RoomMember(
+                    name="Reviewer",
+                    persona="reviewer",
+                    lead=True,
+                    present=True,
+                    voices={"grok-voice": "rex"},
+                ),
+                RoomMember(name="Coder", persona="coder"),
+            ),
+            people=("Ada",),
+        )
+
+        context = make_room_binding(room).context()
+
+        assert context == {
+            "room": {
+                "id": room.status().room_id,
+                "name": "Release crew",
+                "kind": "team",
+                "speaksToEveryone": True,
+                "members": [
+                    {
+                        "name": "Reviewer",
+                        "persona": "reviewer",
+                        "lead": True,
+                        "present": True,
+                        "voices": {"grok-voice": "rex"},
+                    },
+                    {
+                        "name": "Coder",
+                        "persona": "coder",
+                        "lead": False,
+                        "present": False,
+                        "voices": {},
+                    },
+                ],
+                "people": ["Ada"],
+            }
+        }
+
+    def test_a_run_room_does_not_speak_to_everyone(self):
+        context = make_room_binding(FakeRoom(kind=RoomKind.RUN)).context()
+
+        assert context["room"]["kind"] == "run"
+        assert context["room"]["speaksToEveryone"] is False

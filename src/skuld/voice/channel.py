@@ -383,6 +383,7 @@ class SessionVoiceChannel(CallOutlet):
             "voices": voices,
             "sources": [f"persona:{persona.name}", *self._binding.sources()],
             "errors": [],
+            **self._binding.context(),
         }
 
     def _allowed_definitions(self, connection: _Connection) -> list[dict[str, Any]]:

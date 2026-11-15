@@ -65,6 +65,10 @@ class VoiceCallBinding(ABC):
         """That person's call ended (``session.end`` or the socket closed)."""
         del author
 
+    def context(self) -> dict[str, Any]:
+        """Structured facts ``persona.get`` adds to its context; none by default."""
+        return {}
+
     @property
     @abstractmethod
     def subject(self) -> str:

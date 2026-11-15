@@ -128,6 +128,29 @@ class RoomVoiceBinding(VoiceCallBinding):
     def sources(self) -> list[str]:
         return [f"room:{self._room.status().room_id}"]
 
+    def context(self) -> dict[str, Any]:
+        """The room up front for the phone: its agents and the voice each speaks in."""
+        status = self._room.status()
+        return {
+            "room": {
+                "id": status.room_id,
+                "name": status.name,
+                "kind": status.kind.value,
+                "speaksToEveryone": status.speaks_to_everyone,
+                "members": [
+                    {
+                        "name": member.name,
+                        "persona": member.persona,
+                        "lead": member.lead,
+                        "present": member.present,
+                        "voices": dict(member.voices),
+                    }
+                    for member in status.members
+                ],
+                "people": list(status.people_online),
+            }
+        }
+
     # -- grounding ---------------------------------------------------------
 
     def grounding(self) -> str:
