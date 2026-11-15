@@ -122,7 +122,8 @@ class Phone:
         await self.socket.inbox.put(None)
         assert self.task is not None
         async with asyncio.timeout(WAIT_SECONDS):
-            await self.task
+            served = await self.task
+        assert served is None  # the serve loop ended on the hang-up, not on an error
 
     def pushed(self, message_type: str) -> list[dict[str, Any]]:
         return [f for f in self.socket.sent if f["type"] == message_type]
