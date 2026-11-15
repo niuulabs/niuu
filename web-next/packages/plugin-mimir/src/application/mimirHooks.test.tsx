@@ -32,7 +32,6 @@ const mount: Omit<RegistryMount, 'id'> = {
   lifecycle: 'registered',
   role: 'shared',
   url: 'https://mimir.example.test',
-  path: '',
   categories: ['research'],
   defaultReadPriority: 10,
   enabled: true,

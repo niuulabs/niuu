@@ -34,6 +34,30 @@ class ForgeClient(ABC):
         """``GET /sessions/{id}``."""
 
     @abstractmethod
+    async def list_session_people(self, session_id: str) -> list[dict[str, Any]]:
+        """``GET /sessions/{id}/people``: the members of the session's project.
+
+        Forge answers 409 (raised as :class:`ForgeApiError`) when the session has no
+        project; an empty list would read as "nobody is on it"."""
+
+    @abstractmethod
+    async def create_person_question(
+        self, session_id: str, *, user_id: str, question: str, request_id: str
+    ) -> dict[str, Any]:
+        """``POST /sessions/{id}/person-questions``: put a question to one project member.
+
+        Returns ``{question_id, notification_id, addressee}``. Forge refuses (409) a session
+        with no project and (422) a person who is not on it, raised as
+        :class:`ForgeApiError`. The same ``request_id`` is the same question."""
+
+    @abstractmethod
+    async def answer_person_question(
+        self, session_id: str, question_id: str, *, answered_by_user_id: str, answered_by_name: str
+    ) -> dict[str, Any]:
+        """``POST /sessions/{id}/person-questions/{question_id}/answer``: settle the
+        addressee's notification, naming who answered."""
+
+    @abstractmethod
     async def get_conversation(
         self, session_id: str, *, turns: int, instance_id: str | None
     ) -> dict[str, Any]:
@@ -194,6 +218,29 @@ class ForgeMcpHost(ABC):
         arrives in; other hosts refuse."""
         raise ForgeApiError(
             "ask needs a Forge session's own MCP (the answer arrives in that session's inbox)",
+            status=501,
+        )
+
+    async def ask_person_answer(
+        self,
+        *,
+        addressee: dict[str, Any],
+        question: str,
+        question_id: str,
+        request_id: str,
+        deadline_s: float,
+    ) -> dict[str, Any]:
+        """Show ``question`` in the session's room addressed to ``addressee`` and wait for its
+        answer; return ``{outcome, ...}``.
+
+        ``addressee`` is Forge's description of the person (``user_id``, ``display_name``,
+        ``role``). The room shows the question once per ``question_id`` (a repeat only waits
+        again). An answer that arrives after the wait is delivered at the next turn boundary.
+        Only a session's own broker has the room and the inbox the answer arrives in; other
+        hosts refuse."""
+        raise ForgeApiError(
+            "ask_person needs a Forge session's own MCP (the question is shown in that "
+            "session's room and the answer arrives in its inbox)",
             status=501,
         )
 

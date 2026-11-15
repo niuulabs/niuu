@@ -24,14 +24,27 @@ export function useComputeHosts(instanceId: string, refetchMs: number = COMPUTE_
   });
 }
 
-/** True only once the Forge has answered that it has compute hosts. */
-export function useHasComputeHosts(instanceId: string): boolean {
+/** How many hosts a Forge has and how many of their slots are free. */
+export interface ComputeHostsCount {
+  hosts: number;
+  slotsFree: number;
+}
+
+/**
+ * The Forge's host count and free slots once it has answered that it has compute hosts;
+ * null while unanswered, for a Forge without hosts, or when it cannot be read.
+ */
+export function useComputeHostsCount(instanceId: string): ComputeHostsCount | null {
   const volundr = useService<IVolundrService>('volundr');
   const query = useQuery({
     queryKey: [...computeHostsKey(instanceId), 'available'],
-    queryFn: async () => (await volundr.getComputeHosts(instanceId)) !== null,
+    queryFn: async (): Promise<ComputeHostsCount | null> => {
+      const overview = await volundr.getComputeHosts(instanceId);
+      if (overview === null) return null;
+      return { hosts: overview.summary.hosts, slotsFree: overview.summary.slotsFree };
+    },
   });
-  return query.data === true;
+  return query.data ?? null;
 }
 
 /** Every host action, each refreshing the list when it lands. */

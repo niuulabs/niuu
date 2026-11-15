@@ -1,16 +1,27 @@
 import { describe, it, expect } from 'vitest';
 import { createMockPersonaStore } from './mock';
 
-// ---------------------------------------------------------------------------
-// IPersonaStore mock
-// ---------------------------------------------------------------------------
+const MIGRATION_REVIEWER = `name: migration-reviewer
+description: Checks a migration before it runs.
+permission_mode: read_only
+system_prompt_template: Review the migration.
+consumes:
+  event_types: [migration.requested]
+produces:
+  event_type: migration_reviewer.completed
+  event_type_map:
+    approve: migration_reviewer.approve
+  when:
+    approve: The migration can run twice.
+`;
 
 describe('createMockPersonaStore', () => {
-  it('returns the seeded personas', async () => {
+  it('returns the seeded personas with the events their outcomes send', async () => {
     const store = createMockPersonaStore();
     const result = await store.listPersonas();
-    expect(result.length).toBeGreaterThan(0);
+    const coder = result.find((persona) => persona.name === 'coder');
     expect(result.some((persona) => persona.name === 'architect')).toBe(true);
+    expect(coder?.outcomeEvents).toEqual({ done: 'code.changed' });
   });
 
   it('filters to builtin personas only', async () => {
@@ -22,141 +33,66 @@ describe('createMockPersonaStore', () => {
 
   it('returns empty list for custom when only builtins exist', async () => {
     const store = createMockPersonaStore();
-    const result = await store.listPersonas('custom');
-    expect(result).toHaveLength(0);
+    expect(await store.listPersonas('custom')).toHaveLength(0);
   });
 
-  it('getPersona returns a PersonaDetail', async () => {
+  it('getPersona returns a detail read from the persona document', async () => {
     const store = createMockPersonaStore();
     const detail = await store.getPersona('coder');
     expect(detail.name).toBe('coder');
-    expect(detail.systemPromptTemplate).toBeDefined();
-    expect(detail.llm.maxTokens).toBeGreaterThan(0);
-    expect(detail.fanIn.strategy).toBeDefined();
+    expect(detail.systemPromptTemplate).toContain('coder');
+    expect(detail.produces.when.done).toBeTruthy();
     expect(detail.yamlSource).toBe('[mock]');
-  });
-
-  it('builds reviewer defaults and exposes configured override sources', async () => {
-    const store = createMockPersonaStore();
-    const reviewer = await store.getPersona('reviewer');
-    expect(reviewer).toMatchObject({
-      llm: { thinkingEnabled: true, maxTokens: 8192 },
-      produces: { schemaDef: { verdict: 'string', confidence: 'number', findings: 'array' } },
-      consumes: { schemaDef: { diff: 'string', scope: 'string' } },
-      fanIn: { strategy: 'merge', params: { mode: 'review.final' } },
-      mimirWriteRouting: 'local',
-    });
-    expect(reviewer.description).toContain('Careful code reviewer');
-    expect(reviewer.systemPromptTemplate).toContain('operational risk');
-    expect(reviewer.consumes.events).toHaveLength(2);
-
     const architect = await store.getPersona('architect');
-    expect(architect.overrideSource).toContain('overrides/architect.yaml');
+    expect(architect.overrideSource).toContain('architect');
   });
 
-  it('getPersona throws for unknown persona', async () => {
+  it('getPersona and getPersonaYaml throw for unknown persona', async () => {
     const store = createMockPersonaStore();
     await expect(store.getPersona('nonexistent')).rejects.toThrow('Persona not found');
+    await expect(store.getPersonaYaml('ghost')).rejects.toThrow('Persona not found');
   });
 
-  it('getPersonaYaml returns a YAML string', async () => {
+  it('getPersonaYaml and getPersonaDocument return the same persona', async () => {
     const store = createMockPersonaStore();
     const yaml = await store.getPersonaYaml('coder');
+    const doc = await store.getPersonaDocument('coder');
     expect(yaml).toContain('name: coder');
+    expect(doc.name).toBe('coder');
+    expect(doc.permission_mode).toBe('workspace_write');
   });
 
-  it('serializes an empty produced event as null', async () => {
+  it('checks YAML without saving it', async () => {
     const store = createMockPersonaStore();
-    const yaml = await store.getPersonaYaml('autonomous-agent');
-    expect(yaml).toContain('event: null');
+    expect(await store.checkPersonaYaml(MIGRATION_REVIEWER)).toEqual({ valid: true, errors: [] });
+    expect((await store.checkPersonaYaml('name: [')).valid).toBe(false);
+    expect((await store.checkPersonaYaml('description: none\n')).errors[0]).toMatch(/name/);
+    expect((await store.listPersonas()).some((p) => p.name === 'migration-reviewer')).toBe(false);
   });
 
-  it('getPersonaYaml throws for unknown persona', async () => {
+  it('creates a persona from YAML and refuses a name that exists', async () => {
     const store = createMockPersonaStore();
-    await expect(store.getPersonaYaml('ghost')).rejects.toThrow();
+    const detail = await store.createPersonaFromYaml(MIGRATION_REVIEWER);
+    expect(detail).toMatchObject({
+      name: 'migration-reviewer',
+      isBuiltin: false,
+      permissionMode: 'safe',
+      outcomeEvents: { approve: 'migration_reviewer.approve' },
+      consumesEvents: ['migration.requested'],
+    });
+    expect(detail.produces.when).toEqual({ approve: 'The migration can run twice.' });
+    await expect(store.createPersonaFromYaml(MIGRATION_REVIEWER)).rejects.toThrow('already exists');
   });
 
-  it('createPersona adds the persona and returns a detail', async () => {
+  it('replaces a persona with its YAML, keeping it a built-in with an override', async () => {
     const store = createMockPersonaStore();
-    const req = {
-      name: 'my-custom',
-      role: 'build' as const,
-      letter: 'M',
-      color: 'var(--color-accent-cyan)',
-      summary: 'Custom persona',
-      description: 'Custom description',
-      systemPromptTemplate: 'Custom system prompt',
-      permissionMode: 'default',
-      iterationBudget: 10,
-      llmThinkingEnabled: false,
-      llmMaxTokens: 4096,
-      llmTemperature: 0.2,
-      producesEventType: 'custom.done',
-      producesSchema: {},
-      consumesEvents: [{ name: 'custom.requested' }],
-      consumesSchema: {},
-      fanInStrategy: 'quorum',
-      fanInParams: { quorum: 2 },
-      mimirWriteRouting: 'shared' as const,
-    };
-    const detail = await store.createPersona(req);
-    expect(detail.name).toBe('my-custom');
-    expect(detail.isBuiltin).toBe(false);
-    expect(detail.llm.maxTokens).toBe(4096);
-    expect(detail.llm.temperature).toBe(0.2);
-    expect(detail.fanIn).toEqual({ strategy: 'quorum', params: { quorum: 2 } });
-    expect(detail.mimirWriteRouting).toBe('shared');
-
-    const all = await store.listPersonas();
-    expect(all.some((p) => p.name === 'my-custom')).toBe(true);
-  });
-
-  it('updatePersona modifies an existing persona', async () => {
-    const store = createMockPersonaStore();
-    const req = {
-      name: 'coder',
-      role: 'build' as const,
-      letter: 'C',
-      color: 'var(--color-accent-indigo)',
-      summary: 'Updated coder',
-      description: 'Updated description',
-      systemPromptTemplate: 'Updated prompt',
-      permissionMode: 'default',
-      iterationBudget: 50,
-      llmThinkingEnabled: true,
-      llmMaxTokens: 16384,
-      producesEventType: 'code.changed',
-      producesSchema: {},
-      consumesEvents: [{ name: 'code.requested' }],
-      consumesSchema: {},
-      fanInStrategy: 'any_passes' as const,
-    };
-    const detail = await store.updatePersona('coder', req);
-    expect(detail.iterationBudget).toBe(50);
-    expect(detail.llm.maxTokens).toBe(16384);
-  });
-
-  it('updatePersona throws for unknown persona', async () => {
-    const store = createMockPersonaStore();
-    await expect(
-      store.updatePersona('ghost', {
-        name: 'ghost',
-        role: 'build',
-        letter: 'G',
-        color: '',
-        summary: '',
-        description: '',
-        systemPromptTemplate: '',
-        permissionMode: 'default',
-        iterationBudget: 0,
-        llmThinkingEnabled: false,
-        llmMaxTokens: 0,
-        producesEventType: '',
-        producesSchema: {},
-        consumesEvents: [],
-        consumesSchema: {},
-      }),
-    ).rejects.toThrow('Persona not found');
+    const yaml = MIGRATION_REVIEWER.replace('migration-reviewer', 'coder');
+    const detail = await store.replacePersonaYaml('coder', yaml);
+    expect(detail).toMatchObject({ name: 'coder', isBuiltin: true, hasOverride: true });
+    await expect(store.replacePersonaYaml('coder', MIGRATION_REVIEWER)).rejects.toThrow(
+      'this is coder',
+    );
+    await expect(store.replacePersonaYaml('ghost', yaml)).rejects.toThrow('Persona not found');
   });
 
   it('deletePersona removes the persona', async () => {
@@ -166,14 +102,14 @@ describe('createMockPersonaStore', () => {
     expect(all.some((p) => p.name === 'architect')).toBe(false);
   });
 
-  it('forkPersona creates a non-builtin copy', async () => {
+  it('forkPersona creates a non-builtin copy of the whole document', async () => {
     const store = createMockPersonaStore();
     const forked = await store.forkPersona('coder', { newName: 'my-coder' });
     expect(forked.name).toBe('my-coder');
     expect(forked.isBuiltin).toBe(false);
-
-    const all = await store.listPersonas();
-    expect(all.some((p) => p.name === 'my-coder')).toBe(true);
+    expect((await store.getPersonaDocument('my-coder')).produces).toEqual(
+      (await store.getPersonaDocument('coder')).produces,
+    );
   });
 
   it('forkPersona throws for unknown source', async () => {

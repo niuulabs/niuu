@@ -112,13 +112,13 @@ describe('board workflows edited on the board', () => {
     );
   });
 
-  it('cannot move the first workflow earlier, and links each one to the builder', async () => {
+  it('cannot move the first workflow earlier, and links each one to its workflow', async () => {
     setup();
     const menu = await openMenu('Ticket Planning Flow');
     expect(within(menu).queryByRole('menuitem', { name: 'Run it earlier' })).toBeNull();
-    expect(within(menu).getByRole('menuitem', { name: 'Open in the builder' })).toHaveAttribute(
+    expect(within(menu).getByRole('menuitem', { name: 'Open workflow' })).toHaveAttribute(
       'href',
-      '/ting/workflows/build',
+      '/ting/workflows',
     );
   });
 

@@ -786,7 +786,7 @@ describe('WorkPage', () => {
     );
     expect(screen.getByRole('link', { name: 'Open definition' })).toHaveAttribute(
       'href',
-      '/ting/workflows/build',
+      '/ting/workflows',
     );
 
     const provenance = screen.getByText('Provenance').closest('details') as HTMLElement;

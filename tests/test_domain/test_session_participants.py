@@ -14,7 +14,7 @@ from volundr.domain.session_participants import (
 def _participant(
     *,
     user_id: str = "user-1",
-    role: ParticipantRole = ParticipantRole.OBSERVER,
+    role: ParticipantRole = ParticipantRole.VIEWER,
     status: ParticipantStatus = ParticipantStatus.ACTIVE,
     expires_at: datetime | None = None,
 ) -> SessionParticipant:
@@ -56,13 +56,11 @@ def test_revoked_status_is_never_active():
 
 def test_compute_room_grants_puts_every_active_role_in_viewer():
     participants = [
-        _participant(user_id="observer-1", role=ParticipantRole.OBSERVER),
-        _participant(user_id="teacher-1", role=ParticipantRole.TEACHER),
-        _participant(user_id="debugger-1", role=ParticipantRole.DEBUGGER),
+        _participant(user_id="viewer-1", role=ParticipantRole.VIEWER),
         _participant(user_id="approver-1", role=ParticipantRole.APPROVER),
     ]
     grants = compute_room_grants(participants)
-    all_ids = {"observer-1", "teacher-1", "debugger-1", "approver-1"}
+    all_ids = {"viewer-1", "approver-1"}
     assert grants.viewer_ids == all_ids
     assert grants.approver_ids == {"approver-1"}
 

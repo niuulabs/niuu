@@ -3,14 +3,14 @@ import { renderHook, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ServicesProvider } from '@niuulabs/plugin-sdk';
 import {
-  useCreatePersona,
   useForkPersona,
   usePersona,
+  usePersonaDocument,
   usePersonaYaml,
-  useUpdatePersona,
+  usePersonaYamlCheck,
+  useSavePersonaYaml,
 } from './usePersona';
 import { createMockPersonaStore } from '../adapters/mock';
-import type { PersonaCreateRequest } from '../ports';
 
 function createWrapper() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -61,82 +61,65 @@ describe('usePersonaYaml', () => {
   });
 });
 
-describe('useUpdatePersona', () => {
-  it('updates a persona and invalidates cache', async () => {
-    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-    const store = createMockPersonaStore();
-    const invalidateSpy = vi.spyOn(client, 'invalidateQueries');
-
-    function Wrapper({ children }: { children: React.ReactNode }) {
-      return (
-        <QueryClientProvider client={client}>
-          <ServicesProvider services={{ 'ravn.personas': store }}>{children}</ServicesProvider>
-        </QueryClientProvider>
-      );
-    }
-
-    const { result } = renderHook(() => useUpdatePersona('coder'), { wrapper: Wrapper });
-
-    const req: PersonaCreateRequest = {
-      name: 'coder',
-      role: 'build',
-      letter: 'C',
-      color: 'var(--color-accent-indigo)',
-      summary: 'Updated',
-      description: 'Updated description',
-      systemPromptTemplate: '# coder',
-      permissionMode: 'default',
-      iterationBudget: 40,
-      llmThinkingEnabled: true,
-      llmMaxTokens: 16384,
-      producesEventType: 'code.changed',
-      producesSchema: {},
-      consumesEvents: [],
-      consumesSchema: {},
-    };
-
-    result.current.mutate(req);
+describe('usePersonaDocument', () => {
+  it('fetches the persona document', async () => {
+    const { result } = renderHook(() => usePersonaDocument('coder'), {
+      wrapper: createWrapper(),
+    });
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
-    expect(invalidateSpy).toHaveBeenCalled();
+    expect(result.current.data?.name).toBe('coder');
   });
 });
 
-describe('useCreatePersona', () => {
-  it('creates a persona and invalidates cache', async () => {
-    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-    const store = createMockPersonaStore();
-    const invalidateSpy = vi.spyOn(client, 'invalidateQueries');
+describe('usePersonaYamlCheck', () => {
+  it('asks the store whether YAML can be saved, and not for empty YAML', async () => {
+    const { result } = renderHook(() => usePersonaYamlCheck('description: no name\n', true), {
+      wrapper: createWrapper(),
+    });
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(result.current.data?.valid).toBe(false);
+    const idle = renderHook(() => usePersonaYamlCheck('   ', true), { wrapper: createWrapper() });
+    expect(idle.result.current.fetchStatus).toBe('idle');
+  });
+});
 
-    function Wrapper({ children }: { children: React.ReactNode }) {
+describe('useSavePersonaYaml', () => {
+  function wrapperWith(store: ReturnType<typeof createMockPersonaStore>, client: QueryClient) {
+    return function Wrapper({ children }: { children: React.ReactNode }) {
       return (
         <QueryClientProvider client={client}>
           <ServicesProvider services={{ 'ravn.personas': store }}>{children}</ServicesProvider>
         </QueryClientProvider>
       );
-    }
+    };
+  }
 
-    const { result } = renderHook(() => useCreatePersona(), { wrapper: Wrapper });
-
-    result.current.mutate({
-      name: 'streaming-reviewer',
-      role: 'review',
-      letter: 'S',
-      color: 'var(--color-accent-indigo)',
-      summary: 'Streaming reviewer',
-      description: 'Streaming reviewer persona',
-      systemPromptTemplate: '# streaming-reviewer',
-      permissionMode: 'default',
-      iterationBudget: 20,
-      llmThinkingEnabled: false,
-      llmMaxTokens: 8192,
-      producesEventType: '',
-      producesSchema: {},
-      consumesEvents: [],
-      consumesSchema: {},
+  it('creates a persona from YAML and invalidates the cache', async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const store = createMockPersonaStore();
+    const invalidateSpy = vi.spyOn(client, 'invalidateQueries');
+    const { result } = renderHook(() => useSavePersonaYaml(null), {
+      wrapper: wrapperWith(store, client),
     });
 
+    result.current.mutate('name: streaming-reviewer\n');
+
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(result.current.data?.name).toBe('streaming-reviewer');
     expect(invalidateSpy).toHaveBeenCalled();
+  });
+
+  it('replaces the named persona with its YAML', async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const store = createMockPersonaStore();
+    const { result } = renderHook(() => useSavePersonaYaml('coder'), {
+      wrapper: wrapperWith(store, client),
+    });
+
+    result.current.mutate('name: coder\ndescription: Writes careful code.\n');
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(result.current.data?.description).toBe('Writes careful code.');
   });
 });
 

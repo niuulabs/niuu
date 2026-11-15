@@ -30,9 +30,8 @@ from skuld.conversation_snapshot import (
 from skuld.preview import PREVIEW_PORTS_FRAME
 from skuld.room_role_port import RoomRoleResolutionError
 from skuld.websocket_auth import (
-    _decode_jwt_claims,
-    _extract_token_from_websocket,
     _is_loopback_ws_client,
+    _resolve_ws_author,
     _resolve_ws_principal,
 )
 
@@ -142,7 +141,10 @@ class WebSocketLifecycleMixin:
           participants are not supported on these backends (invites are
           refused with 409), so a missing header simply means owner —
           identical to this pod's behavior before session_participants
-          existed.
+          existed. VM invites are allowed: every browser request reaches a
+          VM broker through Forge's session proxy, which always stamps the
+          header; only Forge's own tunnel and the guest itself reach it
+          without one.
         - "proxy" (rendered only for the process backend): the session proxy
           resolves and stamps the header itself from session_participants
           grants, so trust it — a missing header means viewer, except a
@@ -281,34 +283,6 @@ class WebSocketLifecycleMixin:
             with contextlib.suppress(Exception):
                 await websocket.close(code=1011, reason="Revalidation failed")
 
-    def _update_jwt_from_websocket(self, websocket: WebSocket) -> None:
-        """Extract and store JWT from an incoming WebSocket connection.
-
-        Prefers the Authorization header (set by Envoy or reverse proxy),
-        then falls back to the access_token query parameter (browser).
-        Updates the stored JWT on each connection so token refreshes
-        propagate automatically.
-        """
-        try:
-            token = _extract_token_from_websocket(websocket)
-        except Exception:
-            logger.debug("Failed to extract JWT from WebSocket", exc_info=True)
-            return
-        if not token:
-            if self._user_jwt is None:
-                logger.warning("No JWT found on WebSocket connection")
-            return
-
-        self._user_jwt = token
-        self._user_claims = _decode_jwt_claims(token)
-
-        user_id = self._user_claims.get("sub", "unknown")
-        logger.info("JWT updated from WebSocket connection (sub=%s)", _sanitize_log(user_id))
-
-        # Propagate new auth headers to the chronicle watcher
-        if self._chronicle_watcher is not None:
-            self._chronicle_watcher.update_headers(self._build_auth_headers())
-
     async def _safe_browser_send_json(self, websocket: WebSocket, payload: dict[str, Any]) -> bool:
         """Send a browser frame unless the client has already disconnected."""
         try:
@@ -322,8 +296,7 @@ class WebSocketLifecycleMixin:
 
     async def handle_websocket(self, websocket: WebSocket) -> None:
         """Handle a browser WebSocket connection at /session."""
-        # Ownership check first — a rejected caller must not overwrite the
-        # broker's stored JWT or reach any session frames.
+        # Ownership check first — a rejected caller must not reach any session frames.
         if not await self._authorize_websocket(websocket, endpoint="handle_websocket"):
             await websocket.close(code=1008, reason="Not authorized for this session")
             return
@@ -341,15 +314,6 @@ class WebSocketLifecycleMixin:
                 code=1008, reason="No active session_participants grant for this session"
             )
             return
-        # Extract JWT before accepting — headers are available pre-accept.
-        # Only an OWNER connection may update the broker's single stored
-        # _user_jwt/_user_claims: they are read later for actions taken "as
-        # the user" (e.g. the chronicle watcher's auth headers). A viewer or
-        # approver connecting after the owner must not silently swap the
-        # broker's notion of who it is acting as.
-        if room_role == "owner":
-            self._update_jwt_from_websocket(websocket)
-
         await websocket.accept()
         # Internal-visibility default comes from the ONE configured source (SRD
         # FR-7 / INV-10) — NOT the hardcoded WebSocketChannel default — so the live
@@ -364,6 +328,11 @@ class WebSocketLifecycleMixin:
             history_protocol=2 if protocol2 else 0,
             history_bootstrap_max_frames=self._settings.history_bootstrap_max_frames,
             room_role=room_role,
+            author=_resolve_ws_author(
+                websocket,
+                user_id_header=self._settings.ws_auth.user_id_header,
+                display_name_header=self._settings.ws_auth.display_name_header,
+            ),
         )
         if not protocol2:
             self._channels.add(channel)
@@ -560,6 +529,12 @@ class WebSocketLifecycleMixin:
                 for ask_question in list(self._pending_ask_user_questions.values()):
                     if not await self._safe_browser_send_json(websocket, ask_question):
                         return
+
+            # A question put to a person may already be answered; its answer is not in
+            # the turns above, so tell the new browser or it shows the card as waiting.
+            for answered in self.answered_person_question_frames():
+                if not await self._safe_browser_send_json(websocket, answered):
+                    return
 
             # Persisted question text is evidence, not a usable RPC address after
             # the native process restarts. Show the retained card honestly and

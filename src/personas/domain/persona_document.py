@@ -258,6 +258,39 @@ def parse_portable_persona(value: str | bytes | Mapping[str, Any]) -> PortablePe
     return PortablePersonaDefinition.from_dict(value)
 
 
+def persona_definition_from_mapping(definition: Mapping[str, Any]) -> PortablePersonaDefinition:
+    """Validate a persona definition as its author wrote it and give it its content revision.
+
+    The definition is the persona itself (``name``, ``description``, ``produces``, …), not the
+    portable wrapper around it. It is checked as strictly as a pinned persona: an unknown field,
+    a verdict rule for a verdict the persona does not map, or a mode no enforcer knows is refused,
+    naming the field, rather than saved with it dropped.
+    """
+    if not isinstance(definition, Mapping):
+        raise PersonaDocumentError("A persona is a mapping of its fields, starting with its name")
+    name = str(definition.get("name") or "").strip()
+    if not name:
+        raise PersonaDocumentError("A persona needs a name")
+    _validate_definition(name, definition)
+    copied = _json_copy(dict(definition))
+    return PortablePersonaDefinition(
+        id=name,
+        revision=persona_revision_for_definition(copied),
+        definition=copied,
+    )
+
+
+def parse_persona_definition_yaml(text: str) -> PortablePersonaDefinition:
+    """Parse persona YAML as its author wrote it; see :func:`persona_definition_from_mapping`."""
+    try:
+        loaded = yaml.load(text, Loader=_StrictSafeLoader)
+    except yaml.YAMLError as exc:
+        raise PersonaDocumentError(f"Invalid persona YAML: {exc}") from exc
+    if not isinstance(loaded, dict):
+        raise PersonaDocumentError("A persona is a YAML mapping of its fields, starting with name")
+    return persona_definition_from_mapping(loaded)
+
+
 def portable_persona_yaml(document: PortablePersonaDefinition) -> str:
     """Serialize a portable persona document as stable, human-readable YAML."""
     return yaml.safe_dump(

@@ -55,6 +55,7 @@ from volundr.domain.guest_access import GuestCommandResult
 from volundr.domain.models import GitSource, PodSpecAdditions, Session, SessionSpec
 from volundr.domain.services.host_access_key import generate_host_access_key
 from volundr.domain.vm_runtime import VmRuntimeStageError
+from volundr.guest_agent import config as guest_agent_config
 
 ISOLATION = {"cpu": 1.0, "memory_mib": 1024, "pids": 256}
 
@@ -253,6 +254,47 @@ def test_a_member_with_the_roots_pod_is_accepted():
     entry = member_entry(member_launch(root, 8082, persona="coder", pod=pod))
 
     require_same_pod(unit_spec(root, [], pod=pod), entry)
+
+
+def test_a_member_that_declares_no_pod_of_its_own_runs_in_the_units():
+    # The root's secrets agent renders the member's credentials into the unit's volume.
+    root = root_session()
+    unit_pod = PodSpecAdditions(
+        service_account="openbao-session-root",
+        volumes=({"name": "secrets", "emptyDir": {}},),
+        volume_mounts=({"name": "secrets", "mountPath": "/run/secrets"},),
+        init_containers=({"name": "openbao-agent-init", "image": "i"},),
+    )
+    entry = member_entry(member_launch(root, 8082, persona="coder"))
+
+    require_same_pod(unit_spec(root, [], pod=unit_pod), entry)
+
+
+def test_a_member_that_declares_some_of_the_units_parts_runs_in_the_units():
+    # Workload identity gives every session the same token volume; only the root has the
+    # secrets agent's.
+    root = root_session()
+    token = {"name": "workload-token", "projected": {"sources": []}}
+    unit_pod = PodSpecAdditions(
+        service_account="openbao-session-root",
+        volumes=(token, {"name": "secrets", "emptyDir": {}}),
+        init_containers=({"name": "openbao-agent-init", "image": "i"},),
+    )
+    entry = member_entry(
+        member_launch(root, 8082, persona="coder", pod=PodSpecAdditions(volumes=(token,)))
+    )
+
+    require_same_pod(unit_spec(root, [], pod=unit_pod), entry)
+
+
+def test_a_member_with_an_agent_of_its_own_beside_the_units_is_refused():
+    root = root_session()
+    unit_pod = PodSpecAdditions(init_containers=({"name": "openbao-agent-init", "image": "i"},))
+    own = PodSpecAdditions(init_containers=({"name": "openbao-agent-init", "image": "other"},))
+    entry = member_entry(member_launch(root, 8082, persona="coder", pod=own))
+
+    with pytest.raises(HostedUnitError, match="its own init containers"):
+        require_same_pod(unit_spec(root, [], pod=unit_pod), entry)
 
 
 # -- the launch payload ------------------------------------------------------------------------
@@ -484,6 +526,9 @@ async def test_the_metadata_delivery_writes_a_config_for_each_member(tmp_path):
         "file": "token",
     }
     assert configs[f"{member_id}.json"]["allocation_id"] == configs["config.json"]["allocation_id"]
+    # The guest agent accepts every field the runtime writes for the member.
+    accepted = {*guest_agent_config._TOP_LEVEL, *guest_agent_config._OPTIONAL_TOP_LEVEL}
+    assert set(configs[f"{member_id}.json"]) <= accepted
     assert json.loads(payloads(runtime)[-1])["relaunch"] is True
 
 

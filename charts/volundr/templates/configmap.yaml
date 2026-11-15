@@ -39,7 +39,14 @@ data:
     server_public_host: {{ .Values.config.serverPublicHost | default "127.0.0.1" | quote }}
     server_port: {{ .Values.service.targetPort | default 8080 }}
     projects:
-      {{- .Values.config.projects | toYaml | nindent 6 }}
+      {{- $projects := deepCopy .Values.config.projects }}
+      {{- if .Values.projectMemory.mimirUrl }}
+      {{- if not .Values.workloadIdentity.enabled }}
+      {{- fail "projectMemory.mimirUrl asks the hosted Mimir with a workload token: set workloadIdentity.enabled (with a signing key), or clear projectMemory.mimirUrl to use the registry file" }}
+      {{- end }}
+      {{- $_ := set $projects "memory" (dict "directory_adapter" "volundr.adapters.outbound.mimir_registry_http_directory.MimirRegistryHttpDirectory" "directory_kwargs" (dict "base_url" .Values.projectMemory.mimirUrl "audience" .Values.projectMemory.audience)) }}
+      {{- end }}
+      {{- $projects | toYaml | nindent 6 }}
     session_usage:
       {{- .Values.sessionUsage | toYaml | nindent 6 }}
     conversation_recent_max_turns: {{ .Values.config.conversationRecentMaxTurns | default 15 }}
@@ -201,6 +208,43 @@ data:
     {{- $_ := set $forgeMcp "session_tokens" $sessionTokens }}
 
     forge_mcp: {{ toJson $forgeMcp }}
+    {{- if .Values.memory.gatewayUrl }}
+    {{- if not $tokensOn }}
+    {{- fail "memory.gatewayUrl needs Forge session credentials (a session's memory server authenticates to the gateway with them): enable workloadIdentity with signingKey.existingSecret, or set forgeMcp.session_tokens.signing_key_file. Or clear memory.gatewayUrl to run sessions without a memory server" }}
+    {{- end }}
+
+    {{- /* Where Forge verifies its callers, it must know which one is the memory gateway:
+    only that service credential may say when run and session layers ended. */}}
+    {{- $allowAllIdentity := and (not .Values.identityAuthority.enabled) (has .Values.identity.adapter (list "volundr.adapters.outbound.identity.AllowAllIdentityAdapter" "identity.adapters.identity.AllowAllIdentityAdapter")) }}
+    {{- if and (not $allowAllIdentity) (not .Values.memory.gatewayServiceSubject) }}
+    {{- fail "memory.gatewayUrl needs memory.gatewayServiceSubject while Forge verifies its callers (identity.adapter is not the allow-all adapter): only the memory gateway's own service credential may tell Forge when run and session layers ended. Set it to the gateway's workload subject (for example system:serviceaccount:niuu:mimir), or clear memory.gatewayUrl to run sessions without a memory server" }}
+    {{- end }}
+
+    # Every session runs Skuld's memory server against this gateway.
+    memory:
+      gateway_url: {{ tpl .Values.memory.gatewayUrl . | quote }}
+      {{- if .Values.memory.gatewayServiceSubject }}
+      gateway_service_subject: {{ .Values.memory.gatewayServiceSubject | quote }}
+      {{- end }}
+    {{- end }}
+    {{- if .Values.voice.enabled }}
+    {{- if not $tokensOn }}
+    {{- fail "voice.enabled needs Forge session credentials (a session's voice channel mints its call credentials through Forge with them): enable workloadIdentity with signingKey.existingSecret, or set forgeMcp.session_tokens.signing_key_file. Or set voice.enabled: false" }}
+    {{- end }}
+    {{- if not .Values.voice.defaultPersona }}
+    {{- fail "voice.enabled needs voice.defaultPersona: the persona (with a voice: section) a session speaks with when its own persona has none" }}
+    {{- end }}
+    {{- if not .Values.voice.providers }}
+    {{- fail "voice.enabled needs voice.providers: at least one of openai or xai, with the credential holding the owner's API key" }}
+    {{- end }}
+
+    # Realtime voice calls with sessions: every session runs Skuld's voice channel, and Forge
+    # mints each call's provider credential from the owner's own key.
+    voice:
+      enabled: true
+      default_persona: {{ .Values.voice.defaultPersona | quote }}
+      providers: {{ toJson .Values.voice.providers }}
+    {{- end }}
     {{- $attestation := dict }}
     {{- range $key, $value := ((.Values.mesh | default dict).attestation | default dict) }}
     {{- if not (kindIs "invalid" $value) }}
@@ -224,7 +268,11 @@ data:
       runtime_backend: vm
       room_role_source: {{ .Values.podManager.roomRoleSource | default "deployment" | quote }}
       room_role_cache_ttl_seconds: {{ .Values.podManager.roomRoleCacheTtlSeconds | default 5.0 }}
-      kwargs: {{ dict "pool_id" .Values.computeHosts.poolId "max_machines" .Values.computeHosts.maxHosts "profile" .Values.computeHosts.profile "server_port" (.Values.service.targetPort | default 8080) "public_origin" .Values.computeHosts.joinUrl | toJson }}
+      {{- $hostKwargs := dict "pool_id" .Values.computeHosts.poolId "profile" .Values.computeHosts.profile "server_port" (.Values.service.targetPort | default 8080) "public_origin" .Values.computeHosts.joinUrl }}
+      {{- if .Values.computeHosts.mesh }}
+      {{- $_ := set $hostKwargs "mesh" .Values.computeHosts.mesh }}
+      {{- end }}
+      kwargs: {{ $hostKwargs | toJson }}
       secret_kwargs_env: {}
 
     compute: {{ include "volundr.computeHosts" . }}
@@ -593,9 +641,13 @@ data:
     workload_identity:
       enabled: {{ .Values.workloadIdentity.enabled | default false }}
       issuer: {{ .Values.workloadIdentity.issuer | default "" | quote }}
-      {{- if .Values.workloadIdentity.audiences }}
+      {{- $audiences := .Values.workloadIdentity.audiences | default list }}
+      {{- if and .Values.projectMemory.mimirUrl (not (has .Values.projectMemory.audience $audiences)) }}
+      {{- $audiences = append $audiences .Values.projectMemory.audience }}
+      {{- end }}
+      {{- if $audiences }}
       audiences:
-        {{- range .Values.workloadIdentity.audiences }}
+        {{- range $audiences }}
         - {{ . | quote }}
         {{- end }}
       {{- else }}

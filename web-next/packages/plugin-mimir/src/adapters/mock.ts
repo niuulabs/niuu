@@ -2,25 +2,22 @@ import type { Mount } from '@niuulabs/domain';
 import type { IMimirService } from '../ports';
 import type { RecentWrite } from '../ports/IMountAdapter';
 import type { PageMeta, Page, SearchResult } from '../domain/page';
-import type { LintIssue, LintReport, ActivityEvent } from '../domain/lint';
 import type { Source } from '../domain/source';
 import type {
   MimirStats,
   MimirGraph,
+  KnowledgeGraph,
   GraphNode,
   GraphEdge,
   LiveActivity,
 } from '../domain/api-types';
 import type { EmbeddingSearchResult } from '../ports/IEmbeddingStore';
 import type { EntityMeta } from '../domain/entity';
-import type { FactEvidence, RelatedPage, ReviseRequest } from '../domain/evidence';
-import type { WriteRoutingRule } from '../domain/routing';
 import type { RegistryMount } from '../domain/registry';
 import type { EvalReport, QueryStats } from '../domain/analytics';
-import type { DoctorCheck, DoctorReport, DoctorStatus } from '../domain/doctor';
-import { tallySeverity } from '../domain/lint';
 import { toPageMeta } from '../domain/page';
 import { generateMockMemoryGraph, generateMockLiveActivity } from './mockGraph';
+import { buildMockKnowledgeGraph } from './mockKnowledgeGraph';
 
 // ---------------------------------------------------------------------------
 // Seed data — Mounts
@@ -37,7 +34,6 @@ const MOCK_MOUNTS: Mount[] = [
     status: 'healthy',
     pages: 412,
     sources: 185,
-    lintIssues: 8,
     lastWrite: '2026-04-18T14:22:00Z',
     embedding: 'all-minilm-l6-v2',
     sizeKb: 512,
@@ -53,7 +49,6 @@ const MOCK_MOUNTS: Mount[] = [
     status: 'healthy',
     pages: 1180,
     sources: 842,
-    lintIssues: 18,
     lastWrite: '2026-04-19T09:00:00Z',
     embedding: 'all-mpnet-base-v2',
     sizeKb: 4096,
@@ -69,7 +64,6 @@ const MOCK_MOUNTS: Mount[] = [
     status: 'degraded',
     pages: 342,
     sources: 218,
-    lintIssues: 14,
     lastWrite: '2026-04-17T16:45:00Z',
     embedding: 'all-minilm-l6-v2',
     sizeKb: 1024,
@@ -85,7 +79,6 @@ const MOCK_MOUNTS: Mount[] = [
     status: 'healthy',
     pages: 184,
     sources: 128,
-    lintIssues: 6,
     lastWrite: '2026-04-19T11:30:00Z',
     embedding: 'all-minilm-l6-v2',
     sizeKb: 384,
@@ -100,7 +93,6 @@ const MOCK_REGISTRY_MOUNTS: RegistryMount[] = MOCK_MOUNTS.map((mount) => ({
   lifecycle: 'registered',
   role: mount.role,
   url: mount.url,
-  path: '',
   categories: mount.categories,
   authRef: null,
   defaultReadPriority: mount.priority,
@@ -541,8 +533,7 @@ type MockKind =
   | 'directive'
   | 'preference'
   | 'goal'
-  | 'observation'
-  | 'thread';
+  | 'observation';
 
 /**
  * `EntityMeta['entityKind']` predates the memory-kind vocabulary and uses
@@ -603,13 +594,13 @@ const REAL_GRAPH_NODES: GraphNode[] = ALL_PAGES.map((p) => ({
 }));
 
 const CURATED_GRAPH_EDGES: GraphEdge[] = [
-  { source: '/arch/overview', target: '/api/overview', type: 'explains' },
-  { source: '/infra/k8s', target: '/arch/overview', type: 'depends_on' },
-  { source: '/arch/overview', target: '/entities/hexagonal-arch', type: 'part_of' },
-  { source: '/entities/niuulabs', target: '/entities/ting', type: 'part_of' },
-  { source: '/entities/ting', target: '/arch/overview', type: 'depends_on' },
-  { source: '/api/overview', target: '/entities/asyncpg', type: 'depends_on' },
-  { source: '/entities/hexagonal-arch', target: '/entities/asyncpg', type: 'depends_on' },
+  { source: '/arch/overview', target: '/api/overview', relation: 'explains' },
+  { source: '/infra/k8s', target: '/arch/overview', relation: 'depends_on' },
+  { source: '/arch/overview', target: '/entities/hexagonal-arch', relation: 'part_of' },
+  { source: '/entities/niuulabs', target: '/entities/ting', relation: 'part_of' },
+  { source: '/entities/ting', target: '/arch/overview', relation: 'depends_on' },
+  { source: '/api/overview', target: '/entities/asyncpg', relation: 'depends_on' },
+  { source: '/entities/hexagonal-arch', target: '/entities/asyncpg', relation: 'depends_on' },
 ];
 
 const SYNTHETIC_GRAPH = generateMockMemoryGraph({
@@ -620,7 +611,7 @@ const SYNTHETIC_GRAPH = generateMockMemoryGraph({
   now: MOCK_GRAPH_NOW,
 });
 
-/** The mock graph keyed by page path — what the mock `/related` walk traverses. */
+/** The mock graph keyed by page path, before node ids are encoded. */
 const MOCK_PATH_GRAPH: MimirGraph = {
   nodes: [...REAL_GRAPH_NODES, ...SYNTHETIC_GRAPH.nodes],
   edges: [...CURATED_GRAPH_EDGES, ...SYNTHETIC_GRAPH.edges],
@@ -649,220 +640,6 @@ const MOCK_GRAPH: MimirGraph = (() => {
 })();
 
 // ---------------------------------------------------------------------------
-// Seed data — Evidence (GET /evidence) and link-graph relationships
-// ---------------------------------------------------------------------------
-
-/**
- * Proof counts per Key Fact, keyed by page path. Facts are verbatim copies of
- * the page's `key-facts` zone — the screens join the two by exact text.
- */
-const MOCK_EVIDENCE: Record<string, FactEvidence[]> = {
-  '/arch/overview': [
-    {
-      fact: 'Hexagonal architecture with ports and adapters',
-      proofCount: 5,
-      trend: 'strengthening',
-      latestSupport: '2026-04-18',
-      supportingDates: ['2026-01-08', '2026-02-19', '2026-04-18'],
-      sourceProofCount: 2,
-    },
-    {
-      fact: 'Six cognitive regions (Sköll, Hati, Sága, Móði, Váli, Víðarr)',
-      proofCount: 2,
-      trend: 'weakening',
-      latestSupport: '2026-01-12',
-      supportingDates: ['2025-11-30', '2026-01-12'],
-      sourceProofCount: 0,
-    },
-    {
-      fact: 'Ting, Volundr, and Niuu are separate modules',
-      proofCount: 3,
-      trend: 'stable',
-      latestSupport: '2026-04-02',
-      supportingDates: ['2026-03-11', '2026-04-02'],
-      sourceProofCount: 1,
-    },
-  ],
-  '/api/overview': [
-    {
-      fact: 'Raw SQL with asyncpg — no ORM',
-      proofCount: 4,
-      trend: 'stable',
-      latestSupport: '2026-03-20',
-      supportingDates: ['2026-01-10', '2026-03-20'],
-      sourceProofCount: 2,
-    },
-    {
-      fact: 'Parameterised queries only',
-      proofCount: 0,
-      trend: 'new',
-      latestSupport: null,
-      supportingDates: [],
-      sourceProofCount: 0,
-    },
-    {
-      fact: 'Hexagonal adapter pattern for all infrastructure',
-      proofCount: 2,
-      trend: 'stale',
-      latestSupport: '2025-09-02',
-      supportingDates: ['2025-06-14', '2025-09-02'],
-      sourceProofCount: 1,
-    },
-  ],
-  '/infra/k8s': [
-    {
-      fact: 'Uses `migrate` for schema migrations (not Alembic)',
-      proofCount: 3,
-      trend: 'stable',
-      latestSupport: '2026-04-10',
-      supportingDates: ['2026-02-02', '2026-04-10'],
-      sourceProofCount: 1,
-    },
-    {
-      fact: 'Envoy as API gateway with OIDC',
-      proofCount: 2,
-      trend: 'weakening',
-      latestSupport: '2026-01-05',
-      supportingDates: ['2025-12-01', '2026-01-05'],
-      sourceProofCount: 0,
-    },
-    {
-      fact: 'Services exposed as ClusterIP internally',
-      proofCount: 0,
-      trend: 'new',
-      latestSupport: null,
-      supportingDates: [],
-      sourceProofCount: 0,
-    },
-  ],
-};
-
-/** Typed edge labels for the graph edges that carry one. */
-const MOCK_EDGE_RELS: Record<string, string> = {
-  '/arch/overview|/api/overview': 'documents',
-  '/infra/k8s|/arch/overview': 'deploys',
-  '/arch/overview|/entities/hexagonal-arch': 'applies',
-  '/api/overview|/entities/asyncpg': 'uses',
-};
-
-/** BFS over the mock link graph — the shape `GET /related` returns. */
-function relatedFromGraph(path: string, depth: number, rel?: string): RelatedPage[] {
-  const results: RelatedPage[] = [];
-  const visited = new Set([path]);
-  let frontier = [path];
-  for (let hop = 1; hop <= Math.max(1, depth); hop += 1) {
-    const next: string[] = [];
-    for (const current of frontier) {
-      for (const edge of MOCK_PATH_GRAPH.edges) {
-        const outward = edge.source === current;
-        const inward = edge.target === current;
-        if (!outward && !inward) continue;
-        const other = outward ? edge.target : edge.source;
-        if (visited.has(other)) continue;
-        const edgeRel = MOCK_EDGE_RELS[`${edge.source}|${edge.target}`] ?? edge.type ?? null;
-        if (rel !== undefined && edgeRel !== rel) continue;
-        visited.add(other);
-        next.push(other);
-        results.push({ path: other, hop, rel: edgeRel, direction: outward ? 'out' : 'in' });
-      }
-    }
-    frontier = next;
-  }
-  return results;
-}
-
-// ---------------------------------------------------------------------------
-// Seed data — Lint issues
-// ---------------------------------------------------------------------------
-
-const INITIAL_LINT_ISSUES: LintIssue[] = [
-  {
-    id: 'lint-001',
-    rule: 'L05',
-    severity: 'error',
-    page: '/arch/hexagonal',
-    mount: 'local',
-    autoFix: false,
-    message: 'Broken wikilink: [[ports/overview]] — target page does not exist',
-  },
-  {
-    id: 'lint-002',
-    rule: 'L07',
-    severity: 'warn',
-    page: '/infra/legacy-proxy',
-    mount: 'platform',
-    autoFix: true,
-    message: 'Orphan page — no inbound links from any other page',
-  },
-  {
-    id: 'lint-003',
-    rule: 'L12',
-    severity: 'info',
-    page: '/api/overview',
-    mount: 'shared',
-    autoFix: true,
-    message: 'Missing required frontmatter field: `owner`',
-  },
-  {
-    id: 'lint-004',
-    rule: 'L02',
-    severity: 'warn',
-    page: '/infra/k8s',
-    mount: 'platform',
-    autoFix: true,
-    message: 'Stale page — source updated 3 days ago but page not recompiled',
-  },
-  {
-    id: 'lint-005',
-    rule: 'L11',
-    severity: 'error',
-    page: '/arch/overview',
-    mount: 'shared',
-    autoFix: true,
-    message: 'Stale mount index — index out of sync with page store',
-  },
-];
-
-// ---------------------------------------------------------------------------
-// Seed data — write-routing rules
-// ---------------------------------------------------------------------------
-
-const INITIAL_ROUTING_RULES: WriteRoutingRule[] = [
-  {
-    id: 'route-001',
-    prefix: '/infra',
-    mountName: 'platform',
-    priority: 5,
-    active: true,
-    desc: 'Infrastructure pages → platform mount',
-  },
-  {
-    id: 'route-002',
-    prefix: '/api',
-    mountName: 'shared',
-    priority: 10,
-    active: true,
-    desc: 'API docs → shared mount',
-  },
-  {
-    id: 'route-003',
-    prefix: '/entities',
-    mountName: 'shared',
-    priority: 15,
-    active: true,
-    desc: 'Entity pages → shared mount',
-  },
-  {
-    id: 'route-004',
-    prefix: '/',
-    mountName: 'local',
-    priority: 99,
-    active: true,
-    desc: 'Catch-all → local mount',
-  },
-];
-
-// ---------------------------------------------------------------------------
 // Seed data — Recent writes activity feed
 // ---------------------------------------------------------------------------
 
@@ -884,15 +661,6 @@ const MOCK_RECENT_WRITES: RecentWrite[] = [
     ravn: 'ravn-skald',
     kind: 'compile',
     message: 'recompiled from 2 sources after RFC merge',
-  },
-  {
-    id: 'ev-004',
-    timestamp: '2026-04-18T16:00:00Z',
-    mount: 'platform',
-    page: '/infra/legacy-proxy',
-    ravn: 'ravn-skald',
-    kind: 'lint-fix',
-    message: 'auto-fixed orphan page — added backlink from /infra/k8s',
   },
   {
     id: 'ev-005',
@@ -933,92 +701,6 @@ const MOCK_RECENT_WRITES: RecentWrite[] = [
 ];
 
 // ---------------------------------------------------------------------------
-// Seed data — Activity event log
-// ---------------------------------------------------------------------------
-
-const MOCK_ACTIVITY_EVENTS: ActivityEvent[] = [
-  {
-    id: 'act-001',
-    timestamp: '2026-04-19T10:14:02Z',
-    kind: 'write',
-    mount: 'local',
-    ravn: 'ravn-fjolnir',
-    message: 'rewrote compiled-truth of entities/person-karpathy.md',
-    page: 'entities/person-karpathy.md',
-  },
-  {
-    id: 'act-002',
-    timestamp: '2026-04-19T10:12:40Z',
-    kind: 'lint',
-    mount: 'shared',
-    ravn: 'ravn-skald',
-    message: 'auto-fixed L11 (stale index.md, 3 entries added)',
-    page: 'index.md',
-  },
-  {
-    id: 'act-003',
-    timestamp: '2026-04-19T10:10:18Z',
-    kind: 'ingest',
-    mount: 'local',
-    ravn: 'ravn-fjolnir',
-    message: 'ingested karpathy.github.io — pages_updated=1',
-    page: 'entities/person-karpathy.md',
-  },
-  {
-    id: 'act-004',
-    timestamp: '2026-04-19T10:08:54Z',
-    kind: 'write',
-    mount: 'shared',
-    ravn: 'ravn-fjolnir',
-    message: 'appended timeline entry to entities/project-niuu.md',
-    page: 'entities/project-niuu.md',
-  },
-  {
-    id: 'act-006',
-    timestamp: '2026-04-19T09:44:01Z',
-    kind: 'query',
-    mount: 'shared',
-    ravn: 'ravn-fjolnir',
-    message: 'mimir_query "compounding knowledge" → 4 results',
-  },
-  {
-    id: 'act-007',
-    timestamp: '2026-04-19T09:41:12Z',
-    kind: 'ingest',
-    mount: 'platform',
-    ravn: 'ravn-skald',
-    message: 'ingested Anycubic resin datasheet',
-    page: 'technical/forge/resin-profiles.md',
-  },
-  {
-    id: 'act-008',
-    timestamp: '2026-04-19T09:22:10Z',
-    kind: 'lint',
-    mount: 'platform',
-    ravn: 'ravn-skald',
-    message: 'L02 contradiction detected in resin-profiles (escalated)',
-    page: 'technical/forge/resin-profiles.md',
-  },
-  {
-    id: 'act-009',
-    timestamp: '2026-04-19T09:11:08Z',
-    kind: 'write',
-    mount: 'local',
-    ravn: 'ravn-fjolnir',
-    message: 'wrote projects/niuu/architecture.md',
-    page: 'projects/niuu/architecture.md',
-  },
-  {
-    id: 'act-010',
-    timestamp: '2026-04-19T08:58:44Z',
-    kind: 'query',
-    mount: 'local',
-    ravn: 'ravn-fjolnir',
-    message: 'mimir_query "cluster upgrade" → 2 results',
-  },
-];
-
-// ---------------------------------------------------------------------------
 // Seed data — retrieval analytics
 // ---------------------------------------------------------------------------
 
@@ -1050,73 +732,6 @@ const MOCK_QUERY_STATS: QueryStats = {
 };
 
 // ---------------------------------------------------------------------------
-// Seed data — doctor checklist
-// ---------------------------------------------------------------------------
-
-const INITIAL_DOCTOR_CHECKS: DoctorCheck[] = [
-  {
-    id: 'index-fresh',
-    title: 'Mount index freshness',
-    status: 'pass',
-    detail: 'All 4 mount indexes rebuilt within the last 24h',
-    remediation: '',
-    fixable: false,
-  },
-  {
-    id: 'embedding-coverage',
-    title: 'Embedding coverage',
-    status: 'warn',
-    detail: '12 pages missing embeddings on mount "platform"',
-    remediation: 'Re-run the embedding backfill for the platform mount',
-    fixable: true,
-  },
-  {
-    id: 'orphan-sources',
-    title: 'Orphaned sources',
-    status: 'warn',
-    detail: '2 sources not compiled into any page',
-    remediation: 'Trigger a compile pass or archive the stale sources',
-    fixable: true,
-  },
-  {
-    id: 'wikilink-integrity',
-    title: 'Wikilink integrity',
-    status: 'fail',
-    detail: '1 broken wikilink: [[ports/overview]] in /arch/hexagonal',
-    remediation: 'Create the missing target page or repoint the link',
-    fixable: false,
-  },
-  {
-    id: 'fts-index',
-    title: 'Full-text index',
-    status: 'pass',
-    detail: 'FTS index consistent with page store (2118 pages)',
-    remediation: '',
-    fixable: false,
-  },
-  {
-    id: 'registry-health',
-    title: 'Registry mount health',
-    status: 'pass',
-    detail: 'All registered mounts reachable',
-    remediation: '',
-    fixable: false,
-  },
-];
-
-const DOCTOR_STATUS_RANK: Record<DoctorStatus, number> = { pass: 0, warn: 1, fail: 2 };
-
-function buildDoctorReport(checks: DoctorCheck[]): DoctorReport {
-  const passing = checks.filter((check) => check.status === 'pass').length;
-  const worst = checks.reduce<DoctorStatus>(
-    (acc, check) =>
-      DOCTOR_STATUS_RANK[check.status] > DOCTOR_STATUS_RANK[acc] ? check.status : acc,
-    'pass',
-  );
-  return { score: `${passing}/${checks.length}`, worst, checks };
-}
-
-// ---------------------------------------------------------------------------
 // Debug score breakdowns
 // ---------------------------------------------------------------------------
 
@@ -1145,21 +760,8 @@ function buildScoreBreakdown(page: Page, score: number, index: number): Record<s
 
 export function createMimirMockAdapter(): IMimirService {
   // Mutable copies for write operations
-  let lintIssues = [...INITIAL_LINT_ISSUES];
-  let routingRules = [...INITIAL_ROUTING_RULES];
   let sources = [...MOCK_SOURCES];
   let registryMounts = [...MOCK_REGISTRY_MOUNTS];
-  let doctorChecks = INITIAL_DOCTOR_CHECKS.map((check) => ({ ...check }));
-  // Belief revision rewrites a page and its evidence row in place.
-  const revisedPages = new Map<string, Page>();
-  const evidenceByPath = new Map<string, FactEvidence[]>(
-    Object.entries(MOCK_EVIDENCE).map(([path, rows]) => [path, rows.map((row) => ({ ...row }))]),
-  );
-
-  function currentPage(path: string): Page | null {
-    return revisedPages.get(path) ?? ALL_PAGES.find((page) => page.path === path) ?? null;
-  }
-
   return {
     mounts: {
       async listMounts(): Promise<Mount[]> {
@@ -1189,24 +791,6 @@ export function createMimirMockAdapter(): IMimirService {
         registryMounts = registryMounts.filter((entry) => entry.id !== id);
       },
 
-      async listRoutingRules(): Promise<WriteRoutingRule[]> {
-        return [...routingRules].sort((a, b) => a.priority - b.priority);
-      },
-
-      async upsertRoutingRule(rule: WriteRoutingRule): Promise<WriteRoutingRule> {
-        const idx = routingRules.findIndex((r) => r.id === rule.id);
-        if (idx >= 0) {
-          routingRules[idx] = rule;
-        } else {
-          routingRules = [...routingRules, rule];
-        }
-        return rule;
-      },
-
-      async deleteRoutingRule(id: string): Promise<void> {
-        routingRules = routingRules.filter((r) => r.id !== id);
-      },
-
       async getRecentWrites(limit = 20): Promise<RecentWrite[]> {
         return MOCK_RECENT_WRITES.slice(0, limit);
       },
@@ -1217,24 +801,6 @@ export function createMimirMockAdapter(): IMimirService {
 
       async getQueryStats(): Promise<QueryStats | null> {
         return MOCK_QUERY_STATS;
-      },
-
-      async getDoctor(): Promise<DoctorReport | null> {
-        return buildDoctorReport(doctorChecks);
-      },
-
-      async runDoctorFixes(): Promise<DoctorReport | null> {
-        doctorChecks = doctorChecks.map((check) =>
-          check.fixable && check.status !== 'pass'
-            ? {
-                ...check,
-                status: 'pass' as const,
-                detail: `${check.detail} — fixed`,
-                fixable: false,
-              }
-            : check,
-        );
-        return buildDoctorReport(doctorChecks);
       },
     },
 
@@ -1260,7 +826,7 @@ export function createMimirMockAdapter(): IMimirService {
       },
 
       async getPage(path: string, mountName?: string): Promise<Page | null> {
-        const page = currentPage(path);
+        const page = ALL_PAGES.find((candidate) => candidate.path === path) ?? null;
         if (!page) return null;
         if (mountName && !page.mounts.includes(mountName)) return null;
         return page;
@@ -1352,65 +918,19 @@ export function createMimirMockAdapter(): IMimirService {
         return source;
       },
 
-      async getEvidence(path: string): Promise<FactEvidence[]> {
-        return (evidenceByPath.get(path) ?? []).map((row) => ({ ...row }));
-      },
-
-      async getRelated(path: string, depth = 1, rel?: string): Promise<RelatedPage[]> {
-        return relatedFromGraph(path, depth, rel);
-      },
-
-      async revisePage(request: ReviseRequest): Promise<Page> {
-        const base = currentPage(request.path);
-        if (!base) throw new Error(`Page not found: ${request.path}`);
-        const zones = base.zones ?? [];
-        const carriesFact = zones.some(
-          (zone) => zone.kind === 'key-facts' && zone.items.includes(request.oldFact),
-        );
-        if (!carriesFact) {
-          throw new Error(`Fact not found on ${request.path}: ${request.oldFact}`);
-        }
-        const today = new Date().toISOString().slice(0, 10);
-        const note = `belief revised: ${request.oldFact} → ${request.newFact}`;
-        const rewritten = zones.map((zone) =>
-          zone.kind === 'key-facts'
-            ? {
-                ...zone,
-                items: zone.items.map((item) =>
-                  item === request.oldFact ? request.newFact : item,
-                ),
-              }
-            : zone,
-        );
-        const entry = { date: today, note, source: request.attribution };
-        const withTimeline = rewritten.some((zone) => zone.kind === 'timeline')
-          ? rewritten.map((zone) =>
-              zone.kind === 'timeline' ? { ...zone, items: [...zone.items, entry] } : zone,
-            )
-          : [...rewritten, { kind: 'timeline' as const, items: [entry] }];
-        const revised: Page = {
-          ...base,
-          zones: withTimeline,
-          updatedAt: new Date().toISOString(),
-          updatedBy: request.attribution,
+      async getKnowledgeGraph(options): Promise<KnowledgeGraph> {
+        const graph = buildMockKnowledgeGraph(MOCK_GRAPH, Date.now());
+        const layers = options?.layers ?? [];
+        if (layers.length === 0) return graph;
+        const wanted = new Set(layers);
+        const nodes = graph.nodes.filter((n) => wanted.has(n.layer!));
+        const ids = new Set(nodes.map((n) => n.id));
+        return {
+          layers: graph.layers.filter((l) => wanted.has(l.id)),
+          nodes,
+          edges: graph.edges.filter((e) => ids.has(e.source) && ids.has(e.target)),
+          unresolved: graph.unresolved.filter((u) => ids.has(u.source)),
         };
-        revisedPages.set(request.path, revised);
-        evidenceByPath.set(
-          request.path,
-          (evidenceByPath.get(request.path) ?? []).map((row) =>
-            row.fact === request.oldFact
-              ? {
-                  ...row,
-                  fact: request.newFact,
-                  trend: 'stable',
-                  proofCount: row.proofCount + 1,
-                  latestSupport: today,
-                  supportingDates: [...row.supportingDates, today],
-                }
-              : row,
-          ),
-        );
-        return revised;
       },
 
       async getGraph(options): Promise<MimirGraph> {
@@ -1463,36 +983,6 @@ export function createMimirMockAdapter(): IMimirService {
           score: Math.max(0.5, 0.95 - i * 0.15),
           mountName: p.mounts[0] ?? 'local',
         }));
-      },
-    },
-
-    lint: {
-      async getLintReport(mountName?: string): Promise<LintReport> {
-        const issues = mountName ? lintIssues.filter((i) => i.mount === mountName) : lintIssues;
-        return {
-          issues,
-          pagesChecked: MOCK_PAGES.length,
-          mounts: [],
-          summary: tallySeverity(issues),
-        };
-      },
-
-      async runAutoFix(issueIds?: string[]): Promise<LintReport> {
-        if (issueIds) {
-          lintIssues = lintIssues.filter((i) => !issueIds.includes(i.id) || !i.autoFix);
-        } else {
-          lintIssues = lintIssues.filter((i) => !i.autoFix);
-        }
-        return {
-          issues: lintIssues,
-          pagesChecked: MOCK_PAGES.length,
-          mounts: [],
-          summary: tallySeverity(lintIssues),
-        };
-      },
-
-      async getActivityLog(limit = 50): Promise<ActivityEvent[]> {
-        return MOCK_ACTIVITY_EVENTS.slice(0, limit);
       },
     },
   };

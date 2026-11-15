@@ -17,7 +17,9 @@ from personas.domain.persona_document import (
     PersonaDocumentError,
     PortablePersonaCollection,
     PortablePersonaDefinition,
+    parse_persona_definition_yaml,
     parse_portable_persona,
+    persona_definition_from_mapping,
     portable_persona_from_config,
     portable_persona_yaml,
     resolve_persona_dependencies,
@@ -307,3 +309,20 @@ def test_inline_adapter_runs_exact_source_and_only_then_injects_outcome_prompt()
     assert runtime.system_prompt_template.startswith("Pinned prompt")
     assert "---outcome---" in runtime.system_prompt_template
     assert document.definition["system_prompt_template"] == "Pinned prompt"
+
+
+class TestAuthoredDefinitions:
+    def test_a_definition_gets_its_content_revision(self) -> None:
+        document = parse_persona_definition_yaml("name: helper\ndescription: Helps.\n")
+
+        assert document.id == "helper"
+        assert document.definition == {"name": "helper", "description": "Helps."}
+        assert document.revision.startswith("content-")
+
+    def test_a_definition_that_is_not_a_mapping_is_refused(self) -> None:
+        with pytest.raises(PersonaDocumentError, match="mapping of its fields"):
+            persona_definition_from_mapping(["name", "helper"])  # type: ignore[arg-type]
+
+    def test_a_duplicate_key_is_refused_not_overwritten(self) -> None:
+        with pytest.raises(PersonaDocumentError, match="duplicate key"):
+            parse_persona_definition_yaml("name: helper\nname: other\n")

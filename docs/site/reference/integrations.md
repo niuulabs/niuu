@@ -11,7 +11,7 @@ session and granting its credential are related but distinct operations.
 | Clone or review a hosted repository | Configured Git provider and repository access | List/read the intended repository, then test the permitted write operation separately |
 | Import external work | Configured tracker | Read the intended project and inspect imported scope |
 | Call a hosted model | Runtime login or provider API credential | Send a small real inference request |
-| Read shared knowledge | Mímir endpoint or local adapter and mount | Retrieve a known page |
+| Read shared knowledge | Memory endpoint or local adapter and mount | Retrieve a known page |
 | Receive events | Configured event transport | Observe a known event at the consumer |
 
 ## Grant only the connection needed

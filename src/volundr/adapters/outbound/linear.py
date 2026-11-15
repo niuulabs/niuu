@@ -203,9 +203,16 @@ __all__ = ["LinearAdapter", "_CacheEntry", "LinearAPIError"]
 class LinearAdapter(IssueTrackerProvider):
     """Linear issue tracker adapter using GraphQL API."""
 
-    def __init__(self, api_key: str, api_url: str = LINEAR_API_URL, **_extra: object):
+    def __init__(
+        self,
+        api_key: str | None = None,
+        api_url: str = LINEAR_API_URL,
+        access_token: str | None = None,
+        **_extra: object,
+    ):
         self._gql = LinearGraphQLClient(
             api_key=api_key,
+            access_token=access_token,
             api_url=api_url,
         )
 

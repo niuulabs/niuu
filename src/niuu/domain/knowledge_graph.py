@@ -92,7 +92,7 @@ def project_pages(pages: list[MimirPage]) -> KnowledgeGraph:
     sources: dict[str, list[str]] = {}
     for page in pages:
         meta = page.meta
-        kind = meta.entity_type or meta.page_type or ("thread" if meta.is_thread else "page")
+        kind = meta.entity_type or meta.page_type or "page"
         graph.nodes.append(
             KnowledgeNode(
                 id=meta.path,

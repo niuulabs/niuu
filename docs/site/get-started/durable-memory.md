@@ -2,8 +2,12 @@
 
 This exercise stores a short source in Memory, then reads it back. It verifies
 persistence of source material without requiring a model to synthesize a page.
-Use a local Niuu host with Memory enabled and a writable store. The commands below
-use its default local origin and write to the default mount.
+Use a local Niuu host with Memory enabled and a writable store. Memory serves a
+configured backend (`MIMIR__BACKEND`, today a gbrain instance) and does not start
+without one. In mini mode `niuu platform up` runs that gbrain for you
+(`local_memory` in `~/.niuu/config.yaml`; a source checkout builds it with
+`make build-gbrain`). The commands below use its default local origin and write to
+the default mount.
 
 ## 1. Inspect the store
 
@@ -46,7 +50,7 @@ which pages cite the source and which mount is being queried.
 
 ## 4. Give the agent access
 
-Configure the agent's Mímir adapter or tools to use this store. Ask it to retrieve
+Configure the agent's Memory adapter or tools to use this store. Ask it to retrieve
 the onboarding note and cite the source. Verify the returned content rather than
 accepting a plausible answer from model memory. This final agent step requires a
 working model and configured tools and is not covered by the source-ingest check.

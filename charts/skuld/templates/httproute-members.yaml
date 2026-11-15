@@ -33,6 +33,7 @@ spec:
           requestHeaderModifier:
             # Same as the root's route: only Forge stamps the room headers.
             remove:
+              - {{ $.Values.envoy.headerNames.displayName | quote }}
               - {{ $.Values.envoy.headerNames.roomRole | quote }}
               - {{ $.Values.envoy.headerNames.roomCallerSession | quote }}
       backendRefs:

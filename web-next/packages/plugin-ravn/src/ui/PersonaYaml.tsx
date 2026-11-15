@@ -65,16 +65,45 @@ export interface PersonaYamlProps {
   name: string;
 }
 
+/** YAML with line numbers and token colours. */
+export function YamlCode({ text, testId = 'persona-yaml' }: { text: string; testId?: string }) {
+  const tokenizedLines = useMemo(
+    () =>
+      text.split('\n').map((line, i) => ({
+        lineNumber: i + 1,
+        tokens: tokenizeLine(line),
+      })),
+    [text],
+  );
+
+  return (
+    <div className="niuu:overflow-auto niuu:h-full niuu:p-6" data-testid={testId}>
+      <pre className="niuu:m-0 niuu:font-mono niuu:text-xs niuu:leading-relaxed">
+        {tokenizedLines.map(({ lineNumber, tokens }) => (
+          <div key={lineNumber} className="niuu:flex">
+            <span
+              className="niuu:select-none niuu:text-right niuu:shrink-0 niuu:mr-4 niuu:w-8 niuu:text-text-muted niuu:opacity-50"
+              data-testid="yaml-line-number"
+              aria-hidden="true"
+            >
+              {lineNumber}
+            </span>
+            <span className="niuu:flex-1 niuu:whitespace-pre-wrap niuu:break-words">
+              {tokens.map((token, j) => (
+                <span key={j} className={TOKEN_CLASSES[token.type]}>
+                  {token.text}
+                </span>
+              ))}
+            </span>
+          </div>
+        ))}
+      </pre>
+    </div>
+  );
+}
+
 export function PersonaYaml({ name }: PersonaYamlProps) {
   const { data, isLoading, isError, error } = usePersonaYaml(name);
-
-  const tokenizedLines = useMemo(() => {
-    if (!data) return [];
-    return data.split('\n').map((line, i) => ({
-      lineNumber: i + 1,
-      tokens: tokenizeLine(line),
-    }));
-  }, [data]);
 
   if (isLoading) {
     return (
@@ -95,28 +124,5 @@ export function PersonaYaml({ name }: PersonaYamlProps) {
     );
   }
 
-  return (
-    <div className="niuu:overflow-auto niuu:h-full niuu:p-6" data-testid="persona-yaml">
-      <pre className="niuu:m-0 niuu:font-mono niuu:text-xs niuu:leading-relaxed">
-        {tokenizedLines.map(({ lineNumber, tokens }) => (
-          <div key={lineNumber} className="niuu:flex">
-            <span
-              className="niuu:select-none niuu:text-right niuu:shrink-0 niuu:mr-4 niuu:w-8 niuu:text-text-muted niuu:opacity-50"
-              data-testid="yaml-line-number"
-              aria-hidden="true"
-            >
-              {lineNumber}
-            </span>
-            <span className="niuu:flex-1">
-              {tokens.map((token, j) => (
-                <span key={j} className={TOKEN_CLASSES[token.type]}>
-                  {token.text}
-                </span>
-              ))}
-            </span>
-          </div>
-        ))}
-      </pre>
-    </div>
-  );
+  return <YamlCode text={data ?? ''} />;
 }

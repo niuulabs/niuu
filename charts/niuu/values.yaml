@@ -186,9 +186,12 @@ observatory:
   guild:
     url: ""
 
-# Mímir — shared ODIN-wide instance (always enabled)
+# Mímir — shared ODIN-wide instance. Disabled by default because Mímir has no default
+# store: to enable it set mimir-shared.config.backend.mcpUrl (a gbrain /mcp endpoint) and
+# mimir-shared.config.backend.apiTokenSecret.name (the Secret holding its token). The
+# same two values are required for every Mímir instance below.
 mimir-shared:
-  enabled: true
+  enabled: false
   config:
     name: "shared"
     role: "shared"

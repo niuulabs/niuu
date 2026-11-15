@@ -708,7 +708,6 @@ class CodexWebSocketTransport(CLITransport):
 
         _, shim_env = ensure_codex_tool_shims(
             self.workspace_dir,
-            mcp_servers=self._mcp_servers,
             session_env=self._session_tools.env if self._session_tools else None,
         )
         if shim_env:

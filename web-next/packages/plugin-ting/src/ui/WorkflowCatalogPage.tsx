@@ -1,87 +1,92 @@
 /**
- * WorkflowCatalogPage — /ting/workflows.
+ * WorkflowCatalogPage — /ting/workflows, the one place workflows live.
  *
- * One workflow at a time: what it is, how it runs (stages and the gates that
- * wait for you), a launch card, and the runs recorded for it. The builder is
- * one click away at /ting/workflows/build.
+ * Viewing: the workflow list on the left, the chosen workflow drawn on the
+ * builder canvas (read-only), and a panel to run it with the runs recorded
+ * for it. Edit turns the same canvas into the editor; the list and the run
+ * panel step aside until the person saves or cancels.
  *
  * Owner: plugin-ting.
  */
 
-import { useMemo, useState } from 'react';
-import { Link, useNavigate, useSearch } from '@tanstack/react-router';
+import { useState } from 'react';
+import { useNavigate, useSearch } from '@tanstack/react-router';
 import { useQuery } from '@tanstack/react-query';
-import { useOptionalService, useService } from '@niuulabs/plugin-sdk';
+import type { IBifrostService } from '@niuulabs/plugin-bifrost';
+import { useService } from '@niuulabs/plugin-sdk';
 import {
   LoadingState,
   SidebarResizer,
   cn,
   useResizableSidebar,
-  type RepoRecord,
   type SidebarBounds,
 } from '@niuulabs/ui';
 import { Workflow as WorkflowIcon } from 'lucide-react';
-import type { IDispatchBus, ITrackerBrowserService, TrackerIssue } from '../ports';
 import type { Workflow } from '../domain/workflow';
-import { useCreateWorkflow, useLaunchWorkflow, useWorkflows } from './useWorkflows';
+import type { WorkflowExportFormat } from '../ports';
+import {
+  useCreateWorkflow,
+  useDeleteWorkflow,
+  useExportWorkflow,
+  useLoadWorkflowVersion,
+  useSaveWorkflow,
+  useWorkflowVersions,
+  useWorkflows,
+} from './useWorkflows';
 import { useResearchCampaigns } from './useResearch';
 import { useSpecCampaigns } from './useSpecs';
 import {
-  WorkflowLaunchForm,
-  useWorkflowLaunchDraft,
-  workflowLaunchRequest,
-} from './WorkflowLaunchForm';
-import { WorkflowStrip, gateWaitsForPerson } from './WorkflowStrip';
-import { WorkflowRunsCard } from './WorkflowRunsCard';
-import { DispatchTargetSelect } from './DispatchView';
-import { WorkflowIssuePicker, issueLaunchPrompt } from './WorkflowIssuePicker';
+  WorkflowBuilder,
+  type WorkflowEditorLocation,
+  type WorkflowEditorMode,
+} from './WorkflowBuilder';
+import type { PersonaEntry } from './WorkflowBuilder/LibraryPanel';
+import type { WorkflowStageModelOption } from './WorkflowBuilder/useWorkflowBuilder';
+import { WorkflowRunPanel, humanGateCount, workflowSummary } from './WorkflowRunPanel';
 import { WorkflowImportDialog } from './WorkflowImportDialog';
+import { downloadWorkflowFile } from './workflowFiles';
 import { usePersonasBrowser } from './settings/usePersonasBrowser';
 import { useWorkflowRegistryMounts } from './useWorkflowRegistryMounts';
 import './WorkflowCatalogPage.css';
 
 interface WorkflowCatalogSearch {
   workflow?: string;
+  /** The id older builder links carried; read like `workflow`. */
+  id?: string;
   repo?: string;
   branch?: string;
 }
 
-type RepoCatalogService = {
-  getRepos(): Promise<RepoRecord[]>;
-  getBranches(repoUrl: string): Promise<string[]>;
-};
-
-/** Gates a person has to answer before the run continues. */
-function humanGateCount(workflow: Workflow): number {
-  return workflow.nodes.filter((node) => node.kind === 'gate' && gateWaitsForPerson(node)).length;
+/**
+ * Where the canvas is, for the workflow selected in the list: the version or
+ * child workflow on display, whether it is being edited, and the parents
+ * walked through to reach a child.
+ */
+interface EditorState {
+  anchorId: string;
+  location: WorkflowEditorLocation;
+  ancestry: WorkflowEditorLocation[];
 }
 
 function stageCount(workflow: Workflow): number {
   return workflow.nodes.filter((node) => node.kind === 'stage').length;
 }
 
-function workflowSummary(workflow: Workflow): string {
-  if (workflow.description?.trim()) return workflow.description.trim();
-  const stages = workflow.nodes
-    .filter((node) => node.kind === 'stage')
-    .map((node) => node.label)
-    .filter(Boolean);
-  if (stages.length === 0) return 'No stages yet.';
-  return stages.join(' · ');
+function makeLocation(
+  workflow: Workflow,
+  mode: WorkflowEditorMode = 'view',
+): WorkflowEditorLocation {
+  return { workflow, savedWorkflow: workflow, mode };
 }
 
-function gatesSentence(workflow: Workflow): string {
-  const gates = humanGateCount(workflow);
-  if (gates === 0) return 'It runs start to finish without stopping for you.';
-  if (gates === 1) return 'Stops for you at 1 gate';
-  return `Stops for you at ${gates} gates`;
-}
-
-function workflowHasUnresolvedRequirements(workflow: Workflow): boolean {
-  if ((workflow.requirements ?? []).some((requirement) => !requirement.resolved)) return true;
-  return Object.values(workflow.personaDependencies ?? {}).some(
-    (dependency) => dependency.resolved === false,
-  );
+function formatModelOption(
+  id: string,
+  model?: { name?: string; vendor?: string; provider?: string; tier?: string },
+): string {
+  if (!model) return id;
+  const parts = [model.name || id, model.vendor || model.provider];
+  if (model.tier) parts.push(model.tier);
+  return parts.filter(Boolean).join(' · ');
 }
 
 function WorkflowOptionCard({
@@ -100,6 +105,7 @@ function WorkflowOptionCard({
       type="button"
       data-testid={`catalog-workflow-${workflow.id}`}
       data-selected={selected ? 'true' : undefined}
+      aria-current={selected ? 'page' : undefined}
       onClick={onSelect}
       className={cn(
         'niuu:flex niuu:w-full niuu:items-start niuu:gap-3 niuu:rounded-lg niuu:border niuu:px-3 niuu:py-2.5 niuu:text-left niuu:cursor-pointer niuu:transition-colors',
@@ -147,275 +153,289 @@ export function WorkflowCatalogPage() {
   const sidebar = useResizableSidebar('niuu.work.workflowsSidebarWidth', CATALOG_SIDEBAR);
   const navigate = useNavigate();
   const search = useSearch({ strict: false }) as WorkflowCatalogSearch;
-  const repoCatalog = useService<RepoCatalogService>('niuu.repos');
-  const tracker = useOptionalService<ITrackerBrowserService>('ting.tracker');
-  const dispatchBus = useOptionalService<IDispatchBus>('ting.dispatch');
+  const bifrost = useService<IBifrostService>('bifrost');
   const { data: workflows, isLoading, isError, error } = useWorkflows();
   const runCounts = useWorkflowRunCounts();
-  const createWorkflow = useCreateWorkflow();
-  const launchWorkflow = useLaunchWorkflow();
-  const [issuePickerOpen, setIssuePickerOpen] = useState(false);
-  const [importOpen, setImportOpen] = useState(false);
-  const { data: personas = [] } = usePersonasBrowser();
+  const { data: personas } = usePersonasBrowser();
   const { data: registryMounts = [] } = useWorkflowRegistryMounts();
-
-  const reposQuery = useQuery({
-    queryKey: ['niuu', 'repos'],
-    queryFn: () => repoCatalog.getRepos(),
+  const modelsQuery = useQuery({
+    queryKey: ['bifrost', 'model-catalog'],
+    queryFn: () => bifrost.getModelCatalog(),
   });
-  // Which Forge runs the launch; left on Auto, Ting places it among the targets.
-  const clustersQuery = useQuery({
-    queryKey: ['ting', 'dispatch-clusters'],
-    queryFn: () => dispatchBus!.getClusters(),
-    enabled: dispatchBus !== undefined,
-    retry: false,
-  });
-  const clusters = useMemo(
-    () => (clustersQuery.data ?? []).filter((cluster) => cluster.enabled),
-    [clustersQuery.data],
-  );
-  const [connectionId, setConnectionId] = useState('');
+  const createWorkflow = useCreateWorkflow();
+  const saveMutation = useSaveWorkflow();
+  const deleteMutation = useDeleteWorkflow();
+  const exportMutation = useExportWorkflow();
+  const loadVersionMutation = useLoadWorkflowVersion();
+  const [importOpen, setImportOpen] = useState(false);
+  const [editor, setEditor] = useState<EditorState | null>(null);
 
+  const requestedId = search.workflow ?? search.id;
   const selected =
-    workflows?.find((workflow) => workflow.id === search.workflow) ?? workflows?.[0] ?? null;
-  const draft = useWorkflowLaunchDraft(selected?.id ?? 'none', {
-    repo: search.repo ?? '',
-    branch: search.branch ?? '',
-  });
+    workflows?.find((workflow) => workflow.id === requestedId) ?? workflows?.[0] ?? null;
+  const active = selected && editor?.anchorId === selected.id ? editor : null;
+  const location = active?.location ?? (selected ? makeLocation(selected) : null);
+  const ancestry = active?.ancestry ?? [];
+  const displayed = location?.workflow ?? null;
+  const editing = location?.mode === 'edit';
+  const versionsQuery = useWorkflowVersions(displayed?.id ?? '');
 
-  function selectWorkflow(id: string) {
-    void navigate({ to: '/ting/workflows', search: { ...search, workflow: id } });
+  const workflowPersonas: PersonaEntry[] | undefined = personas?.map((persona) => {
+    const outcomeEvents = persona.outcomeEvents ?? {};
+    const produces = [...new Set([...Object.values(outcomeEvents), persona.producesEvent])].filter(
+      Boolean,
+    );
+    return {
+      id: persona.name,
+      label: persona.name,
+      role: persona.role ?? 'build',
+      produces,
+      outcomeEvents,
+      consumes: persona.consumesEvents ?? [],
+    };
+  });
+  const workflowModels: WorkflowStageModelOption[] = Object.entries(modelsQuery.data ?? {})
+    .map(([id, model]) => ({ id, label: formatModelOption(id, model), vendor: model.vendor }))
+    .sort((left, right) => left.label.localeCompare(right.label));
+
+  /** Changes what the canvas shows for the selected workflow. */
+  function updateEditor(
+    update: (
+      current: Pick<EditorState, 'location' | 'ancestry'>,
+    ) => Pick<EditorState, 'location' | 'ancestry'>,
+  ) {
+    if (!selected || !location) return;
+    const current = { location, ancestry };
+    setEditor({ anchorId: selected.id, ...update(current) });
   }
 
-  function openBuilder(id: string) {
-    void navigate({ to: '/ting/workflows/build', search: { id } });
+  function selectWorkflow(id: string) {
+    setEditor(null);
+    void navigate({ to: '/ting/workflows', search: { ...search, id: undefined, workflow: id } });
   }
 
   function handleNew() {
     createWorkflow.mutate(undefined, {
-      onSuccess: (created) => openBuilder(created.id),
+      onSuccess: (created) => {
+        void navigate({
+          to: '/ting/workflows',
+          search: { ...search, id: undefined, workflow: created.id },
+        });
+        setEditor({ anchorId: created.id, location: makeLocation(created, 'edit'), ancestry: [] });
+      },
     });
   }
 
-  function handleIssuePicked(issue: TrackerIssue) {
-    draft.update({ prompt: issueLaunchPrompt(issue) });
+  function handleDelete(workflow: Workflow) {
+    if (!window.confirm(`Delete "${workflow.name}"?`)) return;
+    deleteMutation.mutate(workflow.id, {
+      onSuccess: () => {
+        setEditor(null);
+        void navigate({
+          to: '/ting/workflows',
+          search: { ...search, id: undefined, workflow: undefined },
+        });
+      },
+    });
   }
 
-  async function handleLaunch() {
-    if (!selected || draft.values.prompt.trim().length === 0) return;
-    draft.update({ error: '' });
-    try {
-      const result = await launchWorkflow.mutateAsync({
-        workflowId: selected.id,
-        request: {
-          ...workflowLaunchRequest(draft.values),
-          ...(connectionId ? { connectionId } : {}),
-        },
-      });
-      draft.reset();
-      await navigate({
-        to: '/ting/review/run/$slug',
-        params: { slug: result.campaignSlug },
-      });
-    } catch (launchError) {
-      draft.update({
-        error: launchError instanceof Error ? launchError.message : 'Launch failed.',
-      });
-    }
+  function handleExport(format: WorkflowExportFormat) {
+    if (!displayed) return;
+    exportMutation.mutate(
+      { id: displayed.id, format, version: displayed.version },
+      { onSuccess: downloadWorkflowFile },
+    );
   }
 
-  const canLaunch =
-    selected !== null &&
-    !workflowHasUnresolvedRequirements(selected) &&
-    draft.values.prompt.trim().length > 0 &&
-    !launchWorkflow.isPending;
+  function handleSelectVersion(version: string) {
+    if (!displayed || version === displayed.version) return;
+    loadVersionMutation.mutate(
+      { id: displayed.id, version },
+      {
+        onSuccess: (workflow) =>
+          updateEditor((current) => ({ ...current, location: makeLocation(workflow) })),
+      },
+    );
+  }
+
+  const editorError =
+    saveMutation.error ??
+    exportMutation.error ??
+    deleteMutation.error ??
+    versionsQuery.error ??
+    loadVersionMutation.error;
 
   return (
-    <div data-testid="workflow-catalog-page" className="ting-workflow-catalog">
-      <aside
-        className="ting-workflow-catalog__sidebar"
-        aria-label="Workflow catalog"
-        style={{ flexBasis: `${sidebar.width}px` }}
-      >
-        <div className="ting-workflow-catalog__heading">
-          <h2>Workflows</h2>
-          <div className="niuu:flex niuu:items-center niuu:gap-2">
-            <button
-              type="button"
-              data-testid="catalog-workflow-import"
-              onClick={() => setImportOpen(true)}
-              className="niuu:rounded-md niuu:border niuu:border-border niuu:bg-bg-elevated niuu:px-2.5 niuu:py-1 niuu:text-xs niuu:text-text-secondary niuu:cursor-pointer niuu:hover:text-text-primary"
-            >
-              Import
-            </button>
-            <button
-              type="button"
-              data-testid="catalog-workflow-new"
-              onClick={handleNew}
-              disabled={createWorkflow.isPending}
-              className="niuu:rounded-md niuu:border niuu:border-border niuu:bg-bg-elevated niuu:px-2.5 niuu:py-1 niuu:text-xs niuu:text-text-secondary niuu:cursor-pointer niuu:hover:text-text-primary niuu:disabled:opacity-50"
-            >
-              New
-            </button>
-          </div>
-        </div>
+    <div
+      data-testid="workflow-catalog-page"
+      data-editing={editing ? 'true' : undefined}
+      className="ting-workflow-catalog"
+    >
+      {editing ? null : (
+        <>
+          <aside
+            className="ting-workflow-catalog__sidebar"
+            aria-label="Workflow catalog"
+            style={{ flexBasis: `${sidebar.width}px` }}
+          >
+            <div className="ting-workflow-catalog__heading">
+              <h2>Workflows</h2>
+              <div className="niuu:flex niuu:items-center niuu:gap-2">
+                <button
+                  type="button"
+                  data-testid="catalog-workflow-import"
+                  onClick={() => setImportOpen(true)}
+                  className="niuu:rounded-md niuu:border niuu:border-border niuu:bg-bg-elevated niuu:px-2.5 niuu:py-1 niuu:text-xs niuu:text-text-secondary niuu:cursor-pointer niuu:hover:text-text-primary"
+                >
+                  Import
+                </button>
+                <button
+                  type="button"
+                  data-testid="catalog-workflow-new"
+                  onClick={handleNew}
+                  disabled={createWorkflow.isPending}
+                  className="niuu:rounded-md niuu:border niuu:border-border niuu:bg-bg-elevated niuu:px-2.5 niuu:py-1 niuu:text-xs niuu:text-text-secondary niuu:cursor-pointer niuu:hover:text-text-primary niuu:disabled:opacity-50"
+                >
+                  New
+                </button>
+              </div>
+            </div>
 
-        <div className="niuu:flex niuu:flex-1 niuu:flex-col niuu:gap-1 niuu:overflow-y-auto niuu:px-3 niuu:pb-3">
-          {isLoading ? <LoadingState label="Loading workflows…" /> : null}
-          {isError ? (
-            <p className="niuu:m-0 niuu:px-2 niuu:text-xs niuu:text-critical" role="alert">
-              {error instanceof Error ? error.message : 'Failed to load workflows.'}
-            </p>
-          ) : null}
-          {!isLoading && !isError && (workflows?.length ?? 0) === 0 ? (
-            <p className="niuu:m-0 niuu:px-2 niuu:text-xs niuu:text-text-muted">
-              No workflows yet. New builds your first one.
-            </p>
-          ) : null}
-          {workflows?.map((workflow) => (
-            <WorkflowOptionCard
-              key={workflow.id}
-              workflow={workflow}
-              selected={workflow.id === selected?.id}
-              runCount={runCounts[workflow.id] ?? 0}
-              onSelect={() => selectWorkflow(workflow.id)}
-            />
-          ))}
-        </div>
-      </aside>
-      <SidebarResizer
-        label="Resize workflow list"
-        className="ting-workflow-catalog__resizer"
-        {...sidebar.resizer}
-      />
+            <div className="niuu:flex niuu:flex-1 niuu:flex-col niuu:gap-1 niuu:overflow-y-auto niuu:px-3 niuu:pb-3">
+              {isLoading ? <LoadingState label="Loading workflows…" /> : null}
+              {isError ? (
+                <p className="niuu:m-0 niuu:px-2 niuu:text-xs niuu:text-critical" role="alert">
+                  {error instanceof Error ? error.message : 'Failed to load workflows.'}
+                </p>
+              ) : null}
+              {createWorkflow.error ? (
+                <p className="niuu:m-0 niuu:px-2 niuu:text-xs niuu:text-critical" role="alert">
+                  Could not create a workflow: {createWorkflow.error.message}
+                </p>
+              ) : null}
+              {!isLoading && !isError && (workflows?.length ?? 0) === 0 ? (
+                <p className="niuu:m-0 niuu:px-2 niuu:text-xs niuu:text-text-muted">
+                  No workflows yet. New builds your first one.
+                </p>
+              ) : null}
+              {workflows?.map((workflow) => (
+                <WorkflowOptionCard
+                  key={workflow.id}
+                  workflow={workflow}
+                  selected={workflow.id === selected?.id}
+                  runCount={runCounts[workflow.id] ?? 0}
+                  onSelect={() => selectWorkflow(workflow.id)}
+                />
+              ))}
+            </div>
+          </aside>
+          <SidebarResizer
+            label="Resize workflow list"
+            className="ting-workflow-catalog__resizer"
+            {...sidebar.resizer}
+          />
+        </>
+      )}
+
+      <main className="ting-workflow-catalog__canvas" aria-label="Workflow">
+        {!isLoading && !isError && !displayed ? (
+          <p className="niuu:m-auto niuu:text-sm niuu:text-text-muted">No workflow selected yet.</p>
+        ) : null}
+        {displayed ? (
+          <WorkflowBuilder
+            key={`${displayed.id}:${displayed.documentRevision ?? displayed.version ?? 'head'}`}
+            initialWorkflow={displayed}
+            initialSavedWorkflow={location?.savedWorkflow}
+            mode={location?.mode}
+            ancestry={ancestry}
+            versions={versionsQuery.data ?? []}
+            versionPending={loadVersionMutation.isPending}
+            onSelectVersion={handleSelectVersion}
+            workflowCatalog={workflows ?? []}
+            onOpenWorkflow={(workflow, current) =>
+              updateEditor((state) => ({
+                location: makeLocation(workflow),
+                ancestry: [...state.ancestry, current],
+              }))
+            }
+            onNavigateAncestor={(index) =>
+              updateEditor((state) => {
+                const parent = state.ancestry[index];
+                if (!parent) return state;
+                return { location: parent, ancestry: state.ancestry.slice(0, index) };
+              })
+            }
+            onDeleteWorkflow={handleDelete}
+            personas={workflowPersonas}
+            models={workflowModels}
+            registryMounts={registryMounts}
+            onSave={(updated) => saveMutation.mutateAsync(updated)}
+            onSaved={(saved) =>
+              updateEditor((state) => ({ ...state, location: makeLocation(saved) }))
+            }
+            savePending={saveMutation.isPending}
+            onEdit={(workflow) =>
+              updateEditor((state) => ({
+                ...state,
+                location: {
+                  workflow,
+                  savedWorkflow:
+                    state.location.workflow.id === workflow.id
+                      ? state.location.savedWorkflow
+                      : workflow,
+                  mode: 'edit',
+                },
+              }))
+            }
+            onCancelEdit={() =>
+              updateEditor((state) => ({
+                ...state,
+                location: makeLocation(state.location.savedWorkflow),
+              }))
+            }
+            onRefreshPersona={(workflow, alias) =>
+              saveMutation.mutate(
+                { ...workflow, refreshPersonas: [alias] },
+                {
+                  onSuccess: (saved) =>
+                    updateEditor((state) => ({
+                      ...state,
+                      location: { ...makeLocation(saved), mode: state.location.mode },
+                    })),
+                },
+              )
+            }
+            onExport={handleExport}
+            exportPending={exportMutation.isPending}
+          />
+        ) : null}
+        {editorError ? (
+          <div
+            role="alert"
+            className="niuu:border-t niuu:border-critical niuu:bg-bg-secondary niuu:px-4 niuu:py-2 niuu:text-xs niuu:text-critical"
+          >
+            {editorError.message}
+          </div>
+        ) : null}
+      </main>
+
+      {!editing && displayed ? (
+        <WorkflowRunPanel
+          key={`${displayed.id}:${displayed.version ?? 'head'}`}
+          workflow={displayed}
+          initialRepo={search.repo}
+          initialBranch={search.branch}
+        />
+      ) : null}
 
       {importOpen ? (
         <WorkflowImportDialog
           open
           workflows={workflows ?? []}
-          personas={personas}
+          personas={personas ?? []}
           registryMounts={registryMounts}
           onClose={() => setImportOpen(false)}
           onImported={(workflow) => selectWorkflow(workflow.id)}
-        />
-      ) : null}
-
-      <main className="ting-workflow-catalog__detail">
-        {!isLoading && !selected ? (
-          <p className="niuu:m-0 niuu:text-sm niuu:text-text-muted">No workflow selected yet.</p>
-        ) : null}
-
-        {selected ? (
-          <div className="niuu:flex niuu:flex-col niuu:gap-5">
-            <header className="ting-workflow-catalog__header">
-              <div className="niuu:min-w-0 niuu:flex-1">
-                <div className="niuu:flex niuu:items-center niuu:gap-2.5">
-                  <h1>{selected.name}</h1>
-                  <span className="ting-workflow-catalog__scope">
-                    {selected.scope === 'system' ? 'shared' : 'yours'}
-                  </span>
-                </div>
-              </div>
-              <Link
-                to="/ting/workflows/build"
-                search={{ id: selected.id }}
-                data-testid="catalog-workflow-edit"
-                className="ting-workflow-catalog__builder"
-              >
-                <WorkflowIcon size={15} aria-hidden="true" /> Open in builder
-              </Link>
-            </header>
-
-            <p className="ting-workflow-catalog__description">{workflowSummary(selected)}</p>
-
-            <section className="ting-workflow-catalog__preview">
-              <div role="heading" aria-level={2} className="ting-workflow-catalog__section-title">
-                How it runs
-              </div>
-              <WorkflowStrip nodes={selected.nodes} edges={selected.edges} />
-            </section>
-
-            <div className="ting-workflow-catalog__panels">
-              <section className="ting-workflow-catalog__launch">
-                <div role="heading" aria-level={2} className="ting-workflow-catalog__section-title">
-                  Run workflow
-                </div>
-                {tracker ? (
-                  <button
-                    type="button"
-                    data-testid="catalog-workflow-pick-issue"
-                    onClick={() => setIssuePickerOpen(true)}
-                    className="ting-workflow-catalog__pick-issue"
-                  >
-                    Use a tracker issue as the prompt
-                  </button>
-                ) : null}
-                {workflowHasUnresolvedRequirements(selected) ? (
-                  <p
-                    data-testid="catalog-workflow-unresolved"
-                    className="niuu:mt-0 niuu:mb-3 niuu:rounded-md niuu:border niuu:border-warning/40 niuu:bg-warning/10 niuu:p-2.5 niuu:text-xs niuu:text-warning"
-                  >
-                    Resolve imported persona dependencies and local bindings in the Builder before
-                    launch.
-                  </p>
-                ) : null}
-                {reposQuery.isFetching ? <LoadingState label="Loading repositories…" /> : null}
-                {reposQuery.error ? (
-                  <p role="alert">Could not load repositories: {reposQuery.error.message}</p>
-                ) : null}
-                <WorkflowLaunchForm
-                  loadBranches={repoCatalog.getBranches}
-                  values={draft.values}
-                  onChange={draft.update}
-                  repos={reposQuery.data ?? []}
-                  showSessionName={false}
-                  promptLabel="What should it do?"
-                  promptRows={3}
-                  onPromptSubmit={() => void handleLaunch()}
-                />
-                {dispatchBus ? (
-                  <div className="niuu:mt-3">
-                    <DispatchTargetSelect
-                      label="Run on"
-                      clusters={clusters}
-                      selectedClusterId={connectionId}
-                      onChange={setConnectionId}
-                      isLoading={clustersQuery.isLoading}
-                    />
-                    {clustersQuery.error ? (
-                      <p role="alert">
-                        Could not load Forge targets: {clustersQuery.error.message}
-                      </p>
-                    ) : null}
-                  </div>
-                ) : null}
-                <div className="niuu:mt-4 niuu:flex niuu:items-center niuu:justify-between niuu:gap-3">
-                  <span className="niuu:text-xs niuu:text-text-muted">
-                    {gatesSentence(selected)}
-                  </span>
-                  <button
-                    type="button"
-                    data-testid="catalog-workflow-launch"
-                    disabled={!canLaunch}
-                    onClick={() => void handleLaunch()}
-                    className="ting-workflow-catalog__launch-button"
-                  >
-                    {launchWorkflow.isPending ? 'Launching…' : 'Launch'}
-                  </button>
-                </div>
-              </section>
-
-              <WorkflowRunsCard workflowId={selected.id} />
-            </div>
-          </div>
-        ) : null}
-      </main>
-
-      {tracker ? (
-        <WorkflowIssuePicker
-          open={issuePickerOpen}
-          onOpenChange={setIssuePickerOpen}
-          onPick={handleIssuePicked}
         />
       ) : null}
     </div>

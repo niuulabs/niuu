@@ -45,17 +45,199 @@
   pointer-events: none;
 }
 
+/* The focused page's name: larger, brighter, under its reticle. */
+.niuu-memory-label--focus {
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--color-text-primary);
+  background: transparent;
+  text-shadow: 0 0 12px color-mix(in srgb, var(--color-brand) 55%, transparent);
+}
+
+.niuu-memory-label--recent {
+  color: var(--color-accent-amber);
+}
+
+/* A relation on a lit link: small cyan monospace, the HUD's annotation voice. */
 .niuu-memory-relation {
   position: absolute;
   top: 0;
   left: 0;
   padding: 0 4px;
-  font-size: var(--text-xs);
-  color: var(--color-text-muted);
-  background: color-mix(in srgb, var(--color-bg-primary) 60%, transparent);
+  font-family: var(--font-mono);
+  font-size: calc(var(--text-xs) * 11 / 12);
+  letter-spacing: 0.02em;
+  color: var(--color-brand);
+  opacity: 0.85;
+  background: color-mix(in srgb, var(--color-memory-background) 55%, transparent);
   border-radius: var(--radius-sm);
   white-space: nowrap;
   pointer-events: none;
+}
+
+.niuu-memory-relation--recent {
+  color: var(--color-accent-amber);
+  opacity: 1;
+}
+
+/* ── Targeting reticle on the focused node: corner brackets + a slow pulse ── */
+
+.niuu-memory-reticle {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 56px;
+  height: 56px;
+  pointer-events: none;
+}
+
+.niuu-memory-reticle-corners,
+.niuu-memory-reticle-corners::before,
+.niuu-memory-reticle-corners::after {
+  position: absolute;
+  inset: 0;
+}
+
+.niuu-memory-reticle-corners {
+  background:
+    linear-gradient(var(--color-brand), var(--color-brand)) top left / 10px 1px no-repeat,
+    linear-gradient(var(--color-brand), var(--color-brand)) top left / 1px 10px no-repeat,
+    linear-gradient(var(--color-brand), var(--color-brand)) top right / 10px 1px no-repeat,
+    linear-gradient(var(--color-brand), var(--color-brand)) top right / 1px 10px no-repeat,
+    linear-gradient(var(--color-brand), var(--color-brand)) bottom left / 10px 1px no-repeat,
+    linear-gradient(var(--color-brand), var(--color-brand)) bottom left / 1px 10px no-repeat,
+    linear-gradient(var(--color-brand), var(--color-brand)) bottom right / 10px 1px no-repeat,
+    linear-gradient(var(--color-brand), var(--color-brand)) bottom right / 1px 10px no-repeat;
+  opacity: 0.8;
+  animation: niuu-memory-reticle-lock 2.4s ease-in-out infinite;
+}
+
+/* Cross-hair ticks at the middle of each side. */
+.niuu-memory-reticle-corners::before {
+  content: '';
+  background:
+    linear-gradient(var(--color-brand), var(--color-brand)) top center / 1px 5px no-repeat,
+    linear-gradient(var(--color-brand), var(--color-brand)) bottom center / 1px 5px no-repeat,
+    linear-gradient(var(--color-brand), var(--color-brand)) center left / 5px 1px no-repeat,
+    linear-gradient(var(--color-brand), var(--color-brand)) center right / 5px 1px no-repeat;
+  opacity: 0.6;
+}
+
+.niuu-memory-reticle-pulse {
+  position: absolute;
+  inset: 14px;
+  border: 1px solid var(--color-brand);
+  border-radius: var(--radius-full);
+  opacity: 0;
+  animation: niuu-memory-reticle-pulse 2.4s ease-out infinite;
+}
+
+@keyframes niuu-memory-reticle-lock {
+  0%,
+  100% {
+    transform: scale(1);
+  }
+  50% {
+    transform: scale(1.08);
+  }
+}
+
+@keyframes niuu-memory-reticle-pulse {
+  0% {
+    transform: scale(0.6);
+    opacity: 0.7;
+  }
+  100% {
+    transform: scale(2.2);
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .niuu-memory-reticle-corners,
+  .niuu-memory-reticle-pulse {
+    animation: none;
+  }
+}
+
+/* ── HUD frame: corner brackets on the viewport, mono readouts on the left edge ── */
+
+.niuu-memory-hud {
+  position: absolute;
+  inset: 10px;
+  pointer-events: none;
+}
+
+.niuu-memory-hud-corner {
+  position: absolute;
+  width: 22px;
+  height: 22px;
+  border-color: color-mix(in srgb, var(--color-brand) 45%, transparent);
+  border-style: solid;
+  border-width: 0;
+}
+
+.niuu-memory-hud-corner--tl {
+  top: 0;
+  left: 0;
+  border-top-width: 1px;
+  border-left-width: 1px;
+}
+
+.niuu-memory-hud-corner--tr {
+  top: 0;
+  right: 0;
+  border-top-width: 1px;
+  border-right-width: 1px;
+}
+
+.niuu-memory-hud-corner--bl {
+  bottom: 0;
+  left: 0;
+  border-bottom-width: 1px;
+  border-left-width: 1px;
+}
+
+.niuu-memory-hud-corner--br {
+  bottom: 0;
+  right: 0;
+  border-bottom-width: 1px;
+  border-right-width: 1px;
+}
+
+.niuu-memory-readout {
+  position: absolute;
+  left: 24px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 0;
+  padding: 0 0 0 10px;
+  border-left: 1px solid color-mix(in srgb, var(--color-brand) 35%, transparent);
+  font-family: var(--font-mono);
+  font-size: calc(var(--text-xs) * 11 / 12);
+  letter-spacing: 0.12em;
+  color: var(--color-text-muted);
+  pointer-events: none;
+}
+
+.niuu-memory-readout dt {
+  margin: 0;
+  color: color-mix(in srgb, var(--color-brand) 70%, transparent);
+}
+
+.niuu-memory-readout dd {
+  margin: 0;
+  color: var(--color-text-secondary);
+  letter-spacing: 0.04em;
+  white-space: pre;
+}
+
+.niuu-memory-readout--recent dt,
+.niuu-memory-readout--recent dd {
+  color: var(--color-accent-amber);
 }
 
 .niuu-memory-badge {

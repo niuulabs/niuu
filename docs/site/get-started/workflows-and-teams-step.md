@@ -20,7 +20,7 @@ You can inspect the workflow catalog directly on the default local host:
 curl --fail --silent --show-error http://127.0.0.1:8080/api/v1/ting/workflows
 ```
 
-Ting requires authentication for this endpoint, including on the local host.
+The workflow engine requires authentication for this endpoint, including on the local host.
 Without an authenticated caller the command returns HTTP 401; use your configured
 identity flow or the logged-in UI. This is not a public health check.
 
@@ -42,7 +42,7 @@ check the transition and fan-in behavior. Add the trigger and completion path
 required by the graph's validation results.
 
 If you start from a saved template, inspect its resource bindings before reuse.
-A template can reference a Mímir registry entry or provider model from another
+A template can reference a Memory registry entry or provider model from another
 deployment. Replace those with real resources available to yours. Resolve the
 editor's validation errors before choosing **Save as…**; verify the saved catalog
 entry contains the graph you intended.
@@ -70,8 +70,8 @@ Inspect the session's actual output and repository diff, then confirm that the
 workflow reaches its completion condition.
 
 The launch dialog does not expose every API field. The API accepts a prompt,
-repository, branch, model/runtime overrides, and context; consult Ting's schema
-when driving launches programmatically. Do not infer these fields from Völundr's
+repository, branch, model/runtime overrides, and context; consult the workflow engine's schema
+when driving launches programmatically. Do not infer these fields from Forge's
 OpenAPI download.
 
 ## Read a blocked run

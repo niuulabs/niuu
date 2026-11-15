@@ -31,7 +31,7 @@ class TingPlugin(ServicePlugin):
     def register_service(self) -> ServiceDefinition:
         return ServiceDefinition.hosted(
             name="ting",
-            description="Autonomous saga coordinator",
+            description="Work: the workflow engine for workflows, runs and the board",
             default_enabled=True,
             depends_on=["postgres", "volundr"],
         )

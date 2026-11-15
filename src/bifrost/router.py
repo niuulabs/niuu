@@ -1,7 +1,8 @@
 """ModelRouter — resolve model names, aliases, and route between providers.
 
 The router maps a model name (possibly an alias) to the correct provider adapter
-and selects/orders candidates according to the configured RoutingStrategy.
+and selects exactly one provider according to the configured RoutingStrategy. A
+request is served by that provider alone: when it fails, the error is the answer.
 """
 
 from __future__ import annotations
@@ -44,7 +45,6 @@ def record_genai_span_attributes(
     *,
     requested_model: str,
     provider: str,
-    failover_attempts: int,
     cache_hit: bool,
     response_model: str = "",
     usage: _UsageLike | None = None,
@@ -56,14 +56,13 @@ def record_genai_span_attributes(
     every inbound completion request already has a FastAPI server span open
     for its whole duration — opening a second, nested span here would just
     duplicate it. This attaches the GenAI attributes (requested model,
-    routed model, chosen provider, failover attempts, cache hit, token usage)
+    routed model, chosen provider, cache hit, token usage)
     to that already-active span instead. A no-op when observability is
     disabled.
     """
     attributes: dict[str, object] = {
         "gen_ai.operation.name": "chat",
         "gen_ai.request.model": requested_model,
-        "bifrost.failover_attempts": failover_attempts,
         "bifrost.cache_hit": cache_hit,
     }
     if provider:
@@ -75,9 +74,6 @@ def record_genai_span_attributes(
         attributes["gen_ai.usage.output_tokens"] = usage.output_tokens
     get_observability().set_attributes(attributes)
 
-
-# HTTP status codes that trigger failover to an alternative provider.
-_FAILOVER_STATUS_CODES = frozenset({429, 500, 502, 503, 504})
 
 # Map provider name → adapter class dotted path.
 _PROVIDER_ADAPTER_MAP: dict[str, str] = {
@@ -148,9 +144,9 @@ def _validate_passthrough(config: BifrostConfig) -> dict[str, NativeProtocol]:
 
     Raises:
         ValueError: A passthrough adapter cannot serve natively; the providers of
-            one model disagree on the path (failover cannot switch protocols
-            mid-request); or the response cache is enabled, which stores only
-            canonical responses.
+            one model disagree on the path (the protocol a request is served in
+            must not depend on which provider is selected); or the response cache is
+            enabled, which stores only canonical responses.
     """
     native = {
         name: protocol
@@ -176,23 +172,23 @@ def _validate_passthrough(config: BifrostConfig) -> dict[str, NativeProtocol]:
             )
             raise ValueError(
                 f"model '{model}' is served by providers on different paths: {described}. "
-                "Failover cannot change protocol mid-request; set the same passthrough on "
-                "every provider of the model"
+                "The protocol a request is served in must not depend on which provider is "
+                "selected; set the same passthrough on every provider of the model"
             )
     return native
 
 
 @dataclass
 class RoutedRequest:
-    """A request after rules, model selection and candidate ordering.
+    """A request after rules, model selection and provider selection.
 
-    ``request`` is the canonical view the policy ran on; ``candidates`` are the
-    (provider, model) pairs to try in order; ``native_protocol`` is the protocol
-    the candidates are served in natively, or ``None`` for the canonical path.
+    ``request`` is the canonical view the policy ran on; ``target`` is the one
+    (provider, model) pair that serves it; ``native_protocol`` is the protocol
+    the target is served in natively, or ``None`` for the canonical path.
     """
 
     request: AnthropicRequest
-    candidates: list[tuple[str, str]]
+    target: tuple[str, str]
     native_protocol: NativeProtocol | None
 
 
@@ -235,7 +231,7 @@ class RouterError(Exception):
 
 
 class ModelRouter:
-    """Routes requests to the right provider using the configured RoutingStrategy.
+    """Routes each request to one provider chosen by the configured RoutingStrategy.
 
     Providers are loaded lazily on first use so that no connections are
     opened until an actual request arrives.
@@ -297,10 +293,11 @@ class ModelRouter:
             return
         self._latency_ewma[provider] = alpha * elapsed + (1 - alpha) * current
 
-    def _build_candidates(self, raw_model: str) -> list[tuple[str, str]]:
-        """Return an ordered list of (provider, model) pairs to try.
+    def _select_target(self, raw_model: str) -> tuple[str, str]:
+        """Return the one (provider, model) pair that serves *raw_model*.
 
-        Order is determined by the configured RoutingStrategy.
+        The configured RoutingStrategy picks the provider; no other provider is
+        tried when it fails.
 
         Raises:
             RouterError: If no provider is configured for the resolved model.
@@ -318,47 +315,40 @@ class ModelRouter:
 
         match strategy:
             case RoutingStrategy.DIRECT:
-                return [(providers[0], model)]
-
-            case RoutingStrategy.FAILOVER:
-                return [(p, model) for p in providers]
+                return providers[0], model
 
             case RoutingStrategy.COST_OPTIMISED:
-                return self._cost_optimised_candidates(providers, model)
+                return self._cheapest_provider(providers), model
 
             case RoutingStrategy.ROUND_ROBIN:
-                return self._round_robin_candidates(providers, model)
+                return self._next_round_robin_provider(providers, model), model
 
             case RoutingStrategy.LATENCY_OPTIMISED:
-                return self._latency_optimised_candidates(providers, model)
+                return self._fastest_provider(providers), model
 
             case _:
                 raise ValueError(f"Unknown routing strategy: {strategy}")
-        raise AssertionError("Unreachable _build_candidates fallthrough")
+        raise AssertionError("Unreachable _select_target fallthrough")
 
-    def _cost_optimised_candidates(self, providers: list[str], model: str) -> list[tuple[str, str]]:
-        """Sort providers cheapest-first by their configured cost_per_token."""
+    def _cheapest_provider(self, providers: list[str]) -> str:
+        """The provider with the lowest configured cost_per_token (config order breaks ties)."""
 
         def cost(name: str) -> float:
             cfg = self._config.providers.get(name)
             return cfg.cost_per_token if cfg else 0.0
 
-        ordered = sorted(providers, key=cost)
-        return [(p, model) for p in ordered]
+        return min(providers, key=cost)
 
-    def _round_robin_candidates(self, providers: list[str], model: str) -> list[tuple[str, str]]:
-        """Rotate the provider list so a different provider leads each request."""
+    def _next_round_robin_provider(self, providers: list[str], model: str) -> str:
+        """The next provider in rotation for *model*; a different one leads each request."""
         idx = self._round_robin_counters.get(model, 0)
         self._round_robin_counters[model] = (idx + 1) % len(providers)
-        rotated = providers[idx:] + providers[:idx]
-        return [(p, model) for p in rotated]
+        return providers[idx]
 
-    def _latency_optimised_candidates(
-        self, providers: list[str], model: str
-    ) -> list[tuple[str, str]]:
-        """Sort providers fastest-first by EWMA latency.
+    def _fastest_provider(self, providers: list[str]) -> str:
+        """The provider with the lowest EWMA latency.
 
-        Providers with no recorded latency are placed after those with data,
+        Providers with no recorded latency rank after those with data,
         preserving config order among unknowns.
         """
 
@@ -368,15 +358,14 @@ class ModelRouter:
                 return (1, 0.0)
             return (0, ewma)
 
-        ordered = sorted(providers, key=latency_key)
-        return [(p, model) for p in ordered]
+        return min(providers, key=latency_key)
 
     async def route(
         self,
         request: AnthropicRequest,
         context: RoutingContext | None = None,
     ) -> RoutedRequest:
-        """Apply rules and model selection, and order the candidates to try.
+        """Apply rules and model selection, and pick the one provider that serves it.
 
         Idempotent: a request that was routed already keeps its route.
 
@@ -386,45 +375,42 @@ class ModelRouter:
                      percentage).  When ``None`` an empty context is used so
                      budget-sensitive rules are skipped silently.
         """
-        if request._routed_candidates is not None:
-            candidates = request._routed_candidates
-            return RoutedRequest(request, candidates, self._native_protocols.get(candidates[0][0]))
+        if request._routed_target is not None:
+            target = request._routed_target
+            return RoutedRequest(request, target, self._native_protocols.get(target[0]))
         ctx = context if context is not None else RoutingContext()
         request = self._honour_model_thinking(await self.prepare(request, ctx))
-        candidates = (
-            [(request._routed_provider, request.model)]
+        target = (
+            (request._routed_provider, request.model)
             if request._routed_provider
-            else await self._select_candidates(request.model)
+            else await self._select_provider_target(request.model)
         )
         # Routed once: rules, selection and round-robin state are not applied
         # a second time when the inbound layer passes this request back in.
         # A copy, so the caller's request object can be routed afresh.
         request = request.model_copy()
         request._routing_prepared = True
-        request._routed_candidates = candidates
+        request._routed_target = target
         if request.uses_context_management():
-            self._require_context_management(candidates)
-        # _validate_passthrough guarantees one model's providers share a path,
-        # so the first candidate speaks for all of them.
-        native_protocol = self._native_protocols.get(candidates[0][0])
-        return RoutedRequest(request, candidates, native_protocol)
+            self._require_context_management(target)
+        return RoutedRequest(request, target, self._native_protocols.get(target[0]))
 
-    def _require_context_management(self, candidates: list[tuple[str, str]]) -> None:
+    def _require_context_management(self, target: tuple[str, str]) -> None:
         """Refuse Anthropic context management for a provider that cannot honour it.
 
         Raises:
-            UnsupportedFeatureError: A candidate's adapter would have to drop the
+            UnsupportedFeatureError: The target's adapter would have to drop the
                 ``context_management`` edits or ``compaction`` blocks.
         """
-        for name, model in candidates:
-            cls = _adapter_class(name, self._config.providers.get(name, ProviderConfig()))
-            if not getattr(cls, "accepts_context_management", False):
-                raise UnsupportedFeatureError(
-                    f"provider '{name}' ({cls.__name__}) serves model '{model}' through a "
-                    "translation that cannot carry Anthropic context_management or "
-                    "compaction blocks; route the model to an Anthropic provider, or have "
-                    "the client compact on its own"
-                )
+        name, model = target
+        cls = _adapter_class(name, self._config.providers.get(name, ProviderConfig()))
+        if not getattr(cls, "accepts_context_management", False):
+            raise UnsupportedFeatureError(
+                f"provider '{name}' ({cls.__name__}) serves model '{model}' through a "
+                "translation that cannot carry Anthropic context_management or "
+                "compaction blocks; route the model to an Anthropic provider, or have "
+                "the client compact on its own"
+            )
 
     async def complete(
         self,
@@ -433,7 +419,7 @@ class ModelRouter:
     ) -> AnthropicResponse:
         """Route a non-streaming completion request on the canonical path.
 
-        Tries candidates in order; moves to the next on retryable errors.
+        The selected provider's error is the answer; no other provider is tried.
         """
         return await self.complete_routed(await self.route(request, context))
 
@@ -444,8 +430,7 @@ class ModelRouter:
     ) -> AsyncIterator[str]:
         """Route a streaming request on the canonical path.
 
-        Failover is attempted on connection or HTTP errors before the first
-        byte is yielded.
+        The selected provider's error is the answer; no other provider is tried.
         """
         routed = await self.route(request, context)
         async for chunk in self.stream_routed(routed):
@@ -458,11 +443,11 @@ class ModelRouter:
         async def call(adapter: ProviderPort, model: str) -> AnthropicResponse:
             return await adapter.complete(request, model)
 
-        result, pname, pmodel, attempt = await self._complete_with_failover(routed, call)
+        result = await self._complete_on_target(routed, call)
+        pname, pmodel = routed.target
         record_genai_span_attributes(
             requested_model=request.model,
             provider=pname,
-            failover_attempts=attempt,
             cache_hit=False,
             response_model=pmodel,
             usage=result.usage,
@@ -472,7 +457,7 @@ class ModelRouter:
     async def stream_routed(self, routed: RoutedRequest) -> AsyncIterator[str]:
         """Stream an already-routed request through the canonical translation."""
         request = routed.request
-        async for chunk in self._stream_with_failover(
+        async for chunk in self._stream_from_target(
             routed, lambda adapter, model: adapter.stream(request, model)
         ):
             yield chunk
@@ -480,16 +465,16 @@ class ModelRouter:
     async def complete_native(
         self, routed: RoutedRequest, payload: dict[str, Any]
     ) -> dict[str, Any]:
-        """Complete *payload* verbatim on the routed providers' native protocol."""
+        """Complete *payload* verbatim on the routed provider's native protocol."""
 
         async def call(adapter: ProviderPort, model: str) -> dict[str, Any]:
             return await self._native(adapter).native_complete(payload, model)
 
-        result, pname, pmodel, attempt = await self._complete_with_failover(routed, call)
+        result = await self._complete_on_target(routed, call)
+        pname, pmodel = routed.target
         record_genai_span_attributes(
             requested_model=routed.request.model,
             provider=pname,
-            failover_attempts=attempt,
             cache_hit=False,
             response_model=pmodel,
         )
@@ -498,21 +483,19 @@ class ModelRouter:
     async def stream_native(
         self, routed: RoutedRequest, payload: dict[str, Any]
     ) -> AsyncIterator[str]:
-        """Stream *payload* verbatim on the routed providers' native protocol."""
-        async for chunk in self._stream_with_failover(
+        """Stream *payload* verbatim on the routed provider's native protocol."""
+        async for chunk in self._stream_from_target(
             routed, lambda adapter, model: self._native(adapter).native_stream(payload, model)
         ):
             yield chunk
 
     def supports_native_compaction(self, routed: RoutedRequest) -> bool:
-        """Whether every routed provider compacts context natively on request."""
-        return all(
-            getattr(
-                _adapter_class(name, self._config.providers.get(name, ProviderConfig())),
-                "supports_native_compaction",
-                False,
-            )
-            for name, _ in routed.candidates
+        """Whether the routed provider compacts context natively on request."""
+        name, _ = routed.target
+        return getattr(
+            _adapter_class(name, self._config.providers.get(name, ProviderConfig())),
+            "supports_native_compaction",
+            False,
         )
 
     @staticmethod
@@ -524,86 +507,69 @@ class ModelRouter:
             )
         return adapter
 
-    async def _complete_with_failover(
+    @staticmethod
+    def _provider_failure(
+        pname: str, pmodel: str, exc: httpx.HTTPStatusError | ProviderError
+    ) -> RouterError:
+        """A RouterError that names the provider and model whose call failed."""
+        if isinstance(exc, httpx.HTTPStatusError):
+            reason = f"HTTP {exc.response.status_code}"
+        else:
+            reason = str(exc)
+        return RouterError(f"Provider '{pname}' failed for model '{pmodel}': {reason}")
+
+    async def _complete_on_target(
         self,
         routed: RoutedRequest,
         call: Callable[[ProviderPort, str], Awaitable[Any]],
-    ) -> tuple[Any, str, str, int]:
-        """Call each candidate in order until one answers.
+    ) -> Any:
+        """Call the routed provider and return its answer.
 
-        Returns the result with the provider, model and attempt that served it.
+        Raises:
+            RouterError: The provider failed. No other provider is tried.
         """
-        last_exc: Exception | None = None
-        for attempt, (pname, pmodel) in enumerate(routed.candidates):
-            try:
-                adapter = self._get_adapter(pname)
-                t0 = time.monotonic()
-                result = await call(adapter, pmodel)
-                self._record_latency(pname, time.monotonic() - t0)
-                return result, pname, pmodel, attempt
-            except httpx.HTTPStatusError as exc:
-                if exc.response.status_code not in _FAILOVER_STATUS_CODES:
-                    raise
-                logger.warning(
-                    "Provider %s returned HTTP %d for model %s; trying next candidate",
-                    pname,
-                    exc.response.status_code,
-                    pmodel,
-                )
-                last_exc = exc
-            except ProviderError as exc:
-                logger.warning("Provider %s error for model %s: %s", pname, pmodel, exc)
-                last_exc = exc
+        pname, pmodel = routed.target
+        try:
+            adapter = self._get_adapter(pname)
+            t0 = time.monotonic()
+            result = await call(adapter, pmodel)
+        except (httpx.HTTPStatusError, ProviderError) as exc:
+            raise self._provider_failure(pname, pmodel, exc) from exc
+        self._record_latency(pname, time.monotonic() - t0)
+        return result
 
-        raise RouterError(
-            f"All providers failed for model '{routed.candidates[0][1]}': {last_exc}"
-        ) from last_exc
-
-    async def _stream_with_failover(
+    async def _stream_from_target(
         self,
         routed: RoutedRequest,
         open_stream: Callable[[ProviderPort, str], AsyncIterator[str]],
     ) -> AsyncIterator[str]:
-        """Stream from each candidate in order until one opens."""
-        last_exc: Exception | None = None
-        for attempt, (pname, pmodel) in enumerate(routed.candidates):
-            try:
-                adapter = self._get_adapter(pname)
-                t0 = time.monotonic()
-                async for chunk in open_stream(adapter, pmodel):
-                    yield chunk
-                self._record_latency(pname, time.monotonic() - t0)
-                # Token usage isn't known at this layer for streaming responses
-                # (it arrives as SSE deltas the inbound layer accumulates), so
-                # only the request/provider/failover attributes are recorded
-                # here; usage is left for the inbound layer to attach.
-                record_genai_span_attributes(
-                    requested_model=routed.request.model,
-                    provider=pname,
-                    failover_attempts=attempt,
-                    cache_hit=False,
-                )
-                return
-            except httpx.HTTPStatusError as exc:
-                if exc.response.status_code not in _FAILOVER_STATUS_CODES:
-                    raise
-                logger.warning(
-                    "Provider %s returned HTTP %d; trying next candidate",
-                    pname,
-                    exc.response.status_code,
-                )
-                last_exc = exc
-            except ProviderError as exc:
-                logger.warning("Provider %s error: %s", pname, exc)
-                last_exc = exc
+        """Stream from the routed provider.
 
-        raise RouterError(
-            f"All providers failed for model '{routed.candidates[0][1]}': {last_exc}"
-        ) from last_exc
+        Raises:
+            RouterError: The provider failed. No other provider is tried.
+        """
+        pname, pmodel = routed.target
+        try:
+            adapter = self._get_adapter(pname)
+            t0 = time.monotonic()
+            async for chunk in open_stream(adapter, pmodel):
+                yield chunk
+        except (httpx.HTTPStatusError, ProviderError) as exc:
+            raise self._provider_failure(pname, pmodel, exc) from exc
+        self._record_latency(pname, time.monotonic() - t0)
+        # Token usage isn't known at this layer for streaming responses
+        # (it arrives as SSE deltas the inbound layer accumulates), so
+        # only the request/provider attributes are recorded here; usage is
+        # left for the inbound layer to attach.
+        record_genai_span_attributes(
+            requested_model=routed.request.model,
+            provider=pname,
+            cache_hit=False,
+        )
 
-    async def _select_candidates(self, model: str) -> list[tuple[str, str]]:
+    async def _select_provider_target(self, model: str) -> tuple[str, str]:
         if self._selection is None or self._selection.configured_targets():
-            return self._build_candidates(model)
+            return self._select_target(model)
         resolved = self._config.resolve_alias(model)
         candidates = [
             (provider, resolved) for provider in self._config.providers_for_model(resolved)
@@ -613,7 +579,7 @@ class ModelRouter:
         selected = await self._selection.select(candidates)
         if selected not in candidates:
             raise RouterError("Selection adapter returned an unconfigured target")
-        return [selected]
+        return selected
 
     def _honour_model_thinking(self, request: AnthropicRequest) -> AnthropicRequest:
         """Drop thinking controls for a model the catalog says has none.
@@ -639,7 +605,7 @@ class ModelRouter:
         stripped._routing_prepared = request._routing_prepared
         stripped._response_format = request._response_format
         stripped._images_stripped = request._images_stripped
-        stripped._routed_candidates = request._routed_candidates
+        stripped._routed_target = request._routed_target
         return stripped
 
     async def prepare(

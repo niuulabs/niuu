@@ -15,6 +15,7 @@ import logging
 from hashlib import sha256
 from typing import Any
 
+from niuu.domain.models import credential_owner
 from volundr.domain.models import IntegrationConnection, IntegrationType
 from volundr.domain.ports import (
     CredentialStorePort,
@@ -186,8 +187,7 @@ class UserIntegrationService:
             return {}
 
         cred_data = await self._credential_store.get_value(
-            "user",
-            user_id,
+            *credential_owner(connection),
             connection.credential_name,
         )
         return cred_data or {}

@@ -148,3 +148,24 @@ def test_actual_role_policy_enforces_delivery_write_ownership(operation, caller,
     )
     assert response.status_code == expected
     assert getattr(repo, operation).await_count == (1 if expected == 200 else 0)
+
+
+@pytest.mark.parametrize("suffix", ["/claim", "/settle"])
+def test_session_credential_without_notify_scope_is_refused(delivery_api, suffix):
+    """Claims and settlements name ``forge:notify``: a session credential that lacks it
+    (a read-only one) is refused before the owner check is even reached."""
+    import jwt
+
+    client, repo, service, path = delivery_api
+    token = jwt.encode(
+        {"sub": "owner", "token_use": "forge_session", "scopes": ["forge:session:read"]},
+        "unused-signature-key-of-sufficient-length",
+        algorithm="HS256",
+    )
+    body = {"payload_hash": "a" * 64, "claim_token": str(uuid4()), "status": "delivered"}
+    response = client.post(path + suffix, json=body, headers={"Authorization": f"Bearer {token}"})
+    assert response.status_code == 403
+    assert "forge:notify" in response.json()["detail"]
+    service._check_access.assert_not_awaited()
+    repo.claim.assert_not_awaited()
+    repo.settle.assert_not_awaited()

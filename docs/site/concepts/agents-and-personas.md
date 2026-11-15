@@ -1,7 +1,7 @@
 # Agents, personas, and residents
 
 An agent runtime executes work using models and tools. A persona describes how
-that agent should approach its work. A resident is an autonomous agent configured to steward
+that agent should approach its work. A resident is an autonomous agent configured to look after
 an environment over time, with a mandate and the authority to pursue it.
 Residents participate in the distributed ecosystem: they can call on peers,
 commission work, and share knowledge and capabilities.
@@ -15,11 +15,11 @@ holding different state and working in different environments.
 
 ## Direct agents and residents
 
-Niuu implements this resident behavior in its Ravn runtime. The same runtime
+Niuu implements this resident behavior in its agent runtime. The same runtime
 can also handle direct conversations and bounded tasks. A resident adds
 long-lived state and autonomous behavior: observing, judging whether action is
 needed, acting within policy, waiting for input, and learning from outcomes.
-The historical term **Valkyrie** still appears in APIs and UI areas.
+The historical name `valkyrie` still appears in APIs and UI areas.
 
 The agent runtime owns these decisions. Niuu supplies identity, deployment, collaboration,
 mesh, and other infrastructure. A running daemon is a process arrangement;

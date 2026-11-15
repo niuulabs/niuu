@@ -26,6 +26,7 @@ from niuu.domain.notifications import (
     MAX_TITLE_CHARS,
     NotificationDraft,
     NotificationKind,
+    NotificationLink,
     NotificationSeverity,
     NotificationSource,
     draft_from_log_payload,
@@ -33,6 +34,7 @@ from niuu.domain.notifications import (
     summarize_reply,
     turn_dedupe_key,
 )
+from niuu.domain.person_question import ASKED_PERSON_KEY, PERSON_QUESTION_ID_KEY
 from volundr.domain.models import (
     ResidentRuntime,
     Session,
@@ -47,7 +49,10 @@ from volundr.domain.notification_ports import (
     NotificationRuleRepository,
 )
 from volundr.domain.notifications import (
+    COPY_OF_KEY,
     INTEGRATION_SINK,
+    MEMORY_PROPOSAL_KEY,
+    PARTICIPANT_INVITATION_KEY,
     RESIDENT_ID_KEY,
     RESIDENT_SESSION_ID_KEY,
     Notification,
@@ -66,10 +71,13 @@ from volundr.domain.notifications import (
     NotificationScope,
     NotificationSinkInfo,
     NotificationValidationError,
+    asks_for_approver,
     attention_push_rule,
 )
 from volundr.domain.ports import EventBroadcaster, IntegrationRepository
 from volundr.domain.services.notification_images import notification_event
+from volundr.domain.services.room_grants import RoomGrantSource
+from volundr.domain.session_participants import SessionParticipant
 from volundr.domain.session_read_state import is_final_output
 
 logger = logging.getLogger(__name__)
@@ -148,6 +156,25 @@ def submit_dedupe_key(session_id: UUID | None, principal_id: str, idempotency_ke
     return f"submit:{session_id or '-'}:{principal_id}:{idempotency_key}"
 
 
+def person_question_dedupe_key(session_id: UUID, question_id: str) -> str:
+    """Dedupe key of the notification for one question put to one person."""
+    return f"person-question:{session_id}:{question_id}"
+
+
+def memory_proposal_dedupe_key(proposal_id: str) -> str:
+    """Dedupe key of the notification for one memory proposal waiting for its deciders."""
+    return f"memory-proposal:{proposal_id}"
+
+
+def participant_invitation_dedupe_key(session_id: UUID, user_id: str, invited_at: datetime) -> str:
+    """Dedupe key of the notification for one invitation of one person to one session.
+
+    Stamped with the grant's own time, so inviting someone again after they declined or
+    were removed is a new invitation and tells them again.
+    """
+    return f"participant-invite:{session_id}:{user_id}:{invited_at.isoformat()}"
+
+
 def _resident_anchor(resident_id: UUID, resident_session_id: UUID | None) -> str:
     return f"{resident_id}:{resident_session_id or 'room'}"
 
@@ -196,6 +223,7 @@ class NotificationService(NotificationRecorder):
         integration_repository: IntegrationRepository | None = None,
         attention_retire_page_size: int = 200,
         guild_instance: GuildInstance | None = None,
+        room_grants: RoomGrantSource | None = None,
     ) -> None:
         if attention_retire_page_size < 1:
             raise ValueError("attention_retire_page_size must be positive")
@@ -218,6 +246,10 @@ class NotificationService(NotificationRecorder):
         self._engine_resolver = engine_resolver
         self._integrations = integration_repository
         self._instance_fields = guild_instance.fields() if guild_instance else {}
+        # Who may answer a session's gates and questions, besides its owner: its approvers
+        # (per-session grants and the roles of its project's members). ``None`` is a
+        # service built without room roles; it tells only the session's owner.
+        self._room_grants = room_grants
 
     # -- Projection --------------------------------------------------------
 
@@ -237,7 +269,7 @@ class NotificationService(NotificationRecorder):
             if entry.session_id != session.id:
                 raise ValueError("Every projected log row must belong to the session")
             candidates.extend(self._candidates_for_entry(context, entry))
-        return await self._record(candidates)
+        return await self._record(candidates, session)
 
     def _candidates_for_entry(
         self, context: _SessionContext, entry: SessionLogEntry
@@ -310,34 +342,251 @@ class NotificationService(NotificationRecorder):
             session_seq=None,
             metadata={"input_kind": kind, "request_id": request_id},
         )
-        created = await self._record([candidate])
+        created = await self._record([candidate], session)
         return created[0] if created else None
 
     async def retire_attention(self, session: Session) -> int:
-        """Acknowledge the owner's unread attention items once the question is settled.
+        """Acknowledge everyone's unread attention items once the question is settled.
 
-        Only items above the owner's read watermark can be unread; each is marked read
-        individually, so the rest of the feed's read state is untouched.
+        The question was put to the session's owner and to every approver who was told
+        (their recipient copies); it is settled for all of them at once. Only items above
+        a person's read watermark can be unread; each is marked read individually, so the
+        rest of the feed's read state is untouched. Returns how many were acknowledged.
         """
         owner = session.owner_id or ""
-        if not owner:
-            return 0
-        after = (await self._repository.get_watermark(owner)).read_through_seq
+        recipients = [owner] if owner else []
+        recipients += [
+            person
+            for person in await self._repository.copy_recipients(session.id)
+            if person != owner
+        ]
+        retired = 0
+        for recipient in recipients:
+            retired += await self._retire_attention_of(recipient, session)
+        return retired
+
+    async def _retire_attention_of(self, recipient: str, session: Session) -> int:
+        after = (await self._repository.get_watermark(recipient)).read_through_seq
         retired = 0
         while True:
             page = await self._repository.list_for_session(
                 session.id, after=after, limit=self._attention_retire_page_size
             )
-            attention = [item for item in page if item.kind == NotificationKind.ATTENTION]
+            attention = [
+                item
+                for item in page
+                if item.kind == NotificationKind.ATTENTION and item.owner_id == recipient
+            ]
             if attention:
-                already = await self._repository.read_ids(owner, [item.id for item in attention])
+                already = await self._repository.read_ids(
+                    recipient, [item.id for item in attention]
+                )
                 for item in attention:
                     if item.id not in already:
-                        await self._repository.mark_read(owner, item.id)
+                        await self._repository.mark_read(recipient, item.id)
                         retired += 1
             if len(page) < self._attention_retire_page_size:
                 return retired
             after = page[-1].seq
+
+    async def ask_person(
+        self,
+        session: Session,
+        *,
+        addressee_id: str,
+        question: str,
+        question_id: str,
+    ) -> tuple[Notification, bool]:
+        """Tell one person a session's agent put a question to them; ``(row, created)``.
+
+        One row, owned by the addressee and by nobody else: the question is theirs, not
+        the project approvers' (the room shows it to everyone). Idempotent per question id,
+        so asking again with the same ``request_id`` neither notifies nor posts twice. It
+        stays open until the question is answered (:meth:`settle_person_question`).
+        """
+        context = replace(self._context(session), owner_id=addressee_id)
+        draft = NotificationDraft(
+            kind=NotificationKind.DECISION,
+            severity=NotificationSeverity.WARNING,
+            title=_bounded(f"{context.session_name} asks you a question", MAX_TITLE_CHARS),
+            body=question,
+            question=True,
+        )
+        candidate = self._candidate(
+            context,
+            dedupe_key=person_question_dedupe_key(session.id, question_id),
+            draft=draft,
+            source=NotificationSource.AGENT,
+            session_seq=None,
+            metadata={PERSON_QUESTION_ID_KEY: question_id, ASKED_PERSON_KEY: addressee_id},
+        )
+        created = await self._record([candidate])
+        if created:
+            return created[0], True
+        existing = await self._repository.get(candidate.id)
+        if existing is None:
+            raise RuntimeError(f"Deduplicated notification {candidate.id} is not readable")
+        return existing, False
+
+    async def settle_person_question(
+        self, session: Session, *, question_id: str, answered_by: str
+    ) -> Notification:
+        """The question was answered: its notification settles (idempotent).
+
+        ``answered_by`` is the name of the person who answered, which may be a person
+        other than the addressee (an approver). Raises
+        :class:`NotificationNotFoundError` when no notification was recorded for the
+        question, which means it was never put to a person through Forge.
+        """
+        row_id = notification_id(person_question_dedupe_key(session.id, question_id))
+        notification = await self._repository.get(row_id)
+        if notification is None:
+            raise NotificationNotFoundError(
+                f"No notification was recorded for question {question_id} of session {session.id}"
+            )
+        if notification.resolved:
+            return notification
+        changed = await self._repository.resolve(
+            notification.owner_id,
+            [notification.id],
+            resolved_at=datetime.now(UTC),
+            resolved_by=None,
+            resolution=f"Answered by {answered_by}.",
+        )
+        for row in changed:
+            await self._broadcast(row)
+        return await self._repository.get(notification.id) or notification
+
+    async def invitation_sent(
+        self, session: Session, participant: SessionParticipant, *, invited_by_name: str
+    ) -> None:
+        """Tell the invitee they were invited into this session's chat.
+
+        One row, owned by the invitee and nobody else (the owner knows; they invited).
+        Idempotent per invitation, and open until the invitation is answered or withdrawn
+        (:meth:`invitation_settled`).
+        """
+        context = replace(self._context(session), owner_id=participant.user_id)
+        draft = NotificationDraft(
+            kind=NotificationKind.DECISION,
+            severity=NotificationSeverity.INFO,
+            title=_bounded(
+                f"{invited_by_name} invited you to {context.session_name}", MAX_TITLE_CHARS
+            ),
+            body=f"You can join this chat as {participant.role.value}.",
+        )
+        candidate = self._candidate(
+            context,
+            dedupe_key=participant_invitation_dedupe_key(
+                session.id, participant.user_id, participant.updated_at
+            ),
+            draft=draft,
+            source=NotificationSource.SYSTEM,
+            session_seq=None,
+            metadata={PARTICIPANT_INVITATION_KEY: participant.role.value},
+        )
+        await self._record([candidate])
+
+    async def invitation_settled(
+        self, session: Session, participant: SessionParticipant, *, resolution: str
+    ) -> None:
+        """The invitation was accepted, declined or withdrawn: its notification settles.
+
+        A missing row is not an error: an invitation made before invitations were
+        announced, or while this host ran without the feed, never had one.
+        """
+        row_id = notification_id(
+            participant_invitation_dedupe_key(
+                session.id, participant.user_id, participant.updated_at
+            )
+        )
+        notification = await self._repository.get(row_id)
+        if notification is None or notification.resolved:
+            return
+        changed = await self._repository.resolve(
+            notification.owner_id,
+            [notification.id],
+            resolved_at=datetime.now(UTC),
+            resolved_by=None,
+            resolution=resolution,
+        )
+        for row in changed:
+            await self._broadcast(row)
+
+    # -- Memory proposals --------------------------------------------------
+
+    async def memory_proposal_waiting(
+        self,
+        session: Session,
+        *,
+        proposal_id: str,
+        project_name: str,
+        title: str,
+        why: str,
+        deciders: list[str],
+        review_url: str,
+    ) -> list[str]:
+        """Tell a project's deciders that a change the session proposed waits for them.
+
+        One item for everyone who may decide it: a row for the first decider and a copy
+        for each other, so deciding settles them all (:meth:`memory_proposal_decided`).
+        Idempotent per proposal. Returns who was told; nobody when the project has no
+        decider to tell (a tenant admin still finds it on the Review page).
+        """
+        people = sorted({person for person in deciders if person})
+        if not people:
+            return []
+        context = replace(self._context(session), owner_id=people[0])
+        body = title if not why else f"{title}\n{why}"
+        draft = NotificationDraft(
+            kind=NotificationKind.DECISION,
+            severity=NotificationSeverity.INFO,
+            title=_bounded(f"{project_name}: a change to its memory waits", MAX_TITLE_CHARS),
+            body=_bounded(body, MAX_BODY_CHARS),
+            links=[NotificationLink(label="Review", url=review_url)],
+        )
+        candidate = self._candidate(
+            context,
+            dedupe_key=memory_proposal_dedupe_key(proposal_id),
+            draft=draft,
+            source=NotificationSource.AGENT,
+            session_seq=None,
+            metadata={MEMORY_PROPOSAL_KEY: proposal_id},
+        )
+        if await self._repository.get(candidate.id) is not None:
+            return people
+        await self._record(
+            [candidate, *(self._copy_for(candidate, person) for person in people[1:])]
+        )
+        return people
+
+    async def memory_proposal_decided(self, proposal_id: str, *, resolution: str) -> int:
+        """The proposal was decided: every decider's row settles (idempotent).
+
+        A proposal that was never announced (the feed was off, the announcement failed,
+        a person promoted it) has no row; that is not an error. Returns rows settled.
+        """
+        notification = await self._repository.get(
+            notification_id(memory_proposal_dedupe_key(proposal_id))
+        )
+        if notification is None:
+            return 0
+        now = datetime.now(UTC)
+        changed: list[Notification] = []
+        if not notification.resolved:
+            changed = await self._repository.resolve(
+                notification.owner_id,
+                [notification.id],
+                resolved_at=now,
+                resolved_by=None,
+                resolution=resolution,
+            )
+        changed += await self._settle_group(
+            [notification], resolved_at=now, resolved_by=None, resolution=resolution
+        )
+        for row in changed:
+            await self._broadcast(row)
+        return len(changed)
 
     # -- Residents ---------------------------------------------------------
     #
@@ -503,7 +752,7 @@ class NotificationService(NotificationRecorder):
             session_seq=None,
             metadata={"submitted_by": principal.user_id},
         )
-        created = await self._record([candidate])
+        created = await self._record([candidate], session)
         if created:
             return created[0], True
         existing = await self._repository.get(candidate.id)
@@ -586,10 +835,18 @@ class NotificationService(NotificationRecorder):
             speak=draft.speak,
         )
 
-    async def _record(self, candidates: list[NotificationCandidate]) -> list[Notification]:
+    async def _record(
+        self, candidates: list[NotificationCandidate], session: Session | None = None
+    ) -> list[Notification]:
+        """Record ``candidates`` (with their recipients' copies); return the originals.
+
+        ``session`` is what the candidates are about; it decides who else is told of an
+        item that asks someone to act. Copies are stored, delivered and broadcast like any
+        row, but callers hear only of the originals they produced.
+        """
         if not candidates:
             return []
-        created = await self._repository.project(candidates)
+        created = await self._repository.project(await self._with_recipients(candidates, session))
         images_pending = False
         for notification in created:
             if (
@@ -603,9 +860,52 @@ class NotificationService(NotificationRecorder):
             await self._broadcast(notification)
         if images_pending:
             self._image_scheduler.wake()
-        for notification in created:
+        originals = [n for n in created if n.copy_of is None]
+        for notification in originals:
             await self._apply_resolutions(notification)
-        return created
+        return originals
+
+    async def _with_recipients(
+        self, candidates: list[NotificationCandidate], session: Session | None
+    ) -> list[NotificationCandidate]:
+        """Add a copy for every approver of ``session`` to each candidate that needs one.
+
+        An item that asks someone to decide or act (:func:`asks_for_approver`) goes to
+        everyone whose role may answer it: the session's owner (the candidate itself) and
+        each approver, whether per-session or through the session's project. Members who
+        may only watch or chat are not told, and a session with no project and no invited
+        approvers tells only its owner.
+
+        Copies are made only for an original this call is about to record: a replay of a
+        producer's retry finds the original already stored and adds nobody who became an
+        approver since, so an item already settled is never raised again.
+        """
+        if session is None or self._room_grants is None:
+            return candidates
+        if not any(asks_for_approver(c.kind, c.metadata) for c in candidates):
+            return candidates
+        approvers = (await self._room_grants.for_session(session)).approver_ids
+        expanded: list[NotificationCandidate] = []
+        for candidate in candidates:
+            expanded.append(candidate)
+            if not asks_for_approver(candidate.kind, candidate.metadata):
+                continue
+            if await self._repository.get(candidate.id) is not None:
+                continue
+            for person in sorted(approvers - {candidate.owner_id, ""}):
+                expanded.append(self._copy_for(candidate, person))
+        return expanded
+
+    @staticmethod
+    def _copy_for(candidate: NotificationCandidate, person: str) -> NotificationCandidate:
+        """``person``'s own row of ``candidate``: same item, theirs to read and settle."""
+        return candidate.model_copy(
+            update={
+                "dedupe_key": f"{candidate.dedupe_key}:copy:{person}",
+                "owner_id": person,
+                "metadata": {**candidate.metadata, COPY_OF_KEY: str(candidate.id)},
+            }
+        )
 
     async def _apply_resolutions(self, notification: Notification) -> None:
         """Resolve what a new notification closes (LEX-1442).
@@ -651,8 +951,47 @@ class NotificationService(NotificationRecorder):
                 resolved_at=now,
                 resolved_by=notification.id,
             )
+        resolved += await self._settle_group(
+            resolved, resolved_at=now, resolved_by=notification.id, resolution=None
+        )
         for row in resolved:
             await self._broadcast(row)
+
+    async def _settle_group(
+        self,
+        touched: list[Notification],
+        *,
+        resolved_at: datetime,
+        resolved_by: UUID | None,
+        resolution: str | None,
+    ) -> list[Notification]:
+        """Resolve everyone's row of each item in ``touched``; return the rows changed.
+
+        An item that went to several people is one item: once it is decided, every
+        recipient's row settles, whichever of them (or Ting, or a later notice) decided
+        it. Rows already resolved keep their first resolution, so this is safe to repeat
+        and finishes a group an earlier, interrupted call left half settled.
+        """
+        originals = {row.copy_of or row.id for row in touched}
+        rows = await self._repository.list_copies(sorted(originals, key=str))
+        for original_id in sorted({row.copy_of for row in touched if row.copy_of}, key=str):
+            original = await self._repository.get(original_id)
+            if original is not None:
+                rows.append(original)
+        open_by_owner: dict[str, list[UUID]] = {}
+        for row in rows:
+            if not row.resolved:
+                open_by_owner.setdefault(row.owner_id, []).append(row.id)
+        changed: list[Notification] = []
+        for owner, ids in open_by_owner.items():
+            changed += await self._repository.resolve(
+                owner,
+                ids,
+                resolved_at=resolved_at,
+                resolved_by=resolved_by,
+                resolution=resolution,
+            )
+        return changed
 
     async def resolve(
         self, principal: Principal, notification_id: UUID, *, resolution: str | None
@@ -660,20 +999,24 @@ class NotificationService(NotificationRecorder):
         """An operator resolves one notification by hand (idempotent)."""
         notification = await self._repository.get(notification_id)
         scope = NotificationScope.for_principal(principal)
-        if notification is None or not scope.allows(notification.owner_id, notification.tenant_id):
+        if notification is None or not scope.allows_notification(notification):
             raise NotificationNotFoundError(f"Notification not found: {notification_id}")
-        if notification.resolved:
-            return notification
-        changed = await self._repository.resolve(
-            notification.owner_id,
-            [notification_id],
-            resolved_at=datetime.now(UTC),
-            resolved_by=None,
-            resolution=resolution,
+        now = datetime.now(UTC)
+        changed: list[Notification] = []
+        if not notification.resolved:
+            changed = await self._repository.resolve(
+                notification.owner_id,
+                [notification_id],
+                resolved_at=now,
+                resolved_by=None,
+                resolution=resolution,
+            )
+        changed += await self._settle_group(
+            [notification], resolved_at=now, resolved_by=None, resolution=resolution
         )
         for row in changed:
             await self._broadcast(row)
-        return changed[0] if changed else await self._repository.get(notification_id)
+        return await self._repository.get(notification_id) or notification
 
     @property
     def instance_fields(self) -> dict[str, str]:
@@ -740,7 +1083,9 @@ class NotificationService(NotificationRecorder):
         The caller has already authorized ``principal`` for the session.
         """
         watermark = await self._repository.get_watermark(principal.user_id)
-        items = await self._repository.list_for_session(session_id, after=after, limit=limit)
+        items = await self._repository.list_for_session(
+            session_id, after=after, limit=limit, reader=principal.user_id
+        )
         return await self._mark_stale(items), watermark.read_through_seq
 
     async def _mark_stale(self, items: list[Notification]) -> list[Notification]:
@@ -818,7 +1163,7 @@ class NotificationService(NotificationRecorder):
     async def mark_read(self, principal: Principal, notification_id: UUID) -> NotificationReadState:
         notification = await self._repository.get(notification_id)
         scope = NotificationScope.for_principal(principal)
-        if notification is None or not scope.allows(notification.owner_id, notification.tenant_id):
+        if notification is None or not scope.allows_notification(notification):
             raise NotificationNotFoundError(f"Notification not found: {notification_id}")
         await self._repository.mark_read(principal.user_id, notification_id)
         return await self.get_read_state(principal)
@@ -832,7 +1177,7 @@ class NotificationService(NotificationRecorder):
         """The stored image bytes, readable by exactly those who may read the item."""
         notification = await self._repository.get(notification_id)
         scope = NotificationScope.for_principal(principal)
-        if notification is None or not scope.allows(notification.owner_id, notification.tenant_id):
+        if notification is None or not scope.allows_notification(notification):
             raise NotificationNotFoundError(f"Notification not found: {notification_id}")
         content = await self._images.get_content(notification_id, variant)
         if content is None:
@@ -844,7 +1189,7 @@ class NotificationService(NotificationRecorder):
     ) -> list[NotificationDelivery]:
         notification = await self._repository.get(notification_id)
         scope = NotificationScope.for_principal(principal)
-        if notification is None or not scope.allows(notification.owner_id, notification.tenant_id):
+        if notification is None or not scope.allows_notification(notification):
             raise NotificationNotFoundError(f"Notification not found: {notification_id}")
         return await self._deliveries.list_for_notification(notification_id)
 

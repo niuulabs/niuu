@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { ChevronDown, Copy, FolderOpen, GitBranch } from 'lucide-react';
 import { ConversationLink, Popover, PopoverContent, PopoverTrigger } from '@niuulabs/ui';
-import type { VolundrSession } from '../models/volundr.model';
+import type { SessionSource, VolundrSession } from '../models/volundr.model';
 import './SessionEnvironment.css';
 
 export function SessionEnvironment({
@@ -9,7 +9,8 @@ export function SessionEnvironment({
   repoUrl,
   repoLabel,
 }: {
-  session: VolundrSession;
+  /** A session whose workspace Forge reported: a shared session has none to show. */
+  session: VolundrSession & { source: SessionSource };
   repoUrl?: string | null;
   repoLabel?: string;
 }) {

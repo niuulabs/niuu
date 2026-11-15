@@ -18,7 +18,7 @@ import {
 import { cn } from '../../../utils/cn';
 import { MarkdownContent } from '../MarkdownContent';
 import { ToolBlock, ToolGroupBlock, groupContentBlocks } from '../ToolBlock';
-import type { ChatMessage, ChatMessagePart } from '../../types';
+import type { ChatMessage, ChatMessagePart, MessageAuthor } from '../../types';
 import type { ContentBlock as ToolContentBlock } from '../ToolBlock';
 import type { CompactionBlock } from '../ToolBlock/groupContentBlocks';
 import { isSubagentTool } from '../ToolBlock/toolFamilies';
@@ -32,11 +32,14 @@ import {
 } from '../TranscriptCards';
 import { engineInk } from '../../utils/engineInk';
 import { useCompactUxChatPrefs } from '../../compactUxPrefs';
+import { authorInitials, authorName, showsAuthor, useChatAuthorship } from '../../authorship';
+import { resolveParticipantColor } from '../../utils/participantColor';
 import './ChatMessages.css';
 import { ToolImageCard } from '../ToolImages';
 import { PresentedFileCard } from '../ConversationResources';
 import {
   isNotificationCardTool,
+  isPersonQuestionTool,
   isPresentedFileTool,
   isForgeSessionTool,
   isSecretRequestTool,
@@ -46,6 +49,12 @@ import { RelayCard } from './RelayCard';
 import { classifyRelayedTurn } from './relayedTurn';
 import { NotificationCard } from '../NotificationCard';
 import { SecretRequestCard } from '../SecretRequestCard';
+import { PersonQuestionCard } from '../PersonQuestionCard';
+import {
+  answeredQuestionId,
+  chatMessageDomId,
+  parsePersonQuestionInput,
+} from '../../personQuestions';
 import {
   isForgeNotifyCall,
   modelLabel,
@@ -182,6 +191,25 @@ export function ModelSpeaker({ model }: { model?: string }) {
   );
 }
 
+/** Who sent a user message: their initials on their colour, then their name. */
+export function UserAuthor({ author }: { author: MessageAuthor }) {
+  return (
+    <span
+      className="niuu-chat-speaker niuu-chat-user-author"
+      style={{ '--niuu-chat-engine': resolveParticipantColor(author.userId) } as CSSProperties}
+      data-testid="user-author"
+    >
+      {/* The initials are drawn, not written, so the author reads as their name alone. */}
+      <i
+        className="niuu-chat-speaker-avatar niuu-chat-user-author-avatar"
+        aria-hidden="true"
+        data-initial={authorInitials(author)}
+      />
+      {authorName(author)}
+    </span>
+  );
+}
+
 /* ── UserMessage ── */
 
 interface UserMessageProps {
@@ -191,6 +219,10 @@ interface UserMessageProps {
 export function UserMessage({ message }: UserMessageProps) {
   const uxPrefs = useCompactUxChatPrefs();
   const links = useSessionLinks();
+  const authorship = useChatAuthorship();
+  // An answer to a question the agent put to a person always names who answered.
+  const answers = answeredQuestionId(message.id);
+  const author = answers || showsAuthor(message, authorship) ? message.author : undefined;
   const delivery = message.delivery;
   const queued = delivery?.state === 'queued';
   // A turn this client sent has a delivery state and is the operator's own, whatever it says.
@@ -214,10 +246,18 @@ export function UserMessage({ message }: UserMessageProps) {
   return (
     <div
       className="niuu-chat-user-wrapper"
+      id={chatMessageDomId(message.id)}
       data-testid="user-message"
       data-timestamp={uxPrefs.timestamp}
       data-delivery={delivery?.state}
+      data-answers-question={answers ?? undefined}
     >
+      {author && <UserAuthor author={author} />}
+      {answers && (
+        <span className="niuu-chat-answer-caption" data-testid="person-answer-caption">
+          Answer to the agent&apos;s question
+        </span>
+      )}
       <div className={cn('niuu-chat-user-bubble', queued && 'niuu-chat-user-bubble--queued')}>
         <div className="niuu-chat-user-text">
           <MarkdownContent content={message.content} />
@@ -506,7 +546,9 @@ function AssistantContentWithTools({
   const hasNotificationCard = grouped.some(
     (item) =>
       item.kind === 'single' &&
-      (isNotificationCardTool(item.block.name) || isSecretRequestTool(item.block.name)),
+      (isNotificationCardTool(item.block.name) ||
+        isSecretRequestTool(item.block.name) ||
+        isPersonQuestionTool(item.block.name)),
   );
 
   if (grouped.length === 0)
@@ -579,11 +621,22 @@ function AssistantContentWithTools({
             return (
               <SecretRequestCard key={`secret-request:${item.block.id}`} request={secretRequest} />
             );
+          const personQuestion = isPersonQuestionTool(item.block.name)
+            ? parsePersonQuestionInput(item.block.input)
+            : null;
+          if (personQuestion)
+            return (
+              <PersonQuestionCard
+                key={`person-question:${personQuestion.questionId}`}
+                question={personQuestion}
+              />
+            );
           // The raw notify call stays a quiet, expandable line beside its notification card,
           // and a notification whose payload cannot be read stays visible as a raw call.
           if (
             isNotificationCardTool(item.block.name) ||
             isSecretRequestTool(item.block.name) ||
+            isPersonQuestionTool(item.block.name) ||
             isForgeNotifyCall(item.block.name, item.block.input)
           )
             return (

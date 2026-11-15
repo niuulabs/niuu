@@ -63,18 +63,11 @@ class RabbitMQEventSink(EventSink):
     # -- EventSink interface --------------------------------------------------
 
     async def emit(self, event: SessionEvent) -> None:
-        if not self._healthy or self._exchange is None:
-            logger.warning("RabbitMQ sink not connected, dropping event %s", event.id)
-            return
+        self._require_connected()
         await self._publish(event)
 
     async def emit_batch(self, events: list[SessionEvent]) -> None:
-        if not self._healthy or self._exchange is None:
-            logger.warning(
-                "RabbitMQ sink not connected, dropping %d events",
-                len(events),
-            )
-            return
+        self._require_connected()
         for event in events:
             await self._publish(event)
 
@@ -100,6 +93,15 @@ class RabbitMQEventSink(EventSink):
         return self._healthy
 
     # -- Internal -------------------------------------------------------------
+
+    def _require_connected(self) -> None:
+        """Refuse to emit on a sink that is not connected, rather than drop the events."""
+        if self._healthy and self._exchange is not None:
+            return
+        raise RuntimeError(
+            "RabbitMQ event sink is not connected (call connect() first, or it was closed); "
+            "events were not published"
+        )
 
     async def _publish(self, event: SessionEvent) -> None:
         import aio_pika

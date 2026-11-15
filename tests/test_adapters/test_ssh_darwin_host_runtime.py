@@ -10,6 +10,7 @@ import hashlib
 import io
 import json
 import os
+import shlex
 import subprocess
 import sys
 import tarfile
@@ -24,17 +25,21 @@ from volundr.adapters.outbound import darwin_guest_programs as programs
 from volundr.adapters.outbound.host_checks import DARWIN_AUDIT_SH
 from volundr.adapters.outbound.host_session_programs import SESSION_BOOT
 from volundr.adapters.outbound.ssh_darwin_host_runtime import (
+    BUNDLE_CACHE,
     BUNDLE_MEDIA_TYPE,
     DarwinSlotLayout,
     SshDarwinHostRuntime,
     _group_mode,
     translate,
 )
+from volundr.adapters.outbound.ssh_guest_access import SshGuestAccess
 from volundr.adapters.outbound.ssh_vm_runtime import SlotNotCleanError
+from volundr.adapters.outbound.vm_slot_supervisor import DETAIL_PREFIX, STAGE_PREFIX
 from volundr.domain.compute import Machine, MachineBootstrap, MachineState
 from volundr.domain.compute_hosts import HostPlatform
 from volundr.domain.guest_access import GuestCommandResult
 from volundr.domain.models import GitSource, PodSpecAdditions, Session, SessionSpec
+from volundr.domain.ports import HostedUnitError
 from volundr.domain.services.host_access_key import generate_host_access_key
 from volundr.domain.session_runtimes import SessionRuntimeKind
 from volundr.domain.vm_runtime import SessionImages
@@ -246,13 +251,50 @@ def test_every_guest_program_parses_and_install_runs_on_apples_python():
     ast.parse(programs.INSTALL, feature_version=(3, 9))
 
 
+PORTS = {"broker_port": 8081, "platform_port": 18080}
+
+
 def test_a_mac_has_only_slot_zero(tmp_path):
-    with pytest.raises(ValueError, match="one session at a time"):
-        DarwinSlotLayout(allocation_id=uuid4(), slot=1, uid_base=61000)
+    with pytest.raises(ValueError, match="one session at a time.*darwin.sharedSlots"):
+        DarwinSlotLayout(allocation_id=uuid4(), slot=1, uid_base=61000, **PORTS)
+
+
+def test_a_mac_with_shared_slots_has_its_own_ports_and_metadata_address_per_slot():
+    zero, two = (
+        DarwinSlotLayout(allocation_id=uuid4(), slot=n, uid_base=61000, shared=True, **PORTS)
+        for n in (0, 2)
+    )
+
+    assert (zero.skuld_port, zero.callback_port, zero.metadata_address) == (
+        8081,
+        18080,
+        "169.254.169.254",
+    )
+    assert (two.name, two.uid, two.label) == ("niuu-slot-2", 61002, "world.niuu.slot.2")
+    assert (two.skuld_port, two.callback_port, two.metadata_address) == (
+        8083,
+        18082,
+        "169.254.169.252",
+    )
+    assert two.data_root == "/var/lib/niuu/slots/2"
+
+
+def test_slots_whose_ports_would_overlap_are_refused():
+    with pytest.raises(ValueError, match="ports overlap"):
+        DarwinSlotLayout(
+            allocation_id=uuid4(),
+            slot=3,
+            uid_base=61000,
+            shared=True,
+            broker_port=8081,
+            platform_port=8083,
+        )
+    with pytest.raises(ValueError, match="at most 254 slots"):
+        DarwinSlotLayout(allocation_id=uuid4(), slot=254, uid_base=61000, shared=True, **PORTS)
 
 
 def test_the_slot_layout_is_where_the_darwin_audit_looks():
-    layout = DarwinSlotLayout(allocation_id=uuid4(), slot=0, uid_base=61000)
+    layout = DarwinSlotLayout(allocation_id=uuid4(), slot=0, uid_base=61000, **PORTS)
 
     assert (layout.name, layout.uid, layout.label) == ("niuu-slot-0", 61000, "world.niuu.slot.0")
     assert layout.key == str(layout.allocation_id)
@@ -267,6 +309,78 @@ def test_the_slot_layout_is_where_the_darwin_audit_looks():
     spec = layout.spec(stop_timeout=30, poll=2)
     assert spec["audit"] == DARWIN_AUDIT_SH
     assert spec["label"] == "world.niuu.slot.0"
+
+
+def _remove_owned(tmp_path, stderr: str, exit_code: int) -> subprocess.CompletedProcess:
+    """``remove_owned`` of the slot programs, against a ``find`` that answers as given."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    fake = bin_dir / "find"
+    fake.write_text(
+        f'#!/bin/sh\nprintf "%s " "$@" > {shlex.quote(str(tmp_path / "args"))}\n'
+        f"printf '%s' {shlex.quote(stderr)} >&2\nexit {exit_code}\n"
+    )
+    fake.chmod(0o755)
+    program = programs._SLOT_COMMON + "\nremove_owned('/private/var/folders', 61000)\n"
+    return subprocess.run(
+        [sys.executable, "-I", "-c", program],
+        capture_output=True,
+        text=True,
+        env={**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}"},
+    )
+
+
+def test_slot_down_keeps_the_folder_skeleton_macos_will_not_let_root_remove(tmp_path):
+    result = _remove_owned(tmp_path, "", 0)
+
+    assert result.returncode == 0, result.stderr
+    assert (tmp_path / "args").read_text().split() == [
+        "/private/var/folders",
+        "-xdev",
+        "-uid",
+        "61000",
+        "!",
+        "-flags",
+        "+sunlnk",
+        "-prune",
+        "-exec",
+        "rm",
+        "-rf",
+        "{}",
+        "+",
+    ]
+
+
+def test_slot_down_passes_over_directories_root_may_not_read(tmp_path):
+    result = _remove_owned(
+        tmp_path,
+        "find: /private/var/folders/zz/x/C/com.apple.a: Operation not permitted\n"
+        "find: /private/var/folders/zz/x/C/com.apple.b: Permission denied\n",
+        1,
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize(
+    ("stderr", "exit_code", "detail"),
+    [
+        ("rm: /private/var/folders/x: Directory not empty\n", 1, "Directory not empty"),
+        ("", 1, "find exited 1"),
+        (
+            "find: /a: Operation not permitted\nfind: /b: No such file or directory\n",
+            1,
+            "No such file or directory",
+        ),
+    ],
+)
+def test_slot_down_fails_on_any_other_find_error(tmp_path, stderr, exit_code, detail):
+    result = _remove_owned(tmp_path, stderr, exit_code)
+
+    assert result.returncode == 1
+    assert f"{STAGE_PREFIX}slot-down" in result.stderr
+    assert detail in result.stderr
+    assert "Operation not permitted" not in result.stderr.split(DETAIL_PREFIX)[-1]
 
 
 # -- translation -------------------------------------------------------------------------------
@@ -383,7 +497,7 @@ async def test_start_fetches_the_bundle_makes_the_slot_then_starts_the_session(m
     assert commands[0].startswith("sudo -n python3 -c ")
     assert commands[0].endswith(f"{BUNDLE} /var/lib/niuu/host-bundles {BUNDLE_MEDIA_TYPE}")
     assert commands[1] == runtime._python(
-        programs.PRUNE, "/var/lib/niuu/host-bundles", DIGEST, "world.niuu.slot.0"
+        programs.PRUNE, "/var/lib/niuu/host-bundles", DIGEST, "world.niuu.slot"
     )
     assert commands[2] == runtime._python(programs.SLOT, "up")
     slot = json.loads(calls[2].kwargs["data"])
@@ -449,7 +563,7 @@ async def test_start_fetches_the_bundle_makes_the_slot_then_starts_the_session(m
 
 async def test_mounts_at_fixed_paths_become_links_of_the_session_or_of_root(tmp_path):
     runtime = _runtime(tmp_path)
-    layout = DarwinSlotLayout(allocation_id=uuid4(), slot=0, uid_base=61000)
+    layout = DarwinSlotLayout(allocation_id=uuid4(), slot=0, uid_base=61000, **PORTS)
     payload = {
         "environment": {"TOKEN": "/var/run/secrets/niuu-workload/token"},
         "secret_mounts": [
@@ -486,7 +600,10 @@ async def test_mounts_at_fixed_paths_become_links_of_the_session_or_of_root(tmp_
 
 async def test_the_guest_agents_configuration_names_the_macs_places(mac):
     runtime, bootstrap, lease = mac
-    config = {"token_volumes": [{"directory": "/run/niuu/session/tokens/sa"}]}
+    config = {
+        "listen": {"address": "169.254.169.254", "port": 80},
+        "token_volumes": [{"directory": "/run/niuu/session/tokens/sa"}],
+    }
 
     await runtime.write_files(
         lease,
@@ -504,7 +621,8 @@ async def test_the_guest_agents_configuration_names_the_macs_places(mac):
     items = json.loads(_calls(runtime)[-1].kwargs["data"])
     assert items[0]["directory"] == "/var/run/niuu/host-sessions/0/guest-agent"
     assert json.loads(items[0]["content"]) == {
-        "token_volumes": [{"directory": "/var/run/niuu/slots/0/run/tokens/sa"}]
+        "listen": {"address": "169.254.169.254", "port": 80},
+        "token_volumes": [{"directory": "/var/run/niuu/slots/0/run/tokens/sa"}],
     }
     # A credential's own content is never rewritten.
     assert items[1] == {
@@ -531,6 +649,8 @@ async def test_stop_ends_the_jobs_archives_then_removes_the_slot_verified(mac):
 
     calls = _calls(runtime)
     commands = [_program(call) for call in calls]
+    assert BUNDLE_MEDIA_TYPE in commands[0]
+    calls, commands = calls[1:], commands[1:]
     assert commands[0] == runtime._python(
         programs.STOP,
         json.dumps(
@@ -550,6 +670,33 @@ async def test_stop_ends_the_jobs_archives_then_removes_the_slot_verified(mac):
     runtime._guest_access.close_tunnel.assert_awaited_once_with(str(lease.id))
 
 
+async def test_a_stop_fetches_the_bundle_before_running_its_programs(mac):
+    """A start that failed before its bundle arrived must still be stoppable."""
+    runtime, bootstrap, lease = mac
+
+    await runtime.stop(lease, bootstrap)
+
+    commands = [_program(call) for call in _calls(runtime)]
+    install = SshGuestAccess.python_command(
+        programs.INSTALL, runtime._image, BUNDLE_CACHE, BUNDLE_MEDIA_TYPE
+    )
+    # The install runs under the Mac's own python3; what follows needs the bundle's.
+    assert commands[0] == install
+    assert runtime._python_binary not in commands[0]
+    assert runtime._python_binary in commands[1]
+
+
+async def test_a_stop_whose_bundle_cannot_be_fetched_raises_and_leaves_the_slot(mac):
+    runtime, bootstrap, lease = mac
+    runtime._guest_access.execute = AsyncMock(side_effect=RuntimeError("HTTP 404"))
+
+    with pytest.raises(RuntimeError, match="HTTP 404"):
+        await runtime.stop(lease, bootstrap)
+
+    assert len(_calls(runtime)) == 1
+    runtime._guest_access.close_tunnel.assert_not_awaited()
+
+
 async def test_a_stop_before_storage_was_prepared_keeps_the_previous_archive(mac):
     runtime, bootstrap, lease = mac
     runtime._guest_access.execute = AsyncMock(return_value=GuestCommandResult(42, b""))
@@ -562,6 +709,147 @@ async def test_a_stop_before_storage_was_prepared_keeps_the_previous_archive(mac
     assert not any(" tar " in command for command in commands)
     assert commands[-1] == runtime._python(programs.SLOT, "down")
     delivery.stop.assert_awaited_once_with(lease, bootstrap)
+
+
+# -- shared slots ------------------------------------------------------------------------------
+
+
+@pytest.fixture
+def shared_mac(tmp_path):
+    runtime = _runtime(tmp_path, shared_slots=True)
+    allocation = uuid4()
+    session = _session()
+    bootstrap = runtime.bootstrap(session, SPEC, MachineBootstrap())
+    lease = SlotView(allocation, session.id, 1, _machine(allocation))
+    runtime._guest_access.execute = AsyncMock(
+        return_value=GuestCommandResult(0, json.dumps(DESCRIPTION).encode())
+    )
+    runtime._guest_access.open_tunnel = AsyncMock()
+    runtime._guest_access.close_tunnel = AsyncMock()
+    return runtime, bootstrap, lease
+
+
+def test_a_mac_runs_one_slot_unless_the_operator_shares_them(tmp_path):
+    assert not _runtime(tmp_path).supports_slots
+    assert _runtime(tmp_path).slot_platforms == frozenset()
+    shared = _runtime(tmp_path, shared_slots=True)
+    assert shared.supports_slots
+    assert shared.slot_platforms == {HostPlatform.DARWIN}
+
+
+def test_shared_slots_need_a_delivery_each_slot_receives_its_own_credentials_from(tmp_path):
+    runtime = _runtime(tmp_path, shared_slots=True)
+    runtime._credential_delivery = type("OneIdentity", (), {"serves_slots": False})()
+    assert not runtime.supports_slots
+    runtime._credential_delivery = type("PerSlot", (), {"serves_slots": True})()
+    assert runtime.supports_slots
+
+
+async def test_a_shared_slot_starts_skuld_on_its_own_ports_with_no_fixed_path_links(shared_mac):
+    runtime, bootstrap, lease = shared_mac
+
+    await runtime.start(lease, bootstrap)
+
+    calls = _calls(runtime)
+    slot = json.loads(calls[2].kwargs["data"])
+    assert (slot["name"], slot["uid"], slot["links"]) == ("niuu-slot-1", 61001, [])
+    placed = json.loads(calls[-1].kwargs["data"])
+    environment = placed["environment"]
+    assert environment["SKULD__PORT"] == "8082"
+    assert environment["SKULD__VOLUNDR_API_URL"] == "http://127.0.0.1:18081"
+    assert placed["darwin"]["label"] == "world.niuu.slot.1"
+    assert placed["darwin"]["links"] == []
+
+
+def test_a_shared_slots_tunnel_reaches_its_own_broker_and_callback_ports(shared_mac):
+    runtime, _, lease = shared_mac
+
+    assert runtime._tunnel_ends(runtime._layout(lease)) == {
+        "remote_port": 8082,
+        "reverse_bind_host": "127.0.0.1",
+        "reverse_port": 18081,
+        "key": f"{lease.id}-slot-1",
+    }
+
+
+async def test_a_shared_slots_tunnel_is_opened_to_its_own_broker(shared_mac):
+    runtime, bootstrap, lease = shared_mac
+
+    await runtime.target(lease, bootstrap)
+
+    kwargs = runtime._guest_access.open_tunnel.await_args.kwargs
+    assert (kwargs["remote_port"], kwargs["reverse_port"]) == (8082, 18081)
+
+
+async def test_a_shared_slots_guest_agent_listens_on_the_slots_own_address(shared_mac):
+    runtime, bootstrap, lease = shared_mac
+    config = {
+        "metadata_url": "https://forge.example/api/v1/internal/compute/metadata/credentials",
+        "slot": 1,
+        "listen": {"address": "169.254.169.254", "port": 80},
+        "token_volumes": [{"directory": "/etc/niuu/guest-agent/tokens"}],
+    }
+
+    await runtime.write_files(
+        lease,
+        bootstrap,
+        [
+            {
+                "directory": "/etc/niuu/guest-agent",
+                "name": "config.json",
+                "content": json.dumps(config),
+            },
+            {"directory": "/etc/niuu/guest-agent", "name": "notes", "content": "not json"},
+        ],
+    )
+
+    data = json.loads(_calls(runtime)[0].kwargs["data"])
+    written = json.loads(data[0]["content"]) if isinstance(data, list) else None
+    assert written is not None
+    assert written["listen"] == {"address": "169.254.169.253", "port": 80}
+    assert written["token_volumes"][0]["directory"].startswith("/var/run/niuu/host-sessions/1/")
+    # Any other file of the agent's is only moved to the Mac's places.
+    assert data[1]["content"] == "not json"
+
+
+def test_a_shared_slot_removes_only_its_own_metadata_address(shared_mac):
+    runtime, bootstrap, lease = shared_mac
+    layout = runtime._layout(lease)
+
+    spec = runtime._slot_spec(layout, {"metadata_address": "169.254.169.254"})
+
+    assert spec["metadata_address"] == "169.254.169.253"
+    assert runtime._slot_spec(layout, {})["metadata_address"] is None
+
+
+def test_a_workflow_runs_unit_is_refused_on_a_mac_with_shared_slots(shared_mac):
+    runtime, _, _ = shared_mac
+
+    with pytest.raises(HostedUnitError, match="shared slots"):
+        runtime._add_members(_session(), {}, [{"id": str(uuid4()), "port": 8090}])
+
+
+def test_the_bundle_is_pruned_only_while_no_slot_runs_a_session(tmp_path):
+    cache = tmp_path / "bundles"
+    (cache / "old").mkdir(parents=True)
+    (cache / "current").mkdir()
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    launchctl = bin_dir / "launchctl"
+
+    def prune(listing: str) -> list[str]:
+        launchctl.write_text(f"#!/bin/sh\nprintf '%s' {shlex.quote(listing)}\n")
+        launchctl.chmod(0o755)
+        subprocess.run(
+            [sys.executable, "-I", "-c", programs.PRUNE, str(cache), "current", "world.niuu.slot"],
+            check=True,
+            env={**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}"},
+        )
+        return sorted(entry.name for entry in cache.iterdir())
+
+    header = "PID\tStatus\tLabel\n"
+    assert prune(header + "17\t0\tworld.niuu.slot.3\n") == ["current", "old"]
+    assert prune(header + "17\t0\tworld.niuu.slotted\n") == ["current"]
 
 
 # -- the install program, against a fake registry ----------------------------------------------

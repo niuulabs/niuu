@@ -13,9 +13,10 @@ import type {
   IPersonaStore,
   PersonaSummary,
   PersonaDetail,
-  PersonaCreateRequest,
+  PersonaDocument,
   PersonaForkRequest,
   PersonaFilter,
+  PersonaYamlCheck,
 } from '../ports';
 
 // ---------------------------------------------------------------------------
@@ -30,6 +31,7 @@ interface RawPersonaLLM {
 interface RawPersonaProduces {
   event_type: string;
   schema_def: Record<string, unknown>;
+  when?: Record<string, string>;
 }
 
 interface RawPersonaConsumesEvent {
@@ -110,6 +112,7 @@ function toDetail(raw: RawPersonaDetail): PersonaDetail {
     produces: {
       eventType: raw.produces.event_type,
       schemaDef: raw.produces.schema_def as PersonaDetail['produces']['schemaDef'],
+      when: raw.produces.when ?? {},
     },
     consumes: {
       events: raw.consumes.events.map((e) => ({
@@ -128,30 +131,6 @@ function toDetail(raw: RawPersonaDetail): PersonaDetail {
       : undefined,
     yamlSource: raw.yaml_source,
     overrideSource: raw.override_source,
-  };
-}
-
-function toRequestBody(req: PersonaCreateRequest): Record<string, unknown> {
-  return {
-    name: req.name,
-    role: req.role,
-    letter: req.letter,
-    color: req.color,
-    summary: req.summary,
-    description: req.description,
-    system_prompt_template: req.systemPromptTemplate,
-    permission_mode: req.permissionMode,
-    iteration_budget: req.iterationBudget,
-    llm_thinking_enabled: req.llmThinkingEnabled,
-    llm_max_tokens: req.llmMaxTokens,
-    llm_temperature: req.llmTemperature,
-    produces_event_type: req.producesEventType,
-    produces_schema: req.producesSchema,
-    consumes_events: req.consumesEvents,
-    consumes_schema: req.consumesSchema,
-    fan_in_strategy: req.fanInStrategy,
-    fan_in_params: req.fanInParams,
-    mimir_write_routing: req.mimirWriteRouting,
   };
 }
 
@@ -180,16 +159,25 @@ export function buildRavnPersonaAdapter(client: ApiClient): IPersonaStore {
       return client.get<string>(`/personas/${encodeURIComponent(name)}/yaml`);
     },
 
-    async createPersona(req: PersonaCreateRequest) {
-      const raw = await client.post<RawPersonaDetail>('/personas', toRequestBody(req));
-      return toDetail(raw);
+    async getPersonaDocument(name: string) {
+      const raw = await client.get<{ definition: PersonaDocument }>(
+        `/personas/${encodeURIComponent(name)}/portable`,
+      );
+      return raw.definition;
     },
 
-    async updatePersona(name: string, req: PersonaCreateRequest) {
-      const raw = await client.put<RawPersonaDetail>(
-        `/personas/${encodeURIComponent(name)}`,
-        toRequestBody(req),
-      );
+    async checkPersonaYaml(yaml: string) {
+      return client.post<PersonaYamlCheck>('/personas/yaml/check', { yaml });
+    },
+
+    async createPersonaFromYaml(yaml: string) {
+      return toDetail(await client.post<RawPersonaDetail>('/personas/yaml', { yaml }));
+    },
+
+    async replacePersonaYaml(name: string, yaml: string) {
+      const raw = await client.put<RawPersonaDetail>(`/personas/${encodeURIComponent(name)}/yaml`, {
+        yaml,
+      });
       return toDetail(raw);
     },
 

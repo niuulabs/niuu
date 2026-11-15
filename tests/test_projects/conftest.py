@@ -9,17 +9,121 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from tests.conftest import make_session_participant_service
+from identity.models import TenantMembership, User, UserStatus
+from tests.conftest import InMemoryUserRepository, make_session_participant_service
 from volundr.adapters.outbound.contributors.prompt import PromptContributor
-from volundr.domain.project_ports import ProjectConflictError, ProjectRepository, ProjectWorkspace
-from volundr.domain.projects import ForgeProject
+from volundr.domain.project_ports import (
+    LastOwnerError,
+    ProjectConflictError,
+    ProjectMemberRepository,
+    ProjectRepository,
+    ProjectWorkspace,
+)
+from volundr.domain.projects import (
+    ForgeProject,
+    ProjectMember,
+    ProjectMemberCandidate,
+    ProjectRole,
+)
 from volundr.domain.services.forge import ForgeService
 from volundr.domain.services.projects import ProjectService
 from volundr.domain.services.session import SessionService
 
 
-class MemoryProjects(ProjectRepository):
+class MemoryUsers(InMemoryUserRepository):
+    """Users with real tenant memberships, for the tenant checks on adding members."""
+
     def __init__(self):
+        super().__init__()
+        self.memberships: dict[str, list[TenantMembership]] = {}
+
+    def seed(self, user_id, tenant_id, *, status=UserStatus.ACTIVE, name="", email=""):
+        self._users[user_id] = User(
+            id=user_id, email=email or f"{user_id}@x.test", display_name=name, status=status
+        )
+        self.memberships.setdefault(user_id, []).append(
+            TenantMembership(user_id=user_id, tenant_id=tenant_id)
+        )
+
+    async def get_memberships(self, user_id):
+        return self.memberships.get(user_id, [])
+
+
+class MemoryProjectMembers(ProjectMemberRepository):
+    def __init__(self, users=None):
+        self.rows: dict[tuple, ProjectMember] = {}
+        self.users = users
+
+    def seed_owner(self, project):
+        member = ProjectMember(
+            project_id=project.id,
+            user_id=project.owner_id,
+            tenant_id=project.tenant_id,
+            role=ProjectRole.OWNER,
+            added_by=project.owner_id,
+        )
+        self.rows.setdefault((project.id, project.owner_id), member)
+
+    async def list_for_project(self, project_id):
+        return [m for (pid, _), m in self.rows.items() if pid == project_id]
+
+    async def list_for_user(self, user_id, tenant_id):
+        return [
+            m for (_, uid), m in self.rows.items() if uid == user_id and m.tenant_id == tenant_id
+        ]
+
+    async def get(self, project_id, user_id):
+        return self.rows.get((project_id, user_id))
+
+    async def add(self, member):
+        key = (member.project_id, member.user_id)
+        if key in self.rows:
+            raise ProjectConflictError("already a member")
+        self.rows[key] = member
+        return member
+
+    def _owners(self, project_id):
+        return {u for (p, u), m in self.rows.items() if p == project_id and m.role == "owner"}
+
+    async def update(self, project_id, user_id, *, role=None, expertise=None, skills=None):
+        current = self.rows.get((project_id, user_id))
+        if current is None:
+            return None
+        if role is not None and role != ProjectRole.OWNER and self._owners(project_id) == {user_id}:
+            raise LastOwnerError("last owner")
+        changes = {
+            k: v
+            for k, v in {"role": role, "expertise": expertise, "skills": skills}.items()
+            if v is not None
+        }
+        self.rows[(project_id, user_id)] = current.model_copy(update=changes)
+        return self.rows[(project_id, user_id)]
+
+    async def remove(self, project_id, user_id):
+        if self._owners(project_id) == {user_id}:
+            raise LastOwnerError("last owner")
+        return self.rows.pop((project_id, user_id), None) is not None
+
+    async def candidates(self, project_id, tenant_id, query):
+        found = []
+        for user in await self.users.list():
+            in_tenant = any(m.tenant_id == tenant_id for m in self.users.memberships[user.id])
+            if user.status != UserStatus.ACTIVE or not in_tenant:
+                continue
+            if (project_id, user.id) in self.rows:
+                continue
+            if query.lower() in f"{user.display_name} {user.email}".lower():
+                found.append(
+                    ProjectMemberCandidate(
+                        user_id=user.id, display_name=user.display_name, email=user.email
+                    )
+                )
+        return found
+
+
+class MemoryProjects(ProjectRepository):
+    def __init__(self, members=None):
+        self.members = members
         self.projects = {}
         self.handoffs = {}
         self.dispatches = {}
@@ -47,8 +151,15 @@ class MemoryProjects(ProjectRepository):
     async def get(self, project_id):
         return self.projects.get(project_id)
 
+    async def list_member_projects(self, user_id, tenant_id):
+        ids = {m.project_id for m in await self.members.list_for_user(user_id, tenant_id)}
+        return [p for p in self.projects.values() if p.id in ids]
+
     async def register(self, project):
-        return self.projects.setdefault(project.id, project)
+        stored = self.projects.setdefault(project.id, project)
+        if stored is project and project.owner_id and self.members is not None:
+            self.members.seed_owner(project)
+        return stored
 
     async def update(self, project, expected_revision):
         if self.projects[project.id].revision != expected_revision:
@@ -80,7 +191,9 @@ class MemoryProjects(ProjectRepository):
 
 @pytest.fixture
 async def rig(repository, pod_manager):
-    project_repo = MemoryProjects()
+    users = MemoryUsers()
+    members = MemoryProjectMembers(users)
+    project_repo = MemoryProjects(members)
     workspace = AsyncMock(spec=ProjectWorkspace)
     workspace.context.return_value = ("Keep project decisions in Git.", "revision-a")
     sessions = SessionService(
@@ -90,7 +203,9 @@ async def rig(repository, pod_manager):
         provisioning_initial_delay=0,
         contributors=[PromptContributor()],
     )
-    service = ProjectService(project_repo, workspace, sessions, instance_id="thor")
+    service = ProjectService(
+        project_repo, workspace, sessions, instance_id="thor", members=members, users=users
+    )
     project = await service.register(
         ForgeProject(
             slug="lexi",

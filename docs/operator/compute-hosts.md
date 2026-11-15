@@ -101,7 +101,6 @@ section:
 ```yaml
 compute:
   pool_id: valhalla-hosts
-  max_machines: 32                # at least the number of hosts you will register
   reuse_policy: reuse             # slots are cleaned and reused in place
   provider_binding: valhalla-hosts
   provider:
@@ -148,6 +147,9 @@ Startup fails if any of these hold:
 
 - `compute.hosts` is set without the registered-host provider, or the reverse.
 - There is no execution catalog.
+- `compute.max_machines` is set. A pool of registered hosts has no maximum: it is the
+  hosts that joined, and every one of them can be claimed. (A maximum an earlier release
+  stored in the pool's policy is dropped at startup, with one warning.)
 - A configured runtime needs a root daemon on the machine. `SshContainerVmRuntime`
   and the OpenShell runtimes run under root Docker, so registered hosts use the host
   runtime, which runs no daemon.
@@ -171,7 +173,7 @@ Any other combination fails at startup and names the fix.
 `~/.niuu/config.yaml`. This machine keeps running its own sessions. The CLI wraps the configured pod
 manager in `PlacementPodManager` as `local` and adds a `VmPodManager` on the
 registered-host pool as `pool`. It also renders the `compute:` section above with
-these defaults: pool `local-hosts`, profile `host`, `max_hosts: 16`,
+these defaults: pool `local-hosts`, profile `host`,
 `reuse_policy: reuse`, one `direct-ssh` connector (`allowed_sources: []`),
 `reserved_cpu: 2`, `reserved_memory_mib: 4096`, `min_free_disk_mib: 20480`, and the
 pairing key file under `~/.niuu`, and Forge's host data (its key, the hosts' pins,
@@ -259,6 +261,22 @@ compute:
 - Open the listener's port (8443 by default) to your hosts in the Forge machine's
   firewall. The listener serves only `join.sh` and `join`: no UI, no API docs, no
   admin route.
+
+## Who sees the hosts
+
+Anyone who can reach a Forge can read its host list: on the Guild page the Forge's
+card carries a **Hosts · 2 · 5 free** chip (host count, free slots) that opens the
+Hosts page, shown to everyone the Forge node is visible to (`system`, `tenant` or
+`user` scope, as set on the node). The Forge itself only authenticates the caller;
+who may address the node is Guild's visibility. A person who reaches the Forge's own
+URL directly, bypassing Guild, can read the list too, so a `user`-scoped node is
+not a secret about its Forge.
+
+Only `volundr:admin` changes anything (add, drain, resume, re-prepare, check,
+capacity, tags, remove, revoke). The list answers `can_manage`; when it is false the
+page is read-only and Forge leaves the pairing codes, connector and runtime choices,
+host addresses, key fingerprints, audit findings, capacity advice and session ids out
+of the answer.
 
 ## Add a host
 
@@ -631,9 +649,31 @@ a rolling update or no host key Secret.
 ## Macs as hosts
 
 A Mac (Apple silicon; proven on macOS 26) joins with the same line as a Linux host and
-always runs **one session at a time**: macOS has no network namespaces or cgroups, so
-the only boundary is a user. Design: "macOS hosts" in
-[bm-compute-hosts.md](../design/bm-compute-hosts.md).
+runs **one session at a time** by default: macOS has no network namespaces or cgroups,
+so the only boundary is a user. With shared slots (below) it runs several. Design:
+"macOS hosts" in [bm-compute-hosts.md](../design/bm-compute-hosts.md).
+
+**Shared slots.** `computeHosts.darwin.sharedSlots: true` (the built-in catalog's
+`darwin_shared_slots`, the runtime's `shared_slots`) lets every Mac of this Forge run
+as many sessions as its slots, set per host like a Linux host's (Hosts → Edit slots,
+after a drain). Each slot `n` is its own user `niuu-slot-<n>` (uid `uid_base + n`) with
+its own home, workspace, launchd jobs and credential files, and the audit proves each
+slot clean on its own. What separates them is the user and nothing else, which is the
+operator's decision this setting records:
+
+- they share the Mac's network: a session can reach the other sessions' loopback
+  listeners, including each slot's guest credential agent, so a session can read
+  another slot's credentials;
+- they share its CPUs and memory with no limits, so slots are not sized from the
+  Linux per-slot limits: the count is yours;
+- each slot has its own loopback ports, Skuld's `8081 + n` and the callbacks'
+  `18080 + n` (`broker_port`, `guest_platform_port`), and its own guest agent address
+  `169.254.169.(254 − n)`;
+- session mounts at fixed paths outside a session's storage (`/var/run/secrets/…`) are
+  not linked there, since only one session could own the path: the session reads its
+  copy where its environment points;
+- a workflow run's unit (a team in one session) is refused on such a Mac, because its
+  members' ports would be every slot's.
 
 **Before joining**, on the Mac: turn on Remote Login (System Settings → General →
 Sharing), install the Command Line Tools (`xcode-select --install`; the join and Forge
@@ -669,7 +709,7 @@ compute:
 Its access binding is `SshGuestAccess` with `ssh_user: root`, and its connector's
 `permit_listen` must include `127.0.0.1:18080` and `permit_open` `127.0.0.1:8081`
 (Skuld's port on the Mac), because a Mac session listens on the Mac's loopback rather
-than a slot address.
+than a slot address; with shared slots, every slot's `18080 + n` and `8081 + n`.
 
 **The session bundle.** Instead of the Skuld image, a Mac runs the bundle
 `ghcr.io/niuulabs/skuld-darwin@sha256:…` (`compute.session_images.darwin`, or
@@ -683,7 +723,7 @@ with an anonymous registry pull, checks both digests, and unpacks it once per di
 under `/var/lib/niuu/host-bundles`; it removes older ones when no session runs. The
 bundle is about 1 GB.
 
-**A session**, step by step:
+**A session**, step by step (slot 0; slot `n` with shared slots has `n` in each name):
 
 1. Forge creates the user and group `niuu-slot-0` (uid `uid_base`, default 61000,
    hidden, no password, no admin or Remote Login groups), its storage in
@@ -710,7 +750,8 @@ guest agent's configuration. Secret files the session expects in its home become
 there; a session mount under `/var/run` (a workload token) becomes a link of root's at
 that path, removed at stop.
 
-**Limits.** There is no CPU or memory limit: a session has the whole Mac. A session can
+**Limits.** There is no CPU or memory limit: a session has the whole Mac (with shared
+slots, all of them share it). A session can
 read its own credential files (its ServiceAccount tokens and the guest agent's
 configuration) through its group, which Linux hides behind a mount. Live preview finds
 the session's listeners with `lsof`.

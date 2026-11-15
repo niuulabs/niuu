@@ -554,7 +554,6 @@ async def test_real_tmux_workspace_trust_then_chat(tmp_path, monkeypatch, resets
     monkeypatch.setenv("FORGE_FAKEAGENT_WORKSPACE_TRUST", "1")
     monkeypatch.setenv("FORGE_FAKEAGENT_WORKSPACE_TRUST_RESETS", str(resets))
     monkeypatch.setenv("SKULD__TMUX_SOCKET_DIR", str(tmp_path / "sockets"))
-    monkeypatch.setenv("SKULD__TMUX_REMOTE_CONTROL", "0")
 
     async def handle_hook(payload):
         await transport.handle_claude_hook(payload)
@@ -566,6 +565,7 @@ async def test_real_tmux_workspace_trust_then_chat(tmp_path, monkeypatch, resets
         turn_idle_timeout_s=0.1,
         turn_no_output_timeout_s=1,
         sdk_port=hook_server.port,
+        tmux_remote_control=False,
     )
     events = await _collect_events(transport)
     try:

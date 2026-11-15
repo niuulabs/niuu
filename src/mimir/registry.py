@@ -24,7 +24,6 @@ class MimirRegistryEntry(BaseModel):
     lifecycle: RegistryMountLifecycle = "registered"
     role: str = "shared"
     url: str = ""
-    path: str = ""
     categories: list[str] | None = None
     adapter: str = ""
     kwargs: dict[str, Any] = Field(default_factory=dict)
@@ -32,6 +31,13 @@ class MimirRegistryEntry(BaseModel):
     auth_ref: str | None = None
     default_read_priority: int = 10
     enabled: bool = True
+    facts: bool = Field(
+        default=False,
+        description=(
+            "The Mímir behind this entry serves the typed-fact tools (mimir_fact_*). "
+            "Sessions are told to use them only for mounts that say so."
+        ),
+    )
     health_status: RegistryMountHealth = "unknown"
     health_message: str = ""
     desc: str = ""
@@ -88,7 +94,6 @@ class MimirRegistryStore:
         kind: RegistryMountKind,
         lifecycle: RegistryMountLifecycle = "registered",
         url: str = "",
-        path: str = "",
         categories: list[str] | None = None,
         default_read_priority: int = 10,
         desc: str = "",
@@ -103,7 +108,6 @@ class MimirRegistryStore:
             kind=kind,
             lifecycle=lifecycle,
             url=url,
-            path=path,
             categories=categories,
             default_read_priority=default_read_priority,
             desc=desc,

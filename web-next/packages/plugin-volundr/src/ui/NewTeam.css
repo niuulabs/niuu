@@ -1,0 +1,41 @@
+/* The "A team" tab of the new session page and the unit rows of the session list share the
+   agent avatar: a rune in a ring tinted with the agent's colour. */
+.vol-agent-avatar {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border: 1px solid var(--agent-color);
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--agent-color) 14%, transparent);
+  color: var(--agent-color);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12px;
+  line-height: 1;
+}
+.vol-agent-avatar--person {
+  font-family: inherit;
+  font-size: 9.5px;
+  font-weight: 600;
+}
+.vol-agent-avatar--sm {
+  width: 18px;
+  height: 18px;
+  font-size: 10px;
+}
+.vol-agent-avatar--person.vol-agent-avatar--sm {
+  font-size: 8px;
+}
+
+/* A person stands out from an agent by a dashed ring, as in the room preview. */
+.vol-agent-avatar--person {
+  border-style: dashed;
+}
+
+/* A name in the room preview carries its agent's colour. */
+.vol-room-line__agent {
+  color: var(--agent-color);
+  font-weight: 600;
+}

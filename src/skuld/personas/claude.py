@@ -66,7 +66,6 @@ _SESSION_COMMANDS: tuple[str, ...] = (
     "mimir_search",
     "mimir_read",
     "mimir_read_source",
-    "mimir_related",
     "mimir_list",
     "mimir_write",
     "mimir_ingest",
@@ -91,7 +90,11 @@ class ClaudeProjector:
         policy = PersonaPolicy.from_definition(persona.id, persona.definition)
         gaps: list[ProjectionGap] = []
         kwargs: dict[str, Any] = {
-            "system_prompt": compose_instructions(persona.definition, context.request_prompt)
+            "system_prompt": compose_instructions(
+                persona.definition,
+                context.request_prompt,
+                outcome_contract=context.outcome_contract,
+            )
         }
         self._check_mode(policy, gaps)
         if policy.mode is PermissionMode.READ_ONLY:

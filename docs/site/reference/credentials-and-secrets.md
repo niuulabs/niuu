@@ -17,7 +17,7 @@ Finish the browser login and confirm that the second command returns `OK` with
 a successful exit code. Then start Niuu and choose **Claude Code** in the launch
 wizard. Leave **Credentials** and **Integrations** empty for this local exercise.
 
-The local adapter launches Skuld under the same OS account. Its Claude transport
+The local adapter launches the session gateway under the same OS account. Its Claude transport
 uses subscription authentication by default. It removes `ANTHROPIC_API_KEY` and
 `ANTHROPIC_AUTH_TOKEN` from the Claude child environment in that mode, so merely
 exporting an API key does not switch this runtime to API billing.
@@ -61,7 +61,8 @@ Integrations → Connections** and choose **Claude Code (subscription)** or
 verify an actual session afterward.
 
 These connection buttons require a configured login runner and credential
-store. An unconfigured local deployment cannot complete that enrollment flow.
+store. Local mini mode configures one that runs the provider's CLI on the host
+(it must be installed there); other deployments configure their own.
 The deployment procedure is documented in the repository's
 [provider-login operator guide](https://github.com/niuulabs/niuu/blob/main/docs/operator/provider-logins.md).
 

@@ -23,7 +23,7 @@ vi.mock('@niuulabs/plugin-sdk', async (original) => ({
   }),
   useService: () => ({
     getIdentity: async () => identity,
-    getComputeHosts: async () => (forgeHasHosts ? {} : null),
+    getComputeHosts: async () => (forgeHasHosts ? { summary: { hosts: 2, slotsFree: 5 } } : null),
   }),
 }));
 vi.mock('@tanstack/react-router', () => ({ useRouterState: () => ({ search: '' }) }));
@@ -310,10 +310,29 @@ describe('Guild node management', () => {
     const link = await screen.findByRole('link', { name: 'Compute hosts' });
     expect(link).toHaveAttribute('href', '/volundr/hosts?instance_id=node-1');
   });
+  it('puts a Hosts chip with the host count and free slots on the card of a Forge that has hosts', async () => {
+    forgeHasHosts = true;
+    renderGuild();
+    const chip = await screen.findByRole('link', { name: 'Hosts: 2 hosts, 5 free slots' });
+    expect(chip).toHaveAttribute('href', '/volundr/hosts?instance_id=node-1');
+    expect(chip).toHaveTextContent('Hosts · 2 · 5 free');
+    // The link sits beside the card's button, not inside it: a link in a button is invalid.
+    expect(screen.getByTestId('guild-instance-card-build-kit')).not.toContainElement(chip);
+    // The detail aside keeps its own link.
+    expect(screen.getByRole('link', { name: 'Compute hosts' })).toBeInTheDocument();
+  });
   it('offers no Hosts page for a Forge without compute hosts', async () => {
     renderGuild();
     await screen.findByRole('button', { name: 'Edit settings' });
     expect(screen.queryByRole('link', { name: 'Compute hosts' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: /^Hosts:/ })).not.toBeInTheDocument();
+  });
+  it('shows no Hosts chip on a node that is not a Forge', async () => {
+    forgeHasHosts = true;
+    records = [{ ...structuredClone(node), kind: 'mimir' }];
+    renderGuild();
+    await screen.findByTestId('guild-instance-card-build-kit');
+    expect(screen.queryByRole('link', { name: /^Hosts:/ })).not.toBeInTheDocument();
   });
   it('treats an unrecognized health value as unknown instead of rendering it as unreachable', async () => {
     records = [{ ...structuredClone(node), health: 'weird-future-value' as never }];

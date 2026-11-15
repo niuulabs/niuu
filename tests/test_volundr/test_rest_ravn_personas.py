@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections import defaultdict
+import json
 from unittest.mock import AsyncMock
 
 import pytest
@@ -10,125 +10,44 @@ import yaml
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from personas.adapters.loader import FilesystemPersonaAdapter
-from personas.adapters.postgres_registry import (
-    PersonaView,
-    _config_to_payload,
-    _normalize_payload,
-    _payload_to_config,
-)
-from personas.domain.persona import parse_persona, persona_to_yaml
-from personas.domain.persona_document import (
-    PortablePersonaDefinition,
-    portable_persona_from_config,
-)
+from personas.adapters.postgres_registry import PostgresPersonaRegistry, _normalize_payload
 from volundr.adapters.inbound.rest_ravn_personas import create_ravn_personas_router
 from volundr.domain.models import Principal, User, UserStatus
 
 
-class _InMemoryPersonaRegistry:
+class _InMemoryPool:
+    """The two statements the persona registry runs, over a dict, so the real registry is tested."""
+
     def __init__(self) -> None:
-        self._builtin_loader = FilesystemPersonaAdapter(persona_dirs=[], include_builtin=True)
-        self._overrides: dict[str, dict[str, dict]] = defaultdict(dict)
+        self.rows: dict[tuple[str, str], str] = {}
 
-    async def list_personas(self, owner_id: str, *, source: str = "all") -> list[PersonaView]:
-        active_builtin_names = set(self._builtin_loader.list_builtin_names())
-        custom_override_names = {
-            name for name in self._overrides[owner_id] if not self._builtin_loader.is_builtin(name)
-        }
-        names = active_builtin_names | custom_override_names
-        views: list[PersonaView] = []
-        for name in sorted(names):
-            view = await self.get_persona(owner_id, name)
-            if view is None:
-                continue
-            if source == "builtin" and not view.is_builtin:
-                continue
-            if source == "custom" and view.is_builtin:
-                continue
-            views.append(view)
-        return views
+    async def execute(self, query: str, *args: object) -> str:
+        statement = query.split()[0]
+        if statement == "INSERT":
+            owner_id, name, config_json = args[0], args[1], args[2]
+            self.rows.pop((str(owner_id), str(name)), None)
+            self.rows[(str(owner_id), str(name))] = str(config_json)
+            return "INSERT 0 1"
+        if statement == "DELETE":
+            removed = self.rows.pop((str(args[0]), str(args[1])), None)
+            return "DELETE 1" if removed is not None else "DELETE 0"
+        raise AssertionError(f"unexpected statement: {query}")
 
-    async def get_persona(self, owner_id: str, name: str) -> PersonaView | None:
-        override = self._overrides[owner_id].get(name)
-        builtin_config = self._builtin_loader.load(name)
-        is_builtin = builtin_config is not None
+    async def fetch(self, query: str, *args: object) -> list[dict[str, str]]:
+        owner_id = args[0]
+        name = args[1] if len(args) > 1 else None
+        return [
+            {"name": row_name, "config_json": config_json}
+            for (row_owner, row_name), config_json in reversed(self.rows.items())
+            if row_owner == owner_id and (name is None or row_name == name)
+        ]
 
-        if override is not None:
-            payload = _normalize_payload(override, fallback=builtin_config)
-            config = _payload_to_config(payload)
-            return PersonaView(
-                config=config,
-                payload=payload,
-                is_builtin=is_builtin,
-                has_override=True,
-                yaml_source="[built-in]" if is_builtin else f"[user:{owner_id}]",
-                override_source=f"[user:{owner_id}]" if is_builtin else None,
-            )
-
-        if builtin_config is None:
-            return None
-
-        return PersonaView(
-            config=builtin_config,
-            payload=_config_to_payload(builtin_config),
-            is_builtin=True,
-            has_override=False,
-            yaml_source="[built-in]",
-            override_source=None,
-        )
-
-    async def save_persona(self, owner_id: str, payload: dict) -> None:
-        normalized = _normalize_payload(payload)
-        self._overrides[owner_id][normalized["name"]] = normalized
-
-    async def delete_persona(self, owner_id: str, name: str) -> bool:
-        return self._overrides[owner_id].pop(name, None) is not None
-
-    async def get_persona_yaml(self, owner_id: str, name: str) -> str | None:
-        view = await self.get_persona(owner_id, name)
-        if view is None:
-            return None
-        return persona_to_yaml(view.config)
-
-    async def get_current_portable_persona(
-        self,
-        owner_id: str,
-        name: str,
-    ) -> PortablePersonaDefinition | None:
-        override = self._overrides[owner_id].get(name)
-        if override is None:
-            return self._builtin_loader.load_current_portable(name)
-        builtin = self._builtin_loader.load_current_portable(name)
-        fallback = None
-        if builtin is not None:
-            fallback = parse_persona(
-                yaml.safe_dump(
-                    builtin.definition,
-                    allow_unicode=True,
-                    sort_keys=False,
-                )
-            )
-        payload = _normalize_payload(override, fallback=fallback)
-        return portable_persona_from_config(_payload_to_config(payload), persona_id=name)
-
-    async def get_portable_persona_revision(
-        self,
-        owner_id: str,
-        name: str,
-        revision: str,
-    ) -> PortablePersonaDefinition | None:
-        document = await self.get_current_portable_persona(owner_id, name)
-        if document is None or document.revision != revision:
-            return None
-        return document
-
-    def is_builtin(self, name: str) -> bool:
-        return self._builtin_loader.is_builtin(name)
+    def put(self, owner_id: str, payload: dict) -> None:
+        self.rows[(owner_id, payload["name"])] = json.dumps(payload)
 
 
-def _make_client() -> tuple[TestClient, _InMemoryPersonaRegistry]:
-    registry = _InMemoryPersonaRegistry()
+def _make_client() -> tuple[TestClient, PostgresPersonaRegistry]:
+    registry = PostgresPersonaRegistry(_InMemoryPool())  # type: ignore[arg-type]
     identity = AsyncMock()
     identity.validate_token.return_value = Principal(
         user_id="user-1",
@@ -329,12 +248,9 @@ class TestRavnPersonaRoutes:
 
     def test_user_scoping_isolated(self) -> None:
         client, registry = _make_client()
-        registry._overrides["user-1"]["scoped-agent"] = _normalize_payload(
-            _make_payload("scoped-agent")
-        )
-        registry._overrides["user-2"]["other-agent"] = _normalize_payload(
-            _make_payload("other-agent")
-        )
+        pool = registry._pool
+        pool.put("user-1", _normalize_payload(_make_payload("scoped-agent")))
+        pool.put("user-2", _normalize_payload(_make_payload("other-agent")))
 
         user_one = client.get(
             "/api/v1/ravn/personas?source=custom",
@@ -416,3 +332,192 @@ def test_the_persona_answers_carry_no_tool_lists() -> None:
     assert "allowed_tools" not in detail
     assert "forbidden_tools" not in detail
     assert all("allowed_tools" not in summary for summary in summaries)
+
+
+_HEADERS = {"Authorization": "Bearer token"}
+
+_MIGRATION_REVIEWER = """\
+name: migration-reviewer
+description: Checks a database migration before it runs.
+system_prompt_template: |
+  You review database migrations before they run.
+  Never change files.
+permission_mode: read_only
+consumes:
+  event_types:
+  - migration.requested
+produces:
+  event_type: migration_reviewer.completed
+  event_type_map:
+    approve: migration_reviewer.approve
+    request_changes: migration_reviewer.request_changes
+  when:
+    approve: The migration can run twice and the down undoes the up.
+    request_changes: Something must change first; list each finding with file:line.
+  schema:
+    verdict:
+      type: enum
+      description: the outcome
+      values:
+      - approve
+      - request_changes
+    summary:
+      type: string
+      description: one-line summary
+"""
+
+
+class TestPersonaYamlRoutes:
+    def test_create_keeps_every_field_the_yaml_declares(self) -> None:
+        client, _ = _make_client()
+
+        created = client.post(
+            "/api/v1/personas/yaml", json={"yaml": _MIGRATION_REVIEWER}, headers=_HEADERS
+        )
+
+        assert created.status_code == 201
+        detail = created.json()
+        assert detail["name"] == "migration-reviewer"
+        assert detail["is_builtin"] is False
+        assert detail["summary"] == "Checks a database migration before it runs."
+        assert detail["permission_mode"] == "safe"
+        assert detail["produces"]["when"]["approve"].startswith("The migration can run twice")
+        assert detail["consumes"]["events"][0]["name"] == "migration.requested"
+        portable = client.get(
+            "/api/v1/personas/migration-reviewer/portable", headers=_HEADERS
+        ).json()
+        assert portable["definition"] == yaml.safe_load(_MIGRATION_REVIEWER)
+
+    @pytest.mark.parametrize(
+        ("text", "reason"),
+        [
+            ("name: [unclosed", "Invalid persona YAML"),
+            ("- just\n- a list\n", "YAML mapping"),
+            ("description: no name\n", "needs a name"),
+            ("name: Bad Name\n", "must start with"),
+            ("name: dotted.name\n", "only letters, digits, dashes and underscores"),
+            ("name: typo-agent\nsystem_prompt: hi\n", "system_prompt"),
+            ("name: mode-agent\npermission_mode: anything\n", "permission_mode"),
+            (
+                "name: when-agent\nproduces:\n  event_type_map:\n    pass: a.passed\n"
+                "  when:\n    fail: never\n",
+                "fail",
+            ),
+        ],
+    )
+    def test_create_refuses_yaml_it_cannot_save_and_says_why(self, text: str, reason: str) -> None:
+        client, _ = _make_client()
+
+        response = client.post("/api/v1/personas/yaml", json={"yaml": text}, headers=_HEADERS)
+        checked = client.post("/api/v1/personas/yaml/check", json={"yaml": text}, headers=_HEADERS)
+
+        assert response.status_code == 422
+        assert reason in response.json()["detail"]
+        assert checked.json()["valid"] is False
+        assert reason in checked.json()["errors"][0]
+
+    def test_check_accepts_a_valid_persona_without_saving_it(self) -> None:
+        client, _ = _make_client()
+
+        checked = client.post(
+            "/api/v1/ravn/personas/yaml/check", json={"yaml": _MIGRATION_REVIEWER}, headers=_HEADERS
+        )
+
+        assert checked.json() == {"valid": True, "errors": []}
+        missing = client.get("/api/v1/personas/migration-reviewer", headers=_HEADERS)
+        assert missing.status_code == 404
+
+    def test_create_refuses_a_name_that_exists(self) -> None:
+        client, _ = _make_client()
+        client.post("/api/v1/personas/yaml", json={"yaml": _MIGRATION_REVIEWER}, headers=_HEADERS)
+
+        again = client.post(
+            "/api/v1/personas/yaml", json={"yaml": _MIGRATION_REVIEWER}, headers=_HEADERS
+        )
+        builtin = client.post(
+            "/api/v1/personas/yaml", json={"yaml": "name: reviewer\n"}, headers=_HEADERS
+        )
+
+        assert again.status_code == 409
+        assert "custom" in again.json()["detail"]
+        assert builtin.status_code == 409
+        assert "built-in" in builtin.json()["detail"]
+
+    def test_replace_saves_the_new_document(self) -> None:
+        client, _ = _make_client()
+        client.post("/api/v1/personas/yaml", json={"yaml": _MIGRATION_REVIEWER}, headers=_HEADERS)
+        changed = _MIGRATION_REVIEWER.replace("Never change files.", "Never touch production.")
+
+        replaced = client.put(
+            "/api/v1/personas/migration-reviewer/yaml", json={"yaml": changed}, headers=_HEADERS
+        )
+
+        assert replaced.status_code == 200
+        assert "Never touch production." in replaced.json()["system_prompt_template"]
+        portable = client.get(
+            "/api/v1/personas/migration-reviewer/portable", headers=_HEADERS
+        ).json()
+        assert portable["definition"] == yaml.safe_load(changed)
+
+    def test_replace_refuses_a_document_naming_another_persona(self) -> None:
+        client, _ = _make_client()
+        client.post("/api/v1/personas/yaml", json={"yaml": _MIGRATION_REVIEWER}, headers=_HEADERS)
+        renamed = _MIGRATION_REVIEWER.replace("name: migration-reviewer", "name: other")
+
+        response = client.put(
+            "/api/v1/personas/migration-reviewer/yaml", json={"yaml": renamed}, headers=_HEADERS
+        )
+        missing = client.put(
+            "/api/v1/personas/nobody/yaml", json={"yaml": "name: nobody\n"}, headers=_HEADERS
+        )
+
+        assert response.status_code == 422
+        assert "fork migration-reviewer" in response.json()["detail"]
+        assert missing.status_code == 404
+
+    def test_replace_of_a_builtin_saves_an_override(self) -> None:
+        client, _ = _make_client()
+        builtin = client.get("/api/v1/personas/reviewer/portable", headers=_HEADERS).json()
+        definition = dict(builtin["definition"])
+        definition["description"] = "Reviews with our house rules."
+
+        response = client.put(
+            "/api/v1/personas/reviewer/yaml",
+            json={"yaml": yaml.safe_dump(definition, sort_keys=False)},
+            headers=_HEADERS,
+        )
+
+        assert response.status_code == 200
+        assert response.json()["has_override"] is True
+        assert response.json()["role"] == "review"
+        assert response.json()["summary"] == "Reviews with our house rules."
+        portable = client.get("/api/v1/personas/reviewer/portable", headers=_HEADERS).json()
+        assert portable["definition"] == definition
+
+    def test_a_form_save_after_a_yaml_save_replaces_the_document(self) -> None:
+        client, _ = _make_client()
+        client.post("/api/v1/personas/yaml", json={"yaml": _MIGRATION_REVIEWER}, headers=_HEADERS)
+        payload = _make_payload("migration-reviewer")
+
+        client.put("/api/v1/personas/migration-reviewer", json=payload, headers=_HEADERS)
+
+        portable = client.get(
+            "/api/v1/personas/migration-reviewer/portable", headers=_HEADERS
+        ).json()
+        assert portable["definition"]["system_prompt_template"] == payload["system_prompt_template"]
+        assert "when" not in portable["definition"].get("produces", {})
+
+    @pytest.mark.parametrize("source", ["migration-reviewer", "reviewer"])
+    def test_fork_keeps_the_whole_document(self, source: str) -> None:
+        client, _ = _make_client()
+        client.post("/api/v1/personas/yaml", json={"yaml": _MIGRATION_REVIEWER}, headers=_HEADERS)
+        original = client.get(f"/api/v1/personas/{source}/portable", headers=_HEADERS).json()
+
+        forked = client.post(
+            f"/api/v1/personas/{source}/fork", json={"new_name": "my-copy"}, headers=_HEADERS
+        )
+
+        assert forked.status_code == 201
+        copy = client.get("/api/v1/personas/my-copy/portable", headers=_HEADERS).json()
+        assert copy["definition"] == {**original["definition"], "name": "my-copy"}
+        assert forked.json()["produces"]["when"] == original["definition"]["produces"]["when"]

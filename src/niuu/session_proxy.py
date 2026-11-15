@@ -18,6 +18,7 @@ from starlette.responses import JSONResponse, Response
 from identity.adapters.http_auth import extract_principal
 from niuu.config import NiuuSettings
 from niuu.domain.models import Principal
+from niuu.domain.session_voice import SESSION_VOICE_PATH
 from niuu.ports.session_proxy import SessionProxyTarget
 from niuu.room_access import (
     ROOM_CALLER_SESSION_HEADER,
@@ -27,6 +28,10 @@ from niuu.room_access import (
 )
 
 logger = logging.getLogger(__name__)
+
+#: The room role the voice channel needs: it is the session owner's call, so a participant
+#: or viewer never reaches it, whatever the broker would admit.
+_VOICE_ROOM_ROLE = "owner"
 
 
 def _configured_cors_origins() -> list[str]:
@@ -107,6 +112,11 @@ class SkuldPortRegistry:
         self._room_role_resolver: (
             Callable[[str, str | None, str | None, tuple[str, ...]], Awaitable[str | None]] | None
         ) = None
+        # Optional async lookup of a user's provisioned display name, for the
+        # stamped x-auth-display-name header (see DISPLAY_NAME_HEADER). Set by
+        # the composition root from its user store. Without it the proxy stamps
+        # the caller's email.
+        self._display_name_resolver: Callable[[str], Awaitable[str | None]] | None = None
         # Live proxied browser sockets, keyed by (session_id, user_id), so a
         # revoke/demotion can close an ALREADY-OPEN connection immediately
         # (see close_connections) instead of relying solely on
@@ -166,6 +176,14 @@ class SkuldPortRegistry:
         responses and gate resolution, distinct from the attach decision.
         """
         self._room_role_resolver = resolver
+
+    def set_display_name_resolver(self, resolver: Callable[[str], Awaitable[str | None]]) -> None:
+        """Inject the lookup of a user's provisioned display name.
+
+        ``resolver(user_id) -> display_name | None``. ``None`` or an empty name
+        means the user has no display name on record.
+        """
+        self._display_name_resolver = resolver
 
     def set_preview_credential_issuer(
         self, issuer: Callable[[str, Principal], Awaitable[str]]
@@ -251,6 +269,21 @@ class SkuldPortRegistry:
         if self._dev_identity:
             return "owner"
         return None
+
+    async def resolve_display_name(self, principal: Principal | None) -> str:
+        """The name the broker records as the author of this caller's messages.
+
+        The provisioned user's display name when the registry can look one up;
+        otherwise the caller's verified email. Empty only when the caller has
+        neither: the proxy never invents a name.
+        """
+        if principal is None or not principal.user_id:
+            return ""
+        if self._display_name_resolver is not None:
+            name = await self._display_name_resolver(principal.user_id)
+            if name and name.strip():
+                return name.strip()
+        return principal.email.strip()
 
     async def resolve_target(self, session_id: str) -> SessionProxyTarget | None:
         """Resolve an externally hosted session service, when configured."""
@@ -382,6 +415,13 @@ async def _proxy_ws_identity(
     return (principal.user_id, principal.tenant_id, tuple(principal.roles))
 
 
+# The display name of the verified caller, percent-encoded UTF-8 (an HTTP header
+# value is not UTF-8 safe), recorded by the broker with the user id as the author of
+# the caller's messages. Stamped from the proxy's own resolution, like the room role:
+# outside local dev it is dropped from the browser's request and never forwarded from
+# it. Must match skuld.config.WsAuthConfig.display_name_header.
+DISPLAY_NAME_HEADER = "x-auth-display-name"
+
 # Identity headers the downstream session trusts as proxy-verified.
 _IDENTITY_HEADERS = frozenset(
     {
@@ -389,6 +429,7 @@ _IDENTITY_HEADERS = frozenset(
         "x-auth-email",
         "x-auth-tenant",
         "x-auth-roles",
+        DISPLAY_NAME_HEADER,
     }
 )
 # The room role ("owner"/"approver"/"viewer") the proxy resolved for this
@@ -412,8 +453,47 @@ _DEV_QUERY_TO_HEADER = (
 _DEV_QUERY_PARAMS = frozenset(query_key for query_key, _ in _DEV_QUERY_TO_HEADER)
 
 
-def _verified_identity_headers(principal: Principal | None) -> dict[str, str]:
-    """Project a principal the proxy resolved itself onto ``x-auth-*`` headers."""
+def _dev_asserted(conn: WebSocket | Request) -> dict[str, str]:
+    """The ``x-auth-*`` identity a local-dev browser asserts, by header or query param."""
+    asserted = {k.lower(): v for k, v in conn.headers.items() if k.lower() in _IDENTITY_HEADERS}
+    for query_key, header in _DEV_QUERY_TO_HEADER:
+        if value := conn.query_params.get(query_key):
+            asserted[header] = value
+    return asserted
+
+
+def _forwarded_principal(
+    conn: WebSocket | Request, principal: Principal | None, *, dev_identity: bool
+) -> Principal | None:
+    """The person the broker leg will carry as the caller, for naming their messages.
+
+    Outside local dev that is always the proxy's own *principal*. In local dev a browser
+    may assert another person (``devUserId``); the broker then records that person, so
+    their name has to be looked up for them and not for the proxy's own principal.
+    """
+    if not dev_identity:
+        return principal
+    asserted = _dev_asserted(conn)
+    user_id = asserted.get("x-auth-user-id", "").strip()
+    if not user_id:
+        return principal
+    roles = [r for r in asserted.get("x-auth-roles", "").split(",") if r.strip()]
+    return Principal(
+        user_id=user_id,
+        email=asserted.get("x-auth-email", "").strip(),
+        tenant_id=asserted.get("x-auth-tenant", "").strip(),
+        roles=roles,
+    )
+
+
+def _verified_identity_headers(
+    principal: Principal | None, display_name: str = ""
+) -> dict[str, str]:
+    """Project a principal the proxy resolved itself onto ``x-auth-*`` headers.
+
+    ``display_name`` is the proxy's own resolution of the caller's name
+    (``SkuldPortRegistry.resolve_display_name``); it is sent only when there is one.
+    """
     if principal is None or not principal.user_id:
         return {}
     headers = {
@@ -423,6 +503,8 @@ def _verified_identity_headers(principal: Principal | None) -> dict[str, str]:
     }
     if principal.email:
         headers["x-auth-email"] = principal.email
+    if display_name:
+        headers[DISPLAY_NAME_HEADER] = urllib.parse.quote(display_name, safe="")
     return headers
 
 
@@ -433,6 +515,7 @@ def _proxy_forward_headers(
     dev_identity: bool,
     principal: Principal | None,
     room_role: str | None = None,
+    display_name: str = "",
 ) -> dict[str, str]:
     """Build the header set forwarded from the browser leg to the broker leg.
 
@@ -444,7 +527,11 @@ def _proxy_forward_headers(
 
     ``room_role``, when resolved, is stamped as ``ROOM_ROLE_HEADER``. It is
     never in ``allow``, so a client-supplied copy on the incoming WebSocket is
-    never part of ``headers`` before this stamps the proxy's own value.
+    never part of ``headers`` before this stamps the proxy's own value. The
+    same holds for ``display_name`` outside local dev: it is projected with the
+    other ``x-auth-*`` values from the proxy's own resolution, never from the
+    client's copy. With ``dev_identity`` a browser-asserted display name is
+    forwarded like the rest of the dev identity.
     """
     allow = {"authorization"}
     if include_cookie:
@@ -452,12 +539,19 @@ def _proxy_forward_headers(
     if dev_identity:
         allow |= _IDENTITY_HEADERS
     headers = {k: v for k, v in websocket.headers.items() if k.lower() in allow}
-    if not dev_identity:
-        headers.update(_verified_identity_headers(principal))
+    if not dev_identity or not _dev_asserted(websocket).get("x-auth-user-id", "").strip():
+        # The proxy's own principal: always outside local dev, and in local dev when the
+        # browser asserts nobody else (the dev user's own tab).
+        headers = {k: v for k, v in headers.items() if k.lower() not in _IDENTITY_HEADERS}
+        headers.update(_verified_identity_headers(principal, display_name))
     else:
         for query_key, header in _DEV_QUERY_TO_HEADER:
             if value := websocket.query_params.get(query_key):
                 headers[header] = value
+        # ``display_name`` was resolved for the asserted person (_forwarded_principal): their
+        # stored name wins over one the browser asserted, which stands only when there is none.
+        if display_name:
+            headers[DISPLAY_NAME_HEADER] = urllib.parse.quote(display_name, safe="")
     if room_role is not None:
         headers[ROOM_ROLE_HEADER] = room_role
     return headers
@@ -586,6 +680,7 @@ async def _proxy_ws(
     *,
     log_label: str,
     include_cookie: bool = False,
+    required_room_role: str | None = None,
 ) -> None:
     """Proxy a WebSocket to a session's Skuld broker (ownership-guarded).
 
@@ -614,6 +709,14 @@ async def _proxy_ws(
         # omitted header here would silently hand out owner to a
         # connection this proxy could not actually place a role on.
         room_role = "viewer"
+    if (
+        required_room_role is not None
+        and ROOM_ROLE_RANK[room_role] < ROOM_ROLE_RANK[required_room_role]
+    ):
+        await websocket.close(
+            code=1008, reason=f"This channel requires the {required_room_role} room role"
+        )
+        return
 
     port = skuld_reg.get_port(session_id)
     target = None if port is not None else await skuld_reg.resolve_target(session_id)
@@ -651,6 +754,11 @@ async def _proxy_ws(
         original_rank = ROOM_ROLE_RANK.get(room_role or "", -1)
         return ROOM_ROLE_RANK[current_role] >= original_rank
 
+    # Resolved before the bridge's catch-all below: a failed lookup must surface as an
+    # error, not as a silently refused socket.
+    display_name = await skuld_reg.resolve_display_name(
+        _forwarded_principal(websocket, principal, dev_identity=skuld_reg.dev_identity)
+    )
     tracking_key = (session_id, user_id or "")
     skuld_reg.track_connection(*tracking_key, websocket)
     try:
@@ -686,6 +794,7 @@ async def _proxy_ws(
                 dev_identity=skuld_reg.dev_identity,
                 principal=principal,
                 room_role=room_role,
+                display_name=display_name,
             ),
             connect_kwargs=connect_kwargs,
             on_connected=_mark_connected,
@@ -747,6 +856,137 @@ def _session_http_connect_url(target: SessionProxyTarget, path: str) -> tuple[st
     return target.http_url(path)
 
 
+async def _proxy_http(
+    request: Request,
+    session_id: str,
+    path: str,
+    skuld_reg: SkuldPortRegistry,
+    *,
+    broker_prefix: str,
+    required_room_role: str | None = None,
+) -> Response:
+    """Proxy an HTTP request to ``{broker_prefix}/{path}`` of a session's Skuld broker.
+
+    Same attach guard and identity resolution as the WebSocket legs
+    (``_proxy_ws``): without it, any authenticated caller who can reach the host could
+    call a session's broker API (workflow gates, room join, voice, ...) regardless of who
+    owns the session. ``required_room_role`` is the room role the route needs; ``None``
+    asks ``required_role_for_route`` (the broker's ``/api`` routes differ in what they
+    need), a channel that is the owner's alone names ``"owner"``.
+    """
+    principal = await _proxy_principal(request)
+    user_id, tenant_id, roles = (
+        (principal.user_id, principal.tenant_id, tuple(principal.roles))
+        if principal is not None
+        else (None, None, ())
+    )
+    if not await skuld_reg.may_attach(session_id, user_id, tenant_id, roles):
+        return JSONResponse({"detail": "Not authorized for this session"}, status_code=403)
+    room_role = await skuld_reg.resolve_room_role(session_id, user_id, tenant_id, roles)
+    if room_role is None:
+        # See the matching comment in _proxy_ws: stamp least privilege
+        # explicitly rather than omit the header, which a loopback-dialed
+        # proxy connection could otherwise have read as owner.
+        room_role = "viewer"
+
+    port = skuld_reg.get_port(session_id)
+    target = None if port is not None else await skuld_reg.resolve_target(session_id)
+    if port is None and target is None:
+        return JSONResponse({"detail": "Session not found"}, status_code=404)
+
+    from urllib.parse import quote
+
+    # Skuld workflow gate ids use ":" as an internal delimiter, so the
+    # session proxy needs to accept it in path segments while still
+    # rejecting slashes and traversal tokens.
+    allowed_segment = re.compile(r"^[A-Za-z0-9._~:-]+$")
+    raw_segments = path.split("/")
+    normalized_segments: list[str] = []
+    for seg in raw_segments:
+        if seg in ("", ".", ".."):
+            return JSONResponse({"detail": "Invalid path"}, status_code=400)
+        if "\\" in seg or not allowed_segment.fullmatch(seg):
+            return JSONResponse({"detail": "Invalid path"}, status_code=400)
+        normalized_segments.append(seg)
+
+    unquoted_path = "/".join(normalized_segments)
+    required_role = (
+        required_room_role
+        if required_room_role is not None
+        else required_role_for_route(request.method, unquoted_path)
+    )
+    # An unresolvable role (may_attach passed, but resolve_room_role could
+    # not name one) is least privilege, "viewer" — never "no access at
+    # all", which would 403 even the routes every attached caller may use.
+    effective_role = room_role or "viewer"
+    if ROOM_ROLE_RANK[effective_role] < ROOM_ROLE_RANK[required_role]:
+        return JSONResponse(
+            {"detail": f"This route requires the {required_role} room role"},
+            status_code=403,
+        )
+
+    sanitized_path = "/".join(quote(seg, safe="") for seg in normalized_segments)
+    proxy_path = f"{broker_prefix}/{sanitized_path}"
+    url = f"http://127.0.0.1:{port}{proxy_path}"
+    params = dict(
+        _without_dev_params(request.query_params.multi_items(), dev_identity=skuld_reg.dev_identity)
+    )
+    # Same identity policy as the WebSocket legs: outside local dev the
+    # session only ever sees x-auth-* the proxy resolved itself. The room
+    # role header is always dropped from the client's own request and
+    # replaced with the proxy's own resolution, never conditionally.
+    dropped = {
+        "host",
+        "content-length",
+        "transfer-encoding",
+        ROOM_ROLE_HEADER,
+        ROOM_CALLER_SESSION_HEADER,
+    }
+    dev_asserted = skuld_reg.dev_identity and bool(
+        _dev_asserted(request).get("x-auth-user-id", "").strip()
+    )
+    if not dev_asserted:
+        dropped |= _IDENTITY_HEADERS
+    headers = {k: v for k, v in request.headers.items() if k.lower() not in dropped}
+    verified = await _proxy_principal(request)
+    caller = _forwarded_principal(request, verified, dev_identity=skuld_reg.dev_identity)
+    display_name = await skuld_reg.resolve_display_name(caller)
+    if not dev_asserted:
+        headers.update(_verified_identity_headers(verified, display_name))
+    else:
+        for query_key, header in _DEV_QUERY_TO_HEADER:
+            if value := request.query_params.get(query_key):
+                headers[header] = value
+        if display_name:
+            headers[DISPLAY_NAME_HEADER] = urllib.parse.quote(display_name, safe="")
+    if room_role is not None:
+        headers[ROOM_ROLE_HEADER] = room_role
+    if target is not None:
+        url, service_host = _session_http_connect_url(target, proxy_path)
+        headers["Host"] = service_host
+    body = await request.body()
+
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.request(
+                method=request.method,
+                url=url,
+                params=params,
+                headers=headers,
+                content=body if body else None,
+            )
+        return Response(
+            content=resp.content,
+            status_code=resp.status_code,
+            headers=dict(resp.headers),
+        )
+    except httpx.ConnectError:
+        return JSONResponse(
+            {"detail": "Skuld broker not ready"},
+            status_code=502,
+        )
+
+
 def register_session_proxy_routes(app: FastAPI, skuld_reg: SkuldPortRegistry) -> None:
     """Register the ``/s/{session_id}`` session-proxy routes on *app*.
 
@@ -777,110 +1017,53 @@ def register_session_proxy_routes(app: FastAPI, skuld_reg: SkuldPortRegistry) ->
         include_in_schema=False,
     )
     async def skuld_http_proxy(request: Request, session_id: str, path: str) -> Response:
-        """Proxy HTTP requests to the Skuld subprocess (ownership-guarded).
+        """Proxy HTTP requests to the Skuld subprocess (ownership-guarded)."""
+        return await _proxy_http(request, session_id, path, skuld_reg, broker_prefix="/api")
 
-        Same attach guard and identity resolution as the WebSocket legs
-        (``_proxy_ws``): without it, any authenticated caller who can reach
-        the host could POST to a session's broker API (workflow gates, room
-        join, ...) regardless of who owns the session.
-        """
-        principal = await _proxy_principal(request)
-        user_id, tenant_id, roles = (
-            (principal.user_id, principal.tenant_id, tuple(principal.roles))
-            if principal is not None
-            else (None, None, ())
+    @app.websocket("/s/{session_id}/voice")
+    @app.websocket("/s/{session_id}/voice/")
+    async def skuld_voice_ws_proxy(
+        websocket: WebSocket,
+        session_id: str,
+    ) -> None:
+        """Proxy the voice channel's WebSocket to the session's Skuld broker (owner only)."""
+        await _proxy_ws(
+            websocket,
+            session_id,
+            skuld_reg,
+            SESSION_VOICE_PATH,
+            log_label="Skuld voice WS proxy",
+            include_cookie=False,
+            required_room_role=_VOICE_ROOM_ROLE,
         )
-        if not await skuld_reg.may_attach(session_id, user_id, tenant_id, roles):
-            return JSONResponse({"detail": "Not authorized for this session"}, status_code=403)
-        room_role = await skuld_reg.resolve_room_role(session_id, user_id, tenant_id, roles)
-        if room_role is None:
-            # See the matching comment in _proxy_ws: stamp least privilege
-            # explicitly rather than omit the header, which a loopback-dialed
-            # proxy connection could otherwise have read as owner.
-            room_role = "viewer"
 
-        port = skuld_reg.get_port(session_id)
-        target = None if port is not None else await skuld_reg.resolve_target(session_id)
-        if port is None and target is None:
-            return JSONResponse({"detail": "Session not found"}, status_code=404)
-
-        from urllib.parse import quote
-
-        # Skuld workflow gate ids use ":" as an internal delimiter, so the
-        # session proxy needs to accept it in path segments while still
-        # rejecting slashes and traversal tokens.
-        allowed_segment = re.compile(r"^[A-Za-z0-9._~:-]+$")
-        raw_segments = path.split("/")
-        normalized_segments: list[str] = []
-        for seg in raw_segments:
-            if seg in ("", ".", ".."):
-                return JSONResponse({"detail": "Invalid path"}, status_code=400)
-            if "\\" in seg or not allowed_segment.fullmatch(seg):
-                return JSONResponse({"detail": "Invalid path"}, status_code=400)
-            normalized_segments.append(seg)
-
-        unquoted_path = "/".join(normalized_segments)
-        required_role = required_role_for_route(request.method, unquoted_path)
-        # An unresolvable role (may_attach passed, but resolve_room_role could
-        # not name one) is least privilege, "viewer" — never "no access at
-        # all", which would 403 even the routes every attached caller may use.
-        effective_role = room_role or "viewer"
-        if ROOM_ROLE_RANK[effective_role] < ROOM_ROLE_RANK[required_role]:
-            return JSONResponse(
-                {"detail": f"This route requires the {required_role} room role"},
-                status_code=403,
-            )
-
-        sanitized_path = "/".join(quote(seg, safe="") for seg in normalized_segments)
-        proxy_path = f"/api/{sanitized_path}"
-        url = f"http://127.0.0.1:{port}{proxy_path}"
-        params = dict(
-            _without_dev_params(
-                request.query_params.multi_items(), dev_identity=skuld_reg.dev_identity
-            )
+    @app.api_route(
+        "/s/{session_id}/voice/api/{path:path}",
+        methods=["GET", "POST", "PATCH", "DELETE"],
+        include_in_schema=False,
+    )
+    async def skuld_voice_http_proxy(request: Request, session_id: str, path: str) -> Response:
+        """Proxy the voice channel's REST routes to the session's Skuld broker (owner only)."""
+        return await _proxy_http(
+            request,
+            session_id,
+            path,
+            skuld_reg,
+            broker_prefix=f"{SESSION_VOICE_PATH}/api",
+            required_room_role=_VOICE_ROOM_ROLE,
         )
-        # Same identity policy as the WebSocket legs: outside local dev the
-        # session only ever sees x-auth-* the proxy resolved itself. The room
-        # role header is always dropped from the client's own request and
-        # replaced with the proxy's own resolution, never conditionally.
-        dropped = {
-            "host",
-            "content-length",
-            "transfer-encoding",
-            ROOM_ROLE_HEADER,
-            ROOM_CALLER_SESSION_HEADER,
-        }
-        if not skuld_reg.dev_identity:
-            dropped |= _IDENTITY_HEADERS
-        headers = {k: v for k, v in request.headers.items() if k.lower() not in dropped}
-        if not skuld_reg.dev_identity:
-            headers.update(_verified_identity_headers(await _proxy_principal(request)))
-        if room_role is not None:
-            headers[ROOM_ROLE_HEADER] = room_role
-        if target is not None:
-            url, service_host = _session_http_connect_url(target, proxy_path)
-            headers["Host"] = service_host
-        body = await request.body()
 
-        try:
-            async with httpx.AsyncClient(timeout=30) as client:
-                resp = await client.request(
-                    method=request.method,
-                    url=url,
-                    params=params,
-                    headers=headers,
-                    content=body if body else None,
-                )
-            return Response(
-                content=resp.content,
-                status_code=resp.status_code,
-                headers=dict(resp.headers),
-            )
-        except httpx.ConnectError:
-            return JSONResponse(
-                {"detail": "Skuld broker not ready"},
-                status_code=502,
-            )
+    @app.get("/s/{session_id}/voice/health", include_in_schema=False)
+    async def skuld_voice_health_proxy(request: Request, session_id: str) -> Response:
+        """Proxy the voice channel's health check to the session's Skuld broker (owner only)."""
+        return await _proxy_http(
+            request,
+            session_id,
+            "health",
+            skuld_reg,
+            broker_prefix=SESSION_VOICE_PATH,
+            required_room_role=_VOICE_ROOM_ROLE,
+        )
 
     @app.get("/s/{session_id}/health", include_in_schema=False)
     async def skuld_health_proxy(request: Request, session_id: str) -> Response:

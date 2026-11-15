@@ -149,6 +149,29 @@ class PostgresSessionRepository(SessionRepository):
         rows = await self._pool.fetch(query, *params)
         return [self._row_to_session(row) for row in rows]
 
+    async def list_by_project(self, project_ids: list[UUID], tenant_id: str) -> list[Session]:
+        """Sessions of a tenant attached to any of the projects, newest first."""
+        if not project_ids:
+            return []
+        rows = await self._pool.fetch(
+            "SELECT * FROM sessions WHERE tenant_id = $1 AND coordination IS NOT NULL "
+            "AND (coordination->>'project_id') = ANY($2::text[]) ORDER BY created_at DESC",
+            tenant_id,
+            [str(project_id) for project_id in project_ids],
+        )
+        return [self._row_to_session(row) for row in rows]
+
+    async def list_by_workflow_runs(self, run_ids: list[str]) -> list[Session]:
+        """Sessions of any of the workflow runs, across tenants, oldest first."""
+        if not run_ids:
+            return []
+        rows = await self._pool.fetch(
+            "SELECT * FROM sessions WHERE (workload_config->>'workflow_run_id') = ANY($1::text[]) "
+            "ORDER BY created_at ASC",
+            run_ids,
+        )
+        return [self._row_to_session(row) for row in rows]
+
     async def update(self, session: Session) -> Session:
         """Update an existing session."""
         source_json = json.dumps(session.source.model_dump())

@@ -186,7 +186,8 @@ class TestInternalCatalogEndpoints:
         app = create_app(config)
         with TestClient(app) as client:
             data = client.get("/health").json()
-        assert data == {"status": "ok"}
+        assert data["status"] == "ok"
+        assert data["caps"]["cap_hits_total"] >= 0
 
     def test_internal_catalog_models_also_available_without_public_prefix(self) -> None:
         config = BifrostConfig(providers={})

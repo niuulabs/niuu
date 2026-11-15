@@ -54,6 +54,7 @@ from typing import Any, Protocol, runtime_checkable
 
 from niuu.domain.conversation_timeline import TIMELINE_KEY, project_timeline, stamp_parts, timeline
 from niuu.domain.history_control import is_history_control
+from niuu.domain.message_author import AUTHOR_KEY, MessageAuthor
 
 # Deterministic namespace for folded-turn ids (stable across reloads AND across paths).
 _TURN_NAMESPACE = uuid.UUID("6f2d2e2a-7b1c-4e8a-9d3f-0a1b2c3d4e5f")
@@ -102,8 +103,10 @@ TOOL_DURATION_MS = "duration_ms"
 # of kinds that simply do not belong on the wire. The reduce/rebuild path STILL
 # reads them as authoritative seeds or snapshot boundaries; only the verbatim
 # wire stream drops them.
+# ``voice_call`` frames are a session voice call's durable record (``skuld.voice.calls``):
+# the broker folds them back into its call list on restart; they are not conversation.
 NON_BROADCAST_KINDS: frozenset[str] = frozenset(
-    {"conversation.turn", "conversation.projection", "history_import"}
+    {"conversation.turn", "conversation.projection", "history_import", "voice_call"}
 )
 
 # Per-connect handshake/preamble frames: addressed to ONE freshly-connecting
@@ -649,10 +652,15 @@ def build_user_turn(
     turn_id: str | None = None,
     metadata: dict | None = None,
     ts: datetime | None = None,
+    author: MessageAuthor | None = None,
 ) -> dict:
-    """Build a user turn. Uses the carried ``turn_id`` (so live==rebuild) or the seq-based id."""
+    """Build a user turn. Uses the carried ``turn_id`` (so live==rebuild) or the seq-based id.
+
+    ``author`` is who said it; a turn logged before authorship existed has none and carries
+    no ``author`` key at all.
+    """
     tid = turn_id or assistant_turn_id(session_id, seq, "user")
-    return _turn_dict(
+    turn = _turn_dict(
         id=tid,
         role="user",
         content=content,
@@ -660,6 +668,9 @@ def build_user_turn(
         metadata=dict(metadata or {}),
         ts=ts,
     )
+    if author is not None:
+        turn[AUTHOR_KEY] = author.to_dict()
+    return turn
 
 
 def build_error_turn(session_id: str, seq: int, text: str, ts: datetime | None = None) -> dict:
@@ -1081,7 +1092,15 @@ def _apply_user_frame(acc, turns, seen_ids, session_id, seq, ts, kind, payload, 
     if timeline(payload) is not None:
         metadata[TIMELINE_KEY] = dict(timeline(payload))
     turns.append(
-        build_user_turn(session_id, seq, content, turn_id=uid or None, ts=ts, metadata=metadata)
+        build_user_turn(
+            session_id,
+            seq,
+            content,
+            turn_id=uid or None,
+            ts=ts,
+            metadata=metadata,
+            author=MessageAuthor.from_wire(payload.get(AUTHOR_KEY)),
+        )
     )
     return True
 

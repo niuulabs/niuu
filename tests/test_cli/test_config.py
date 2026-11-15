@@ -366,13 +366,14 @@ class TestHostsConfig:
             CLISettings(mode="docker", hosts={"enabled": True})
 
     def test_the_built_in_execution_is_rendered_when_no_catalog_is_named(self, tmp_path) -> None:
-        hosts = HostsConfig(
-            pool_id="pool", profile="byo", data_dir=str(tmp_path / "hosts"), max_hosts=3
-        )
+        hosts = HostsConfig(pool_id="pool", profile="byo", data_dir=str(tmp_path / "hosts"))
 
         compute = hosts.compute(platform_port=8081, join_host="10.0.0.5")
 
         assert compute.pool_id == compute.provider_binding == "pool"
+        # The pool is the hosts that joined: no machine maximum strands any of them.
+        assert compute.max_machines is None
+        assert "max_machines" not in hosts.pod_manager("x.Local", {})["kwargs"]["pool"]["kwargs"]
         assert compute.execution_catalog.adapter.endswith("BuiltinHostCatalog")
         assert compute.execution_catalog.kwargs == {
             "pool_id": "pool",

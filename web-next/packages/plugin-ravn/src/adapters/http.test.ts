@@ -3,7 +3,7 @@
  */
 import { describe, it, expect, vi } from 'vitest';
 import { buildRavnPersonaAdapter } from './http';
-import type { IPersonaStore, PersonaCreateRequest } from '../ports';
+import type { IPersonaStore } from '../ports';
 
 // ---------------------------------------------------------------------------
 // Shared test fixtures
@@ -154,91 +154,45 @@ describe('getPersonaYaml', () => {
 });
 
 // ---------------------------------------------------------------------------
-// createPersona
+// Persona documents
 // ---------------------------------------------------------------------------
 
-describe('createPersona', () => {
-  const req: PersonaCreateRequest = {
-    name: 'new-agent',
-    role: 'build',
-    letter: 'N',
-    color: 'var(--color-accent-cyan)',
-    summary: 'New agent',
-    description: 'New agent description',
-    systemPromptTemplate: 'You are helpful.',
-    permissionMode: 'default',
-    iterationBudget: 10,
-    llmThinkingEnabled: false,
-    llmMaxTokens: 8192,
-    producesEventType: '',
-    producesSchema: {},
-    consumesEvents: [],
-    consumesSchema: {},
-  };
+describe('persona documents', () => {
+  const yaml = 'name: new-agent\nsystem_prompt_template: You are helpful.\n';
 
-  it('calls POST /personas', async () => {
+  it('reads the document from the portable route', async () => {
     const client = makeClient();
-    client.post.mockResolvedValue(rawDetail);
-    await buildRavnPersonaAdapter(client).createPersona(req);
-    expect(client.post).toHaveBeenCalledWith('/personas', expect.any(Object));
+    client.get.mockResolvedValue({ id: 'coder', definition: { name: 'coder' } });
+    const result = await buildRavnPersonaAdapter(client).getPersonaDocument('coder');
+    expect(client.get).toHaveBeenCalledWith('/personas/coder/portable');
+    expect(result).toEqual({ name: 'coder' });
   });
 
-  it('converts camelCase request to snake_case body', async () => {
+  it('checks YAML without saving it', async () => {
     const client = makeClient();
-    client.post.mockResolvedValue(rawDetail);
-    await buildRavnPersonaAdapter(client).createPersona(req);
-    const body = client.post.mock.calls[0][1] as Record<string, unknown>;
-    expect(body).toMatchObject({
-      name: 'new-agent',
-      role: 'build',
-      system_prompt_template: 'You are helpful.',
-      permission_mode: 'default',
-      iteration_budget: 10,
-      llm_thinking_enabled: false,
-      llm_max_tokens: 8192,
-      produces_schema: {},
-      consumes_events: [],
-      consumes_schema: {},
-    });
+    client.post.mockResolvedValue({ valid: false, errors: ['no'] });
+    const result = await buildRavnPersonaAdapter(client).checkPersonaYaml(yaml);
+    expect(client.post).toHaveBeenCalledWith('/personas/yaml/check', { yaml });
+    expect(result).toEqual({ valid: false, errors: ['no'] });
   });
 
-  it('returns a camelCase PersonaDetail', async () => {
+  it('creates from YAML and returns a camelCase PersonaDetail', async () => {
     const client = makeClient();
     client.post.mockResolvedValue(rawDetail);
-    const result = await buildRavnPersonaAdapter(client).createPersona(req);
+    const result = await buildRavnPersonaAdapter(client).createPersonaFromYaml(yaml);
+    expect(client.post).toHaveBeenCalledWith('/personas/yaml', { yaml });
     expect(result.systemPromptTemplate).toBe('You are a coder.');
-    expect(result.llm.thinkingEnabled).toBe(true);
   });
-});
 
-// ---------------------------------------------------------------------------
-// updatePersona
-// ---------------------------------------------------------------------------
-
-describe('updatePersona', () => {
-  const req: PersonaCreateRequest = {
-    name: 'coder',
-    role: 'build',
-    letter: 'C',
-    color: 'var(--color-accent-indigo)',
-    summary: 'Updated',
-    description: 'Updated description',
-    systemPromptTemplate: 'Updated.',
-    permissionMode: 'default',
-    iterationBudget: 0,
-    llmThinkingEnabled: false,
-    llmMaxTokens: 8192,
-    producesEventType: '',
-    producesSchema: {},
-    consumesEvents: [],
-    consumesSchema: {},
-  };
-
-  it('calls PUT /personas/:name', async () => {
+  it('replaces a persona with its YAML', async () => {
     const client = makeClient();
-    client.put.mockResolvedValue(rawDetail);
-    await buildRavnPersonaAdapter(client).updatePersona('coder', req);
-    expect(client.put).toHaveBeenCalledWith('/personas/coder', expect.any(Object));
+    client.put.mockResolvedValue({
+      ...rawDetail,
+      produces: { ...rawDetail.produces, when: { pass: 'It works.' } },
+    });
+    const result = await buildRavnPersonaAdapter(client).replacePersonaYaml('my agent', yaml);
+    expect(client.put).toHaveBeenCalledWith('/personas/my%20agent/yaml', { yaml });
+    expect(result.produces.when).toEqual({ pass: 'It works.' });
   });
 });
 
@@ -296,8 +250,9 @@ describe('buildRavnPersonaAdapter', () => {
     expect(typeof store.listPersonas).toBe('function');
     expect(typeof store.getPersona).toBe('function');
     expect(typeof store.getPersonaYaml).toBe('function');
-    expect(typeof store.createPersona).toBe('function');
-    expect(typeof store.updatePersona).toBe('function');
+    expect(typeof store.getPersonaDocument).toBe('function');
+    expect(typeof store.createPersonaFromYaml).toBe('function');
+    expect(typeof store.replacePersonaYaml).toBe('function');
     expect(typeof store.deletePersona).toBe('function');
     expect(typeof store.forkPersona).toBe('function');
   });

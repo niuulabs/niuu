@@ -33,7 +33,7 @@ def _participant(**overrides) -> SessionParticipant:
         "session_id": uuid4(),
         "user_id": "invitee",
         "tenant_id": "acme",
-        "role": ParticipantRole.OBSERVER,
+        "role": ParticipantRole.VIEWER,
         "status": ParticipantStatus.INVITED,
         "invited_by": "owner",
         "created_at": now,
@@ -62,7 +62,7 @@ def participants_api():
 def test_missing_session_is_404_before_any_service_call(participants_api):
     client, service, session_service, path = participants_api
     session_service.get_session.return_value = None
-    response = client.post(path, json={"user_id": "invitee", "role": "observer"})
+    response = client.post(path, json={"user_id": "invitee", "role": "viewer"})
     assert response.status_code == 404
     service.invite.assert_not_awaited()
 
@@ -71,12 +71,12 @@ def test_invite_returns_the_created_grant(participants_api):
     client, service, session_service, path = participants_api
     session_service.get_session.return_value = object()
     service.invite.return_value = _participant()
-    response = client.post(path, json={"user_id": "invitee", "role": "observer"})
+    response = client.post(path, json={"user_id": "invitee", "role": "viewer"})
     assert response.status_code == 201
     body = response.json()
     assert body["user_id"] == "invitee" and body["status"] == "invited"
     assert service.invite.await_args.kwargs["user_id"] == "invitee"
-    assert service.invite.await_args.kwargs["role"] == ParticipantRole.OBSERVER
+    assert service.invite.await_args.kwargs["role"] == ParticipantRole.VIEWER
 
 
 @pytest.fixture
@@ -105,7 +105,7 @@ def test_invite_on_kubernetes_backend_is_409_before_any_service_call(
     than let the invite succeed and every attach silently 403 afterward."""
     client, service, session_service, path = participants_api_on_kubernetes
     session_service.get_session.return_value = object()
-    response = client.post(path, json={"user_id": "invitee", "role": "observer"})
+    response = client.post(path, json={"user_id": "invitee", "role": "viewer"})
     assert response.status_code == 409
     assert "process" in response.json()["detail"]
     service.invite.assert_not_awaited()
@@ -138,7 +138,7 @@ def test_invite_on_kubernetes_remote_backend_is_no_longer_409(
     client, service, session_service, path = participants_api_on_kubernetes_remote
     session_service.get_session.return_value = object()
     service.invite.return_value = _participant()
-    response = client.post(path, json={"user_id": "invitee", "role": "observer"})
+    response = client.post(path, json={"user_id": "invitee", "role": "viewer"})
     assert response.status_code == 201
     service.invite.assert_awaited_once()
 
@@ -151,7 +151,7 @@ def test_invite_on_kubernetes_backend_409_names_the_remote_remedy(
     remote for this backend."""
     client, service, session_service, path = participants_api_on_kubernetes
     session_service.get_session.return_value = object()
-    response = client.post(path, json={"user_id": "invitee", "role": "observer"})
+    response = client.post(path, json={"user_id": "invitee", "role": "viewer"})
     assert response.status_code == 409
     detail = response.json()["detail"]
     assert "process" in detail
@@ -178,43 +178,66 @@ def test_docker_backend_stays_409_even_with_room_role_source_remote():
         session_service.get_session.return_value = object()
         response = TestClient(app).post(
             f"/api/v1/forge/sessions/{sid}/participants",
-            json={"user_id": "invitee", "role": "observer"},
+            json={"user_id": "invitee", "role": "viewer"},
         )
     assert response.status_code == 409
 
 
-@pytest.mark.parametrize("backend", ["openshell", "vm"])
-def test_openshell_and_vm_stay_409_even_with_room_role_source_remote(backend):
-    """Neither backend mounts a projected workload-identity token today
-    (WorkloadIdentityContributor skips them), so the pod would have no
-    credential to call the remote role endpoint with — REMOTE_CAPABLE_RUNTIME_BACKENDS
-    is limited to "kubernetes" until that changes."""
+def _invite_on(backend: str, room_role_source: str = "deployment"):
     service, session_service = AsyncMock(), AsyncMock()
     app = FastAPI()
     app.include_router(
         create_session_participants_router(
-            service, session_service, runtime_backend=backend, room_role_source="remote"
+            service,
+            session_service,
+            runtime_backend=backend,
+            room_role_source=room_role_source,
         )
     )
-    sid = uuid4()
     principal = Principal(user_id="owner", email="", tenant_id="acme", roles=["volundr:developer"])
+    session_service.get_session.return_value = object()
+    service.invite.return_value = _participant()
     with patch(
         "volundr.adapters.inbound.rest_session_participants.extract_principal",
         new=AsyncMock(return_value=principal),
     ):
-        session_service.get_session.return_value = object()
         response = TestClient(app).post(
-            f"/api/v1/forge/sessions/{sid}/participants",
-            json={"user_id": "invitee", "role": "observer"},
+            f"/api/v1/forge/sessions/{uuid4()}/participants",
+            json={"user_id": "invitee", "role": "viewer"},
         )
+    return response, service
+
+
+@pytest.mark.parametrize("room_role_source", ["deployment", "remote"])
+def test_openshell_stays_409_even_with_room_role_source_remote(room_role_source):
+    """OpenShell mounts no projected workload-identity token today
+    (WorkloadIdentityContributor skips it), so the pod would have no credential
+    to call the remote role endpoint with, and it is not proxied by Forge."""
+    response, service = _invite_on("openshell", room_role_source)
     assert response.status_code == 409
+    detail = response.json()["detail"]
+    assert "'openshell'" in detail
+    assert "session proxy" in detail
+    assert "process, vm" in detail
+    # The Kubernetes Gateway is not why an OpenShell invite is refused.
+    assert "Gateway" not in detail
+    service.invite.assert_not_awaited()
+
+
+def test_invite_on_vm_backend_is_allowed():
+    """A VM session is reached only through Forge's session proxy (over Forge's
+    own SSH tunnel to the guest), which admits grants and stamps the room role,
+    so an invite there is honoured."""
+    response, service = _invite_on("vm")
+    assert response.status_code == 201
+    service.invite.assert_awaited_once()
 
 
 def test_invite_denied_for_non_owner_is_403(participants_api):
     client, service, session_service, path = participants_api
     session_service.get_session.return_value = object()
     service.invite.side_effect = SessionAccessDeniedError(uuid4(), "owner")
-    response = client.post(path, json={"user_id": "invitee", "role": "observer"})
+    response = client.post(path, json={"user_id": "invitee", "role": "viewer"})
     assert response.status_code == 403
 
 
@@ -223,7 +246,7 @@ def test_invite_of_nonexistent_user_is_generic_422_not_404(participants_api):
     client, service, session_service, path = participants_api
     session_service.get_session.return_value = object()
     service.invite.side_effect = InviteeNotFoundError("no such user")
-    response = client.post(path, json={"user_id": "ghost", "role": "observer"})
+    response = client.post(path, json={"user_id": "ghost", "role": "viewer"})
     assert response.status_code == 422
     assert response.json()["detail"] == "Cannot invite this user"
 
@@ -232,7 +255,7 @@ def test_invite_of_cross_tenant_user_is_generic_422(participants_api):
     client, service, session_service, path = participants_api
     session_service.get_session.return_value = object()
     service.invite.side_effect = CrossTenantInviteError("wrong tenant")
-    response = client.post(path, json={"user_id": "invitee", "role": "observer"})
+    response = client.post(path, json={"user_id": "invitee", "role": "viewer"})
     assert response.status_code == 422
     assert response.json()["detail"] == "Cannot invite this user"
 
@@ -241,7 +264,7 @@ def test_invite_self_is_generic_422(participants_api):
     client, service, session_service, path = participants_api
     session_service.get_session.return_value = object()
     service.invite.side_effect = SelfInviteError("cannot invite yourself")
-    response = client.post(path, json={"user_id": "owner", "role": "observer"})
+    response = client.post(path, json={"user_id": "owner", "role": "viewer"})
     assert response.status_code == 422
     assert response.json()["detail"] == "Cannot invite this user"
 
@@ -250,7 +273,7 @@ def test_invite_owner_is_generic_422(participants_api):
     client, service, session_service, path = participants_api
     session_service.get_session.return_value = object()
     service.invite.side_effect = OwnerInviteError("owner already has full access")
-    response = client.post(path, json={"user_id": "owner", "role": "observer"})
+    response = client.post(path, json={"user_id": "owner", "role": "viewer"})
     assert response.status_code == 422
     assert response.json()["detail"] == "Cannot invite this user"
 
@@ -268,7 +291,7 @@ def test_invite_rejects_a_timezone_naive_expiry(participants_api):
     session_service.get_session.return_value = object()
     response = client.post(
         path,
-        json={"user_id": "invitee", "role": "observer", "expires_at": "2030-01-01T00:00:00"},
+        json={"user_id": "invitee", "role": "viewer", "expires_at": "2030-01-01T00:00:00"},
     )
     assert response.status_code == 422
 
@@ -281,7 +304,7 @@ def test_invite_accepts_a_timezone_aware_expiry(participants_api):
         path,
         json={
             "user_id": "invitee",
-            "role": "observer",
+            "role": "viewer",
             "expires_at": "2030-01-01T00:00:00+00:00",
         },
     )
@@ -339,9 +362,11 @@ def test_list_returns_every_grant(participants_api):
     client, service, session_service, path = participants_api
     session_service.get_session.return_value = object()
     service.list_participants.return_value = [_participant(), _participant(user_id="second")]
+    service.display_names.return_value = {"second": "Second Person"}
     response = client.get(path)
     assert response.status_code == 200
     assert [p["user_id"] for p in response.json()] == ["invitee", "second"]
+    assert [p["display_name"] for p in response.json()] == ["", "Second Person"]
 
 
 def test_list_denied_is_403(participants_api):
@@ -397,14 +422,14 @@ def test_actual_cedar_policy_enforces_invite_and_accept_end_to_end():
             "volundr.adapters.inbound.rest_session_participants.extract_principal",
             new=AsyncMock(return_value=outsider),
         ):
-            denied = client.post(path, json={"user_id": "invitee", "role": "observer"})
+            denied = client.post(path, json={"user_id": "invitee", "role": "viewer"})
         assert denied.status_code == 403
 
         with patch(
             "volundr.adapters.inbound.rest_session_participants.extract_principal",
             new=AsyncMock(return_value=owner),
         ):
-            invited = client.post(path, json={"user_id": "invitee", "role": "observer"})
+            invited = client.post(path, json={"user_id": "invitee", "role": "viewer"})
         assert invited.status_code == 201
 
         with patch(

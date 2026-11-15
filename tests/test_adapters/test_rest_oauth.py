@@ -8,7 +8,11 @@ from unittest.mock import AsyncMock
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from volundr.adapters.inbound.rest_oauth import create_oauth_router
+from volundr.adapters.inbound.rest_oauth import (
+    TEAM_OAUTH_PREFIX,
+    create_oauth_router,
+    create_team_oauth_router,
+)
 from volundr.adapters.outbound.oauth2_provider import OAuth2Provider
 from volundr.config import OAuthClientConfig, OAuthConfig
 from volundr.domain.models import (
@@ -393,3 +397,156 @@ class TestDisconnect:
         assert resp.status_code == 204
         credential_store.delete.assert_called_once()
         integration_repo.delete_connection.assert_called_once_with("conn-2")
+
+
+TEAM_PREFIX = TEAM_OAUTH_PREFIX
+
+
+class TestTeamInstall:
+    """A project owner installs a provider's app for the team, acting as the app."""
+
+    PROJECT = "11111111-1111-4111-8111-111111111111"
+
+    def _app(self, team, *, team_install=True):
+        from volundr.domain.models import TeamInstallMethod, TeamInstallSpec
+
+        defn = IntegrationDefinition(
+            slug="linear",
+            name="Linear",
+            description="",
+            integration_type=IntegrationType.ISSUE_TRACKER,
+            adapter="x.Linear",
+            oauth=OAuthSpec(
+                authorize_url="https://auth.example.com/authorize",
+                token_url="https://auth.example.com/token",
+                extra_authorize_params={"scope": "read,write"},
+            ),
+            team_install=(
+                TeamInstallSpec(method=TeamInstallMethod.OAUTH, authorize_params={"actor": "app"})
+                if team_install
+                else None
+            ),
+        )
+        registry = IntegrationRegistry([defn])
+        app = FastAPI()
+        app.state.identity = _mock_identity()
+        config = OAuthConfig(
+            redirect_base_url="https://app.test",
+            clients={"linear": OAuthClientConfig(client_id="cid", client_secret="sec")},
+        )
+        if team is None:
+            app.include_router(
+                create_oauth_router(
+                    oauth_config=config,
+                    integration_registry=registry,
+                    credential_store=AsyncMock(),
+                    integration_repo=AsyncMock(),
+                )
+            )
+        else:
+            app.include_router(
+                create_team_oauth_router(
+                    oauth_config=config,
+                    integration_registry=registry,
+                    credential_store=AsyncMock(),
+                    integration_repo=AsyncMock(),
+                    team_integrations=team,
+                )
+            )
+        return app, defn
+
+    def _team(self, defn=None):
+        team = AsyncMock()
+        team.owner_project.return_value = type("P", (), {"id": self.PROJECT})()
+        team.definition = lambda slug: defn
+        return team
+
+    def test_authorize_acts_as_the_app_and_callback_saves_under_the_project(self):
+        from unittest.mock import patch as _patch
+        from urllib.parse import parse_qs, urlparse
+
+        team = self._team()
+        app, defn = self._app(team)
+        team.definition = lambda slug: defn
+        client = TestClient(app)
+        resp = client.post(
+            f"{TEAM_PREFIX}/authorize-team",
+            json={"slug": "linear", "project_id": self.PROJECT, "config": {"team": "PAY"}},
+            headers=AUTH,
+        )
+        assert resp.status_code == 200
+        query = parse_qs(urlparse(resp.json()["url"]).query)
+        assert query["actor"] == ["app"] and query["scope"] == ["read,write"]
+        state = query["state"][0]
+
+        with _patch.object(
+            OAuth2Provider, "exchange_code", AsyncMock(return_value={"access_token": "t"})
+        ):
+            callback = TestClient(app).get(f"{TEAM_PREFIX}/callback?code=c&state={state}")
+        assert callback.status_code == 200
+        assert f"team:{self.PROJECT}:linear" in callback.text
+        assert "access_token" not in callback.text
+        # The installer is checked again at the callback, as the owner they were.
+        assert team.owner_project.await_count == 2
+        installer = team.owner_project.await_args.args[1]
+        assert installer.user_id == "u1" and installer.roles == ["volundr:admin"]
+        save = team.save.await_args
+        assert save.kwargs["connected_by"] == "u1"
+        assert save.kwargs["credential"] == {"access_token": "t"}
+        assert save.kwargs["config"]["team"] == "PAY"
+
+    def test_non_owner_is_refused_before_any_redirect(self):
+        from volundr.domain.project_ports import ProjectAccessDeniedError
+
+        team = self._team()
+        team.owner_project.side_effect = ProjectAccessDeniedError("owners only")
+        app, _ = self._app(team)
+        resp = TestClient(app).post(
+            f"{TEAM_PREFIX}/authorize-team",
+            json={"slug": "linear", "project_id": self.PROJECT},
+            headers=AUTH,
+        )
+        assert resp.status_code == 403
+
+    def test_the_shared_oauth_routes_do_not_take_team_installs(self):
+        app, _ = self._app(None)
+        resp = TestClient(app).post(
+            f"{PREFIX}/authorize-team",
+            json={"slug": "linear", "project_id": self.PROJECT},
+            headers=AUTH,
+        )
+        assert resp.status_code in (404, 405)
+
+    def test_the_team_callback_returns_to_forge(self):
+        from urllib.parse import parse_qs, urlparse
+
+        team = self._team()
+        app, defn = self._app(team)
+        team.definition = lambda slug: defn
+        resp = TestClient(app).post(
+            f"{TEAM_PREFIX}/authorize-team",
+            json={"slug": "linear", "project_id": self.PROJECT},
+            headers=AUTH,
+        )
+        redirect = parse_qs(urlparse(resp.json()["url"]).query)["redirect_uri"][0]
+        assert redirect == f"https://app.test{TEAM_PREFIX}/callback"
+
+    def test_an_integration_without_a_team_oauth_install_is_refused(self):
+        app, defn = self._app(self._team(), team_install=False)
+        resp = TestClient(app).post(
+            f"{TEAM_PREFIX}/authorize-team",
+            json={"slug": "linear", "project_id": self.PROJECT},
+            headers=AUTH,
+        )
+        assert resp.status_code == 422
+
+    def test_an_integration_name_must_be_a_catalog_slug(self):
+        team = self._team()
+        app, _ = self._app(team)
+        resp = TestClient(app).post(
+            f"{TEAM_PREFIX}/authorize-team",
+            json={"slug": "../admin", "project_id": self.PROJECT},
+            headers=AUTH,
+        )
+        assert resp.status_code == 422
+        team.owner_project.assert_not_awaited()

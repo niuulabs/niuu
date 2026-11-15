@@ -147,31 +147,8 @@ system_prompt_template: |
   3. **Needs Context** — Business logic that affects security assessment
   4. **Scope Exceeded** — Full security audit needed, not just code review
 
-  When escalating, use `status: help_needed` in your outcome.
-
-  ## Output Format
-
-  ---outcome---
-  verdict: pass | fail | needs_review
-  critical_findings: [number of critical/high findings]
-  summary: |
-    [One-line summary: what was audited and the security verdict]
-  findings: |
-    ## Critical
-    - **file.py:42** — SQL injection via `user_id` parameter. User input
-      concatenated directly into query. Exploit: `'; DROP TABLE users; --`
-      Fix: Use parameterized query.
-
-    ## High
-    - **config.py:15** — API key hardcoded. Fix: Move to environment variable.
-
-    ## Medium
-    - **api.py:87** — Missing rate limiting on login endpoint.
-
-    ## False Positives Considered
-    - **auth.py:23** — Password comparison uses `==` but is protected by
-      bcrypt.compare() wrapper that handles timing.
-  ---
+  When escalating, ask one concrete question, and say why you cannot go on,
+  what you tried, and your recommended default.
 
   ## Quality Checklist
 
@@ -217,7 +194,7 @@ produces:
       description: one-line security assessment summary
     findings:
       type: string
-      description: detailed security findings with exploitability
+      description: "markdown under ## Critical, ## High, ## Medium and ## False Positives Considered; each finding as **file:line** — the issue, how it is exploited, and the fix"
 
 fan_in:
   strategy: all_must_pass

@@ -1,8 +1,9 @@
 # Bundled catalogue
 
 What ships in the box: the Ting workflows in `src/ting/workflows` and the built-in
-personas in `src/personas/builtin`. One workflow ships, **Code, Review and Merge**, with
-the three personas it uses. Everything marked **archived** lives in `archive/` and is not
+personas in `src/personas/builtin`. Two workflows ship: **Code, Review and Merge**, with
+the three personas it uses, and **Memory compile**, which Ting starts after a memory import
+brought new sources (`docs/operator/project-memory.md`), with its one persona. Everything marked **archived** lives in `archive/` and is not
 shipped (`archive/README.md`).
 
 A bundled workflow pins the exact persona documents it uses, so a persona stays shipped
@@ -13,6 +14,7 @@ for as long as a shipped workflow names it. Checked by `tests/test_catalog_archi
 | Workflow | What it is for | Personas | Status | Why |
 |---|---|---|---|---|
 | `code-review-merge` | The coder implements a change, the reviewer and the security auditor each check it, side by side, and once both pass a person approves the merge and the coder merges it. | `coder`, `reviewer`, `security-auditor` | **kept** | the one shipped workflow: coder implements, reviewer and security-auditor check it as two steps side by side, a person approves, then coder merges |
+| `memory-compile` | Reads the new sources of a project's memory and brings the pages they concern up to date, citing each source on the page's timeline; it only adds. | `memory-compiler` | **kept** | started by Ting after a memory import brought new sources; not on a board |
 | `code-review-flow` | Tracker-driven developer workflow that implements a ticket, iterates through code review, and merges the branch without publishing a delivery record. | `closer`, `coder`, `reviewer` | **archived** | tests only (catalogue list, one fixture) |
 | `developer-delivery` | Plan, delegate, verify, integrate, publish, and merge one repository change using durable child workflows and typed evidence. | `developer-coordinator`, `developer-analyst`, `developer-architecture-reviewer`, `developer-correctness-reviewer`, `developer-security-plan-reviewer`, `developer-integration-verifier` | **archived** | Ting delivery subsystem (chart `delivery.*`, `scripts/prepare_delivery_proof.py`, web e2e); parent of three |
 | `developer-integration` | Verify and review the complete integration candidate against the approved delivery plan. | `developer-coordinator`, `developer-integration-verifier` | **archived** | child of Developer Delivery; chart `integrationPolicyId` |
@@ -39,6 +41,7 @@ for as long as a shipped workflow names it. Checked by `tests/test_catalog_archi
 | `coder` | Implements features and bug fixes, with tests, in a repository workspace; talk to it to get code written or to answer review and security change requests. | `code-review-merge`, `code-review-flow`, `infra-change-flow`, `reviewed-delivery-flow`, `tool-skill-builder`, `tracker-delivery-flow` | **kept** | implements and merges in the shipped workflow; default mesh.persona; the Claude Code coder of the live end-to-end run |
 | `reviewer` | Reviews a code change for correctness, maintainability and project conventions, leaves a review artifact and tracker comments, and returns a pass or changes-requested verdict; talk to it for a general code review. | `code-review-merge`, `code-review-flow`, `infra-change-flow`, `reviewed-delivery-flow`, `tool-skill-builder`, `tracker-delivery-flow` | **kept** | reviews in the shipped workflow; the Codex reviewer of the live end-to-end run |
 | `security-auditor` | Audits a code change for exploitable weaknesses and returns a security verdict, read-only; talk to it for a security check on changes. | `code-review-merge`, `tool-skill-builder` | **kept** | the security reviewer of the shipped workflow; also ting/templates/review.yaml |
+| `memory-compiler` | Turns new sources in a project's memory into updates of the pages they concern, citing each source on the page's timeline, and only ever adds; talk to it to compile sources into memory. | `memory-compile` | **kept** | the one persona of the memory-compile workflow |
 | `capability-publisher` | Publishes a finished capability build's learned_tool.json to Mimir after review and security have passed, or reports it blocked; talk to it only as the last step of a capability build. | `tool-skill-builder` | **archived** |  |
 | `closer` | Merges reviewed code into the target branch, updates the tracker ticket and writes the closure record; talk to it once a review has passed and the change is ready to land. | `code-review-flow`, `infra-change-flow`, `reviewed-delivery-flow`, `tracker-delivery-flow` | **archived** |  |
 | `developer-adversarial-reviewer` | Tries to break an immutable candidate commit with counterexamples, boundary inputs and failure cases without changing it; talk to it for a hostile read of a verified candidate. | `developer-workstream` | **archived** |  |

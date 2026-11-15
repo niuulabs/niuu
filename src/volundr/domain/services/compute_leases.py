@@ -38,6 +38,30 @@ from volundr.domain.compute import (
 from volundr.domain.execution_catalog import ResolvedExecutionPlan
 
 
+def require_machine_maximum(
+    pool_id: str, max_machines: int | None, *, fixed_inventory: bool
+) -> None:
+    """A VM pool needs a machine maximum; a pool of registered hosts must have none.
+
+    A VM provider makes a machine for every claim, so the operator's maximum is what bounds
+    it. Registered hosts are bounded by the hosts that joined: a maximum below that count
+    would leave joined hosts ready and never claimed.
+    """
+    if fixed_inventory and max_machines is not None:
+        raise ValueError(
+            f"Compute pool {pool_id} runs on registered hosts, which are bounded by the hosts "
+            f"that joined, but sets max_machines={max_machines}; remove compute.max_machines "
+            "(chart: computeHosts.maxHosts)"
+        )
+    if not fixed_inventory and max_machines is None:
+        raise ValueError(
+            f"Compute pool {pool_id} makes its machines and needs compute.max_machines: how "
+            "many it may hold at once"
+        )
+    if max_machines is not None and max_machines < 1:
+        raise ValueError(f"Compute pool {pool_id} needs a positive max_machines")
+
+
 class ComputeLeaseService:
     def __init__(
         self,
@@ -45,7 +69,7 @@ class ComputeLeaseService:
         provider: MachineProvider,
         *,
         pool_id: str,
-        max_machines: int,
+        max_machines: int | None,
         bootstrap: MachineBootstrap,
         bootstrap_store: CredentialStorePort | None = None,
         provider_binding: str = "",
@@ -54,8 +78,9 @@ class ComputeLeaseService:
         retry_interval_seconds: float = 10,
         retry_max_seconds: float = 300,
     ):
-        if not pool_id or max_machines < 1:
-            raise ValueError("Compute pool_id and positive max_machines are required")
+        if not pool_id:
+            raise ValueError("Compute pool_id is required")
+        require_machine_maximum(pool_id, max_machines, fixed_inventory=provider.fixed_inventory)
         self._repository = repository
         self._provider = provider
         self._pool_id = pool_id
@@ -67,6 +92,15 @@ class ComputeLeaseService:
         self._provisioning_timeout = provisioning_timeout_seconds
         self._retry_interval = retry_interval_seconds
         self._retry_max = retry_max_seconds
+
+    @property
+    def fixed_inventory(self) -> bool:
+        """Whether the provider claims machines that exist instead of making them."""
+        return self._provider.fixed_inventory
+
+    async def claimable(self, profile: str) -> int:
+        """Machines of ``profile`` a fixed inventory could hand a new allocation now."""
+        return await self._provider.claimable(profile, HostSelector())
 
     async def validated_profiles(self) -> tuple[MachineProfile, ...]:
         profiles = tuple(await self._provider.profiles())

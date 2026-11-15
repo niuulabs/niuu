@@ -71,6 +71,7 @@ from volundr.domain.models import (  # noqa: F401
     ResidentRuntime,
     ResidentSession,
     RoomParticipantInfo,
+    RoomRoster,
     SavedPrompt,
     SecretInfo,
     SecretMountSpec,
@@ -99,7 +100,11 @@ from volundr.domain.models import (  # noqa: F401
 from volundr.domain.projects import SessionCoordination
 from volundr.domain.push import PushTokenKind
 from volundr.domain.session_changes import SessionChanges
-from volundr.domain.session_participants import ParticipantRole, SessionParticipant
+from volundr.domain.session_participants import (
+    ParticipantCandidate,
+    ParticipantRole,
+    SessionParticipant,
+)
 from volundr.domain.session_read_state import SessionReadState, SessionReadStateChange
 from volundr.domain.session_runtimes import SessionRuntimeOffer
 from volundr.domain.session_startup import SessionStartup, StartupStage
@@ -177,6 +182,15 @@ class SessionRepository(ABC):
         owner_id: str | None = None,
     ) -> list[Session]:
         """Retrieve sessions, filtered by status/tenant/owner."""
+
+    @abstractmethod
+    async def list_by_project(self, project_ids: list[UUID], tenant_id: str) -> list[Session]:
+        """Sessions of *tenant_id* attached to any of the projects, newest first."""
+
+    @abstractmethod
+    async def list_by_workflow_runs(self, run_ids: list[str]) -> list[Session]:
+        """Sessions whose ``workload_config.workflow_run_id`` is any of *run_ids*, across
+        tenants, oldest first. Callers scope the result to the caller they answer."""
 
     @abstractmethod
     async def update(self, session: Session) -> Session:
@@ -513,6 +527,47 @@ class SessionParticipantRepository(ABC):
         participates in but does not own (see ``SessionParticipantService.
         list_participant_sessions``) — a visibility grant, not a Cedar
         read/list grant.
+        """
+
+    @abstractmethod
+    async def list_invited_for_user(self, user_id: str) -> list[SessionParticipant]:
+        """Return every status=INVITED grant for a user, across sessions.
+
+        Lets the invitee find the invitation in their session list and accept or
+        decline it. Callers still filter expiry (``SessionParticipant.is_pending``).
+        """
+
+    @abstractmethod
+    async def count_active_for_sessions(
+        self, session_ids: list[UUID], now: datetime
+    ) -> dict[UUID, int]:
+        """Active, unexpired grants per session, for all of ``session_ids`` in one read.
+
+        ``now`` is the instant expiry is judged at (``SessionParticipant.is_active`` judges
+        it in Python, so the database clock never disagrees with it). A session with no
+        such grant has no entry.
+        """
+
+    @abstractmethod
+    async def candidates(
+        self, session_id: UUID, tenant_id: str, owner_id: str, query: str
+    ) -> list[ParticipantCandidate]:
+        """Active members of ``tenant_id`` who could be invited into the session.
+
+        Not the owner, and not anyone already invited or active on the session; a
+        revoked grant can be invited again. ``query`` matches display name or email,
+        case-insensitively; empty matches everyone.
+        """
+
+    @abstractmethod
+    async def tenant_people(
+        self, tenant_id: str, excluded_user_id: str, query: str
+    ) -> list[ParticipantCandidate]:
+        """Active members of ``tenant_id`` other than ``excluded_user_id``.
+
+        The people someone may invite before any session exists, so no session's grants
+        are consulted. ``query`` matches display name or email, case-insensitively; empty
+        matches everyone.
         """
 
 
@@ -2268,10 +2323,17 @@ class SessionPersonaProvider(ABC):
 
 @dataclass(frozen=True)
 class SessionContribution:
-    """Output from a single contributor."""
+    """Output from a single contributor.
+
+    ``launch_facts`` are facts this launch establishes about the session (for example that
+    its broker runs the voice channel). The launch records them on the session's workload
+    config (``session_launch_facts``) and every launch replaces the whole record, so a fact
+    never outlives the launch that made it.
+    """
 
     values: dict[str, Any] = field(default_factory=dict)
     pod_spec: PodSpecAdditions | None = None
+    launch_facts: dict[str, Any] = field(default_factory=dict)
 
 
 class SessionContributor(ABC):
@@ -2328,6 +2390,16 @@ class SessionRoomPort(ABC):
     @abstractmethod
     async def list_room_participants(self, session_id: UUID) -> list[RoomParticipantInfo]:
         """Return the current room participants for a live session."""
+
+    @abstractmethod
+    async def read_room(self, session_id: UUID, *, credential: str | None = None) -> RoomRoster:
+        """Return the room's seated participants and the people connected to it.
+
+        ``credential`` is the caller's own ``Authorization`` value, presented to the
+        session's broker, which admits the caller as it does any request to the session.
+        ``list_room_participants`` is the same read without the connected people, for the
+        callers that route to participants only.
+        """
 
 
 class SessionCommunicationPort(ABC):

@@ -1,4 +1,4 @@
-"""Cross-service integration tests: Volundr → Sleipnir → Skuld.
+"""Cross-service integration tests: Volundr → Sleipnir → subscribers.
 
 Validates the full event chain across service boundaries using real
 broker transports.  Parameterised across NATS, RabbitMQ, and Redis.
@@ -6,18 +6,11 @@ broker transports.  Parameterised across NATS, RabbitMQ, and Redis.
 
 from __future__ import annotations
 
-import asyncio
 import uuid
-from datetime import UTC, datetime
-from uuid import uuid4
 
 import pytest
 
-from skuld.channels import ChannelRegistry, MessageChannel
-from skuld.sleipnir_bridge import SleipnirBridge
 from sleipnir.domain.events import SleipnirEvent
-from volundr.adapters.outbound.sleipnir_event_sink import SleipnirEventSink
-from volundr.domain.models import SessionEvent, SessionEventType
 
 from .conftest import (
     NATS_URL,
@@ -35,28 +28,6 @@ pytestmark = pytest.mark.broker
 # ---------------------------------------------------------------------------
 # Mock channel for capturing Skuld broadcast output
 # ---------------------------------------------------------------------------
-
-
-class _CaptureChannel(MessageChannel):
-    """In-memory channel that records all broadcast events."""
-
-    def __init__(self) -> None:
-        self.events: list[dict] = []
-        self._open = True
-
-    async def send_event(self, event: dict) -> None:
-        self.events.append(event)
-
-    @property
-    def channel_type(self) -> str:
-        return "test"
-
-    @property
-    def is_open(self) -> bool:
-        return self._open
-
-    async def close(self) -> None:
-        self._open = False
 
 
 # ---------------------------------------------------------------------------
@@ -112,113 +83,6 @@ async def transport(request):
 
 # ---------------------------------------------------------------------------
 # Volundr → Sleipnir → Skuld end-to-end
-# ---------------------------------------------------------------------------
-
-
-async def test_volundr_sink_to_skuld_bridge(transport):
-    """SleipnirEventSink publishes → real broker → SleipnirBridge → channel."""
-    session_id = uuid4()
-    channel = _CaptureChannel()
-    registry = ChannelRegistry()
-    registry.add(channel)
-
-    # Set up Skuld bridge on the subscriber side
-    bridge = SleipnirBridge(
-        subscriber=transport,
-        registry=registry,
-        session_id=str(session_id),
-        event_patterns=["volundr.*"],
-    )
-    await bridge.start()
-
-    # Set up Volundr sink on the publisher side
-    sink = SleipnirEventSink(publisher=transport)
-
-    session_event = SessionEvent(
-        id=uuid4(),
-        session_id=session_id,
-        event_type=SessionEventType.SESSION_START,
-        timestamp=datetime.now(UTC),
-        data={"model": "claude-sonnet-4-6", "repo": "niuu/volundr", "branch": "main"},
-        sequence=1,
-    )
-
-    await sink.emit(session_event)
-
-    # Wait for the event to flow through the broker
-    deadline = asyncio.get_event_loop().time() + 5.0
-    while not channel.events:
-        if asyncio.get_event_loop().time() > deadline:
-            break
-        await asyncio.sleep(0.05)
-
-    await bridge.stop()
-
-    assert len(channel.events) == 1
-    wire = channel.events[0]
-    assert wire["type"] == "sleipnir"
-    assert wire["event_type"] == "volundr.session.started"
-    assert wire["correlation_id"] == str(session_id)
-    assert wire["payload"]["session_id"] == str(session_id)
-    assert wire["payload"]["model"] == "claude-sonnet-4-6"
-
-
-# ---------------------------------------------------------------------------
-# correlation_id filtering
-# ---------------------------------------------------------------------------
-
-
-async def test_correlation_id_filtering(transport):
-    """Skuld bridge only forwards events matching its session_id."""
-    target_session = str(uuid4())
-    other_session = str(uuid4())
-
-    channel = _CaptureChannel()
-    registry = ChannelRegistry()
-    registry.add(channel)
-
-    bridge = SleipnirBridge(
-        subscriber=transport,
-        registry=registry,
-        session_id=target_session,
-        event_patterns=["volundr.*"],
-    )
-    await bridge.start()
-
-    # Publish events for two different sessions
-    await transport.publish(
-        make_event(
-            event_type="volundr.session.started",
-            correlation_id=target_session,
-            payload={"session_id": target_session},
-            summary="target session",
-        )
-    )
-    await transport.publish(
-        make_event(
-            event_type="volundr.session.started",
-            correlation_id=other_session,
-            payload={"session_id": other_session},
-            summary="other session",
-        )
-    )
-
-    deadline = asyncio.get_event_loop().time() + 3.0
-    while not channel.events:
-        if asyncio.get_event_loop().time() > deadline:
-            break
-        await asyncio.sleep(0.05)
-    # Extra wait to confirm second event doesn't arrive
-    await asyncio.sleep(0.5)
-
-    await bridge.stop()
-
-    assert len(channel.events) == 1
-    assert channel.events[0]["correlation_id"] == target_session
-
-
-# ---------------------------------------------------------------------------
-# Multi-publisher
 # ---------------------------------------------------------------------------
 
 

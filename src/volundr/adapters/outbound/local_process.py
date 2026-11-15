@@ -37,11 +37,14 @@ from typing import Any
 import httpx
 
 from niuu.ports.session_proxy import SessionProxyTarget
-from volundr.adapters.outbound.contributors.session_mcp import MIMIR_MOUNT_PATH
 from volundr.adapters.outbound.mesh_settings import (
     mesh_environment,
     mesh_with_defaults,
     parse_mesh_settings,
+)
+from volundr.adapters.outbound.session_file_secret_injection import (
+    DEFAULT_ENV_MOUNT_PATH,
+    read_shell_exports,
 )
 from volundr.adapters.outbound.vm_hosted_unit import (
     HostedMemberLaunch,
@@ -72,8 +75,6 @@ DEFAULT_WORKSPACES_DIR = "~/.niuu/workspaces"
 # Broker-owned present-file staging for local sessions, under the workspaces dir.
 LOCAL_PRESENTED_FILES_DIR = ".forge-presented"
 
-# Where a local session's ephemeral Mimir mounts live, under its workspace.
-LOCAL_MIMIR_DIR = ".mimir-local"
 DEFAULT_CLAUDE_BINARY = "claude"
 DEFAULT_SDK_PORT_START = 9100
 DEFAULT_STOP_TIMEOUT = 10
@@ -241,21 +242,6 @@ def _local_workspace_from_repo(value: str) -> Path | None:
     return Path(value).expanduser()
 
 
-def _localize_mimir_path(path: str, workspace: Path) -> str:
-    """Point a session's ephemeral Mimir mount at a directory in its workspace."""
-    trimmed = path.strip()
-    if not trimmed:
-        return trimmed
-    local_root = workspace / LOCAL_MIMIR_DIR
-    if trimmed == MIMIR_MOUNT_PATH:
-        return str(local_root)
-    prefix = f"{MIMIR_MOUNT_PATH.rstrip('/')}/"
-    if trimmed.startswith(prefix):
-        suffix = trimmed[len(prefix) :]
-        return str((local_root / suffix).resolve())
-    return trimmed
-
-
 #: Broker settings carrying the session credential (skuld ``forge_mcp.token`` /
 #: ``forge_mcp.grants``). Skuld scrubs the token from every agent process it spawns.
 FORGE_MCP_TOKEN_ENV = "SKULD__FORGE_MCP__TOKEN"
@@ -277,37 +263,6 @@ def _apply_forge_session_env(env: dict[str, str], spec: SessionSpec) -> None:
         return
     env[FORGE_MCP_TOKEN_ENV] = credential.token
     env[FORGE_MCP_GRANTS_ENV] = ",".join(grant.value for grant in credential.grants)
-
-
-def _localize_mcp_servers(raw_servers: object, workspace: Path) -> list[dict[str, Any]]:
-    if not isinstance(raw_servers, list):
-        return []
-
-    localized: list[dict[str, Any]] = []
-    for raw_server in raw_servers:
-        if not isinstance(raw_server, dict):
-            continue
-        server = dict(raw_server)
-        args = server.get("args")
-        if isinstance(args, list):
-            normalized_args = [str(arg) for arg in args]
-            rewritten_args: list[str] = []
-            index = 0
-            while index < len(normalized_args):
-                arg = normalized_args[index]
-                rewritten_args.append(arg)
-                if arg == "--path" and index + 1 < len(normalized_args):
-                    localized_path = _localize_mimir_path(
-                        normalized_args[index + 1],
-                        workspace,
-                    )
-                    rewritten_args.append(localized_path)
-                    index += 2
-                    continue
-                index += 1
-            server["args"] = rewritten_args
-        localized.append(server)
-    return localized
 
 
 class LocalProcessPodManager(PodManager):
@@ -1333,6 +1288,8 @@ class LocalProcessPodManager(PodManager):
             for entry in spec.pod_spec.env:
                 if name := entry.get("name"):
                     env[name] = entry.get("value", "")
+        # The session's credentials as its secret injection rendered them.
+        env.update(injected_credential_env(spec))
 
         env["SKULD__SESSION__ID"] = session_id
         env["SKULD__SESSION__NAME"] = session.name
@@ -1600,8 +1557,8 @@ class LocalProcessPodManager(PodManager):
                 if message_thread_id not in (None, ""):
                     env["SKULD__TELEGRAM__MESSAGE_THREAD_ID"] = str(message_thread_id)
 
-        mcp_servers = _localize_mcp_servers(spec.values.get("mcpServers"), workspace)
-        if mcp_servers:
+        mcp_servers = spec.values.get("mcpServers")
+        if isinstance(mcp_servers, list) and mcp_servers:
             env["SKULD__MCP_SERVERS"] = json.dumps(mcp_servers)
 
         # Container/VM callers also use this spec-only environment builder.
@@ -1822,3 +1779,30 @@ class LocalProcessPodManager(PodManager):
                 ", ".join(s[:8] for s in reaped),
             )
         return self._active_sessions()
+
+
+def injected_credential_env(spec: SessionSpec) -> dict[str, str]:
+    """The environment the session's secret injection rendered for it, for a host process.
+
+    A container sources the rendered env file bound at ``DEFAULT_ENV_MOUNT_PATH``; a host
+    process gets its variables as its environment. A credential rendered as a file is bound
+    at a path inside a container, which a host process has no such place for: it is
+    refused, naming the path, rather than started without it.
+    """
+    if spec.pod_spec is None:
+        return {}
+    volumes = {volume.get("name"): volume for volume in spec.pod_spec.volumes}
+    env: dict[str, str] = {}
+    for mount in spec.pod_spec.volume_mounts:
+        host_path = (volumes.get(mount.get("name")) or {}).get("hostPath")
+        if not isinstance(host_path, dict):
+            continue
+        target = str(mount.get("mountPath") or "")
+        if target != DEFAULT_ENV_MOUNT_PATH:
+            raise ValueError(
+                f"the session's credentials include a file for {target}, which a session "
+                "running as a host process cannot be given; detach that connection, or run "
+                "the session on a container runtime"
+            )
+        env.update(read_shell_exports(Path(host_path["path"]).read_text()))
+    return env

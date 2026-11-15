@@ -13,6 +13,20 @@ import {
 // ---------------------------------------------------------------------------
 
 describe('createMockVolundrService', () => {
+  it('keeps the memories a project reads, one per name', async () => {
+    const svc = createMockVolundrService();
+    const [project] = await svc.getProjects();
+    await svc.addProjectMemoryMount(project!, { name: 'n', registryEntryId: 'r', access: 'read' });
+    await expect(
+      svc.addProjectMemoryMount(project!, { name: 'n', registryEntryId: 'r', access: 'read' }),
+    ).rejects.toThrow('already mounts');
+    expect((await svc.getProjectMemoryMounts(project!)).map((m) => m.registry_entry_id)).toEqual([
+      'r',
+    ]);
+    await svc.removeProjectMemoryMount(project!, 'n');
+    expect(await svc.getProjectMemoryMounts(project!)).toEqual([]);
+  });
+
   it('returns an object implementing IVolundrService', () => {
     const svc = createMockVolundrService();
     expect(typeof svc.getSessions).toBe('function');
@@ -1023,6 +1037,126 @@ describe('mock Forge projects', () => {
   });
 });
 
+describe('mock project members', () => {
+  it('starts a project with its creator as owner and adds people of the org', async () => {
+    const service = createMockVolundrService();
+    const project = await service.createProject('Push relay');
+    expect((await service.getProjectMembers(project)).map((m) => m.role)).toEqual(['owner']);
+    const candidates = await service.getProjectMemberCandidates(project, 'ali');
+    expect(candidates.map((c) => c.user_id)).toEqual(['alice']);
+    const added = await service.addProjectMember(project, { userId: 'alice', role: 'approver' });
+    expect(added).toMatchObject({
+      user_id: 'alice',
+      role: 'approver',
+      display_name: 'Alice Lindqvist',
+    });
+    expect(await service.getProjectMemberCandidates(project, '')).toHaveLength(1);
+    await expect(
+      service.addProjectMember(project, { userId: 'alice', role: 'viewer' }),
+    ).rejects.toThrow('already a member');
+    await expect(
+      service.addProjectMember(project, { userId: 'mallory', role: 'viewer' }),
+    ).rejects.toThrow('Cannot add this person');
+  });
+
+  it('changes a role, keeps the last owner and removes a member', async () => {
+    const service = createMockVolundrService();
+    const project = await service.createProject('Push relay');
+    await service.addProjectMember(project, { userId: 'bram', role: 'viewer' });
+    expect(
+      await service.updateProjectMember(project, 'bram', { role: 'owner', expertise: 'Ting' }),
+    ).toMatchObject({ role: 'owner', expertise: 'Ting' });
+    await service.removeProjectMember(project, 'bram');
+    await expect(service.updateProjectMember(project, 'u1', { role: 'viewer' })).rejects.toThrow(
+      'at least one owner',
+    );
+    await expect(service.removeProjectMember(project, 'u1')).rejects.toThrow('at least one owner');
+    await expect(service.removeProjectMember(project, 'bram')).rejects.toThrow('not a member');
+    await expect(service.updateProjectMember(project, 'bram', { role: 'viewer' })).rejects.toThrow(
+      'not a member',
+    );
+    await expect(
+      service.getProjectMembers({ id: 'nope', name: 'x', slug: 'x', status: 'active' }),
+    ).rejects.toThrow('Project not found');
+  });
+});
+
+describe('mock team integrations', () => {
+  const project = {
+    id: 'project-yggdrasil',
+    name: 'Yggdrasil',
+    slug: 'y',
+    status: 'active' as const,
+  };
+
+  it('offers the catalog and connects a service account with its required settings', async () => {
+    const service = createMockVolundrService();
+    expect((await service.getTeamIntegrationCatalog(project)).map((e) => e.slug)).toContain('jira');
+    await expect(
+      service.connectTeamServiceAccount(project, {
+        slug: 'jira',
+        credential: { client_id: 'i', client_secret: 's' },
+        config: {},
+      }),
+    ).rejects.toThrow('Missing settings: site_url, cloud_id');
+    await expect(
+      service.connectTeamServiceAccount(project, {
+        slug: 'slack',
+        credential: { client_id: 'i', client_secret: 's' },
+        config: {},
+      }),
+    ).rejects.toThrow('not installed with a service account');
+    const jira = await service.connectTeamServiceAccount(project, {
+      slug: 'jira',
+      credential: { client_id: 'i', client_secret: 's' },
+      config: { site_url: 'https://acme.atlassian.net', cloud_id: 'c' },
+    });
+    expect((await service.getTeamIntegrations(project)).map((c) => c.id)).toContain(jira.id);
+    await expect(service.startTeamOAuth(project, 'jira', {})).rejects.toThrow('not an app install');
+    expect((await service.startTeamOAuth(project, 'linear', {})).url).toContain('linear');
+  });
+
+  it('routes events, drops routes with their connection and pages uses', async () => {
+    const service = createMockVolundrService();
+    const [slack] = await service.getTeamIntegrations(project);
+    const route = {
+      connection_id: slack!.id,
+      deliver_to: 'channel' as const,
+      channel: '#eng',
+      enabled: true,
+    };
+    await service.setTeamRoute(project, 'errors', route);
+    await service.setTeamRoute(project, 'errors', { ...route, deliver_to: 'recipient' });
+    expect(await service.getTeamRoutes(project)).toEqual([
+      { event: 'errors', ...route, deliver_to: 'recipient' },
+    ]);
+    await service.removeTeamRoute(project, 'errors');
+    expect(await service.getTeamRoutes(project)).toEqual([]);
+    await expect(
+      service.setTeamRoute(project, 'errors', { ...route, connection_id: 'nope' }),
+    ).rejects.toThrow('not connected');
+
+    const first = await service.getTeamIntegrationUsage(project);
+    expect(first.items).toHaveLength(3);
+    const second = await service.getTeamIntegrationUsage(project, first.next_before!);
+    expect(second.items).toHaveLength(2);
+    expect(second.next_before).toBeNull();
+
+    await service.setTeamRoute(project, 'progress', route);
+    expect(
+      await service.updateTeamIntegration(project, slack!.id, { enabled: false }),
+    ).toMatchObject({ enabled: false });
+    await service.removeTeamIntegration(project, slack!.id);
+    expect(await service.getTeamRoutes(project)).toEqual([]);
+    await expect(service.removeTeamIntegration(project, slack!.id)).rejects.toThrow(
+      'not connected',
+    );
+    await expect(service.updateTeamIntegration(project, slack!.id, {})).rejects.toThrow(
+      'not connected',
+    );
+  });
+});
+
 describe('mock session read state', () => {
   it('marks a session unread and read, advancing the revision each time', async () => {
     const service = createMockVolundrService();
@@ -1112,5 +1246,147 @@ describe('mock secret requests', () => {
     await expect(svc.declineSecretRequest('sess-2', 'secret-request-1')).rejects.toThrow(
       'not found',
     );
+  });
+});
+
+describe('the mock chat participants', () => {
+  it('invites someone from the org, lists them, and no longer offers them as a candidate', async () => {
+    const svc = createMockVolundrService();
+    const before = await svc.getParticipantCandidates('s1', '');
+    expect(before.map((person) => person.userId)).toContain('alice');
+
+    const invited = await svc.inviteSessionParticipant('s1', { userId: 'alice', role: 'approver' });
+
+    expect(invited).toMatchObject({ userId: 'alice', role: 'approver', status: 'invited' });
+    expect((await svc.getSessionParticipants('s1')).map((p) => p.userId)).toEqual(['alice']);
+    expect((await svc.getParticipantCandidates('s1', '')).map((p) => p.userId)).not.toContain(
+      'alice',
+    );
+    expect((await svc.getParticipantCandidates('s1', 'LINDQ')).length).toBe(0);
+    expect((await svc.getParticipantCandidates('s2', 'lindq')).map((p) => p.userId)).toEqual([
+      'alice',
+    ]);
+  });
+
+  it('refuses someone outside the org, and someone already in the chat', async () => {
+    const svc = createMockVolundrService();
+    await expect(
+      svc.inviteSessionParticipant('s1', { userId: 'ghost', role: 'viewer' }),
+    ).rejects.toThrow('Cannot invite this user');
+    await svc.inviteSessionParticipant('s1', { userId: 'bram', role: 'viewer' });
+    // Re-inviting an unanswered invitation replaces it.
+    await expect(
+      svc.inviteSessionParticipant('s1', { userId: 'bram', role: 'approver' }),
+    ).resolves.toMatchObject({ role: 'approver' });
+    expect(await svc.getSessionParticipants('s1')).toHaveLength(1);
+  });
+
+  it('removes a participant, and refuses someone who is not in the chat', async () => {
+    const svc = createMockVolundrService();
+    await svc.inviteSessionParticipant('s1', { userId: 'bram', role: 'viewer' });
+    await svc.removeSessionParticipant('s1', 'bram');
+    expect(await svc.getSessionParticipants('s1')).toEqual([]);
+    await expect(svc.removeSessionParticipant('s1', 'bram')).rejects.toThrow('not in this chat');
+  });
+
+  it('accepts only an invitation that exists', async () => {
+    const svc = createMockVolundrService();
+    await expect(svc.acceptSessionInvitation('s1')).rejects.toThrow('No invitation to accept');
+  });
+
+  it('knows the project people of a session in a project, and none for one without', async () => {
+    const svc = createMockVolundrService();
+    expect(await svc.getSessionProjectPeople('no-such-session')).toBeNull();
+  });
+});
+
+describe('the mock teams', () => {
+  const source = { type: 'git' as const, repo: 'github.com/niuulabs/niuu', branch: 'dev' };
+  const members = [
+    { model: 'm1', definition: 'skuldClaude', personaName: 'coordinator', lead: true },
+    { model: 'm2', definition: 'skuldCodex', personaName: '', lead: false },
+  ];
+
+  it('starts a root and a member session per agent, and lists them as the room', async () => {
+    const svc = createMockVolundrService();
+    const started = await svc.startTeam({
+      name: 'niuu',
+      source,
+      task: 'Fix it',
+      taskTo: 'lead',
+      members,
+      invitees: ['alice'],
+      instanceId: 'thor',
+    });
+
+    // An invitee counts once they have joined, and the team starts on the Forge asked for.
+    expect(started.session).toMatchObject({
+      team: { taskTo: 'lead' },
+      peopleCount: 1,
+      instanceId: 'thor',
+    });
+    expect(started.members.map((member) => member.hostedBy)).toEqual([
+      started.session.id,
+      started.session.id,
+    ]);
+    expect(started.members.map((member) => member.teamMember?.lead)).toEqual([true, false]);
+
+    const room = await svc.getSessionMembers(started.session.id);
+    expect(room.agents.map((agent) => [agent.personaName, agent.lead])).toEqual([
+      ['coordinator', true],
+      ['', false],
+    ]);
+    expect(room.people[0]).toMatchObject({ role: 'owner', status: 'active' });
+    expect(room.people[1]).toMatchObject({ userId: 'alice', role: 'viewer', status: 'invited' });
+  });
+
+  it('refuses to invite someone the org does not have', async () => {
+    const svc = createMockVolundrService();
+    await expect(
+      svc.startTeam({ name: 'n', source, members, invitees: ['ghost'] }),
+    ).rejects.toThrow('Cannot invite this user');
+  });
+
+  it('finds people to invite before the team exists', async () => {
+    const svc = createMockVolundrService();
+    expect((await svc.getTeamInviteCandidates('ali')).map((person) => person.userId)).toEqual([
+      'alice',
+    ]);
+    expect((await svc.getTeamInviteCandidates('')).length).toBeGreaterThan(1);
+  });
+
+  it('refuses a team without exactly one lead, and a task nobody was given', async () => {
+    const svc = createMockVolundrService();
+    await expect(
+      svc.startTeam({ name: 'n', source, members: members.map((m) => ({ ...m, lead: false })) }),
+    ).rejects.toThrow('exactly one lead');
+    await expect(svc.startTeam({ name: 'n', source, task: 'Do it', members })).rejects.toThrow(
+      'who gets it',
+    );
+    const started = await svc.startTeam({ name: 'n', source, task: '  ', members });
+    expect(started.session.team).toEqual({ taskTo: null });
+  });
+
+  it('answers a session that is not a team with the session itself and its people', async () => {
+    const svc = createMockVolundrService();
+    const [session] = await svc.getSessions();
+    await svc.inviteSessionParticipant(session!.id, { userId: 'alice', role: 'viewer' });
+    const room = await svc.getSessionMembers(session!.id);
+    expect(room.agents.map((agent) => agent.sessionId)).toEqual([session!.id]);
+    expect(room.people.map((person) => [person.userId, person.status])).toEqual([
+      [session!.ownerId ?? 'u1', 'active'],
+      ['alice', 'invited'],
+    ]);
+    await expect(svc.getSessionMembers('missing')).rejects.toThrow('Session not found');
+  });
+
+  it('says the owner is online in a running session and an invitee is not there yet', async () => {
+    const svc = createMockVolundrService();
+    const running = (await svc.getSessions()).find((session) => session.status === 'running');
+    await svc.inviteSessionParticipant(running!.id, { userId: 'alice', role: 'viewer' });
+    const room = await svc.getSessionMembers(running!.id);
+    expect(room.people[0]?.online).toBe(true);
+    // An invitee who has not joined is not in the room to be seen.
+    expect(room.people[1]?.online).toBeNull();
   });
 });

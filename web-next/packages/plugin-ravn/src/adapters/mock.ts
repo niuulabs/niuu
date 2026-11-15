@@ -9,10 +9,20 @@ import type {
   IPersonaStore,
   PersonaSummary,
   PersonaDetail,
-  PersonaCreateRequest,
+  PersonaDocument,
   PersonaForkRequest,
   PersonaFilter,
 } from '../ports';
+import {
+  documentDescription,
+  documentInstructions,
+  documentName,
+  documentPermission,
+  documentYaml,
+  outcomesOf,
+  parseDocumentYaml,
+  startsOn,
+} from '../application/personaDocument';
 
 // ---------------------------------------------------------------------------
 // Seed data — mirrors web/src/modules/ravn/api/mockData.ts
@@ -241,63 +251,91 @@ const SEED_PERSONAS: PersonaSummary[] = [
   },
 ];
 
-function toDetail(summary: PersonaSummary, req?: PersonaCreateRequest): PersonaDetail {
-  const isReviewer = summary.name === 'reviewer';
+/** A seeded persona's document, built from what the seed says about it. */
+function seedDocument(summary: PersonaSummary): PersonaDocument {
+  const prefix = summary.producesEvent.split('.')[0] || summary.name.replace(/-/g, '_');
+  const outcomes = Object.entries(summary.outcomeEvents ?? {});
+  const map = outcomes.length
+    ? Object.fromEntries(outcomes)
+    : summary.producesEvent
+      ? { done: summary.producesEvent }
+      : {};
+  return {
+    name: summary.name,
+    description: summary.summary,
+    permission_mode: MODE_BY_API_NAME[summary.permissionMode] ?? 'workspace_write',
+    system_prompt_template: `# ${summary.name}\nYou are the ${summary.name} persona.\n`,
+    consumes: { event_types: [...summary.consumesEvents] },
+    produces: {
+      event_type: summary.producesEvent || `${prefix}.completed`,
+      event_type_map: map,
+      when: Object.fromEntries(
+        Object.keys(map).map((verdict) => [
+          verdict,
+          `The ${summary.name} work ends in ${verdict}.`,
+        ]),
+      ),
+    },
+  };
+}
+
+const MODE_BY_API_NAME: Record<string, string> = {
+  default: 'workspace_write',
+  safe: 'read_only',
+  loose: 'full_access',
+};
+
+const API_NAME_BY_MODE: Record<string, string> = {
+  workspace_write: 'default',
+  'workspace-write': 'default',
+  read_only: 'safe',
+  'read-only': 'safe',
+  full_access: 'loose',
+  'full-access': 'loose',
+};
+
+function summaryOf(doc: PersonaDocument, base?: PersonaSummary): PersonaSummary {
+  const outcomes = outcomesOf(doc);
+  const name = documentName(doc);
+  return {
+    name,
+    role: base?.role ?? 'build',
+    letter: base?.letter ?? (name.charAt(0).toUpperCase() || 'P'),
+    color: base?.color ?? 'var(--color-accent-indigo)',
+    summary: documentDescription(doc) || base?.summary || name,
+    permissionMode: API_NAME_BY_MODE[documentPermission(doc)] ?? 'default',
+    iterationBudget: base?.iterationBudget ?? 0,
+    isBuiltin: base?.isBuiltin ?? false,
+    hasOverride: base ? base.isBuiltin : false,
+    producesEvent: String((doc.produces as Record<string, unknown> | undefined)?.event_type ?? ''),
+    outcomeEvents: Object.fromEntries(outcomes.map((o) => [o.verdict, o.event])),
+    consumesEvents: startsOn(doc),
+  };
+}
+
+function toDetail(summary: PersonaSummary, doc: PersonaDocument): PersonaDetail {
   return {
     ...summary,
-    description:
-      req?.description ??
-      (isReviewer
-        ? 'Careful code reviewer. Blocks on clarity, correctness, tests, and risky tool or permission use.'
-        : `${summary.summary} Configured as a ${summary.role} persona with ${summary.permissionMode} permissions.`),
-    systemPromptTemplate:
-      req?.systemPromptTemplate ??
-      (isReviewer
-        ? [
-            '# reviewer',
-            'You are {{name}}, a {{role}} persona.',
-            'Review code changes for correctness, clarity, tests, and operational risk.',
-            'Block when the diff introduces regressions, missing tests, unsafe permissions, or unbounded side effects.',
-            'Emit {{produces.event}} only after a complete pass.',
-          ].join('\n')
-        : `# ${summary.name}\nYou are the ${summary.name} persona.`),
-    llm: {
-      thinkingEnabled: req?.llmThinkingEnabled ?? isReviewer,
-      maxTokens: req?.llmMaxTokens ?? 8192,
-      temperature: req?.llmTemperature,
-    },
+    description: documentDescription(doc) || summary.summary,
+    systemPromptTemplate: documentInstructions(doc),
+    llm: { thinkingEnabled: false, maxTokens: 0 },
     produces: {
-      eventType: req?.producesEventType ?? summary.producesEvent,
-      schemaDef:
-        req?.producesSchema ??
-        (isReviewer
-          ? {
-              verdict: 'string',
-              confidence: 'number',
-              findings: 'array',
-            }
-          : {}),
+      eventType: summary.producesEvent,
+      schemaDef: {},
+      when: Object.fromEntries(outcomesOf(doc).map((o) => [o.verdict, o.when])),
     },
-    consumes: {
-      events:
-        req?.consumesEvents ??
-        (isReviewer
-          ? [
-              { name: 'code.changed', injects: ['diff', 'commit_summary'], trust: 0.8 },
-              { name: 'review.requested', injects: ['scope', 'owner'], trust: 0.9 },
-            ]
-          : summary.consumesEvents.map((name) => ({ name }))),
-      schemaDef: req?.consumesSchema ?? (isReviewer ? { diff: 'string', scope: 'string' } : {}),
-    },
-    fanIn: req?.fanInStrategy
-      ? { strategy: req.fanInStrategy, params: req.fanInParams ?? {} }
-      : { strategy: 'merge', params: isReviewer ? { mode: 'review.final' } : {} },
-    mimirWriteRouting: req?.mimirWriteRouting ?? (isReviewer ? 'local' : undefined),
+    consumes: { events: startsOn(doc).map((name) => ({ name })), schemaDef: {} },
+    fanIn: { strategy: 'merge', params: {} },
     yamlSource: '[mock]',
-    overrideSource: summary.hasOverride
-      ? `volundr/src/ravn/personas/overrides/${summary.name}.yaml`
-      : undefined,
+    overrideSource: summary.hasOverride ? `[mock override of ${summary.name}]` : undefined,
   };
+}
+
+function parsed(yaml: string): PersonaDocument {
+  const result = parseDocumentYaml(yaml);
+  if (!result.ok) throw new Error(result.error);
+  if (!documentName(result.doc)) throw new Error('A persona needs a name');
+  return result.doc;
 }
 
 // ---------------------------------------------------------------------------
@@ -306,7 +344,34 @@ function toDetail(summary: PersonaSummary, req?: PersonaCreateRequest): PersonaD
 
 /** Create a mock IPersonaStore with the seeded built-in personas. */
 export function createMockPersonaStore(): IPersonaStore {
-  const store = new Map<string, PersonaSummary>(SEED_PERSONAS.map((p) => [p.name, p]));
+  const documents = new Map<string, PersonaDocument>(
+    SEED_PERSONAS.map((p) => [p.name, seedDocument(p)]),
+  );
+  const store = new Map<string, PersonaSummary>(
+    SEED_PERSONAS.map((p) => [
+      p.name,
+      {
+        ...p,
+        outcomeEvents: Object.fromEntries(
+          outcomesOf(documents.get(p.name)!).map((o) => [o.verdict, o.event]),
+        ),
+      },
+    ]),
+  );
+
+  function find(name: string): { summary: PersonaSummary; doc: PersonaDocument } {
+    const summary = store.get(name);
+    const doc = documents.get(name);
+    if (!summary || !doc) throw new Error(`Persona not found: ${name}`);
+    return { summary, doc };
+  }
+
+  function save(doc: PersonaDocument, base?: PersonaSummary): PersonaDetail {
+    const summary = summaryOf(doc, base);
+    store.set(summary.name, summary);
+    documents.set(summary.name, structuredClone(doc));
+    return toDetail(summary, doc);
+  }
 
   return {
     async listPersonas(filter: PersonaFilter = 'all') {
@@ -317,81 +382,52 @@ export function createMockPersonaStore(): IPersonaStore {
     },
 
     async getPersona(name: string) {
-      const p = store.get(name);
-      if (!p) throw new Error(`Persona not found: ${name}`);
-      return toDetail(p);
+      const { summary, doc } = find(name);
+      return toDetail(summary, doc);
     },
 
     async getPersonaYaml(name: string) {
-      const p = store.get(name);
-      if (!p) throw new Error(`Persona not found: ${name}`);
-      return [
-        `name: ${p.name}`,
-        `role: ${p.role}`,
-        `letter: ${p.letter}`,
-        `color: "${p.color}"`,
-        `summary: "${p.summary}"`,
-        `permission_mode: ${p.permissionMode}`,
-        `iteration_budget: ${p.iterationBudget}`,
-        `llm:`,
-        `  alias: claude-sonnet-4-6`,
-        `  thinking: false`,
-        `  max_tokens: 8192`,
-        `produces:`,
-        `  event: ${p.producesEvent || 'null'}`,
-        `  schema: {}`,
-        `consumes:`,
-        `  events:`,
-        ...p.consumesEvents.map((e) => `    - name: ${e}`),
-      ].join('\n');
+      return documentYaml(find(name).doc);
     },
 
-    async createPersona(req: PersonaCreateRequest) {
-      const summary: PersonaSummary = {
-        name: req.name,
-        role: req.role,
-        letter: req.letter,
-        color: req.color,
-        summary: req.summary,
-        permissionMode: req.permissionMode,
-        iterationBudget: req.iterationBudget,
-        isBuiltin: false,
-        hasOverride: false,
-        producesEvent: req.producesEventType,
-        consumesEvents: req.consumesEvents.map((e) => e.name),
-      };
-      store.set(req.name, summary);
-      return toDetail(summary, req);
+    async getPersonaDocument(name: string) {
+      return structuredClone(find(name).doc);
     },
 
-    async updatePersona(name: string, req: PersonaCreateRequest) {
-      const existing = store.get(name);
-      if (!existing) throw new Error(`Persona not found: ${name}`);
-      const updated: PersonaSummary = {
-        ...existing,
-        role: req.role,
-        letter: req.letter,
-        color: req.color,
-        summary: req.summary,
-        permissionMode: req.permissionMode,
-        iterationBudget: req.iterationBudget,
-        producesEvent: req.producesEventType,
-        consumesEvents: req.consumesEvents.map((e) => e.name),
-      };
-      store.set(name, updated);
-      return toDetail(updated, req);
+    async checkPersonaYaml(yaml: string) {
+      try {
+        parsed(yaml);
+        return { valid: true, errors: [] };
+      } catch (error) {
+        return { valid: false, errors: [(error as Error).message] };
+      }
+    },
+
+    async createPersonaFromYaml(yaml: string) {
+      const doc = parsed(yaml);
+      if (store.has(documentName(doc))) {
+        throw new Error(`Persona already exists: ${documentName(doc)}`);
+      }
+      return save(doc);
+    },
+
+    async replacePersonaYaml(name: string, yaml: string) {
+      const { summary } = find(name);
+      const doc = parsed(yaml);
+      if (documentName(doc) !== name) {
+        throw new Error(`The YAML names ${documentName(doc)}, but this is ${name}`);
+      }
+      return save(doc, summary);
     },
 
     async deletePersona(name: string) {
       store.delete(name);
+      documents.delete(name);
     },
 
     async forkPersona(name: string, req: PersonaForkRequest) {
-      const source = store.get(name);
-      if (!source) throw new Error(`Persona not found: ${name}`);
-      const forked: PersonaSummary = { ...source, name: req.newName, isBuiltin: false };
-      store.set(req.newName, forked);
-      return toDetail(forked);
+      const { doc } = find(name);
+      return save({ ...structuredClone(doc), name: req.newName });
     },
   };
 }

@@ -43,10 +43,10 @@ session, and host no room.
 from collections.abc import Mapping
 from typing import Any
 
-from personas.domain.persona_document import (
-    PortablePersonaDefinition,
-    consumed_event_types,
-    produced_event_types,
+from volundr.adapters.outbound.contributors.mesh_values import (
+    MESH_VALUES_KEY,
+    ROOM_VALUES_KEY,
+    announced_persona,
 )
 from volundr.domain.models import Session
 from volundr.domain.ports import SessionContext, SessionContribution, SessionContributor
@@ -63,13 +63,6 @@ from volundr.domain.workflow_session import (
     WORKFLOW_STEPS_VALUES_KEY,
     WORKFLOW_TOPICS_KEY,
 )
-
-#: Top-level key of the session spec values the skuld chart renders as Skuld's ``mesh``.
-MESH_VALUES_KEY = "mesh"
-#: Top-level key of the session spec values the skuld chart renders as Skuld's ``room``.
-ROOM_VALUES_KEY = "room"
-#: What every Skuld session publishes after each turn, besides its persona's own events.
-_SESSION_OUTCOME_EVENT = "code.changed"
 
 
 def workflow_realm(run_id: str) -> str:
@@ -109,7 +102,7 @@ class WorkflowStepHostContributor(SessionContributor):
             "realmId": workflow_realm(run_id),
             # The run's room keeps what its members do: they share it on the mesh.
             "shareWork": self._host_run_room,
-            **_announced(config.get(PERSONA_DEFINITION_KEY)),
+            **announced_persona(config.get(PERSONA_DEFINITION_KEY)),
         }
         return SessionContribution(values=values)
 
@@ -194,23 +187,3 @@ def _require(session: Session, role: str, needed: Mapping[str, bool]) -> None:
         f"session {session.id} is {role} and needs {', '.join(missing)}; the launch request "
         "must carry them, because Skuld refuses to start a run's session without them"
     )
-
-
-def _announced(document: object) -> dict[str, Any]:
-    """What the member announces to the run's other members: its persona and its topics.
-
-    The same facts Skuld derives from the pinned persona for its own mesh identity, written on
-    the pod so pod discovery (and the run's room) can show them. A session pinned to no
-    persona announces none.
-    """
-    if not isinstance(document, dict):
-        return {}
-    persona = PortablePersonaDefinition.from_dict(document)
-    emits = {_SESSION_OUTCOME_EVENT, *produced_event_types(persona.definition)}
-    return {
-        "announce": {
-            "persona": persona.id,
-            "consumes": sorted(consumed_event_types(persona.definition)),
-            "emits": sorted(emits),
-        }
-    }

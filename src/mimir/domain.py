@@ -48,6 +48,10 @@ class MimirMount:
                        ``None`` means the mount accepts all categories.
         read_priority: Read order — lower value is queried first.
                        Conventional values: local=0, shared=1, domain=2.
+        read_only:     The mount refuses every write.
+        write_prefixes: The page path prefixes the mount may write; ``None`` means
+                       any path. A write outside them is refused, as is any write
+                       that cannot be confined to a path (an ingest, a lint fix).
     """
 
     name: str
@@ -55,6 +59,12 @@ class MimirMount:
     role: Literal["shared", "local", "domain"]
     categories: list[str] | None = None  # None = all categories
     read_priority: int = 0
+    read_only: bool = False
+    write_prefixes: tuple[str, ...] | None = None
+
+    @property
+    def restricted(self) -> bool:
+        return self.read_only or self.write_prefixes is not None
 
 
 @dataclass

@@ -354,6 +354,9 @@ def platform_environment(settings: CLISettings, data_root: Path) -> dict[str, st
         "NIUU_CONFIG": str(data_root / "config.yaml"),
         "NIUU_MODE": "mini",
         "NIUU_SETUP_MODE": "docker",
+        # The platform image carries no gbrain, so mini mode's local memory cannot
+        # run in it: switched off explicitly rather than failing the start.
+        "NIUU_LOCAL_MEMORY__ENABLED": "false",
         "NIUU_SERVER__HOST": "0.0.0.0",
         "NIUU_SERVER__EXTERNAL_HOST": "${NIUU_EXTERNAL_HOST}",
         "NIUU_SERVER__PORT": str(settings.server.port),

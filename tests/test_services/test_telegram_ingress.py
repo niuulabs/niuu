@@ -538,3 +538,28 @@ async def test_run_bot_treats_a_conflict_as_another_instance_polling(caplog):
 
     assert "polled by another instance" in caplog.text
     assert "ERROR" not in caplog.text
+
+
+async def test_load_bindings_never_routes_a_projects_connection_to_a_person():
+    from dataclasses import replace
+
+    from niuu.domain.models import project_owner_id
+
+    personal = _connection(owner_id="u0", credential_name="team-telegram")
+    team = replace(personal, owner_id=project_owner_id("p1"), project_id="p1")
+    service = TelegramIngressService(
+        integration_repo=_FakeIntegrationRepo(
+            [team, _connection(owner_id="u1", credential_name="telegram-a")]
+        ),
+        credential_store=_FakeCredentialStore(
+            {
+                ("user", "u1", "telegram-a"): {"bot_token": "token-1"},
+                ("project", "p1", "team-telegram"): {"bot_token": "token-team"},
+            }
+        ),
+        communication_ingress=_FakeCommunicationIngress(),
+    )
+
+    bindings = await service._load_bindings()
+
+    assert [b.bot_token for b in bindings] == ["token-1"]

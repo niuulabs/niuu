@@ -70,14 +70,14 @@ describe('PersonaLibrary — sheet', () => {
     expect(within(sheet).getByTestId('persona-prompt')).toHaveAttribute('data-open', 'true');
   });
 
-  it('shows the YAML and the editor', async () => {
+  it('shows the YAML and opens the editor on the persona', async () => {
     mountRavn('/ravn/personas?persona=reviewer', ravnServices());
     fireEvent.click(await screen.findByTestId('persona-view-yaml'));
     expect(await screen.findByTestId('persona-body-yaml')).toBeInTheDocument();
     fireEvent.click(screen.getByTestId('persona-edit'));
-    expect(await screen.findByTestId('persona-form')).toBeInTheDocument();
-    expect(screen.getByRole('status')).toHaveTextContent('saving writes an override');
-    fireEvent.click(screen.getByRole('button', { name: 'Done' }));
+    expect(await screen.findByTestId('persona-editor')).toBeInTheDocument();
+    expect(screen.getByRole('status')).toHaveTextContent('reviewer is built in');
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
     expect(await screen.findByTestId('persona-sheet')).toBeInTheDocument();
   });
 
@@ -122,40 +122,22 @@ describe('PersonaLibrary — changes', () => {
     );
   });
 
-  it('creates a persona from an empty sheet', async () => {
-    const services = ravnServices();
-    services['ravn.personas'].createPersona = vi
-      .fn()
-      .mockResolvedValue(makePersonaDetail({ name: 'night-watch' }));
-    const router = mountRavn('/ravn/personas', services);
+  it('opens the wizard for a new persona and goes back on cancel', async () => {
+    mountRavn('/ravn/personas', ravnServices());
     fireEvent.click(await screen.findByTestId('persona-new'));
-    const dialog = await screen.findByRole('dialog', { name: 'New persona' });
-    fireEvent.change(within(dialog).getByTestId('persona-name-input'), {
-      target: { value: 'night-watch' },
-    });
-    fireEvent.click(within(dialog).getByTestId('persona-name-submit'));
-    await waitFor(() =>
-      expect(services['ravn.personas'].createPersona).toHaveBeenCalledWith(
-        expect.objectContaining({ name: 'night-watch' }),
-      ),
-    );
-    await waitFor(() =>
-      expect(router.state.location.search).toMatchObject({ persona: 'night-watch' }),
-    );
+    expect(await screen.findByTestId('persona-body-new')).toBeInTheDocument();
+    expect(screen.getByTestId('persona-new')).toBeDisabled();
+    expect(screen.getByTestId('persona-step-body-start')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(await screen.findByTestId('persona-sheet')).toBeInTheDocument();
   });
 
-  it('shows why a new persona could not be saved', async () => {
-    const services = ravnServices();
-    services['ravn.personas'].createPersona = vi
-      .fn()
-      .mockRejectedValue(Object.assign(new Error('x'), { detail: 'read-only registry' }));
-    mountRavn('/ravn/personas', services);
+  it('leaves the wizard when another persona is picked', async () => {
+    mountRavn('/ravn/personas', ravnServices());
     fireEvent.click(await screen.findByTestId('persona-new'));
-    fireEvent.change(await screen.findByTestId('persona-name-input'), {
-      target: { value: 'night-watch' },
-    });
-    fireEvent.click(screen.getByTestId('persona-name-submit'));
-    expect(await screen.findByText('read-only registry')).toBeInTheDocument();
+    await screen.findByTestId('persona-body-new');
+    fireEvent.click(screen.getByTestId('persona-row-research-framer'));
+    expect(await screen.findByRole('heading', { level: 1, name: 'research-framer' })).toBeVisible();
   });
 
   it('deletes a custom persona', async () => {

@@ -15,6 +15,10 @@ from volundr.domain.ports import (
 logger = logging.getLogger(__name__)
 
 
+class UnitWorkspaceMissingError(RuntimeError):
+    """A unit member was built before its unit root had a workspace to share."""
+
+
 class StorageContributor(SessionContributor):
     """Provisions per-user home and per-session workspace PVCs."""
 
@@ -85,7 +89,10 @@ class StorageContributor(SessionContributor):
         ):
             return SessionContribution()
 
-        home_pvc, workspace_pvc = await self._provision(session)
+        if session.is_hosted:
+            home_pvc, workspace_pvc = await self._provision_member(session)
+        else:
+            home_pvc, workspace_pvc = await self._provision(session)
 
         values: dict[str, Any] = {}
         if home_pvc:
@@ -119,7 +126,31 @@ class StorageContributor(SessionContributor):
             return
         if self._storage is None:
             return
+        if session.is_hosted:
+            # The workspace is the unit root's: it is archived when the root stops.
+            return
         await self._storage.archive_session_workspace(str(session.id))
+
+    async def _provision_member(self, session: Session) -> tuple[str | None, str]:
+        """A unit member's claims: its unit root's workspace, and its own home.
+
+        A member is a container of its unit's pod, and the pod has one workspace: the root's.
+        A workspace of the member's own could never be mounted (the unit refuses a member
+        that disagrees with its pod), so none is made.
+        """
+        unit_id = str(session.hosted_by)
+        unit_workspace = await self._storage.get_workspace_by_session(unit_id)
+        if unit_workspace is None:
+            raise UnitWorkspaceMissingError(
+                f"Member {session.id} works in the workspace of its unit {unit_id}, which has "
+                "none: the unit root's launch provisions it before its members are built, so "
+                "stop the unit and start it again"
+            )
+        home_pvc = None
+        if self._mounts_home(session) and session.owner_id:
+            home_ref = await self._storage.provision_user_storage(session.owner_id, StorageQuota())
+            home_pvc = home_ref.name if home_ref else None
+        return (home_pvc, unit_workspace.pvc_name)
 
     async def _provision(
         self,

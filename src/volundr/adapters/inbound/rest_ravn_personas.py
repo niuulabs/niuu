@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, Response, status
@@ -9,7 +10,12 @@ from pydantic import BaseModel, Field, model_validator
 
 from niuu.domain.models import Principal
 from personas.adapters.postgres_registry import PersonaView, PostgresPersonaRegistry
-from personas.domain.persona_document import PersonaDocumentError, refuse_tool_restrictions
+from personas.domain.persona_document import (
+    PersonaDocumentError,
+    PortablePersonaDefinition,
+    parse_persona_definition_yaml,
+    refuse_tool_restrictions,
+)
 from volundr.adapters.inbound.auth import extract_principal, get_current_user
 from volundr.domain.models import User
 
@@ -174,6 +180,15 @@ class PersonaForkRequest(BaseModel):
     new_name: str = Field(min_length=1, max_length=128, pattern=_NAME_PATTERN)
 
 
+class PersonaDocumentRequest(BaseModel):
+    """A persona as its YAML document."""
+
+    yaml: str = Field(
+        min_length=1,
+        description="The persona's YAML document, exactly what is saved; its name is the persona",
+    )
+
+
 class PersonaValidateResponse(BaseModel):
     """Validation response."""
 
@@ -219,6 +234,88 @@ def create_ravn_personas_router(registry: PostgresPersonaRegistry | None = None)
                 f"Must be one of: {', '.join(sorted(VALID_FAN_IN_STRATEGIES))}"
             )
         return PersonaValidateResponse(valid=not errors, errors=errors)
+
+    @router.post("/personas/yaml/check", response_model=PersonaValidateResponse)
+    @router.post(
+        "/ravn/personas/yaml/check",
+        response_model=PersonaValidateResponse,
+        include_in_schema=False,
+    )
+    async def check_persona_yaml(body: PersonaDocumentRequest) -> PersonaValidateResponse:
+        """Check a persona's YAML as saving it would, without saving it."""
+        try:
+            _parse_document(body.yaml)
+        except HTTPException as exc:
+            return PersonaValidateResponse(valid=False, errors=[str(exc.detail)])
+        return PersonaValidateResponse(valid=True)
+
+    @router.post(
+        "/personas/yaml",
+        response_model=PersonaDetailResponse,
+        status_code=status.HTTP_201_CREATED,
+        responses={409: {"model": ErrorResponse}, 422: {"model": ErrorResponse}},
+    )
+    @router.post(
+        "/ravn/personas/yaml",
+        response_model=PersonaDetailResponse,
+        status_code=status.HTTP_201_CREATED,
+        responses={409: {"model": ErrorResponse}, 422: {"model": ErrorResponse}},
+        include_in_schema=False,
+    )
+    async def create_persona_from_yaml(
+        body: PersonaDocumentRequest,
+        principal: Principal = Depends(extract_principal),
+        user: User = Depends(get_current_user),
+        persona_registry: PostgresPersonaRegistry = Depends(_get_registry),
+    ) -> PersonaDetailResponse:
+        """Create a persona from its YAML document, keeping every field it declares."""
+        del user
+        document = _parse_document(body.yaml)
+        existing = await persona_registry.get_persona(principal.user_id, document.id)
+        if existing is not None:
+            kind = "built-in" if existing.is_builtin else "custom"
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"Persona already exists as {kind}: {document.id}",
+            )
+        return await _save_document(persona_registry, principal.user_id, document)
+
+    @router.put(
+        "/personas/{name}/yaml",
+        response_model=PersonaDetailResponse,
+        responses={404: {"model": ErrorResponse}, 422: {"model": ErrorResponse}},
+    )
+    @router.put(
+        "/ravn/personas/{name}/yaml",
+        response_model=PersonaDetailResponse,
+        responses={404: {"model": ErrorResponse}, 422: {"model": ErrorResponse}},
+        include_in_schema=False,
+    )
+    async def replace_persona_from_yaml(
+        body: PersonaDocumentRequest,
+        name: str = Path(description="Persona name"),
+        principal: Principal = Depends(extract_principal),
+        user: User = Depends(get_current_user),
+        persona_registry: PostgresPersonaRegistry = Depends(_get_registry),
+    ) -> PersonaDetailResponse:
+        """Replace a persona (or override a built-in) with its YAML document."""
+        del user
+        existing = await persona_registry.get_persona(principal.user_id, name)
+        if existing is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Persona not found: {name}",
+            )
+        document = _parse_document(body.yaml)
+        if document.id != name:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=(
+                    f"The YAML names the persona {document.id!r}, but this is {name!r}; "
+                    f"set name: {name}, or fork {name} to save it under a new name"
+                ),
+            )
+        return await _save_document(persona_registry, principal.user_id, document)
 
     @router.get(
         "/personas/{name}/portable",
@@ -467,14 +564,62 @@ def create_ravn_personas_router(registry: PostgresPersonaRegistry | None = None)
                 detail=f"Persona already exists as built-in: {body.new_name}",
             )
 
+        # The fork is the source's whole document under the new name, so it keeps every field
+        # (outcome rules, schema descriptions, …), not only what the registry payload holds.
+        source_document = await persona_registry.get_current_portable_persona(
+            principal.user_id, name
+        )
+        if source_document is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Persona not found: {name}",
+            )
         payload = dict(source_view.payload)
         payload["name"] = body.new_name
+        payload["document"] = source_document.definition
         await persona_registry.save_persona(principal.user_id, payload)
         saved = await persona_registry.get_persona(principal.user_id, body.new_name)
         assert saved is not None
         return _to_detail(saved)
 
     return router
+
+
+def _parse_document(text: str) -> PortablePersonaDefinition:
+    """Parse a persona's YAML, refusing it with the reason (422) when it cannot be saved."""
+    try:
+        document = parse_persona_definition_yaml(text)
+    except ValueError as exc:  # PersonaDocumentError is a ValueError
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=str(exc),
+        ) from exc
+    if not re.fullmatch(_NAME_PATTERN, document.id):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=(
+                f"Persona name {document.id!r} must start with a letter or digit and use only "
+                "letters, digits, dashes and underscores"
+            ),
+        )
+    return document
+
+
+async def _save_document(
+    registry: PostgresPersonaRegistry,
+    owner_id: str,
+    document: PortablePersonaDefinition,
+) -> PersonaDetailResponse:
+    try:
+        await registry.save_persona_document(owner_id, document)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=str(exc),
+        ) from exc
+    saved = await registry.get_persona(owner_id, document.id)
+    assert saved is not None
+    return _to_detail(saved)
 
 
 def _to_summary(view: PersonaView) -> PersonaSummaryResponse:

@@ -1755,6 +1755,54 @@ describe('SessionChat', () => {
     expect(screen.getByText('Reviewer work')).toBeInTheDocument();
   });
 
+  it("keeps a speaker's notification card out of its folded work in a room", () => {
+    localStorage.setItem('niuu.compactUx.conversationFold', 'compact');
+    render(
+      <SessionChat
+        {...defaultProps}
+        connected
+        participants={
+          new Map([
+            [participant.peerId, participant],
+            [participant2.peerId, participant2],
+          ])
+        }
+        messages={[
+          userMessage,
+          {
+            ...roomAssistantMessage,
+            id: 'n1',
+            content: 'Migration applied',
+            parts: [
+              {
+                type: 'tool_use',
+                id: 'nt_1',
+                name: 'forge_notification',
+                input: {
+                  notification_id: 'n-1',
+                  kind: 'milestone',
+                  severity: 'success',
+                  title: 'Migration applied',
+                  body: 'All tables exist.',
+                  links: [],
+                },
+              },
+            ],
+          },
+          { ...roomAssistantMessage, id: 'a1', content: 'Reviewer work' },
+          { ...roomAssistantMessage, id: 'a2', content: 'Reviewer answer' },
+        ]}
+      />,
+    );
+
+    expect(screen.getByTestId('notification-card')).toHaveTextContent('Migration applied');
+    expect(screen.getByRole('button', { name: /^Reviewer: Worked/ })).toHaveAttribute(
+      'aria-expanded',
+      'false',
+    );
+    expect(screen.queryByText('Reviewer work')).not.toBeInTheDocument();
+  });
+
   it('keeps failed room work visible in compact view', () => {
     localStorage.setItem('niuu.compactUx.conversationFold', 'compact');
     render(
@@ -2063,5 +2111,44 @@ describe("SessionChat — a workflow run's room", () => {
     expect(onWorkersChange.mock.calls[0]![0].map((w: { name: string }) => w.name)).toEqual([
       'wf-run-1-reviewer',
     ]);
+  });
+
+  describe('message authors', () => {
+    const alice = { userId: 'u-alice', displayName: 'Alice Liddell' };
+    const bob = { userId: 'u-bob', displayName: 'Bob Stone' };
+    const said = (id: string, author?: typeof alice): ChatMessage => ({
+      ...userMessage,
+      id,
+      content: `message ${id}`,
+      ...(author ? { author } : {}),
+    });
+
+    it('keeps the plain look when only the viewer has spoken', () => {
+      render(
+        <SessionChat
+          {...defaultProps}
+          viewerId="u-alice"
+          messages={[said('1', alice), said('2', alice)]}
+        />,
+      );
+      expect(screen.queryByTestId('user-author')).not.toBeInTheDocument();
+    });
+
+    it('names someone else who spoke in a session the viewer is in', () => {
+      render(<SessionChat {...defaultProps} viewerId="u-alice" messages={[said('1', bob)]} />);
+      expect(screen.getByTestId('user-author')).toHaveTextContent('Bob Stone');
+    });
+
+    it('names every author, the viewer too, once two people have spoken', () => {
+      render(
+        <SessionChat
+          {...defaultProps}
+          viewerId="u-alice"
+          messages={[said('1', alice), said('2', bob), said('3')]}
+        />,
+      );
+      const names = screen.getAllByTestId('user-author').map((node) => node.textContent);
+      expect(names).toEqual(['Alice Liddell', 'Bob Stone']);
+    });
   });
 });

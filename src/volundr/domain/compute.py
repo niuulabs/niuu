@@ -502,10 +502,13 @@ class ComputeLeaseRepository(ABC):
 
     @abstractmethod
     async def reserve(
-        self, lease: ComputeLease, limit: int, binding: ComputeSlot | None = None
+        self, lease: ComputeLease, limit: int | None, binding: ComputeSlot | None = None
     ) -> tuple[ComputeLease, ComputeSlot | None]:
         """Atomically reserve pool capacity, with the session's binding, or return the
-        same live session claim."""
+        same live session claim.
+
+        ``limit`` is the pool's machine maximum; None for a fixed inventory, whose size
+        is the machines that exist (its provider refuses a claim none can serve)."""
 
     @abstractmethod
     async def get(self, lease_id: UUID) -> ComputeLease | None: ...
@@ -562,7 +565,10 @@ class ComputePoolPolicy(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     profile: str = Field(min_length=1)
-    max_machines: int = Field(gt=0)
+    # None only on a fixed inventory (registered hosts): there the pool is the machines
+    # that joined, so a maximum would only strand hosts. A VM pool needs one, since its
+    # provider makes a machine for every claim; the pool service refuses either mismatch.
+    max_machines: int | None = Field(default=None, gt=0)
     slots_per_machine: int = Field(default=1, gt=0)
     max_sessions_per_machine: int | None = Field(default=None, gt=0)
     max_machine_age_seconds: float | None = Field(default=None, gt=0)
@@ -576,7 +582,10 @@ class ComputePoolPolicy(BaseModel):
 
     @model_validator(mode="after")
     def capacity_bounds(self):
-        if self.warm_min > self.max_machines * self.slots_per_machine:
+        if (
+            self.max_machines is not None
+            and self.warm_min > self.max_machines * self.slots_per_machine
+        ):
             raise ValueError("Warm minimum cannot exceed maximum machines times slots per machine")
         has_drain_limit = (
             self.max_sessions_per_machine is not None or self.max_machine_age_seconds is not None

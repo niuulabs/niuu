@@ -77,6 +77,34 @@ async def test_shared_integrations_forwards_configured_auth_and_closes(monkeypat
     repository.close.assert_awaited_once()
 
 
+async def test_postgres_integrations_record_team_uses_in_the_same_database():
+    from niuu.adapters.postgres_integration_usage import PostgresIntegrationUsageLog
+    from ting import main
+    from ting.config import Settings
+
+    pool = object()
+    async with main._integration_repository(Settings(), pool) as stores:
+        assert isinstance(stores.usage_log, PostgresIntegrationUsageLog)
+        assert stores.usage_log._pool is pool
+
+
+async def test_http_integrations_have_no_usage_log(monkeypatch):
+    from unittest.mock import AsyncMock, MagicMock
+
+    from ting import main
+    from ting.config import Settings
+
+    repository = AsyncMock()
+    monkeypatch.setattr(main, "HTTPIntegrationRepository", MagicMock(return_value=repository))
+    settings = Settings(
+        auth={"allow_anonymous_dev": True},
+        shared_integrations={"base_url": "https://identity.test"},
+    )
+    async with main._integration_repository(settings, object()) as stores:
+        assert stores.repository is repository
+        assert stores.usage_log is None
+
+
 async def test_shared_integrations_rejects_ambiguous_store():
     from ting.config import Settings
     from ting.main import _integration_repository

@@ -39,7 +39,6 @@ def test_broker_preserves_lifecycle_methods_through_focused_mixins() -> None:
     }
     websocket_methods = {
         "_authorize_websocket",
-        "_update_jwt_from_websocket",
         "_safe_browser_send_json",
         "handle_websocket",
         "handle_cli_websocket",

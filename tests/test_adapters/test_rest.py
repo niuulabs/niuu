@@ -195,7 +195,7 @@ class TestSessionResponse:
             tokens_used=1000,
             pod_name="volundr-abc123",
         )
-        response = SessionResponse.from_session(session)
+        response = SessionResponse.from_session(session, people_count=1)
 
         assert response.id == session.id
         assert response.name == session.name
@@ -241,7 +241,7 @@ class TestSessionResponse:
             startup=startup,
         )
 
-        response = SessionResponse.from_session(session)
+        response = SessionResponse.from_session(session, people_count=1)
 
         assert response.startup == startup
         body = response.model_dump(mode="json")["startup"]
@@ -259,7 +259,7 @@ class TestSessionResponse:
             source=GitSource(repo="https://github.com/org/repo", branch="main"),
         )
 
-        response = SessionResponse.from_session(session)
+        response = SessionResponse.from_session(session, people_count=1)
 
         assert response.startup is None
         assert response.model_dump(mode="json")["startup"] is None
@@ -275,7 +275,7 @@ class TestSessionResponse:
             chat_endpoint="ws://127.0.0.1:8080/s/example/session",
         )
 
-        response = SessionResponse.from_session(session)
+        response = SessionResponse.from_session(session, people_count=1)
 
         assert response.chat_endpoint == "ws://localhost:8080/s/example/session"
 
@@ -289,7 +289,7 @@ class TestSessionResponse:
             chat_endpoint=("ws://forge-example--skuld.openshell.localhost:8080/session"),
         )
 
-        response = SessionResponse.from_session(session)
+        response = SessionResponse.from_session(session, people_count=1)
 
         assert response.chat_endpoint == f"/s/{session.id}/session"
 

@@ -758,6 +758,8 @@ class TestIntegrationEndpoints:
                 "sign_in_available": False,
                 "sign_in_needs_app": False,
                 "model_vendor": "",
+                "team_install": "",
+                "team_only": False,
             }
         ]
 
