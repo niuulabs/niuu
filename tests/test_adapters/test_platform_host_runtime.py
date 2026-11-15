@@ -305,12 +305,12 @@ def test_a_child_whose_slots_have_no_limits_need_not_match_and_sizes_nothing():
     # A Mac with shared slots: its slots separate, but nothing limits them.
     unlimited = SlotLimits(uid_base=61000, cpu=None, memory_mib=None, pids=None)
     runtime = _runtime(
-        FakeRuntime(DARWIN, slots=True, limits=unlimited),
-        FakeRuntime(LINUX, slots=True, limits=LIMITS),
+        darwin=FakeRuntime(DARWIN, slots=True, limits=unlimited),
+        linux=FakeRuntime(LINUX, slots=True, limits=LIMITS),
     )
     assert runtime.slot_limits == LIMITS
     assert runtime.slot_platforms == frozenset({LINUX, DARWIN})
-    alone = _runtime(FakeRuntime(DARWIN, slots=True, limits=unlimited))
+    alone = _runtime(darwin=FakeRuntime(DARWIN, slots=True, limits=unlimited))
     assert alone.slot_limits == unlimited
 
 
