@@ -42,7 +42,7 @@ from volundr.domain.models import GitSource, PodSpecAdditions, Session, SessionS
 from volundr.domain.ports import HostedUnitError
 from volundr.domain.services.host_access_key import generate_host_access_key
 from volundr.domain.session_runtimes import SessionRuntimeKind
-from volundr.domain.vm_runtime import SessionImages
+from volundr.domain.vm_runtime import SessionImages, VmRuntimeStageError
 
 DIGEST = "b" * 64
 BUNDLE = f"ghcr.io/niuulabs/skuld-darwin@sha256:{DIGEST}"
@@ -378,9 +378,17 @@ def test_slot_down_fails_on_any_other_find_error(tmp_path, stderr, exit_code, de
     result = _remove_owned(tmp_path, stderr, exit_code)
 
     assert result.returncode == 1
-    assert f"{STAGE_PREFIX}slot-down" in result.stderr
-    assert detail in result.stderr
-    assert "Operation not permitted" not in result.stderr.split(DETAIL_PREFIX)[-1]
+    # What Forge shows: the stage, and the detail decoded as SshGuestAccess reads it.
+    with pytest.raises(VmRuntimeStageError) as raised:
+        SshGuestAccess._raise_command_error(
+            result.returncode,
+            result.stderr.encode(),
+            safe_error_prefix=STAGE_PREFIX,
+            safe_detail_prefix=DETAIL_PREFIX,
+        )
+    assert raised.value.stage == "slot-down"
+    assert detail in raised.value.diagnostic
+    assert "Operation not permitted" not in raised.value.diagnostic
 
 
 # -- translation -------------------------------------------------------------------------------
@@ -505,6 +513,9 @@ async def test_start_fetches_the_bundle_makes_the_slot_then_starts_the_session(m
     assert slot["label"] == "world.niuu.slot.0"
     assert calls[2].kwargs["safe_error_prefix"] == "NIUU_SLOT_STAGE:"
     assert commands[-1] == runtime._python(programs.START)
+    # A failed start names its step and reason, as the slot program does.
+    assert calls[-1].kwargs["safe_error_prefix"] == STAGE_PREFIX
+    assert calls[-1].kwargs["safe_detail_prefix"] == DETAIL_PREFIX
     placed = json.loads(calls[-1].kwargs["data"])
     environment = placed["environment"]
     assert environment["HOME"] == "/var/lib/niuu/slots/0/session/home"

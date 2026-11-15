@@ -453,14 +453,14 @@ containers). The container runtime's clone reads it through a credential helper,
 and so does the session's own Git (`GIT_TOKEN_FILE`, a repository-scoped
 `credential.<url>.helper`), on every fetch and push. The token never enters the
 launch file, a URL or the repository's config. A token that was not rendered
-fails the start at stage `clone`. The Linux host-mode runtime reads the same
-token: root reads the rendered file (whichever user the agent wrote it as) and the
-clone, run as the slot's user, gets it through its environment and a
+fails the start at stage `clone`. Both host-mode runtimes (Linux and Mac) read the
+same token: root reads the rendered file (whichever user the agent wrote it as) and
+the clone, run as the slot's user, gets it through its environment and a
 repository-scoped credential helper; the repository is then configured as the
 container runtime's is, and the session gets the same `GIT_TOKEN_FILE` environment.
-A token that was not rendered fails the start at stage `host-workspace`. The Mac
-host runtime and the OpenShell runtimes clone with their own programs and do not
-read this token.
+On a Mac both name the token's place on the Mac, as every other path of the
+session. A token that was not rendered fails the start at stage `host-workspace`.
+The OpenShell runtimes clone with their own programs and do not read this token.
 
 Credential files live outside the archived workspace/home and are deleted with the
 VM. PVCs, ConfigMap/Secret volumes, `valueFrom` env and workspace host-path sources
@@ -1079,8 +1079,9 @@ When ssh itself fails (exit 255), the guest stage and the session error carry th
 OpenSSH client's own reason (a timeout, a refused key, a changed host key). Nothing
 else from the guest command's stderr is shown, since it may carry credentials.
 
-A host-mode session whose Skuld does not start names the step that failed
-(`host-workspace`, `host-containers`, `host-nix`, `host-mounts`, `host-launch`) and
+A host-mode session whose Skuld does not start, on Linux or a Mac, names the step
+that failed (`host-workspace`, `host-containers`, `host-nix`, `host-mounts`,
+`host-agents` on a Mac, `host-launch`) and
 the reason the start program wrote: its own check (`Session storage was not
 prepared`), a failed command's exit code (`git clone of the session's repository
 exited 128`, never the repository's URL or the command's output), or Skuld's exit

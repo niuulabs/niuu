@@ -14,7 +14,11 @@ what root writes for it in ``/var/run/niuu/slots/0``, and the session's launchd 
 from __future__ import annotations
 
 from volundr.adapters.outbound.host_session_programs import SLOT_STORAGE
-from volundr.adapters.outbound.vm_slot_supervisor import DETAIL_PREFIX, STAGE_PREFIX
+from volundr.adapters.outbound.vm_slot_supervisor import (
+    DETAIL_PREFIX,
+    DIAGNOSTIC_LIMIT,
+    STAGE_PREFIX,
+)
 
 #: Fetch the session bundle by digest from its OCI registry and unpack it once per digest.
 #: argv: the digest-pinned reference, the bundle root, the layer media type. Anonymous
@@ -129,11 +133,20 @@ _SLOT_COMMON = (
     + ", "
     + repr(DETAIL_PREFIX)
     + "\n"
+    + "LIMIT = "
+    + repr(DIAGNOSTIC_LIMIT)
+    + "\n"
     + r"""
-import json, os, pathlib, plistlib, signal, subprocess, sys, time
-def fail(stage, detail):
+import base64, json, os, pathlib, plistlib, signal, subprocess, sys, time
+def report(stage, detail):
+    # One printable line, base64 as SshGuestAccess reads it; a longer one says it was cut.
+    line = ' '.join(''.join(c if ' ' <= c <= '~' else ' ' for c in detail).split())
+    if len(line) > LIMIT:
+        line = line[:LIMIT - len(' [truncated]')] + ' [truncated]'
     print(STAGE + stage, file=sys.stderr)
-    print(DETAIL + detail, file=sys.stderr)
+    print(DETAIL + base64.b64encode(line.encode()).decode(), file=sys.stderr)
+def fail(stage, detail):
+    report(stage, detail)
     sys.exit(1)
 def loaded(label):
     return subprocess.run(['launchctl', 'print', 'system/' + label],
@@ -311,6 +324,13 @@ START = (
     _SLOT_COMMON
     + SLOT_STORAGE
     + r"""
+# A failure names its step and a reason this program wrote: a failed command's exit
+# code, never its output or arguments. Anything unforeseen names its step and type.
+stage = ['payload']
+def unforeseen(kind, value, trace):
+    report('host-' + stage[0], kind.__name__ + ' while starting the session; its details '
+        'stay on the Mac')
+sys.excepthook = unforeseen
 p = json.load(sys.stdin)
 s, d = p['slot'], p['darwin']
 uid, label = s['uid'], d['label']
@@ -329,19 +349,41 @@ if loaded(label):
         sys.exit(0)
     # A new launch replaced the Forge session credential the running broker read.
     bootout(label, d['stop_timeout'], d['poll'])
+stage[0] = 'workspace'
 root = pathlib.Path(s['data_root'])
-workspace, home = prepare_storage(root, s['marker'], uid, p['repo'], p['branch'])
+g, git = p.get('git'), None
+try:
+    if g and p['repo']:
+        # Forge placed the token's rendered file and the session's view of it on the Mac.
+        git = integration_git(g, p['repo'], pathlib.Path(g['token_source']), g['token_file'])
+    workspace, home = prepare_storage(root, s['marker'], uid, p['repo'], p['branch'], (), git)
+except subprocess.CalledProcessError as exc:
+    if exc.cmd[0] != 'git':
+        step = 'giving the slot its storage (' + exc.cmd[0] + ')'
+    elif 'clone' in exc.cmd:
+        step = "git clone of the session's repository"
+    else:
+        step = "configuring the cloned repository's Git credential"
+    fail('host-workspace', step + ' exited ' + str(exc.returncode))
+except (RuntimeError, OSError) as exc:
+    fail('host-workspace', str(exc))
+stage[0] = 'mounts'
 for item in p.get('directories', []):
     # Written by root and the Forge's agents, read by the session (its group); a volume the
     # session writes to is its group's too.
     path = pathlib.Path(item['path'])
     if path.is_symlink():
-        raise RuntimeError(str(path) + ' is a link')
+        fail('host-mounts', str(path) + ' is a link')
     path.mkdir(parents=True, exist_ok=True)
     os.chown(str(path), 0, uid)
     os.chmod(str(path), int(item['mode'], 8))
 if d['nix']:
-    require_nix('Mac')
+    stage[0] = 'nix'
+    try:
+        require_nix('Mac')
+    except RuntimeError as exc:
+        fail('host-nix', str(exc))
+stage[0] = 'mounts'
 address = p.get('metadata_address')
 if address:
     shown = subprocess.run(['ifconfig', 'lo0', 'inet'], check=True, capture_output=True,
@@ -356,7 +398,7 @@ for item in d['links']:
     if link.is_symlink() and os.readlink(str(link)) == item['source']:
         continue
     if os.path.lexists(str(link)):
-        raise RuntimeError(str(link) + ' exists on this Mac; the session expects its own there')
+        fail('host-mounts', str(link) + ' exists on this Mac; the session expects its own there')
     link.parent.mkdir(parents=True, exist_ok=True)
     os.symlink(item['source'], str(link))
 state = pathlib.Path(d['state_root'])
@@ -365,6 +407,7 @@ os.chmod(str(state), 0o700)
 logs = pathlib.Path(d['log_root'])
 logs.mkdir(parents=True, exist_ok=True)
 os.chmod(str(logs), 0o700)
+stage[0] = 'agents'
 def native(c):
     environment = {'PATH': d['native_path'], 'HOME': d['agent_home'], 'TMPDIR': d['agent_tmp'],
         **c['environment']}
@@ -376,7 +419,7 @@ for c in p.get('init_containers', []):
     with open(str(logs / (c['name'] + '.log')), 'ab') as log:
         result = subprocess.run(command, env=environment, cwd='/', stdout=log, stderr=log)
     if result.returncode:
-        raise RuntimeError('Init container ' + c['name'] + ' exited with status '
+        fail('host-agents', 'Init container ' + c['name'] + ' exited with status '
             + str(result.returncode) + '; see ' + str(logs / (c['name'] + '.log')) + ' on the Mac')
 for c in p.get('sidecars', []):
     sidecar = label + '.' + c['name']
@@ -392,6 +435,7 @@ for c in p.get('sidecars', []):
         'StandardErrorPath': str(logs / (c['name'] + '.log')),
     })
     subprocess.run(['launchctl', 'bootstrap', 'system', plist], check=True)
+stage[0] = 'launch'
 spec = state / 'session.json'
 fd = os.open(str(spec), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
 with os.fdopen(fd, 'w') as out:
@@ -411,7 +455,9 @@ deadline = time.monotonic() + d['start_timeout']
 while not running() and time.monotonic() < deadline:
     time.sleep(d['poll'])
 if not running():
-    raise RuntimeError('The session did not start; see ' + str(logs / 'skuld.log') + ' on the Mac')
+    fail('host-launch', 'The session did not start within %gs; raise '
+        'compute.runtime.kwargs.session_start_timeout_seconds or see %s on the Mac'
+        % (d['start_timeout'], logs / 'skuld.log'))
 """
 )
 

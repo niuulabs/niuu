@@ -256,6 +256,9 @@ class SshDarwinHostRuntime(HostModeRuntime):
     """
 
     _audit_program = DARWIN_AUDIT_SH
+    # START reads the attached integration's token where ``_place_launch`` puts it and
+    # clones with it as the slot's user; the session's Git reads its file there too.
+    _clones_with_integration_token = True
 
     def __init__(
         self,
@@ -565,6 +568,17 @@ class SshDarwinHostRuntime(HostModeRuntime):
             ]
         )
         placed["environment"] = environment
+        if git := placed.get("git"):
+            # Where root reads the token the slot's agent rendered, and where the session's
+            # Git reads it: the mount's place on the Mac, as every other path of the session.
+            mount = next((m for m in session_mounts if m["target"] == git["token_mount"]), None)
+            if mount is None:
+                raise ValueError(
+                    f"The session's Git integration token {git['token_file']!r} is on no "
+                    "mount of the Mac session"
+                )
+            git["token_source"] = str(PurePosixPath(mount["source"], git["token_path"]))
+            git["token_file"] = translate(git["token_file"], places)
         for container in (*placed.get("init_containers", []), *placed.get("sidecars", [])):
             mounts = {
                 mount["target"]: layout.relocate(mount["source"]) for mount in container["mounts"]
@@ -616,7 +630,12 @@ class SshDarwinHostRuntime(HostModeRuntime):
         self._require_native(payload)
         self._step(lease, "guest_host", f"Starting Skuld as {self._layout(lease).name}")
         await self._guest_access.execute(
-            lease, bootstrap, self._python(programs.START), data=json.dumps(payload).encode()
+            lease,
+            bootstrap,
+            self._python(programs.START),
+            data=json.dumps(payload).encode(),
+            safe_error_prefix=STAGE_PREFIX,
+            safe_detail_prefix=DETAIL_PREFIX,
         )
 
     async def _stop_session(  # type: ignore[override]

@@ -75,6 +75,22 @@ def prepare_storage(root, marker, uid, repo, branch, keep_owners=(), git=None):
     subprocess.run(['find', str(root), *prune, '-exec', 'chown', '-h', '%d:%d' % (uid, uid),
         '{}', '+'], check=True)
     return workspace, home
+def integration_git(g, repo, token, token_file):
+    # The attached integration's token as root reads it (the agent writes it as its own
+    # user), for the clone's environment, and the settings the session's own Git reads the
+    # file at token_file with, on every fetch and push.
+    if not token.is_file() or not token.stat().st_size:
+        raise RuntimeError('The Git integration token was not rendered at ' + token_file)
+    settings = [('niuu.gitTokenFile', token_file), ('niuu.gitUsername', g['username']),
+        ('credential.helper', ''), ('credential.useHttpPath', 'true'),
+        ('credential.' + repo + '.helper', '!f() { [ "$1" = get ] || return 0; '
+         'token=$(cat "$(git config niuu.gitTokenFile)") || return 1; '
+         '[ -n "$token" ] || return 1; printf "username=%s\\npassword=%s\\n" '
+         '"$(git config niuu.gitUsername)" "$token"; }; f')]
+    settings += [(k, g[v]) for k, v in (('user.name', 'user_name'),
+        ('user.email', 'user_email'), ('niuu.baseBranch', 'base_branch')) if g[v]]
+    return {'username': g['username'], 'token': token.read_text().strip(),
+        'settings': settings}
 def require_nix(machine):
     if not os.path.exists('/nix/var/nix/daemon-socket/socket'):
         raise RuntimeError('This ' + machine + ' has no Nix daemon; install Nix through the '

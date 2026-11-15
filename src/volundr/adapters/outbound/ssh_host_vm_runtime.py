@@ -237,24 +237,16 @@ stage[0] = 'workspace'
 root = pathlib.Path(s['data_root'])
 g, git = p.get('git'), None
 if g and p['repo']:
-    # The attached integration's token, rendered by the slot's agent into its mounted
-    # volume. Root reads it, whoever the agent wrote it as; the clone gets it through
-    # its environment and the session's Git through this file, on every fetch and push.
+    # The token's file, through the mount the slot's agent renders it into.
     mount = next((m for m in [*p.get('secret_mounts', []), *p.get('volume_mounts', [])]
         if m['target'] == g['token_mount']), None)
-    token = pathlib.Path(mount['source'], g['token_path']) if mount else None
-    if token is None or not token.is_file() or not token.stat().st_size:
+    if mount is None:
         fail('The Git integration token was not rendered at ' + g['token_file'])
-    settings = [('niuu.gitTokenFile', g['token_file']), ('niuu.gitUsername', g['username']),
-        ('credential.helper', ''), ('credential.useHttpPath', 'true'),
-        ('credential.' + p['repo'] + '.helper', '!f() { [ "$1" = get ] || return 0; '
-         'token=$(cat "$(git config niuu.gitTokenFile)") || return 1; '
-         '[ -n "$token" ] || return 1; printf "username=%s\\npassword=%s\\n" '
-         '"$(git config niuu.gitUsername)" "$token"; }; f')]
-    settings += [(k, g[v]) for k, v in (('user.name', 'user_name'),
-        ('user.email', 'user_email'), ('niuu.baseBranch', 'base_branch')) if g[v]]
-    git = {'username': g['username'], 'token': token.read_text().strip(),
-        'settings': settings}
+    try:
+        git = integration_git(g, p['repo'], pathlib.Path(mount['source'], g['token_path']),
+            g['token_file'])
+    except RuntimeError as exc:
+        fail(str(exc))
 try:
     prepare_storage(root, s['marker'], s['uid'], p['repo'], p['branch'], h['keep_owners'],
         git)
