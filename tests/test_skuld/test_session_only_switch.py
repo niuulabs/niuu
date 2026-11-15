@@ -255,7 +255,9 @@ async def test_a_confirm_dialog_for_another_choice_is_closed_not_answered(tmp_pa
         .replace("❯ 1. Yes", "  1. Yes")
         .replace("    2. No", "  ❯ 2. No")
     )
-    pane = _Pane([_SUBSCRIPTION, moved, hook, hook, _SUBSCRIPTION, "❯ /model\n  ⎿  Cancelled"])
+    pane = _Pane(
+        [_SUBSCRIPTION, moved, hook, hook, hook, _SUBSCRIPTION, "❯ /model\n  ⎿  Cancelled"]
+    )
     claude = _claude(tmp_path, pane, model="claude-fable-5-2")
 
     with pytest.raises(RuntimeError, match="asked to confirm the /model change"):
@@ -263,6 +265,24 @@ async def test_a_confirm_dialog_for_another_choice_is_closed_not_answered(tmp_pa
 
     assert pane.keys == ["Up", "s", "Escape", "Escape"]  # dialog -> picker -> prompt
     assert claude._model == "claude-fable-5-2"
+
+
+async def test_a_half_drawn_dialog_is_waited_for_not_refused(tmp_path):
+    """Mini, Claude Code 2.1.322, 2026-11-15: the broker read "Switch model?" drawn over
+    the picker's rows, whose cursor row is not "Yes, switch to …", refused the switch
+    and closed the dialog 60 ms after it opened. Only a settled dialog is judged."""
+    moved = _moved_to_opus()
+    half = "\n".join(
+        "  Switch model?" if "Select model" in line else line for line in moved.splitlines()
+    )
+    dialog = _CONFIRM.format(choice="Opus 5.5")
+    pane = _Pane([_SUBSCRIPTION, moved, half, dialog, dialog, _ACK_OPUS])
+    claude = _claude(tmp_path, pane, model="claude-fable-5-2")
+
+    await claude._set_model("claude-opus-5-5")
+
+    assert pane.keys == ["Up", "s", "Enter"]
+    assert claude._model == "claude-opus-5-5"
 
 
 def _moved_to_opus() -> str:

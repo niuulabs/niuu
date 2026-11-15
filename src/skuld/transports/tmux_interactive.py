@@ -1566,11 +1566,14 @@ class TmuxInteractiveTransport(CLITransport):
         cache is re-read). The request is the user's choice, so the dialog is answered
         only when its selected option is "Yes, switch to <choice>"; any other dialog (a
         hook's, or one focused on "No") is closed and reported (LEX-2022). The dialog
-        is read from the live screen, not below the echo, which it may replace. Enter
-        goes only to a dialog that stayed unchanged for ``effort_confirm_settle_s``: a
-        key sent as it first draws can be lost, and the switch then times out and is
-        cancelled ("Kept model as …", mini 2026-11-10). A dialog that is still there,
-        unchanged, a settle period after Enter did not take it and gets Enter again.
+        is read from the live screen, not below the echo, which it may replace. Both
+        the answer and the refusal wait until the dialog stayed unchanged for
+        ``effort_confirm_settle_s``: a key sent as it first draws can be lost, and the
+        switch then times out and is cancelled ("Kept model as …", mini 2026-11-10);
+        a half-drawn dialog (its title over the picker's rows) is not yet the dialog
+        and must not be refused (mini, Claude Code 2.1.322, 2026-11-15). A dialog that
+        is still there, unchanged, a settle period after Enter did not take it and gets
+        Enter again.
         """
         confirm = f"Yes, switch to {choice}"
         seen: str | None = None
@@ -1590,15 +1593,15 @@ class TmuxInteractiveTransport(CLITransport):
                     dialog = _confirm_dialog(text)
                     if dialog is None:
                         seen = None
-                    elif not any(line.startswith("❯") and confirm in line for line in dialog):
-                        note = await self._close_picker()
-                        raise RuntimeError(
-                            f"Claude asked to confirm the /{command} change in a way the "
-                            f"broker does not answer; confirm it in the terminal{note}"
-                        )
                     elif dialog != seen:
                         seen, seen_at = dialog, time.monotonic()
                     elif time.monotonic() - seen_at >= self._effort_confirm_settle:
+                        if not any(line.startswith("❯") and confirm in line for line in dialog):
+                            note = await self._close_picker()
+                            raise RuntimeError(
+                                f"Claude asked to confirm the /{command} change in a way "
+                                f"the broker does not answer; confirm it in the terminal{note}"
+                            )
                         await self._send_key("Enter")
                         seen_at = time.monotonic()
                     await asyncio.sleep(self._pane_poll_interval_s)
