@@ -103,8 +103,10 @@ TOOL_DURATION_MS = "duration_ms"
 # of kinds that simply do not belong on the wire. The reduce/rebuild path STILL
 # reads them as authoritative seeds or snapshot boundaries; only the verbatim
 # wire stream drops them.
+# ``voice_call`` frames are a session voice call's durable record (``skuld.voice.calls``):
+# the broker folds them back into its call list on restart; they are not conversation.
 NON_BROADCAST_KINDS: frozenset[str] = frozenset(
-    {"conversation.turn", "conversation.projection", "history_import"}
+    {"conversation.turn", "conversation.projection", "history_import", "voice_call"}
 )
 
 # Per-connect handshake/preamble frames: addressed to ONE freshly-connecting

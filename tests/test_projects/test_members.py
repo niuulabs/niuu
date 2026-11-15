@@ -539,3 +539,111 @@ async def test_rest_project_reads_and_receipt_acks_follow_roles(world, client):
     assert ack.status_code == 403
     admin = await client.get(base, headers=as_user("root"))
     assert admin.status_code == 200
+
+
+# --- the project layer's memory write prefixes ----------------------------------------
+
+
+async def test_only_an_owner_sets_the_memory_write_prefixes(world):
+    await world.add("bob", ProjectRole.CONTRIBUTOR)
+    await world.add("carol", ProjectRole.APPROVER)
+    for member in (BOB, CAROL):
+        with pytest.raises(ProjectAccessDeniedError, match="owner"):
+            await world.service.update(
+                world.project.id, {"memory_write_prefixes": ["decisions/"]}, 1, member
+            )
+    assert (await world.service.get(world.project.id, ALICE)).memory_write_prefixes == ()
+
+    updated = await world.service.update(
+        world.project.id, {"memory_write_prefixes": ["decisions/", "runbooks/"]}, 1, ALICE
+    )
+
+    assert updated.memory_write_prefixes == ("decisions/", "runbooks/")
+    assert updated.revision == 2
+
+
+async def test_a_contributor_still_edits_the_rest_of_the_project(world):
+    await world.add("bob", ProjectRole.CONTRIBUTOR)
+    await world.service.update(world.project.id, {"memory_write_prefixes": ["plans/"]}, 1, ALICE)
+
+    updated = await world.service.update(world.project.id, {"description": "x"}, 2, BOB)
+
+    assert updated.description == "x"
+    assert updated.memory_write_prefixes == ("plans/",)
+
+
+async def test_an_empty_list_clears_the_prefixes(world):
+    await world.service.update(world.project.id, {"memory_write_prefixes": ["plans/"]}, 1, ALICE)
+
+    cleared = await world.service.update(world.project.id, {"memory_write_prefixes": []}, 2, ALICE)
+
+    assert cleared.memory_write_prefixes == ()
+
+
+@pytest.mark.parametrize("prefix", ["", "  ", "/abs/", "a/../b/", "../up/"])
+async def test_a_prefix_that_is_not_a_relative_page_path_is_refused(world, prefix):
+    with pytest.raises(ValueError, match="relative page path"):
+        await world.service.update(world.project.id, {"memory_write_prefixes": [prefix]}, 1, ALICE)
+
+
+async def test_repeated_prefixes_are_refused(world):
+    with pytest.raises(ValueError, match="unique"):
+        await world.service.update(
+            world.project.id, {"memory_write_prefixes": ["a/", " a/"]}, 1, ALICE
+        )
+
+
+def test_prefixes_use_the_same_rule_as_a_mounts():
+    from volundr.domain.project_memory import ProjectMemoryMount
+
+    for bad in ("/abs/", "a/../b/", ""):
+        with pytest.raises(ValueError, match="relative page path"):
+            ForgeProject(name="p", memory_write_prefixes=(bad,))
+        with pytest.raises(ValueError, match="relative page path"):
+            ProjectMemoryMount(
+                project_id=uuid4(),
+                name="m",
+                registry_entry_id="e",
+                access="read_write",
+                write_prefixes=(bad,),
+            )
+
+
+def test_a_project_without_prefixes_stores_the_document_it_always_did():
+    """A rolled-back Forge binary reads the document with extra='forbid'."""
+    assert "memory_write_prefixes" not in ForgeProject(name="p").document_json()
+    stored = ForgeProject(name="p", memory_write_prefixes=("a/",)).document_json()
+    assert ForgeProject.model_validate_json(stored).memory_write_prefixes == ("a/",)
+
+
+async def test_rest_owner_sets_and_everyone_reads_the_memory_write_prefixes(world, client):
+    base = f"/projects/{world.project.id}"
+    await world.add("bob", ProjectRole.CONTRIBUTOR)
+
+    denied = await client.patch(
+        base,
+        headers=as_user("bob"),
+        json={"revision": 1, "memory_write_prefixes": ["decisions/"]},
+    )
+    assert denied.status_code == 403
+
+    invalid = await client.patch(
+        base, headers=as_user("alice"), json={"revision": 1, "memory_write_prefixes": ["/x/"]}
+    )
+    assert invalid.status_code == 422
+
+    patched = await client.patch(
+        base,
+        headers=as_user("alice"),
+        json={"revision": 1, "memory_write_prefixes": ["decisions/"]},
+    )
+    assert patched.status_code == 200
+    assert patched.json()["memory_write_prefixes"] == ["decisions/"]
+
+    read = await client.get(base, headers=as_user("bob"))
+    assert read.json()["memory_write_prefixes"] == ["decisions/"]
+
+    untouched = await client.patch(
+        base, headers=as_user("alice"), json={"revision": 2, "brief": "Be brief."}
+    )
+    assert untouched.json()["memory_write_prefixes"] == ["decisions/"]

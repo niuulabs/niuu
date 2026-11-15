@@ -70,6 +70,7 @@ class TestVolundrPort:
             "spawn_session",
             "get_project",
             "list_member_project_ids",
+            "get_project_role",
             "ensure_project",
             "session_project",
             "join_project",

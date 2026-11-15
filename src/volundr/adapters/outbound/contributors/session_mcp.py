@@ -14,13 +14,10 @@ from volundr.domain.ports import (
     SessionContributor,
 )
 from volundr.domain.project_memory import MIMIR_SERVER_PREFIX
+from volundr.domain.services.memory_context import MemoryContextError, attached_mounts
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_PYTHON_BINARY = "python3"
-#: Where a session's ephemeral local Mimir mounts live; each mount is a
-#: directory below this path.
-MIMIR_MOUNT_PATH = "/mimir/local"
 #: Where the workload-identity token is projected into the session.
 _DEFAULT_WORKLOAD_IDENTITY_MOUNT_PATH = "/var/run/secrets/niuu-workload"
 #: Where secret-backed Mimir credentials are mounted.
@@ -82,7 +79,7 @@ def _resolve_mimir_runtime(
     for index, raw_instance in enumerate(list(mimir_cfg.get("instances") or [])):
         if not isinstance(raw_instance, dict):
             raise MimirMountConfigError(
-                f"mimir.instances[{index}] must be an object with a name and a path, url or "
+                f"mimir.instances[{index}] must be an object with a name and a url or "
                 f"adapter, not {type(raw_instance).__name__}; fix or remove it"
             )
         instance = _normalize_instance(raw_instance)
@@ -142,7 +139,6 @@ def _resolve_mimir_runtime(
             "role": str(raw_ref.get("role") or "shared"),
         }
         url = str(raw_ref.get("url") or "").strip()
-        path = str(raw_ref.get("path") or "").strip()
         if raw_ref.get("adapter"):
             instance["adapter"] = str(raw_ref["adapter"])
             instance["kwargs"] = dict(raw_ref.get("kwargs") or {})
@@ -154,13 +150,11 @@ def _resolve_mimir_runtime(
                 instance["kwargs"]["api_token_file"] = _mimir_token_file(str(auth_ref))
         elif url:
             instance["url"] = url
-        elif path:
-            instance["path"] = path
         elif hosted_url:
             instance["url"] = hosted_url
         else:
             raise MimirMountConfigError(
-                f"The mount {mount_name!r} has no adapter, url or path, so it cannot be "
+                f"The mount {mount_name!r} has no adapter or url, so it cannot be "
                 "reached. Resolve its registry entry before launch (the registry entry must "
                 "exist and be enabled), or set mimir.hosted_url"
             )
@@ -202,16 +196,11 @@ def _resolve_mimir_runtime(
                 "registry_refs or ephemeral_locals); give each mount its own name"
             )
 
-        instance = {
-            "name": mount_name,
-            "role": "local",
-            "path": f"{MIMIR_MOUNT_PATH.rstrip('/')}/{mount_name}",
-        }
-        categories = _string_list(raw_local.get("categories"))
-        if categories:
-            instance["categories"] = categories
-        instances.append(instance)
-        known_mounts.add(mount_name)
+        raise MimirMountConfigError(
+            f"mimir.ephemeral_locals names the scratch mount {mount_name!r}, which has no "
+            "adapter or url a session can reach: a directory mount is no longer served. "
+            "Remove it from ephemeral_locals, or mount a registry entry with an adapter or url"
+        )
 
     local_mount_names = [
         instance["name"]
@@ -241,7 +230,7 @@ def _resolve_mimir_runtime(
             raw_binding.get("write_prefixes") or raw_binding.get("writePrefixes")
         )
         if raw_binding.get("enforce") is True:
-            _hold_access_limit(
+            _require_unrestricted_access(
                 next(i for i in instances if i["name"] == mount_name), access, prefixes
             )
         if "write" not in access:
@@ -293,37 +282,22 @@ def _resolve_mimir_runtime(
     return instances, {"rules": write_rules, "default": default_mounts}
 
 
-def _hold_access_limit(instance: dict[str, Any], access: str, prefixes: list[str]) -> None:
-    """Record the write limit of an enforced binding on ``instance``.
+def _require_unrestricted_access(
+    instance: dict[str, Any], access: str, prefixes: list[str]
+) -> None:
+    """Refuse an enforced binding that limits writes.
 
-    A limit is held by the Mimir server the session starts for a path mount (its
-    ``--read-only`` / ``--write-prefix`` flags). A mount the session reaches over a url
-    or an adapter is served by someone else's Mimir, where this launch cannot hold it, so
-    that is refused rather than started with a limit that does not hold.
+    Every mount is served by someone else's Mimir over a url or an adapter, where this
+    launch cannot hold a read-only or write-prefix limit, so a limited binding is refused
+    rather than started with a limit that does not hold.
     """
     if "write" in access and not prefixes:
         return
-    name = instance["name"]
-    if "path" not in instance:
-        raise MimirMountConfigError(
-            f"The mount {name!r} limits writes (access {access!r}, write prefixes "
-            f"{prefixes or 'none'}), but it is served by its own Mimir over a url or an "
-            "adapter, where the limit cannot be held. Give it unrestricted write access "
-            "(that Mimir decides what the session may write), or mount a path"
-        )
-    if "write" not in access:
-        if instance.get("write_prefixes"):
-            raise MimirMountConfigError(
-                f"The mount {name!r} has bindings that are both read-only and write-limited; "
-                "keep one"
-            )
-        instance["read_only"] = True
-        return
-    if instance.get("read_only"):
-        raise MimirMountConfigError(
-            f"The mount {name!r} has bindings that are both read-only and write-limited; keep one"
-        )
-    instance["write_prefixes"] = sorted({*instance.get("write_prefixes", []), *prefixes})
+    raise MimirMountConfigError(
+        f"The mount {instance['name']!r} limits writes (access {access!r}, write prefixes "
+        f"{prefixes or 'none'}), but a session cannot hold that limit until the memory "
+        "gateway lands. Give it access read_write and no write prefixes"
+    )
 
 
 def _require_known(names: list[str], known_mounts: set[str], where: str) -> None:
@@ -346,18 +320,15 @@ def _normalize_instance(raw_instance: dict[str, Any]) -> dict[str, Any]:
         "role": str(raw_instance.get("role") or "shared"),
     }
     url = str(raw_instance.get("url") or "").strip()
-    path = str(raw_instance.get("path") or "").strip()
     if raw_instance.get("adapter"):
         instance["adapter"] = str(raw_instance["adapter"])
         instance["kwargs"] = dict(raw_instance.get("kwargs") or {})
         instance["secret_kwargs_env"] = dict(raw_instance.get("secret_kwargs_env") or {})
     elif url:
         instance["url"] = url
-    elif path:
-        instance["path"] = path
     else:
         raise MimirMountConfigError(
-            f"The mimir instance {mount_name!r} has no adapter, url or path; set one of them"
+            f"The mimir instance {mount_name!r} has no adapter or url; set one of them"
         )
 
     if "read_priority" in raw_instance:
@@ -390,17 +361,23 @@ class SessionMCPContributor(SessionContributor):
     The contributor is generic at the session layer: it inspects attached
     resources and emits ``mcpServers`` into session values. Mimir is simply the
     first supported resource type behind this contributor.
+
+    With the memory gateway (*memory_gateway_url*, ``memory.gateway_url``) the session's
+    one ``memory`` server carries every mount, and the gateway holds their limits: this
+    contributor then emits no per-mount ``mimir-<name>`` server and does not refuse a
+    restricted mount. It refuses a mount the gateway could not open (one with no registry
+    entry), so nothing is dropped silently.
     """
 
     def __init__(
         self,
         *,
         launch_spec_provider: LaunchSpecProvider | None = None,
-        python_binary: str = _DEFAULT_PYTHON_BINARY,
+        memory_gateway_url: str = "",
         **_extra: object,
     ) -> None:
         self._launch_spec_provider = launch_spec_provider
-        self._python_binary = python_binary
+        self._memory_gateway_url = memory_gateway_url.strip()
 
     @property
     def name(self) -> str:
@@ -423,12 +400,24 @@ class SessionMCPContributor(SessionContributor):
         if not mimir_cfg:
             return SessionContribution()
 
+        if self._memory_gateway_url:
+            self._require_attachable(mimir_cfg)
+            return SessionContribution()
+
         instances, _write_routing = _resolve_mimir_runtime(mimir_cfg)
         if not instances:
             return SessionContribution()
 
         mcp_servers = [self._build_mimir_server(instance) for instance in instances]
         return SessionContribution(values={"mcpServers": mcp_servers})
+
+    @staticmethod
+    def _require_attachable(mimir_cfg: dict[str, Any]) -> None:
+        """Refuse a launch whose mounts the memory gateway could not open."""
+        try:
+            attached_mounts(mimir_cfg)
+        except MemoryContextError as exc:
+            raise MimirMountConfigError(str(exc)) from exc
 
     def _resolve_workload(
         self,
@@ -461,31 +450,6 @@ class SessionMCPContributor(SessionContributor):
         server_name = f"{MIMIR_SERVER_PREFIX}{_slugify_server_name(mount_name)}"
         description = _describe_mimir_instance(instance)
 
-        path = str(instance.get("path") or "").strip()
-        if path:
-            return {
-                "name": server_name,
-                "type": "stdio",
-                "command": self._python_binary,
-                "args": [
-                    "-m",
-                    "mimir",
-                    "mcp",
-                    "--path",
-                    path,
-                    "--name",
-                    mount_name,
-                    *(["--read-only"] if instance.get("read_only") else []),
-                    *(
-                        arg
-                        for prefix in instance.get("write_prefixes") or []
-                        for arg in ("--write-prefix", prefix)
-                    ),
-                ],
-                "env": {},
-                "description": description,
-            }
-
         url = str(instance.get("url") or "").strip()
         if url:
             return {
@@ -496,7 +460,7 @@ class SessionMCPContributor(SessionContributor):
             }
 
         raise MimirMountConfigError(
-            f"The mount {mount_name!r} is reached through an adapter with no url or path, so "
+            f"The mount {mount_name!r} is reached through an adapter with no url, so "
             "the session has no MCP endpoint for it. Give its registry entry the url of the "
             "Mimir that serves it, or remove the mount"
         )

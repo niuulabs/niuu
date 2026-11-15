@@ -13,22 +13,21 @@ bifrost:
 
   # ── Routing Strategy ────────────────────────────────────────────────────────
   #
-  # Controls how Bifröst selects and orders provider candidates for each request.
+  # Controls how Bifröst selects the ONE provider that serves each request.
+  # A request is served by that provider alone: when it fails, its error is the
+  # answer and no other provider is tried. ('failover' was removed and is
+  # refused at load.)
   #
   # Strategies:
-  #   direct           — Always use the first configured provider. No failover.
-  #   failover         — Try the primary provider; fall back to alternatives on
-  #                      retryable errors (429, 500, 502, 503, 504). DEFAULT.
-  #   cost_optimised   — Sort providers by cost_per_token (ascending). The
-  #                      cheapest provider is tried first; more expensive ones
-  #                      are used as automatic fallbacks.
-  #   round_robin      — Cycle through all providers that serve the model on
-  #                      each request. Distributes load evenly.
-  #   latency_optimised — Sort providers by recent P99 latency (ascending).
-  #                       The fastest provider (based on an EWMA of observed
-  #                       request times) is tried first.
+  #   direct           — Always use the first configured provider. DEFAULT.
+  #   cost_optimised   — Use the provider with the lowest cost_per_token.
+  #   round_robin      — Rotate through the providers that serve the model, one
+  #                      per request. Distributes load evenly.
+  #   latency_optimised — Use the provider with the lowest recent latency (an
+  #                       EWMA of observed request times); providers with no
+  #                       measurement yet rank last.
   #
-  routing_strategy: failover
+  routing_strategy: direct
 
   # ── Providers ───────────────────────────────────────────────────────────────
   #

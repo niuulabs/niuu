@@ -110,6 +110,18 @@ def test_missing_top_level_field_is_named(config_dict: dict, field: str) -> None
         parse_config(config_dict)
 
 
+def test_session_id_is_optional_and_names_a_member(config_dict: dict) -> None:
+    assert parse_config(config_dict).session_id == ""
+
+    member = "7d0c6a8e-5f1f-4c55-9d8c-2f7b9a4c1e01"
+    assert parse_config({**config_dict, "session_id": member}).session_id == member
+
+
+def test_a_session_id_that_is_not_a_uuid_is_named(config_dict: dict) -> None:
+    with pytest.raises(ConfigError, match="^session_id: not a UUID"):
+        parse_config({**config_dict, "session_id": "coder"})
+
+
 def test_unknown_top_level_field_is_named(config_dict: dict) -> None:
     config_dict["refresh_every"] = 5
 

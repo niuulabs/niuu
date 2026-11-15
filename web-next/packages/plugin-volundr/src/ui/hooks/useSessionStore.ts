@@ -17,7 +17,8 @@ import type {
 } from '../../ports/ISessionStore';
 import type { Session } from '../../domain/session';
 
-const LIVE_REFETCH_MS = 5_000;
+/** How often a live view of a running session re-reads it. */
+export const LIVE_REFETCH_MS = 5_000;
 const SOURCE_REFETCH_MS = 30_000;
 const ARCHIVE_REFETCH_MS = 60_000;
 const FULL_READ_CURSOR = '0';

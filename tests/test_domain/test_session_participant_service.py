@@ -643,3 +643,42 @@ async def test_display_names_name_who_the_directory_knows_and_nobody_else():
     names = await service.display_names({"olivia", "mail-only", "ghost"})
 
     assert names == {"olivia": "Olivia Owner", "mail-only": "mail@example.test"}
+
+
+async def test_find_people_are_the_askers_org_without_the_asker_and_need_no_session():
+    service, _ = await _service_with_directory()
+
+    found = await service.find_people(INVITEE, "")
+
+    assert [c.user_id for c in found] == ["owner", "zed"]
+    assert found[0].display_name == "Olivia Owner"
+    assert found[0].email == "olivia@example.test"
+
+
+async def test_find_people_ignore_existing_grants_and_match_name_or_email():
+    service, session = await _service_with_directory()
+    await service.invite(
+        session, OWNER, user_id="invitee", role=ParticipantRole.VIEWER, expires_at=None
+    )
+
+    assert [c.user_id for c in await service.find_people(OWNER, "")] == ["invitee", "zed"]
+    assert [c.user_id for c in await service.find_people(OWNER, " ZIM ")] == ["zed"]
+    assert await service.find_people(OWNER, "nobody") == []
+
+
+async def test_find_people_never_reach_into_another_org():
+    service, _ = await _service_with_directory()
+
+    assert [c.user_id for c in await service.find_people(OUTSIDER, "")] == [
+        "invitee",
+        "owner",
+        "zed",
+    ]
+    assert [c.user_id for c in await service.find_people(CROSS_TENANT_ADMIN, "")] == ["stranger"]
+
+
+async def test_find_people_without_a_principal_is_refused():
+    service, _ = await _service_with_directory()
+
+    with pytest.raises(PermissionError):
+        await service.find_people(None, "")

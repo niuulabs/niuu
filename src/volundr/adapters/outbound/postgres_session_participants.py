@@ -127,6 +127,19 @@ class PostgresSessionParticipantRepository(SessionParticipantRepository):
         )
         return [self._row_to_participant(row) for row in rows]
 
+    async def count_active_for_sessions(
+        self, session_ids: list[UUID], now: datetime
+    ) -> dict[UUID, int]:
+        rows = await self._pool.fetch(
+            "SELECT session_id, COUNT(*) AS granted FROM session_participants "
+            "WHERE session_id = ANY($1::uuid[]) AND status = 'active' "
+            "AND (expires_at IS NULL OR expires_at > $2) "
+            "GROUP BY session_id",
+            session_ids,
+            now,
+        )
+        return {row["session_id"]: row["granted"] for row in rows}
+
     async def candidates(
         self, session_id: UUID, tenant_id: str, owner_id: str, query: str
     ) -> list[ParticipantCandidate]:
@@ -143,6 +156,27 @@ class PostgresSessionParticipantRepository(SessionParticipantRepository):
             session_id,
             tenant_id,
             owner_id,
+            query,
+        )
+        return [
+            ParticipantCandidate(
+                user_id=row["id"], display_name=row["display_name"], email=row["email"]
+            )
+            for row in rows
+        ]
+
+    async def tenant_people(
+        self, tenant_id: str, excluded_user_id: str, query: str
+    ) -> list[ParticipantCandidate]:
+        rows = await self._pool.fetch(
+            "SELECT u.id, u.display_name, u.email FROM users u "
+            "JOIN tenant_memberships t ON t.user_id = u.id "
+            "WHERE t.tenant_id = $1 AND u.status = 'active' AND u.id <> $2 "
+            "AND ($3 = '' OR strpos(lower(u.display_name), lower($3)) > 0 "
+            "OR strpos(lower(u.email), lower($3)) > 0) "
+            "ORDER BY u.display_name, u.email",
+            tenant_id,
+            excluded_user_id,
             query,
         )
         return [

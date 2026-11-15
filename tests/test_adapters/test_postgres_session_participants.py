@@ -139,3 +139,21 @@ async def test_candidates_are_the_orgs_active_people_without_a_live_grant_or_the
     assert "u.id <> $3" in sql
     assert "p.status IN ('invited', 'active')" in sql
     assert params == [sid, "acme", "owner", "iv"]
+
+
+async def test_tenant_people_are_the_orgs_active_people_other_than_the_asker_with_no_session():
+    repo, pool = adapter()
+    pool.fetch.return_value = [
+        {"id": "ivan", "display_name": "Ivan Invitee", "email": "ivan@example.test"}
+    ]
+
+    found = await repo.tenant_people("acme", "owner", "iv")
+
+    assert [(c.user_id, c.display_name, c.email) for c in found] == [
+        ("ivan", "Ivan Invitee", "ivan@example.test")
+    ]
+    sql, *params = pool.fetch.call_args.args
+    assert "tenant_memberships" in sql and "u.status = 'active'" in sql
+    assert "u.id <> $2" in sql
+    assert "session_participants" not in sql
+    assert params == ["acme", "owner", "iv"]

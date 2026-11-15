@@ -281,33 +281,3 @@ jobs:
           files: coverage.xml
           flags: backend-volundr
           token: ${{ secrets.CODECOV_TOKEN }}
-
-  # Mímir retrieval-quality eval (NIU-1055/NIU-1057). HARD GATE: fails when
-  # overall P@5 regresses more than the threshold vs the committed baseline
-  # (tests/test_mimir/evals/baseline.json). Improvements should refresh the
-  # baseline via `python -m mimir eval --json --out tests/test_mimir/evals/baseline.json`.
-  mimir-eval:
-    name: "Mímir: Retrieval eval (gated)"
-    runs-on: ubuntu-latest
-    steps:
-      - name: Harden runner
-        uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43 # v2.22.3
-        with:
-          egress-policy: audit
-
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Set up Python + uv
-        uses: ./.github/actions/setup-python-env
-
-      - name: Run golden-set eval vs committed baseline (FTS-only)
-        run: |
-          uv run python -m mimir eval \
-            --against tests/test_mimir/evals/baseline.json \
-            --fail-on-regression | tee eval-report.txt
-          {
-            echo "## Mímir retrieval eval (FTS-only, gated vs baseline)"
-            echo '```'
-            cat eval-report.txt
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"

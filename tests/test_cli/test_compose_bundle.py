@@ -116,6 +116,8 @@ class TestRender:
         assert env["NIUU_STACK_DIR"] == data
         assert env["NIUU_MODE"] == "mini"
         assert env["NIUU_SETUP_MODE"] == "docker"
+        # The platform image carries no gbrain for mini mode's local memory.
+        assert env["NIUU_LOCAL_MEMORY__ENABLED"] == "false"
         assert env["NIUU_DATABASE_MODE"] == "external"
         assert env["DATABASE__HOST"] == "postgres"
         assert env["INTEGRATIONS__DATABASE_NAME"] == "niuu_shared"

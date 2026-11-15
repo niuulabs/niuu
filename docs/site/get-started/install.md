@@ -125,8 +125,9 @@ It covers Claude authentication, local initialization, launch, and shutdown.
 
 The contributor path builds the database and web assets, so its first start is
 slower than using a release. Install Git, curl, make, a C compiler, pkg-config,
-OpenSSL development headers, uv, Node.js, and the pnpm version declared by
-`web-next/package.json`. On macOS, use Xcode Command Line Tools and Homebrew;
+OpenSSL development headers, uv, Node.js, the pnpm version declared by
+`web-next/package.json`, and Bun 1.3.11 or later (it compiles the gbrain that
+local memory runs). On macOS, use Xcode Command Line Tools and Homebrew;
 on Linux, use your distribution's build-tool packages.
 
 ```bash
@@ -136,7 +137,7 @@ uv sync --python 3.12 --extra dev
 ./start-dev
 ```
 
-`start-dev` installs workspace dependencies, builds PostgreSQL and web assets,
+`start-dev` installs workspace dependencies, builds PostgreSQL, gbrain and web assets,
 and starts a background platform. Use the exact URL it prints. Logs are in
 `build/dev-run/logs/platform.log`. Stop this background stack with:
 

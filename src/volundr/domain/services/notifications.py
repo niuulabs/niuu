@@ -26,6 +26,7 @@ from niuu.domain.notifications import (
     MAX_TITLE_CHARS,
     NotificationDraft,
     NotificationKind,
+    NotificationLink,
     NotificationSeverity,
     NotificationSource,
     draft_from_log_payload,
@@ -50,6 +51,7 @@ from volundr.domain.notification_ports import (
 from volundr.domain.notifications import (
     COPY_OF_KEY,
     INTEGRATION_SINK,
+    MEMORY_PROPOSAL_KEY,
     PARTICIPANT_INVITATION_KEY,
     RESIDENT_ID_KEY,
     RESIDENT_SESSION_ID_KEY,
@@ -157,6 +159,11 @@ def submit_dedupe_key(session_id: UUID | None, principal_id: str, idempotency_ke
 def person_question_dedupe_key(session_id: UUID, question_id: str) -> str:
     """Dedupe key of the notification for one question put to one person."""
     return f"person-question:{session_id}:{question_id}"
+
+
+def memory_proposal_dedupe_key(proposal_id: str) -> str:
+    """Dedupe key of the notification for one memory proposal waiting for its deciders."""
+    return f"memory-proposal:{proposal_id}"
 
 
 def participant_invitation_dedupe_key(session_id: UUID, user_id: str, invited_at: datetime) -> str:
@@ -505,6 +512,81 @@ class NotificationService(NotificationRecorder):
         )
         for row in changed:
             await self._broadcast(row)
+
+    # -- Memory proposals --------------------------------------------------
+
+    async def memory_proposal_waiting(
+        self,
+        session: Session,
+        *,
+        proposal_id: str,
+        project_name: str,
+        title: str,
+        why: str,
+        deciders: list[str],
+        review_url: str,
+    ) -> list[str]:
+        """Tell a project's deciders that a change the session proposed waits for them.
+
+        One item for everyone who may decide it: a row for the first decider and a copy
+        for each other, so deciding settles them all (:meth:`memory_proposal_decided`).
+        Idempotent per proposal. Returns who was told; nobody when the project has no
+        decider to tell (a tenant admin still finds it on the Review page).
+        """
+        people = sorted({person for person in deciders if person})
+        if not people:
+            return []
+        context = replace(self._context(session), owner_id=people[0])
+        body = title if not why else f"{title}\n{why}"
+        draft = NotificationDraft(
+            kind=NotificationKind.DECISION,
+            severity=NotificationSeverity.INFO,
+            title=_bounded(f"{project_name}: a change to its memory waits", MAX_TITLE_CHARS),
+            body=_bounded(body, MAX_BODY_CHARS),
+            links=[NotificationLink(label="Review", url=review_url)],
+        )
+        candidate = self._candidate(
+            context,
+            dedupe_key=memory_proposal_dedupe_key(proposal_id),
+            draft=draft,
+            source=NotificationSource.AGENT,
+            session_seq=None,
+            metadata={MEMORY_PROPOSAL_KEY: proposal_id},
+        )
+        if await self._repository.get(candidate.id) is not None:
+            return people
+        await self._record(
+            [candidate, *(self._copy_for(candidate, person) for person in people[1:])]
+        )
+        return people
+
+    async def memory_proposal_decided(self, proposal_id: str, *, resolution: str) -> int:
+        """The proposal was decided: every decider's row settles (idempotent).
+
+        A proposal that was never announced (the feed was off, the announcement failed,
+        a person promoted it) has no row; that is not an error. Returns rows settled.
+        """
+        notification = await self._repository.get(
+            notification_id(memory_proposal_dedupe_key(proposal_id))
+        )
+        if notification is None:
+            return 0
+        now = datetime.now(UTC)
+        changed: list[Notification] = []
+        if not notification.resolved:
+            changed = await self._repository.resolve(
+                notification.owner_id,
+                [notification.id],
+                resolved_at=now,
+                resolved_by=None,
+                resolution=resolution,
+            )
+        changed += await self._settle_group(
+            [notification], resolved_at=now, resolved_by=None, resolution=resolution
+        )
+        for row in changed:
+            await self._broadcast(row)
+        return len(changed)
 
     # -- Residents ---------------------------------------------------------
     #

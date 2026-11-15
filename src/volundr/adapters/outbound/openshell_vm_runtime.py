@@ -78,6 +78,8 @@ class OpenShellVmRuntime(SshContainerVmRuntime):
     _runs_pod_containers = False
     # The OpenShell sandbox and its policy are the session's boundary.
     _separates_slots = False
+    # The OpenShell gateway authenticates the clone with its own credential provider.
+    _clones_with_integration_token = False
 
     @property
     def session_runtime(self) -> SessionRuntimeKind | None:

@@ -20,12 +20,14 @@ from dataclasses import dataclass
 from enum import StrEnum
 
 from niuu.domain.services.token_scope import (
+    FORGE_MEMORY_SCOPE,
     FORGE_MESH_IDENTITY_SCOPE,
     FORGE_NOTIFY_SCOPE,
     FORGE_SESSION_LIFECYCLE_SCOPE,
     FORGE_SESSION_MESSAGE_SCOPE,
     FORGE_SESSION_READ_SCOPE,
     FORGE_SESSION_SECRET_SCOPE,
+    FORGE_SESSION_VOICE_SCOPE,
 )
 
 FORGE_PREFIX = "/api/v1/forge"
@@ -88,6 +90,9 @@ ROUTE_POLICIES: tuple[RoutePolicy, ...] = (
     RoutePolicy("GET", f"{_S}/status", _READ, Binding.OWNED),
     # The people on the session's own project (``find_people``): the session itself only.
     RoutePolicy("GET", f"{_S}/people", _READ, Binding.OWN),
+    # Who is in the session (a team's agents and people): a team's room host reads its own
+    # team's roster, with the voices of its agents, for a team call.
+    RoutePolicy("GET", f"{_S}/members", _READ, Binding.OWN),
     # A question to one of them (``ask_person``) and the report of who answered it: the
     # session itself only, recorded as the agent's own notification.
     RoutePolicy("POST", f"{_S}/person-questions", FORGE_NOTIFY_SCOPE, Binding.OWN),
@@ -170,6 +175,15 @@ ROUTE_POLICIES: tuple[RoutePolicy, ...] = (
     ),
     # The session's mesh certificate: issued to, and renewed by, the session itself.
     RoutePolicy("POST", f"{_S}/mesh-identity", FORGE_MESH_IDENTITY_SCOPE, Binding.OWN),
+    # What the session's memory layers are, asked by the memory gateway with the session's
+    # own credential: Forge's live-session check is the gateway's proof of the session.
+    RoutePolicy("GET", f"{_S}/memory-context", FORGE_MEMORY_SCOPE, Binding.OWN),
+    # The memory gateway tells the session's project's deciders that a proposal the
+    # session made waits for them, with the session's own credential.
+    RoutePolicy("POST", f"{_S}/memory/proposals", FORGE_MEMORY_SCOPE, Binding.OWN),
+    # A short-lived realtime voice credential for a call with the session's owner, minted
+    # from the owner's provider key by Forge: the session's own voice channel only.
+    RoutePolicy("POST", f"{_S}/voice/client-secrets", FORGE_SESSION_VOICE_SCOPE, Binding.OWN),
     # The Forge-hosted MCP. Each tool re-enters this allow-list as a REST call.
     RoutePolicy("POST", f"{FORGE_PREFIX}/mcp", None, Binding.NONE),
 )

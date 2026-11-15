@@ -8,7 +8,7 @@ import re
 from enum import StrEnum
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from bifrost.auth import AuthMode
 from niuu.domain.model_catalog import ManagedModelProvider, ManagedModelTier
@@ -17,22 +17,38 @@ from niuu.domain.reasoning import MODEL_EFFORTS, preferred_effort
 
 
 class RoutingStrategy(StrEnum):
-    """How the router selects and orders provider candidates for a request."""
+    """How the router selects the one provider that serves a request.
+
+    Every strategy picks exactly one provider; none of them falls back to
+    another when that provider fails.
+    """
 
     DIRECT = "direct"
-    """Try only the first configured provider for the model. No failover."""
-
-    FAILOVER = "failover"
-    """Try the primary provider; fall back to alternatives on retryable errors."""
+    """Use the first configured provider for the model."""
 
     COST_OPTIMISED = "cost_optimised"
-    """Order providers by cost_per_token ascending (cheapest first)."""
+    """Use the provider with the lowest cost_per_token."""
 
     ROUND_ROBIN = "round_robin"
-    """Cycle through all providers that serve the model on each request."""
+    """Rotate through the providers that serve the model, one per request."""
 
     LATENCY_OPTIMISED = "latency_optimised"
-    """Order providers by recent P99 latency ascending (fastest first)."""
+    """Use the provider with the lowest recent latency."""
+
+
+_REMOVED_FAILOVER_MESSAGE = (
+    "routing strategy 'failover' was removed: Bifröst serves each request from exactly one "
+    "provider and does not try another when it fails. Set it to 'direct' (the first "
+    "configured provider), or to 'cost_optimised', 'round_robin' or 'latency_optimised' "
+    "to choose among providers"
+)
+
+
+def _refuse_removed_failover(value: Any) -> Any:
+    """Raise the removal message for a ``failover`` strategy in loaded config."""
+    if isinstance(value, str) and value == "failover":
+        raise ValueError(_REMOVED_FAILOVER_MESSAGE)
+    return value
 
 
 class ProviderConfig(BaseModel):
@@ -823,8 +839,8 @@ class BifrostObservabilityConfig(ObservabilityConfig):
     Distinct from ``AuditConfig.otel`` (``OtelAuditConfig``), which exports
     audit log records, not spans. This config drives the shared
     ``niuu.observability`` facade — a server span per inbound completion
-    request, with GenAI attributes (model, provider, failover attempts,
-    cache hit, token usage) — so a trace started by a caller (Ravn, Ting)
+    request, with GenAI attributes (model, provider, cache hit,
+    token usage) — so a trace started by a caller (Ravn, Ting)
     continues through the gateway instead of stopping at the audit log.
     """
 
@@ -1038,10 +1054,11 @@ class BifrostConfig(BaseModel):
         description="Model alias → canonical model name.",
     )
     routing_strategy: RoutingStrategy = Field(
-        default=RoutingStrategy.FAILOVER,
+        default=RoutingStrategy.DIRECT,
         description=(
-            "How to select and order provider candidates. "
-            "Defaults to 'failover' for backwards compatibility."
+            "How to select the one provider that serves a request. Bifröst never "
+            "falls back to another provider when the selected one fails. 'failover' "
+            "was removed and is refused at load."
         ),
     )
     model_routing_strategies: dict[str, RoutingStrategy] = Field(
@@ -1050,9 +1067,23 @@ class BifrostConfig(BaseModel):
             "Per-model or per-alias routing strategy overrides. "
             "Keys are model IDs or alias names; values are routing strategy names. "
             "When a model matches a key, its strategy overrides the global routing_strategy. "
-            "Example: {'claude-sonnet-4-6': 'failover', 'fast': 'round_robin'}"
+            "Example: {'claude-sonnet-4-6': 'direct', 'fast': 'round_robin'}"
         ),
     )
+
+    @field_validator("routing_strategy", mode="before")
+    @classmethod
+    def refuse_failover_strategy(cls, value: Any) -> Any:
+        return _refuse_removed_failover(value)
+
+    @field_validator("model_routing_strategies", mode="before")
+    @classmethod
+    def refuse_failover_model_strategies(cls, value: Any) -> Any:
+        if isinstance(value, dict):
+            for strategy in value.values():
+                _refuse_removed_failover(strategy)
+        return value
+
     selection: dict[str, Any] | None = Field(
         default=None,
         description="Optional provider selection adapter: fully-qualified adapter plus kwargs.",

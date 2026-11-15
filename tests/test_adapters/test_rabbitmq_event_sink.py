@@ -138,14 +138,14 @@ class TestRabbitMQEmit:
             routing_key = exchange.publish.call_args[1]["routing_key"]
             assert routing_key == f"session.{event_type.value}"
 
-    async def test_emit_skips_when_not_connected(self):
+    async def test_emit_raises_when_not_connected(self):
         from volundr.adapters.outbound.rabbitmq_event_sink import RabbitMQEventSink
 
         sink = RabbitMQEventSink(url="amqp://localhost/")
         event = _make_event()
 
-        # Should not raise, just log warning
-        await sink.emit(event)
+        with pytest.raises(RuntimeError, match="not connected"):
+            await sink.emit(event)
 
     async def test_emit_batch_publishes_all(self):
         sink, exchange = _make_sink()
@@ -155,14 +155,14 @@ class TestRabbitMQEmit:
 
         assert exchange.publish.call_count == 3
 
-    async def test_emit_batch_skips_when_not_connected(self):
+    async def test_emit_batch_raises_when_not_connected(self):
         from volundr.adapters.outbound.rabbitmq_event_sink import RabbitMQEventSink
 
         sink = RabbitMQEventSink(url="amqp://localhost/")
         events = [_make_event(sequence=i) for i in range(3)]
 
-        # Should not raise
-        await sink.emit_batch(events)
+        with pytest.raises(RuntimeError, match="not connected"):
+            await sink.emit_batch(events)
 
 
 class TestRabbitMQSerialization:

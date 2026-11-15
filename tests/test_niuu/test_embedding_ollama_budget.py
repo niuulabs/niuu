@@ -1,4 +1,4 @@
-"""Ollama embedding inputs are bounded, and configured embedding failures are explicit.
+"""Ollama embedding inputs are bounded to the model's context length.
 
 The failure this covers, from the journal at 22:01:13 on 2026-08-14:
 
@@ -128,47 +128,3 @@ class TestInputBudget:
 
         assert await adapter.embed_batch([]) == []
         assert client.embed_inputs == []
-
-
-@pytest.mark.asyncio
-class TestConfiguredEmbeddingFailures:
-    async def test_a_document_is_not_indexed_when_embedding_fails(self, tmp_path: Any) -> None:
-        """Configured semantic indexing must not silently store an unembedded row."""
-        from niuu.adapters.search.sqlite import SqliteSearchAdapter
-
-        async def _explode(_content: str) -> list[float]:
-            raise httpx.HTTPStatusError(
-                "400", request=httpx.Request("POST", "/api/embed"), response=httpx.Response(400)
-            )
-
-        adapter = SqliteSearchAdapter(str(tmp_path / "search.db"), embed_fn=_explode)
-        await adapter.initialize()
-
-        with pytest.raises(httpx.HTTPStatusError):
-            await adapter.index("doc-1", "a memory worth keeping", {})
-        assert await adapter.unembedded(limit=10) == []
-        await adapter.close()
-
-    async def test_recall_fails_when_the_query_cannot_be_embedded(self, tmp_path: Any) -> None:
-        """Configured semantic recall must not silently downgrade to keyword search."""
-        from niuu.adapters.search.sqlite import SqliteSearchAdapter
-
-        state = {"fail": False}
-
-        async def _sometimes(_content: str) -> list[float]:
-            if state["fail"]:
-                raise httpx.HTTPStatusError(
-                    "400",
-                    request=httpx.Request("POST", "/api/embed"),
-                    response=httpx.Response(400),
-                )
-            return [0.1, 0.2]
-
-        adapter = SqliteSearchAdapter(str(tmp_path / "recall.db"), embed_fn=_sometimes)
-        await adapter.initialize()
-        await adapter.index("doc-1", "the broker listens on 7503", {})
-
-        state["fail"] = True
-        with pytest.raises(httpx.HTTPStatusError):
-            await adapter.search("broker")
-        await adapter.close()

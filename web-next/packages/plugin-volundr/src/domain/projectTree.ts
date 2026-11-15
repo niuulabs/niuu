@@ -54,12 +54,29 @@ export function groupByProject(
   );
 }
 
+/** The session a session sits under, and the host that holds it when the session knows it. */
+interface ParentRef {
+  sessionId: string;
+  instanceId: string;
+}
+
+/**
+ * The session a session runs under: the coordinator that leads it, else the unit root that
+ * hosts it (a team's root, a workflow run's root). A hosted session runs on its root's host.
+ */
+function parentRef(session: Session): ParentRef | null {
+  const led = session.coordination?.parent;
+  if (led) return led;
+  if (!session.hostedBy) return null;
+  return { sessionId: session.hostedBy, instanceId: session.clusterId };
+}
+
 /** Missing/filtered parents and malformed cycles must never hide sessions. */
 export function buildSessionTree(sessions: Session[]): SessionTreeNode[] {
   const nodes = sessions.map((session) => ({ session, children: [] as SessionTreeNode[] }));
   const parents = new Map<SessionTreeNode, SessionTreeNode>();
   for (const node of nodes) {
-    const ref = node.session.coordination?.parent;
+    const ref = parentRef(node.session);
     if (!ref) continue;
     const candidates = nodes.filter(
       (candidate) => candidate !== node && candidate.session.id === ref.sessionId,
@@ -244,8 +261,34 @@ const QUIET_LEAD_STATES: ReadonlySet<SessionState> = new Set(['ready', 'idle', '
  */
 export function leadState(lead: Session, sessions: readonly Session[]): SessionState {
   if (!QUIET_LEAD_STATES.has(lead.state)) return lead.state;
-  const workers = sessions.filter((session) => session.coordination?.parent?.sessionId === lead.id);
+  const workers = sessions.filter((session) => parentRef(session)?.sessionId === lead.id);
   if (workers.some((worker) => worker.state === 'awaiting_input')) return 'awaiting_input';
   if (workers.some((worker) => worker.state === 'running')) return 'running';
   return lead.state;
+}
+
+/** What a session's row says about the unit it hosts: its agents and the people in its room. */
+export interface UnitSummary {
+  /** Null when the session leads other sessions: whether it is an agent itself is its own role. */
+  agents: number | null;
+  people: number;
+}
+
+/**
+ * The unit a session hosts, when it is one: a team's root, or any session with more than
+ * its owner in the room. A solo session with nobody else in it has none and reads as today.
+ * `memberCount` is how many member sessions the host knows under it.
+ */
+export function unitSummary(session: Session, memberCount: number): UnitSummary | null {
+  const people = session.peopleCount ?? 1;
+  if (!session.team && people <= 1) return null;
+  if (session.team) return { agents: memberCount, people };
+  return { agents: memberCount === 0 ? 1 : null, people };
+}
+
+/** "3 agents · 2 people", or "4 agents · you" when the owner is the only person in the room. */
+export function unitSummaryLabel(summary: UnitSummary, viewerOwns: boolean): string {
+  const people = summary.people > 1 ? `${summary.people} people` : viewerOwns ? 'you' : '1 person';
+  if (summary.agents === null) return people;
+  return `${summary.agents} ${summary.agents === 1 ? 'agent' : 'agents'} \u00b7 ${people}`;
 }

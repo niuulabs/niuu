@@ -109,9 +109,8 @@ class MimirRegistryHttpDirectory(MemoryMountDirectory):
 
     @staticmethod
     def _target(item: dict[str, Any]) -> RegistryTarget:
-        # An entry's path is a path on Mimir's own disk: a session cannot mount it, so
-        # only the url or adapter of an entry is passed on. An entry with neither is
-        # refused by the resolver, naming the mount.
+        # An entry with neither a url nor an adapter is refused by the resolver, naming
+        # the mount.
         return RegistryTarget(
             id=str(item["id"]),
             name=str(item.get("name") or item["id"]),

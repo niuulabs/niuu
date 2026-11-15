@@ -72,6 +72,7 @@ not code.
 |---|---|
 | `KubernetesLoginRunner` | Clusters: a bounded Job in namespace `niuu-logins` |
 | `DockerLoginRunner` | Docker mode: a sibling container removed after the read |
+| `LocalLoginRunner` | Local mini mode: a process on this host, in a private temporary directory, with the host's own CLIs |
 | `OpenShellCredentialEnrollmentRunner` | OpenShell sandboxes |
 | `UnsupportedCredentialEnrollmentRunner` | The default: sign-ins are refused, keys still work |
 
@@ -107,9 +108,9 @@ device-flow runner); each enrollment goes to the first that implements its metho
 | Knob | Default | What it changes | Where it is set |
 |---|---|---|---|
 | `credential_store.adapter` | `MemoryCredentialStore` | Where secrets live: OpenBao, Infisical, file or memory | Forge config |
-| `credential_enrollment_runner` | `UnsupportedCredentialEnrollmentRunner` | Which runner performs sign-ins | Forge config |
+| `credential_enrollment_runner` | `UnsupportedCredentialEnrollmentRunner` (`LocalLoginRunner` in local mini mode) | Which runner performs sign-ins | Forge config |
 | `codex_auth.adapter` (session gateway) | `HostCodexAuthProvider` | Host login versus Forge broker | Set per session by the pod manager |
-| `SKULD__CLAUDE_AUTH` | `subscription` | Subscription login or API key for Claude | Set by `IntegrationContributor` |
+| `claude_auth` (env `SKULD__CLAUDE_AUTH`) | `subscription` | Subscription login or API key for Claude; any other value is refused at startup | Session gateway settings; the env var is set by `IntegrationContributor` |
 | Integration definitions | built in | Which vendors can be connected and how they are delivered | Forge config (integration catalog) |
 
 ## Tradeoffs
@@ -127,7 +128,7 @@ device-flow runner); each enrollment goes to the first that implements its metho
 | Model integration definitions | [`src/volundr/config.py`](https://github.com/niuulabs/niuu/blob/dev/src/volundr/config.py) (`ai_provider` entries) |
 | REST: connections and enrollments | [`src/volundr/adapters/inbound/rest_integrations.py`](https://github.com/niuulabs/niuu/blob/dev/src/volundr/adapters/inbound/rest_integrations.py) |
 | Enrollment service | [`src/volundr/domain/services/credential_enrollment.py`](https://github.com/niuulabs/niuu/blob/dev/src/volundr/domain/services/credential_enrollment.py) |
-| Login runners | [`k8s_login_runner.py`](https://github.com/niuulabs/niuu/blob/dev/src/volundr/adapters/outbound/k8s_login_runner.py), [`docker_login_runner.py`](https://github.com/niuulabs/niuu/blob/dev/src/volundr/adapters/outbound/docker_login_runner.py) |
+| Login runners | [`k8s_login_runner.py`](https://github.com/niuulabs/niuu/blob/dev/src/volundr/adapters/outbound/k8s_login_runner.py), [`docker_login_runner.py`](https://github.com/niuulabs/niuu/blob/dev/src/volundr/adapters/outbound/docker_login_runner.py), [`local_login_runner.py`](https://github.com/niuulabs/niuu/blob/dev/src/volundr/adapters/outbound/local_login_runner.py) |
 | Which Connections a launch gets | [`src/volundr/domain/services/session.py`](https://github.com/niuulabs/niuu/blob/dev/src/volundr/domain/services/session.py) (`_resolve_connections`) |
 | Secret manifest | [`src/volundr/adapters/outbound/contributors/integrations.py`](https://github.com/niuulabs/niuu/blob/dev/src/volundr/adapters/outbound/contributors/integrations.py) |
 | Boot-time env and files | [`src/skuld/session_secrets.py`](https://github.com/niuulabs/niuu/blob/dev/src/skuld/session_secrets.py) |

@@ -179,6 +179,24 @@ class SessionParticipantService:
             session.id, session.tenant_id or "", session.owner_id or "", query.strip()
         )
 
+    async def find_people(
+        self, principal: Principal | None, query: str
+    ) -> list[ParticipantCandidate]:
+        """Active members of the caller's org, other than the caller, matching *query*.
+
+        For choosing people to invite before a session exists (a team being set up), so
+        it needs no session and no grant: anyone who belongs to the org may search it,
+        since anyone who belongs to it may start a session of their own.
+
+        Raises:
+            PermissionError: No principal was given.
+        """
+        if principal is None:
+            raise PermissionError("An authenticated principal is required")
+        return await self._repository.tenant_people(
+            principal.tenant_id, principal.user_id, query.strip()
+        )
+
     async def accept(self, session: Session, principal: Principal) -> SessionParticipant:
         """The invited user accepts, moving their grant from invited to active.
 
@@ -260,6 +278,29 @@ class SessionParticipantService:
             if name:
                 names[user_id] = name
         return names
+
+    async def list_grants(self, session: Session) -> list[SessionParticipant]:
+        """The grants that count as people of *session*: active, or invited and still open.
+
+        A revoked grant and an expired one are not in the session. This is a lookup, not an
+        authorization: the caller has already decided who may see the answer.
+        """
+        return [
+            grant
+            for grant in await self._repository.list_for_session(session.id)
+            if grant.is_active or grant.is_pending
+        ]
+
+    async def people_counts(self, session_ids: list[UUID]) -> dict[UUID, int]:
+        """How many people each session has: its owner and its active, unexpired grants.
+
+        One query for the whole list, so listing sessions never asks once per session.
+        Every id is in the answer; a session nobody was invited to counts its owner alone.
+        """
+        if not session_ids:
+            return {}
+        granted = await self._repository.count_active_for_sessions(session_ids, datetime.now(UTC))
+        return {session_id: 1 + granted.get(session_id, 0) for session_id in session_ids}
 
     async def participation(
         self, session: Session, principal: Principal

@@ -75,7 +75,7 @@ async def test_context_survives_restart_and_raw_config_is_private(rig):
     spec = pods.start_calls[-1][1]
     assert "Keep project decisions" in spec.values["session"]["systemPrompt"]
     assert "NEW context" not in spec.values["session"]["systemPrompt"]
-    payload = SessionResponse.from_session(stored).model_dump()
+    payload = SessionResponse.from_session(stored, people_count=1).model_dump()
     assert payload["coordination"]["project_id"] == project.id
     assert "workload_config" not in payload and "project_context" not in payload
 

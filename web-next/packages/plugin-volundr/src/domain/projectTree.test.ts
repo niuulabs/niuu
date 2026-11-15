@@ -6,6 +6,8 @@ import {
   isCoordinator,
   leadState,
   nestSessions,
+  unitSummary,
+  unitSummaryLabel,
 } from './projectTree';
 import type { Session } from './session';
 
@@ -171,5 +173,61 @@ describe('a lead shows its workers when they are busier', () => {
     expect(leadState(withState(lead, 'terminated'), [working])).toBe('terminated');
     expect(leadState(withState(lead, 'failed'), [working])).toBe('failed');
     expect(leadState(lead, [lead, elsewhere])).toBe('idle');
+  });
+});
+
+describe('sessions hosted in a unit', () => {
+  const hosted = (id: string, hostedBy: string, extra: Partial<Session> = {}): Session =>
+    ({ id, clusterId: 'thor', startedAt: '2026-09-17T10:00:00Z', hostedBy, ...extra }) as Session;
+  const root = (id: string, extra: Partial<Session> = {}): Session =>
+    ({ id, clusterId: 'thor', startedAt: '2026-09-17T10:00:00Z', ...extra }) as Session;
+
+  it('nests a hosted session under its root without any project', () => {
+    const tree = buildSessionTree([hosted('m1', 'team'), root('team'), hosted('m2', 'team')]);
+    expect(tree.map((node) => node.session.id)).toEqual(['team']);
+    expect(tree[0]?.children.map((node) => node.session.id).sort()).toEqual(['m1', 'm2']);
+  });
+
+  it('keeps a hosted session whose root is not listed, and picks the root on its own host', () => {
+    expect(buildSessionTree([hosted('m1', 'missing')]).map((node) => node.session.id)).toEqual([
+      'm1',
+    ]);
+    const tree = buildSessionTree([
+      root('team', { clusterId: 'odin' }),
+      root('team', { clusterId: 'thor' }),
+      hosted('m1', 'team'),
+    ]);
+    const owner = tree.find((node) => node.children.length > 0);
+    expect(owner?.session.clusterId).toBe('thor');
+  });
+
+  it('counts a root hosted members and shows its state as the busiest of them', () => {
+    const team = root('team', { state: 'idle', team: { taskTo: null } });
+    const members = [
+      hosted('m1', 'team', { state: 'running' }),
+      hosted('m2', 'team', { state: 'idle' }),
+    ];
+    expect(leadState(team, [team, ...members])).toBe('running');
+    const nesting = nestSessions([team, ...members], [team, ...members], [team, ...members]);
+    expect(nesting.workerCounts.get('team')).toBe(2);
+    expect(nesting.roots.map((s) => s.id)).toEqual(['team']);
+  });
+
+  it('summarises a team, a session with people, and leaves a solo session alone', () => {
+    const team = root('t', { team: { taskTo: 'lead' }, peopleCount: 2 });
+    expect(unitSummary(team, 3)).toEqual({ agents: 3, people: 2 });
+    expect(unitSummary(root('s', { peopleCount: 3 }), 0)).toEqual({ agents: 1, people: 3 });
+    // A session that leads others says only who is in the room: whether it is an agent is its role.
+    expect(unitSummary(root('c', { peopleCount: 2 }), 2)).toEqual({ agents: null, people: 2 });
+    expect(unitSummary(root('solo', { peopleCount: 1 }), 0)).toBeNull();
+    expect(unitSummary(root('legacy'), 0)).toBeNull();
+  });
+
+  it('words the summary for the owner, a participant and a crowd', () => {
+    expect(unitSummaryLabel({ agents: 3, people: 2 }, true)).toBe('3 agents \u00b7 2 people');
+    expect(unitSummaryLabel({ agents: 1, people: 2 }, false)).toBe('1 agent \u00b7 2 people');
+    expect(unitSummaryLabel({ agents: 4, people: 1 }, true)).toBe('4 agents \u00b7 you');
+    expect(unitSummaryLabel({ agents: 4, people: 1 }, false)).toBe('4 agents \u00b7 1 person');
+    expect(unitSummaryLabel({ agents: null, people: 2 }, true)).toBe('2 people');
   });
 });

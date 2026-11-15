@@ -81,6 +81,9 @@ class ProjectionContext:
     node_claude_permission_mode: str = ""
     node_approval_policy: str = ""
     node_sandbox: str = ""
+    #: Whether the persona's outcome contract is part of its instructions; off for a
+    #: conversational session (``session.conversational``).
+    outcome_contract: bool = True
 
     def mcp_server_names(self) -> list[str]:
         return [str(server.get("name") or "") for server in self.mcp_servers if server.get("name")]
@@ -125,15 +128,18 @@ class PersonaProjector(Protocol):
     ) -> HarnessProjection: ...
 
 
-def compose_instructions(definition: Mapping[str, Any], request_prompt: str) -> str:
+def compose_instructions(
+    definition: Mapping[str, Any], request_prompt: str, *, outcome_contract: bool = True
+) -> str:
     """The persona's instructions with the request's ad-hoc prompt appended after them.
 
     The persona is the base; a request prompt adds to it and never replaces it. The outcome
-    block instruction a persona's ``produces.schema`` implies is part of the persona.
+    block instruction a persona's ``produces.schema`` implies is part of the persona, unless
+    the session converses instead of working to that contract (``outcome_contract`` off).
     """
     prompt = str(definition.get("system_prompt_template") or "")
     produces = parse_produces(definition.get("produces"))
-    if produces.schema:
+    if produces.schema and outcome_contract:
         instruction = generate_outcome_instruction(OutcomeSchema(fields=produces.schema))
         if instruction not in prompt:
             prompt = f"{prompt}\n\n{instruction}".strip()

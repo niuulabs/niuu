@@ -12,12 +12,14 @@ from fastapi.testclient import TestClient
 
 from niuu.domain.services.forge_session_token import LAUNCH_ID_CLAIM, SESSION_ID_CLAIM
 from niuu.domain.services.token_scope import (
+    FORGE_MEMORY_SCOPE,
     FORGE_MESH_IDENTITY_SCOPE,
     FORGE_NOTIFY_SCOPE,
     FORGE_SESSION_LIFECYCLE_SCOPE,
     FORGE_SESSION_MESSAGE_SCOPE,
     FORGE_SESSION_READ_SCOPE,
     FORGE_SESSION_SECRET_SCOPE,
+    FORGE_SESSION_VOICE_SCOPE,
 )
 from tests.support.forge_session import (
     OWNER,
@@ -62,6 +64,7 @@ class TestPolicyTable:
             ("GET", "/sessions/S/conversation", FORGE_SESSION_READ_SCOPE, Binding.OWNED),
             ("GET", "/sessions/S/status", FORGE_SESSION_READ_SCOPE, Binding.OWNED),
             ("GET", "/sessions/S/people", FORGE_SESSION_READ_SCOPE, Binding.OWN),
+            ("GET", "/sessions/S/members", FORGE_SESSION_READ_SCOPE, Binding.OWN),
             ("POST", "/sessions/S/person-questions", FORGE_NOTIFY_SCOPE, Binding.OWN),
             (
                 "POST",
@@ -201,6 +204,8 @@ class TestPolicyTable:
             FORGE_SESSION_MESSAGE_SCOPE,
             FORGE_SESSION_LIFECYCLE_SCOPE,
             FORGE_MESH_IDENTITY_SCOPE,
+            FORGE_MEMORY_SCOPE,
+            FORGE_SESSION_VOICE_SCOPE,
             None,
         }
         assert {policy.scope for policy in ROUTE_POLICIES} <= scopes

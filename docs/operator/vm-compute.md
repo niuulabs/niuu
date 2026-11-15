@@ -15,7 +15,7 @@ Keep this operator configuration and its credentials access restricted.
 | Field | Meaning |
 | --- | --- |
 | `pool_id` | Stable pool identity, unique within the database. |
-| `max_machines` | Positive limit; provisioning, failed and draining claims count. |
+| `max_machines` | Positive limit; provisioning, failed and draining claims count. Required for a provider that makes machines; refused for registered hosts, whose pool is the hosts that joined ([compute-hosts.md](compute-hosts.md)). |
 | `database` | Existing PostgreSQL settings: `host`, `port`, `name`, `user`, `password`. Apply migration 000066 using the normal migration mechanism first. |
 | `provider.adapter` | `volundr.adapters.outbound.harvester.HarvesterMachineProvider`, or an installed class implementing `MachineProvider`. |
 | `provider.kwargs` | Provider-specific mapping described below. |
@@ -444,6 +444,17 @@ honour, and refuses the rest by name:
   `runAsUser`/`runAsGroup`. Init containers run to completion, then sidecars start,
   then Skuld, on every start; all run with host networking and the label
   `compute.niuu.io/allocation=<allocation id>`, and stop with the session.
+
+A Git source clones with the source-control integration attached to the session,
+as on Kubernetes: a session with a repository and no attached integration for it
+is refused at launch. The secret injection's guest agent renders the
+integration's token into its mounted volume (`/run/secrets/git/<id>/token` in the
+containers). The container runtime's clone reads it through a credential helper,
+and so does the session's own Git (`GIT_TOKEN_FILE`, a repository-scoped
+`credential.<url>.helper`), on every fetch and push. The token never enters the
+launch file, a URL or the repository's config. A token that was not rendered
+fails the start at stage `clone`. Host-mode and OpenShell runtimes clone with
+their own programs and do not read this token.
 
 Credential files live outside the archived workspace/home and are deleted with the
 VM. PVCs, ConfigMap/Secret volumes, `valueFrom` env and workspace host-path sources

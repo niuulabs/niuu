@@ -47,7 +47,7 @@ stable: a product name never changes a route, a config key, or a command.
 | Workflows and teams | Definitions, dispatch, stages, review gates, and runs | Work | `ting` |
 | Sessions and execution | Session lifecycle, launch configuration, and review surfaces | Forge | `volundr` |
 | Session gateway | Runtime processes, authentication, transcripts, and channel adaptation | Forge | `skuld` |
-| Shared memory and knowledge | Durable sources, knowledge pages, retrieval, and curation | Memory | `mimir` |
+| Shared memory and knowledge | Durable sources, knowledge pages, and retrieval | Memory | `mimir` |
 | Model gateway | Model catalog, providers, routing, and usage | AI models | `bifrost` |
 | Service discovery | Instance registration, discovery, and routing | Platform | `guild` |
 | Event bus | Event transport between local and distributed services | Platform | `sleipnir` |

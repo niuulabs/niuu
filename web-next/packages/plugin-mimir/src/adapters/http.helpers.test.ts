@@ -12,20 +12,16 @@ import {
   isMissingRouteError,
   listLegacySources,
   normalizeOriginType,
-  normalizeSeverity,
   normalizeZones,
   parseTimelineItems,
   stripFrontmatter,
   stripLeadingTitle,
   stripSourceFooter,
-  toActivityEvent,
   toEmbeddingResult,
   toEntityMeta,
   toGraph,
   toGraphEdge,
   toGraphNode,
-  toLintIssue,
-  toLintReport,
   toMount,
   toPage,
   toPageMeta,
@@ -49,13 +45,12 @@ describe('mimir http helpers', () => {
         status: 'healthy',
         pages: 2,
         sources: 1,
-        lint_issues: 3,
         last_write: '2026-05-01',
         embedding: 'fts',
         size_kb: 12,
         desc: 'Local',
       }),
-    ).toMatchObject({ lintIssues: 3, sizeKb: 12, accessScope: 'tenant' });
+    ).toMatchObject({ sizeKb: 12, accessScope: 'tenant' });
 
     expect(
       toRegistryMount({
@@ -66,7 +61,6 @@ describe('mimir http helpers', () => {
         role: 'shared',
         access_scope: 'global',
         url: 'https://mimir.example',
-        path: '/mnt',
         categories: ['entity'],
         auth_ref: 'secret',
         default_read_priority: 5,
@@ -229,52 +223,7 @@ Useful summary.
     expect(escapeRegExp('a+b?')).toBe('a\\+b\\?');
   });
 
-  it('maps lint, embedding, recent write, source, and activity records', async () => {
-    expect(
-      toLintIssue({
-        id: 'L12',
-        severity: 'warning',
-        page_path: '/arch/overview',
-        auto_fixable: true,
-        message: 'Warn',
-      }),
-    ).toMatchObject({
-      rule: 'L12',
-      severity: 'warn',
-      page: '/arch/overview',
-      mount: 'local',
-      autoFix: true,
-    });
-    expect(
-      toLintReport({
-        issues: [{ id: 'L1', severity: 'error', message: 'Broken', page: '/a' }],
-        pages_checked: 1,
-      }),
-    ).toMatchObject({ pagesChecked: 1, summary: { error: 1, warn: 0, info: 0 }, mounts: [] });
-    expect(
-      toLintReport({
-        issues: [],
-        pages_checked: 0,
-        mounts: [
-          {
-            name: 'gbrain-kanuck',
-            status: 'unsupported',
-            pages_checked: 0,
-            issues: 0,
-            detail: 'gbrain has no equivalent for lint.',
-          },
-        ],
-      }).mounts,
-    ).toEqual([
-      {
-        name: 'gbrain-kanuck',
-        status: 'unsupported',
-        pagesChecked: 0,
-        issues: 0,
-        detail: 'gbrain has no equivalent for lint.',
-      },
-    ]);
-
+  it('maps embedding, recent write, and source records', async () => {
     expect(
       toEmbeddingResult({
         path: '/a',
@@ -304,18 +253,6 @@ Useful summary.
         compiled_into: ['/a'],
       }),
     ).toMatchObject({ id: 'src-1', originType: 'file', ingestAgent: 'mimir' });
-    expect(
-      toActivityEvent({
-        id: 'a1',
-        timestamp: '2026-05-01',
-        kind: 'write',
-        mount: 'local',
-        ravn: 'r1',
-        message: 'Updated',
-        page: '/a',
-      }),
-    ).toMatchObject({ kind: 'write', page: '/a' });
-
     const client = {
       get: vi.fn().mockResolvedValue([{ title: 'Legacy', ingested_at: '2026-05-01' }]),
     };
@@ -336,8 +273,6 @@ Useful summary.
     expect(inferPageType('/x/directives/a', 'arch')).toBe('directive');
     expect(inferPageType('/x/topic', 'arch')).toBe('topic');
 
-    expect(normalizeSeverity('warning')).toBe('warn');
-    expect(normalizeSeverity('error')).toBe('error');
     expect(normalizeOriginType('web')).toBe('web');
     expect(normalizeOriginType('document')).toBe('file');
     expect(normalizeOriginType('conversation')).toBe('chat');

@@ -282,6 +282,19 @@ def _invites_unsupported(runtime_backend: str) -> str:
     )
 
 
+def invitations_refused(runtime_backend: str, room_role_source: str) -> str | None:
+    """Why this Forge's sessions cannot be attached to by an invited person, or ``None``.
+
+    ``None`` means a participant grant can be used: the backend is reached through Forge's
+    session proxy, or authorizes attach by grant (``room_role_source: remote``).
+    """
+    if runtime_backend in GRANT_HONORING_RUNTIME_BACKENDS or (
+        runtime_backend in REMOTE_CAPABLE_RUNTIME_BACKENDS and room_role_source == "remote"
+    ):
+        return None
+    return _invites_unsupported(runtime_backend)
+
+
 def create_session_participants_router(
     service: SessionParticipantService,
     session_service: SessionService,
@@ -292,9 +305,7 @@ def create_session_participants_router(
     identity_header_names: dict[str, str] | None = None,
 ) -> APIRouter:
     router = APIRouter(prefix=prefix, tags=["Sessions"])
-    grants_are_attachable = runtime_backend in GRANT_HONORING_RUNTIME_BACKENDS or (
-        runtime_backend in REMOTE_CAPABLE_RUNTIME_BACKENDS and room_role_source == "remote"
-    )
+    grants_are_attachable = invitations_refused(runtime_backend, room_role_source) is None
 
     async def _get_session(session_id: UUID):
         session = await session_service.get_session(session_id)
@@ -346,6 +357,19 @@ def create_session_participants_router(
         except ParticipantAlreadyActiveError as exc:
             raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
         return ParticipantResponse.from_participant(participant)
+
+    @router.get("/participant-candidates", response_model=list[ParticipantCandidate])
+    async def people_candidates(request: Request, q: str = Query("")) -> list[ParticipantCandidate]:
+        """Active people of the caller's org, other than the caller, matching ``q``.
+
+        For choosing who to invite before a session exists (a team being set up). Any
+        member of the org may ask: the same people the session-scoped search offers an
+        owner, without the session's own grants to leave out."""
+        principal = await extract_principal(request)
+        try:
+            return await service.find_people(principal, q)
+        except PermissionError as exc:
+            raise HTTPException(status.HTTP_401_UNAUTHORIZED, str(exc)) from exc
 
     @router.get(
         "/sessions/{session_id}/participant-candidates",

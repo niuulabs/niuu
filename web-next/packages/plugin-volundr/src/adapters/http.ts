@@ -77,6 +77,11 @@ import type {
   ProjectRole,
   SessionParticipant,
   SessionRoomRole,
+  SessionMembers,
+  SessionStatus,
+  SessionTeamTaskTo,
+  StartTeamRequest,
+  StartedTeam,
 } from '../models/volundr.model';
 import { isSharedSession, roomRoleOfProjectRole } from '../models/volundr.model';
 import { normalizeSecretRequest, type SecretRequestPayload } from './secretRequestWire';
@@ -173,6 +178,51 @@ function normalizeParticipant(payload: ParticipantPayload): SessionParticipant {
     expiresAt: payload.expires_at ?? null,
   };
 }
+
+type SessionMembersPayload = {
+  agents: Array<{
+    session_id: string;
+    name: string;
+    persona_name?: string | null;
+    model: string;
+    definition?: string | null;
+    status: SessionStatus;
+    lead: boolean;
+  }>;
+  people: Array<{
+    user_id: string;
+    display_name?: string | null;
+    role: string;
+    status: string;
+    online?: boolean | null;
+  }>;
+};
+
+function normalizeSessionMembers(payload: SessionMembersPayload): SessionMembers {
+  return {
+    agents: payload.agents.map((agent) => ({
+      sessionId: agent.session_id,
+      name: agent.name,
+      personaName: agent.persona_name ?? '',
+      model: agent.model,
+      definition: agent.definition ?? null,
+      status: agent.status,
+      lead: agent.lead === true,
+    })),
+    people: payload.people.map((person) => ({
+      userId: person.user_id,
+      displayName: person.display_name ?? '',
+      role: person.role,
+      status: person.status,
+      online: person.online ?? null,
+    })),
+  };
+}
+
+type StartedTeamPayload = {
+  session: SessionPayload;
+  members: SessionPayload[];
+};
 
 type SessionPersonPayload = {
   user_id: string;
@@ -279,6 +329,10 @@ type SessionPayload = {
   ownerId?: string | null;
   owner_id?: string | null;
   owner_name?: string | null;
+  hosted_by?: string | null;
+  team?: { task_to?: SessionTeamTaskTo | null } | null;
+  team_member?: { lead?: boolean } | null;
+  people_count?: number | null;
   tenantId?: string | null;
   tenant_id?: string | null;
   instanceId?: string | null;
@@ -628,6 +682,37 @@ function buildStartSessionBody(
   return body;
 }
 
+/** The body of `POST /teams`; a task and who gets it travel together or not at all. */
+function buildStartTeamBody(request: StartTeamRequest): Record<string, unknown> {
+  const task = request.task?.trim() ?? '';
+  const body: Record<string, unknown> = {
+    name: request.name,
+    source: request.source,
+    task,
+    task_to: task ? request.taskTo : undefined,
+    members: request.members.map((member) => ({
+      model: member.model,
+      definition: member.definition,
+      persona_name: member.personaName ?? '',
+      lead: member.lead,
+      ...(member.voices && Object.keys(member.voices).length ? { voices: member.voices } : {}),
+    })),
+    invitees: request.invitees,
+    launch_spec: request.launchSpec,
+    credential_names: request.credentialNames,
+    integration_ids: request.integrationIds,
+    resource_config: request.resourceConfig,
+    terminal_restricted: Boolean(request.terminalRestricted),
+    instance_id: request.instanceId ?? null,
+    target_tags: request.targetTags?.length ? request.targetTags : undefined,
+    target_match: request.targetMatch ?? undefined,
+  };
+  for (const [key, value] of Object.entries(body)) {
+    if (value === undefined) delete body[key];
+  }
+  return body;
+}
+
 function toEpochMs(value?: number | string | null): number {
   if (typeof value === 'number') return value;
   if (typeof value !== 'string') return 0;
@@ -697,6 +782,10 @@ function normalizeSession(session: SessionPayload): VolundrSession {
       : {}),
     source: session.source ?? null,
     ...(session.owner_name ? { ownerName: session.owner_name } : {}),
+    ...(session.hosted_by ? { hostedBy: session.hosted_by } : {}),
+    ...(session.team ? { team: { taskTo: session.team.task_to ?? null } } : {}),
+    ...(session.team_member ? { teamMember: { lead: session.team_member.lead === true } } : {}),
+    ...(typeof session.people_count === 'number' ? { peopleCount: session.people_count } : {}),
     ...(session.room
       ? {
           room: {
@@ -1286,6 +1375,8 @@ export const __testables = {
   normalizeSessionDefinition,
   normalizePermissionAutoApproval,
   buildStartSessionBody,
+  buildStartTeamBody,
+  normalizeSessionMembers,
   toEpochMs,
   toDate,
   normalizeSession,
@@ -1652,10 +1743,13 @@ export function buildVolundrHttpAdapter(
     if (!prior || prior.instanceId !== fresh.instanceId) return fresh;
     const readState = fresh.readState ?? prior.readState;
     const workedSeconds24h = fresh.workedSeconds24h ?? prior.workedSeconds24h;
+    // Counted by the list read only; a streamed update does not carry it.
+    const peopleCount = fresh.peopleCount ?? prior.peopleCount;
     return {
       ...fresh,
       ...(readState ? { readState } : {}),
       ...(workedSeconds24h !== undefined ? { workedSeconds24h } : {}),
+      ...(peopleCount !== undefined ? { peopleCount } : {}),
     };
   }
 
@@ -2273,6 +2367,16 @@ export function buildVolundrHttpAdapter(
         projectMembersPath(project, `integrations/routes/${encodeURIComponent(event)}`),
       );
     },
+    getProjectMemoryMounts: (project) => forgeClient.get(projectMembersPath(project, 'memory')),
+    addProjectMemoryMount: (project, mount) =>
+      forgeClient.post(projectMembersPath(project, 'memory'), {
+        name: mount.name,
+        registry_entry_id: mount.registryEntryId,
+        access: mount.access,
+      }),
+    removeProjectMemoryMount: async (project, name) => {
+      await forgeClient.delete(projectMembersPath(project, `memory/${encodeURIComponent(name)}`));
+    },
     getTeamIntegrationUsage: (project, before) =>
       forgeClient.get(projectMembersPath(project, 'integrations/usage', before ? { before } : {})),
     getSessionParticipants: async (id, options) => {
@@ -2314,6 +2418,18 @@ export function buildVolundrHttpAdapter(
         ),
         { signal: options?.signal },
       );
+      return payload.map((person) => ({
+        userId: person.user_id,
+        displayName: person.display_name,
+        email: person.email,
+      }));
+    },
+    getTeamInviteCandidates: async (query, options) => {
+      const params = new URLSearchParams({ q: query });
+      if (options?.instanceId) params.set('instance_id', options.instanceId);
+      const payload = await forgeClient.get<
+        Array<{ user_id: string; display_name: string; email: string }>
+      >(`/participant-candidates?${params.toString()}`, { signal: options?.signal });
       return payload.map((person) => ({
         userId: person.user_id,
         displayName: person.display_name,
@@ -2460,6 +2576,23 @@ export function buildVolundrHttpAdapter(
     startSession: async (config) =>
       normalizeSession(
         await forgeClient.post<SessionPayload>('/sessions', buildStartSessionBody(config)),
+      ),
+    startTeam: async (request): Promise<StartedTeam> => {
+      const payload = await forgeClient.post<StartedTeamPayload>(
+        '/teams',
+        buildStartTeamBody(request),
+      );
+      return {
+        session: normalizeSession(payload.session),
+        members: payload.members.map(normalizeSession),
+      };
+    },
+    getSessionMembers: async (id, options) =>
+      normalizeSessionMembers(
+        await forgeClient.get<SessionMembersPayload>(
+          sessionPeoplePath(id, 'members', options?.instanceId ?? cachedInstanceId(id)),
+          { signal: options?.signal },
+        ),
       ),
     evaluatePermissionAutoApproval: async (sessionId, request) =>
       normalizePermissionAutoApproval(

@@ -204,6 +204,46 @@ class TestConfigMapTemplate:
         assert settings.workflow_execution.enabled is False
         assert settings.workflow_execution.delivery.enabled is False
 
+    def test_memory_imports_are_off_by_default_and_render_from_values(self, tmp_path):
+        default = Settings(**_config_from_rendered(_render_ting_chart(tmp_path, {})))
+        configured = Settings(
+            **_config_from_rendered(
+                _render_ting_chart(
+                    tmp_path,
+                    {
+                        "memoryImports": {
+                            "enabled": True,
+                            "gatewayUrl": "http://mimir:8080/api/v1/mimir",
+                            "gatewayTimeoutSeconds": 12,
+                            "pollSeconds": 90,
+                        }
+                    },
+                )
+            )
+        )
+
+        assert default.memory_imports.enabled is False
+        assert configured.memory_imports.enabled is True
+        assert configured.memory_imports.gateway_url == "http://mimir:8080/api/v1/mimir"
+        assert configured.memory_imports.gateway_timeout_seconds == 12.0
+        assert configured.memory_imports.poll_seconds == 90.0
+
+    def test_enabled_memory_imports_without_a_gateway_fail_the_render(self, tmp_path):
+        helm = shutil.which("helm")
+        if not helm:
+            pytest.skip("helm is not installed")
+        values_file = tmp_path / "values.yaml"
+        values_file.write_text(yaml.safe_dump({"memoryImports": {"enabled": True}}))
+
+        result = subprocess.run(
+            [helm, "template", "ting-test", str(CHART_DIR), "-f", str(values_file)],
+            capture_output=True,
+            text=True,
+        )
+
+        assert result.returncode != 0
+        assert "memoryImports.gatewayUrl" in result.stderr
+
     def test_step_deadline_renders_from_values_into_settings(self, tmp_path):
         default = Settings(**_config_from_rendered(_render_ting_chart(tmp_path, {})))
         tightened = Settings(

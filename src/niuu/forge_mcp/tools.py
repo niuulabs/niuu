@@ -282,7 +282,8 @@ class _RoomPostArgs(_Args):
 class _MeshSendArgs(_Args):
     peer: str = Field(min_length=1, max_length=200)
     content: str = Field(min_length=1)
-    expect_reply: bool = False
+    #: Unset takes the session's default (``ForgeMcpToolbox(mesh_replies_by_default=...)``).
+    expect_reply: bool | None = None
     request_id: str | None = Field(default=None, pattern=_REQUEST_ID_PATTERN)
 
     @field_validator("content")
@@ -1861,6 +1862,22 @@ def _validation_text(tool: str, exc: ValidationError) -> str:
 # --------------------------------------------------------------------------- dispatch
 
 
+def _answerable_mesh_send(spec: ToolSpec) -> ToolSpec:
+    """``mesh_send`` as a session whose peers answer by default lists it."""
+    properties = dict(spec.input_schema["properties"])
+    properties["expect_reply"] = {
+        "type": "boolean",
+        "default": True,
+        "description": "Whether the peer may answer you. On by default: your peers talk back.",
+    }
+    return replace(
+        spec,
+        description=spec.description
+        + " Here a peer you message may answer you unless you set `expect_reply` to false.",
+        input_schema={**spec.input_schema, "properties": properties},
+    )
+
+
 class ForgeMcpToolbox:
     """Lists and runs the Forge MCP tools against a :class:`ForgeClient` and a host."""
 
@@ -1872,12 +1889,27 @@ class ForgeMcpToolbox:
         grants: Iterable[ForgeMcpGrant | str],
         limits: ForgeMcpLimits,
         notify_mode: ForgeMcpNotifyMode = ForgeMcpNotifyMode.TRANSCRIPT,
+        mesh_replies_by_default: bool = False,
+        team_room_id: str = "",
     ) -> None:
+        """``mesh_replies_by_default``: a message to a peer can be answered unless the agent
+        says otherwise, as between a team's agents, who talk to each other.
+
+        ``team_room_id``: the room of this session's team. What it says to a teammate (a
+        ``mesh_send`` and a ``reply`` over the mesh) is also said there, addressed to the
+        teammate, so the people in the room follow the team's conversation as it happens."""
         self._client = client
         self._host = host
         self._grants = frozenset(ForgeMcpGrant(grant) for grant in grants)
         self._limits = limits
-        self._tool_specs = _specs_for(notify_mode)
+        self._mesh_replies_by_default = mesh_replies_by_default
+        self._team_room_id = team_room_id
+        self._tool_specs = [
+            _answerable_mesh_send(spec)
+            if mesh_replies_by_default and spec.name == "mesh_send"
+            else spec
+            for spec in _specs_for(notify_mode)
+        ]
         self._specs = {spec.name: spec for spec in self._tool_specs}
         notify = self._notify if notify_mode is ForgeMcpNotifyMode.TRANSCRIPT else self._feed_notify
         self._handlers: dict[str, Callable[[Any], Awaitable[ToolResult]]] = {
@@ -2322,8 +2354,13 @@ class ForgeMcpToolbox:
                     return ToolResult.error(
                         f"reply: message {args.message_id} names a room route but no room"
                     )
-                answer = await self._client.post_room_message(
-                    route.target, room_id=original.room_id, content=args.content
+                # Said in the room as room_post says it: straight to the host over the mesh
+                # when the mesh verifies senders, through Forge otherwise.
+                answer = await self._host.post_room_message(
+                    original.room_id,
+                    args.content,
+                    host_session_id=route.target,
+                    request_id=request_id,
                 )
             case ReplyKind.MESH:
                 try:
@@ -2340,6 +2377,14 @@ class ForgeMcpToolbox:
                     if unconfirmed is None:
                         raise
                     return unconfirmed
+                shown = await self._say_in_team_room(
+                    "reply",
+                    original.sender.name or original.sender.label(),
+                    args.content,
+                    request_id,
+                )
+                if shown is not None:
+                    return shown
         return self._ok(
             {
                 "message_id": args.message_id,
@@ -2366,7 +2411,11 @@ class ForgeMcpToolbox:
             answer = await self._host.send_mesh_message(
                 args.peer,
                 args.content,
-                expect_reply=args.expect_reply,
+                expect_reply=(
+                    self._mesh_replies_by_default
+                    if args.expect_reply is None
+                    else args.expect_reply
+                ),
                 request_id=request_id,
                 in_reply_to="",
             )
@@ -2375,7 +2424,42 @@ class ForgeMcpToolbox:
             if unconfirmed is None:
                 raise
             return unconfirmed
+        shown = await self._say_in_team_room(
+            "mesh_send", await self._peer_name(args.peer), args.content, request_id
+        )
+        if shown is not None:
+            return shown
         return self._ok({"peer": args.peer, "request_id": request_id, **answer})
+
+    async def _peer_name(self, peer_id: str) -> str:
+        """What a mesh peer is called, as it announced itself."""
+        if not self._team_room_id:
+            return peer_id
+        peers = await self._host.mesh_peers(role="", capability="", consumes="", produces="")
+        for peer in peers.get("peers", []):
+            if peer.get("peer_id") == peer_id:
+                return str(peer.get("name") or peer_id)
+        return peer_id
+
+    async def _say_in_team_room(
+        self, tool: str, recipient: str, content: str, request_id: str
+    ) -> ToolResult | None:
+        """Say what was just sent to a teammate in the team's room too, addressed to them.
+
+        The message itself was delivered; a room that cannot show it is said so to the agent
+        (an error naming both), never left out silently. None when there is no team room."""
+        if not self._team_room_id:
+            return None
+        try:
+            await self._host.post_room_message(
+                self._team_room_id, f"@{recipient} {content}", request_id=f"{request_id}-room"
+            )
+        except ForgeApiError as exc:
+            return ToolResult.error(
+                f"{tool}: delivered to {recipient}, but it could not be shown in the team's "
+                f"room {self._team_room_id}: {exc}. Do not send it again."
+            )
+        return None
 
     async def _mesh_ask(self, args: _MeshAskArgs) -> ToolResult:
         ceiling_s = self._host.ask_wait_max_s()
@@ -2390,6 +2474,25 @@ class ForgeMcpToolbox:
             record_cap_hit("ask.wait_max_s", message)
             return ToolResult.error(message)
         request_id = args.request_id or f"{_MCP_REQUEST_ID_PREFIX}{uuid.uuid4().hex}"
+        if self._team_room_id:
+            # Said in the room before it is asked, so the answers follow the question there.
+            if args.peers:
+                asked = " ".join([f"@{await self._peer_name(peer)}" for peer in args.peers])
+            elif args.producers_of.strip():
+                asked = f"@whoever produces {args.producers_of.strip()}"
+            else:
+                asked = "@everyone"
+            try:
+                await self._host.post_room_message(
+                    self._team_room_id,
+                    f"{asked} {args.content}",
+                    request_id=f"{request_id}-room",
+                )
+            except ForgeApiError as exc:
+                return ToolResult.error(
+                    f"mesh_ask: the question could not be shown in the team's room "
+                    f"{self._team_room_id}: {exc}. Nothing was asked."
+                )
         answer = await self._host.mesh_ask(
             args.content,
             producers_of=args.producers_of.strip(),

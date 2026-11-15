@@ -43,6 +43,36 @@ describe('RoomMessage', () => {
     expect(screen.getByText('Hello from user')).toBeInTheDocument();
   });
 
+  it("draws an agent's post into the room as that agent speaking, not as a person's", () => {
+    const post: ChatMessage = {
+      id: 'r9',
+      role: 'user',
+      content: 'Posted by the reviewer',
+      createdAt: now,
+      participant: {
+        peerId: 'member-2',
+        persona: 'reviewer',
+        displayName: 'hello-world-2',
+        participantType: 'skuld',
+      },
+    };
+    render(<RoomMessage message={post} workerRoom host={{ peerId: 'root' }} />);
+
+    expect(screen.getByText('hello-world-2')).toBeInTheDocument();
+    expect(screen.getByText('Posted by the reviewer')).toBeInTheDocument();
+    expect(screen.queryByTestId('user-message')).toBeNull();
+  });
+
+  it("still draws a person's message in the room as theirs", () => {
+    const person: ChatMessage = {
+      ...userMsg,
+      participant: { peerId: 'u1', persona: 'Ada', participantType: 'human' },
+    };
+    render(<RoomMessage message={person} />);
+
+    expect(screen.getByTestId('user-message')).toBeInTheDocument();
+  });
+
   it('renders assistant message', () => {
     render(<RoomMessage message={assistantMsg} />);
     expect(screen.getByText('Response from agent')).toBeInTheDocument();

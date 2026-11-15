@@ -2,21 +2,13 @@
  * How the memory view groups page kinds for colour and the legend.
  *
  * A graph node's `kind` is the page's entity type when it has one, else its
- * page type, else `thread` or `page` (see the backend's `project_pages`). The
+ * page type, else `page` (see the backend's `project_pages`). The
  * legend shows groups rather than raw kinds so six entity sub-types read as
  * one colour.
  */
 
 export type KindGroup =
-  | 'topic'
-  | 'entity'
-  | 'decision'
-  | 'directive'
-  | 'preference'
-  | 'goal'
-  | 'observation'
-  | 'thread'
-  | 'page';
+  'topic' | 'entity' | 'decision' | 'directive' | 'preference' | 'goal' | 'observation' | 'page';
 
 export interface KindGroupInfo {
   id: KindGroup;
@@ -35,7 +27,6 @@ export const KIND_GROUPS: readonly KindGroupInfo[] = [
   { id: 'preference', label: 'Preferences', singular: 'preference' },
   { id: 'goal', label: 'Goals', singular: 'goal' },
   { id: 'observation', label: 'Observations', singular: 'observation' },
-  { id: 'thread', label: 'Threads', singular: 'thread' },
   { id: 'page', label: 'Untyped pages', singular: 'page' },
 ];
 
@@ -56,7 +47,6 @@ const DIRECT_GROUPS = new Set<KindGroup>([
   'preference',
   'goal',
   'observation',
-  'thread',
 ]);
 
 /** The legend group a graph node's `kind` belongs to. Unknown kinds are untyped pages. */

@@ -9,6 +9,7 @@ import {
   Input,
   LoadingState,
   RepoSelect,
+  SegmentedFilter,
   StateDot,
   Textarea,
   cn,
@@ -17,7 +18,7 @@ import {
 } from '@niuulabs/ui';
 import { ArrowRight } from 'lucide-react';
 import type { IVolundrService } from '../ports/IVolundrService';
-import type { SessionDefinition } from '../models/volundr.model';
+import type { SessionDefinition, SessionTeamTaskTo } from '../models/volundr.model';
 import {
   deriveCliTool,
   getDefinitionRune,
@@ -31,15 +32,25 @@ import {
   quickLaunchIntegrationIds,
   selectedEngineProvider,
 } from './launchEngines';
-import {
-  defaultTargetId,
-  quickLaunchName,
-  quickLaunchSource,
-  useQuickLaunch,
-} from './hooks/useQuickLaunch';
+import { quickLaunchName, quickLaunchSource, useQuickLaunch } from './hooks/useQuickLaunch';
 import { useSessionList } from './hooks/useSessionStore';
+import { useForgePreference } from './useForgePreference';
 import { SESSION_DOT, compareSessionsByActivity } from './sessions/sessionLabels';
 import { LaunchWizard } from './LaunchWizard';
+import { TaskToPicker, TeamMembersEditor, TeamRoomPreview } from './NewTeamPanels';
+import {
+  buildStartTeamRequest,
+  type TeamInvitee,
+  initialTeamAgents,
+  roomPreviewLines,
+  teamAgentLabel,
+  teamNextSteps,
+  teamStartLabel,
+  type TeamAgentDraft,
+} from './teamLaunch';
+
+const HOST_SELECT =
+  'niuu:w-full niuu:rounded-md niuu:border niuu:border-border-subtle niuu:bg-bg-secondary niuu:px-3 niuu:py-2 niuu:text-sm niuu:text-text-primary';
 
 type RepoCatalogService = {
   getRepos(): Promise<RepoRecord[]>;
@@ -47,6 +58,8 @@ type RepoCatalogService = {
 };
 
 interface NewSessionSearch {
+  /** `team` opens the page on the team launch. */
+  mode?: string;
   repo?: string;
   branch?: string;
   persona?: string;
@@ -60,6 +73,16 @@ function readParam(value: unknown): string {
 }
 
 const RECENT_LIMIT = 3;
+
+type LaunchMode = 'one' | 'team';
+const LAUNCH_MODES = [
+  { value: 'one' as const, label: 'One agent' },
+  { value: 'team' as const, label: 'A team' },
+];
+const LEDE: Record<LaunchMode, string> = {
+  one: 'Describe the task in your own words. A coding agent picks it up in its own sandbox.',
+  team: 'Describe the task in your own words. A team of agents picks it up together, in one workspace, talking in one room.',
+};
 
 const WHAT_HAPPENS_NEXT = [
   'A sandbox boots with your repository checked out.',
@@ -82,7 +105,7 @@ export function NewSessionPage() {
   const volundr = useService<IVolundrService>('volundr');
   const repoCatalog = useService<RepoCatalogService>('niuu.repos');
   const personaCatalog = useOptionalService<IPersonaCatalog>('ravn.personas');
-  const { launch, creating, error } = useQuickLaunch();
+  const { launch, launchTeam, creating, error } = useQuickLaunch();
 
   const backTo = readParam(search.back);
 
@@ -92,6 +115,12 @@ export function NewSessionPage() {
   const [personaName, setPersonaName] = useState(() => readParam(search.persona));
   const [definitionKey, setDefinitionKey] = useState('');
   const [wizardOpen, setWizardOpen] = useState(false);
+  const [mode, setMode] = useState<LaunchMode>(() =>
+    readParam(search.mode) === 'team' ? 'team' : 'one',
+  );
+  const [agents, setAgents] = useState<TeamAgentDraft[]>(initialTeamAgents);
+  const [taskTo, setTaskTo] = useState<SessionTeamTaskTo>('lead');
+  const [invitees, setInvitees] = useState<TeamInvitee[]>([]);
 
   const definitionsQuery = useQuery({
     queryKey: ['volundr', 'session-definitions'],
@@ -144,6 +173,12 @@ export function NewSessionPage() {
     () => (targetsQuery.data ?? []).filter((target) => target.enabled),
     [targetsQuery.data],
   );
+  // The host the quick launch last used is this page's too, so both start where you expect.
+  const [preferredHost, setPreferredHost] = useForgePreference<string>('launch.host', '');
+  const host =
+    targets.find((target) => target.id === preferredHost) ??
+    targets.find((target) => target.isDefault) ??
+    targets[0];
   const recent = useMemo(
     () => [...(sessionsQuery.data ?? [])].sort(compareSessionsByActivity).slice(0, RECENT_LIMIT),
     [sessionsQuery.data],
@@ -162,16 +197,50 @@ export function NewSessionPage() {
     reposQuery.error ??
     integrationsQuery.error ??
     integrationCatalogQuery.error;
+  const team = mode === 'team';
+  const hasTask = task.trim().length > 0;
+  // A single agent needs a task to start on; a team may wait in its room for the first message.
   const canStart =
-    task.trim().length > 0 &&
+    (team ? agents.length > 0 && engines.length > 0 : hasTask && Boolean(selectedDefinition)) &&
     repoValue.trim().length > 0 &&
-    Boolean(selectedDefinition) &&
     !nameError &&
     !creating &&
     !loadError;
+  // The Forge the team starts on; the people to invite are found on it too.
+  const teamInstanceId = host?.id;
+  const inviteSearch = {
+    queryKey: ['volundr', 'team-invite-candidates', teamInstanceId ?? ''] as const,
+    fetcher: (typed: string, signal?: AbortSignal) =>
+      volundr.getTeamInviteCandidates(typed, { instanceId: teamInstanceId, signal }),
+  };
+  const teamPersonas = personaCatalog && personas.length > 0 ? personas : null;
+  const lead = agents.find((agent) => agent.lead);
+
+  async function handleStartTeam() {
+    await launchTeam(
+      buildStartTeamRequest({
+        name: sessionName,
+        source: quickLaunchSource(false, repoValue, branch),
+        task,
+        taskTo,
+        agents,
+        engines,
+        invitees,
+        instanceId: teamInstanceId,
+        integrations,
+        repos,
+        repoUrl: repoValue.trim(),
+      }),
+      backTo ? { returnTo: backTo } : {},
+    );
+  }
 
   async function handleStart() {
     if (!canStart) return;
+    if (team) {
+      await handleStartTeam();
+      return;
+    }
     const provider = selectedEngineProvider(selectedEngine, []);
     await launch(
       {
@@ -179,7 +248,7 @@ export function NewSessionPage() {
         source: quickLaunchSource(false, repoValue, branch),
         definition: selectedDefinition,
         model: launchModel(selectedEngine, provider, ''),
-        instanceId: defaultTargetId(targets),
+        instanceId: host?.id,
         initialPrompt: task,
         personaName,
         integrationIds: quickLaunchIntegrationIds({
@@ -213,6 +282,38 @@ export function NewSessionPage() {
     );
   }
 
+  const nextSteps = team
+    ? teamNextSteps({
+        agentCount: agents.length,
+        leadLabel: lead ? teamAgentLabel(lead, engines) : null,
+        hasTask,
+        taskTo,
+      })
+    : WHAT_HAPPENS_NEXT;
+
+  const engineNotices = (
+    <>
+      {!enginesPending && definitions.length === 0 ? (
+        <p role="status" className="niuu:text-xs niuu:text-text-muted">
+          No session engines are configured.
+        </p>
+      ) : null}
+      {!enginesPending && definitions.length > 0 && engines.length === 0 ? (
+        <p
+          role="status"
+          className="niuu:text-xs niuu:text-text-muted"
+          data-testid="new-session-no-provider"
+        >
+          None of your connected AI providers can run a session engine.{' '}
+          <a href={PROVIDER_SETTINGS_PATH} className="niuu:text-brand-300">
+            Connect one
+          </a>
+          .
+        </p>
+      ) : null}
+    </>
+  );
+
   return (
     <div
       className="niuu:mx-auto niuu:flex niuu:w-full niuu:max-w-5xl niuu:gap-10 niuu:px-8 niuu:py-10"
@@ -226,12 +327,22 @@ export function NewSessionPage() {
           <h1 className="niuu:m-0 niuu:text-2xl niuu:font-semibold niuu:text-text-primary">
             What should it work on?
           </h1>
-          <p className="niuu:m-0 niuu:text-sm niuu:text-text-secondary">
-            Describe the task in your own words. A coding agent picks it up in its own sandbox.
-          </p>
+          <p className="niuu:m-0 niuu:text-sm niuu:text-text-secondary">{LEDE[mode]}</p>
         </div>
 
-        <Field label="The task">
+        <SegmentedFilter
+          aria-label="One agent or a team"
+          options={LAUNCH_MODES}
+          value={mode}
+          onChange={setMode}
+        />
+
+        <Field
+          label="The task"
+          hint={
+            team ? 'Optional — without one they wait in the room for your first message' : undefined
+          }
+        >
           <Textarea
             value={task}
             onChange={(event) => setTask(event.target.value)}
@@ -292,89 +403,111 @@ export function NewSessionPage() {
           </Field>
         </div>
 
-        <div className="niuu:flex niuu:flex-col niuu:gap-3">
-          <span className="niuu:text-xs niuu:font-semibold niuu:text-text-primary">
-            Who works on it
-          </span>
-          {enginesPending ? <LoadingState label="Loading engines…" /> : null}
-          <div
-            role="radiogroup"
-            aria-label="Who works on it"
-            className="niuu:grid niuu:grid-cols-1 niuu:gap-3 niuu:sm:grid-cols-3"
-          >
-            {engines.map(({ definition }) => {
-              const active = definition.key === selectedDefinition?.key;
-              return (
-                <button
-                  key={definition.key}
-                  type="button"
-                  role="radio"
-                  aria-checked={active}
-                  onClick={() => setDefinitionKey(definition.key)}
-                  data-testid={`new-session-engine-${deriveCliTool(definition.key)}`}
-                  className={cn(
-                    'niuu:flex niuu:flex-col niuu:gap-1.5 niuu:rounded-xl niuu:border niuu:bg-bg-primary niuu:p-4 niuu:text-left niuu:transition-colors',
-                    active
-                      ? 'niuu:border-brand niuu:bg-bg-tertiary'
-                      : 'niuu:border-border-subtle niuu:hover:border-brand/40',
-                  )}
-                >
-                  <span
-                    aria-hidden
-                    className="niuu:font-mono niuu:text-lg niuu:leading-none niuu:text-brand"
-                  >
-                    {getDefinitionRune(definition.key)}
-                  </span>
-                  <span className="niuu:text-sm niuu:font-medium niuu:text-text-primary">
-                    {definition.displayName}
-                  </span>
-                  {definitionLine(definition) ? (
-                    <span className="niuu:text-xs niuu:text-text-secondary">
-                      {definitionLine(definition)}
-                    </span>
-                  ) : null}
-                </button>
-              );
-            })}
-          </div>
-          {!enginesPending && definitions.length === 0 ? (
-            <p role="status" className="niuu:text-xs niuu:text-text-muted">
-              No session engines are configured.
-            </p>
-          ) : null}
-          {!enginesPending && definitions.length > 0 && engines.length === 0 ? (
-            <p
-              role="status"
-              className="niuu:text-xs niuu:text-text-muted"
-              data-testid="new-session-no-provider"
-            >
-              None of your connected AI providers can run a session engine.{' '}
-              <a href={PROVIDER_SETTINGS_PATH} className="niuu:text-brand-300">
-                Connect one
-              </a>
-              .
-            </p>
-          ) : null}
-        </div>
-
-        {personaCatalog && personas.length > 0 ? (
-          <Field label="Work as" hint="Optional — a persona shapes how the agent works">
+        {targets.length > 1 && (
+          <Field label="Runs on" hint="The Forge host the sessions start on">
             <select
-              aria-label="Work as"
-              value={personaName}
-              onChange={(event) => setPersonaName(event.target.value)}
-              data-testid="new-session-persona"
-              className="niuu:w-full niuu:rounded-md niuu:border niuu:border-border-subtle niuu:bg-bg-secondary niuu:px-3 niuu:py-2 niuu:text-sm niuu:text-text-primary"
+              className={HOST_SELECT}
+              aria-label="Runs on"
+              value={host?.id ?? ''}
+              onChange={(event) => setPreferredHost(event.target.value)}
+              data-testid="new-session-host"
             >
-              <option value="">No persona</option>
-              {personas.map((persona) => (
-                <option key={persona.name} value={persona.name}>
-                  {persona.name} · {persona.role}
+              {targets.map((target) => (
+                <option key={target.id} value={target.id}>
+                  {target.name}
                 </option>
               ))}
             </select>
           </Field>
-        ) : null}
+        )}
+
+        {!team && (
+          <>
+            <div className="niuu:flex niuu:flex-col niuu:gap-3">
+              <span className="niuu:text-xs niuu:font-semibold niuu:text-text-primary">
+                Who works on it
+              </span>
+              {enginesPending ? <LoadingState label="Loading engines…" /> : null}
+              <div
+                role="radiogroup"
+                aria-label="Who works on it"
+                className="niuu:grid niuu:grid-cols-1 niuu:gap-3 niuu:sm:grid-cols-3"
+              >
+                {engines.map(({ definition }) => {
+                  const active = definition.key === selectedDefinition?.key;
+                  return (
+                    <button
+                      key={definition.key}
+                      type="button"
+                      role="radio"
+                      aria-checked={active}
+                      onClick={() => setDefinitionKey(definition.key)}
+                      data-testid={`new-session-engine-${deriveCliTool(definition.key)}`}
+                      className={cn(
+                        'niuu:flex niuu:flex-col niuu:gap-1.5 niuu:rounded-xl niuu:border niuu:bg-bg-primary niuu:p-4 niuu:text-left niuu:transition-colors',
+                        active
+                          ? 'niuu:border-brand niuu:bg-bg-tertiary'
+                          : 'niuu:border-border-subtle niuu:hover:border-brand/40',
+                      )}
+                    >
+                      <span
+                        aria-hidden
+                        className="niuu:font-mono niuu:text-lg niuu:leading-none niuu:text-brand"
+                      >
+                        {getDefinitionRune(definition.key)}
+                      </span>
+                      <span className="niuu:text-sm niuu:font-medium niuu:text-text-primary">
+                        {definition.displayName}
+                      </span>
+                      {definitionLine(definition) ? (
+                        <span className="niuu:text-xs niuu:text-text-secondary">
+                          {definitionLine(definition)}
+                        </span>
+                      ) : null}
+                    </button>
+                  );
+                })}
+              </div>
+              {engineNotices}
+            </div>
+
+            {personaCatalog && personas.length > 0 ? (
+              <Field label="Work as" hint="Optional — a persona shapes how the agent works">
+                <select
+                  aria-label="Work as"
+                  value={personaName}
+                  onChange={(event) => setPersonaName(event.target.value)}
+                  data-testid="new-session-persona"
+                  className="niuu:w-full niuu:rounded-md niuu:border niuu:border-border-subtle niuu:bg-bg-secondary niuu:px-3 niuu:py-2 niuu:text-sm niuu:text-text-primary"
+                >
+                  <option value="">No persona</option>
+                  {personas.map((persona) => (
+                    <option key={persona.name} value={persona.name}>
+                      {persona.name} · {persona.role}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+            ) : null}
+          </>
+        )}
+
+        {team && (
+          <>
+            {enginesPending ? <LoadingState label="Loading engines…" /> : null}
+            <TeamMembersEditor
+              agents={agents}
+              engines={engines}
+              personas={teamPersonas}
+              onChange={setAgents}
+              invitees={invitees}
+              onInviteesChange={setInvitees}
+              inviteSearch={inviteSearch}
+            />
+            {engineNotices}
+            {hasTask ? <TaskToPicker value={taskTo} onChange={setTaskTo} /> : null}
+          </>
+        )}
 
         <p className="niuu:m-0 niuu:text-xs niuu:text-text-muted">
           It asks before anything risky; you answer in the chat.
@@ -408,27 +541,37 @@ export function NewSessionPage() {
             className={PRIMARY_BTN}
             data-testid="new-session-start"
           >
-            {creating ? 'Starting…' : 'Start session'}
+            {creating ? 'Starting…' : team ? teamStartLabel(agents.length) : 'Start session'}
             <ArrowRight className="niuu:h-4 niuu:w-4" aria-hidden="true" />
           </button>
-          <button
-            type="button"
-            onClick={() => setWizardOpen(true)}
-            className="niuu:text-xs niuu:text-text-muted niuu:underline niuu:underline-offset-4 niuu:hover:text-text-primary"
-            data-testid="new-session-more-options"
-          >
-            More options
-          </button>
+          {team ? null : (
+            <button
+              type="button"
+              onClick={() => setWizardOpen(true)}
+              className="niuu:text-xs niuu:text-text-muted niuu:underline niuu:underline-offset-4 niuu:hover:text-text-primary"
+              data-testid="new-session-more-options"
+            >
+              More options
+            </button>
+          )}
         </div>
       </div>
 
       <aside className="niuu:hidden niuu:w-64 niuu:flex-shrink-0 niuu:flex-col niuu:gap-8 niuu:lg:flex">
+        {team ? (
+          <TeamRoomPreview
+            agents={agents}
+            engines={engines}
+            invitees={invitees}
+            lines={roomPreviewLines({ agents, engines, hasTask, taskTo, invitees })}
+          />
+        ) : null}
         <section className="niuu:flex niuu:flex-col niuu:gap-3">
           <h2 className="niuu:m-0 niuu:text-xs niuu:font-semibold niuu:uppercase niuu:tracking-[0.14em] niuu:text-text-muted">
             What happens next
           </h2>
           <ol className="niuu:m-0 niuu:flex niuu:list-none niuu:flex-col niuu:gap-3 niuu:p-0">
-            {WHAT_HAPPENS_NEXT.map((step, index) => (
+            {nextSteps.map((step, index) => (
               <li key={step} className="niuu:flex niuu:gap-3">
                 <span className="niuu:flex niuu:h-5 niuu:w-5 niuu:flex-shrink-0 niuu:items-center niuu:justify-center niuu:rounded-full niuu:border niuu:border-border-subtle niuu:font-mono niuu:text-[10px] niuu:text-text-muted">
                   {index + 1}

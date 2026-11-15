@@ -250,16 +250,25 @@ def test_the_compute_config_validates_its_hosts_section():
     with pytest.raises(ValidationError, match="plaintext http"):
         ComputeConfig(
             pool_id="pool",
-            max_machines=1,
             provider={"adapter": "x.Y"},
             hosts=hosts(join_url="http://forge.example.test"),
         )
 
-    config = ComputeConfig(
-        pool_id="pool", max_machines=1, provider={"adapter": "x.Y"}, hosts=hosts()
-    )
+    config = ComputeConfig(pool_id="pool", provider={"adapter": "x.Y"}, hosts=hosts())
 
     assert config.hosts.connectors[0].binding_id == "direct"
+    assert config.max_machines is None
+
+
+def test_registered_hosts_refuse_a_machine_maximum_naming_the_knob():
+    # The pool is the hosts that joined: a maximum below that count strands joined hosts.
+    with pytest.raises(ValidationError, match="remove compute.max_machines"):
+        ComputeConfig(pool_id="pool", max_machines=8, provider={"adapter": "x.Y"}, hosts=hosts())
+
+
+def test_a_pool_that_makes_machines_requires_a_machine_maximum():
+    with pytest.raises(ValidationError, match="compute.max_machines is required"):
+        ComputeConfig(pool_id="pool", provider={"adapter": "x.Y"})
 
 
 # -- session_images -----------------------------------------------------------------------------

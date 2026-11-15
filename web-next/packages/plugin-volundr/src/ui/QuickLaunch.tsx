@@ -34,10 +34,13 @@ export function QuickLaunch({
   initialStandard = 'claude',
   onAdvanced,
   onCreated,
+  onStartTeam,
 }: {
   initialStandard?: ForgeStandardId;
   onAdvanced: () => void;
   onCreated?: () => void;
+  /** Leaving for the team launch (a dialog closes itself here). */
+  onStartTeam?: () => void;
 }) {
   const volundr = useService<IVolundrService>('volundr');
   const bifrost = useService<IBifrostService>('bifrost');
@@ -460,6 +463,18 @@ export function QuickLaunch({
           onClick={onAdvanced}
         >
           Advanced launch
+        </button>
+        <button
+          type="button"
+          className="vol-quick__button"
+          disabled={launching}
+          data-testid="quick-launch-team"
+          onClick={() => {
+            onStartTeam?.();
+            void navigate({ to: '/volundr/sessions/new', search: { mode: 'team' } as never });
+          }}
+        >
+          Start a team
         </button>
         <div className="vol-quick__launch-side">
           <RunsAsReadiness offer={runsAs.offer} />

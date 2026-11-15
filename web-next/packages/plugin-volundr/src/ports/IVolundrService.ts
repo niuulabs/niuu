@@ -45,12 +45,16 @@ import type {
   ProjectRole,
   ParticipantCandidate,
   ParticipantRole,
+  SessionMembers,
+  StartedTeam,
+  StartTeamRequest,
   SessionParticipant,
   SessionProjectPerson,
   SessionProjectMembership,
   TeamCatalogEntry,
   TeamIntegration,
   TeamIntegrationUsagePage,
+  ProjectMemoryMount,
   TeamRoute,
   TeamRouteChange,
   TeamRouteEvent,
@@ -308,6 +312,14 @@ export interface IVolundrService {
     route: TeamRouteChange,
   ): Promise<TeamRoute>;
   removeTeamRoute(project: ForgeProject, event: TeamRouteEvent): Promise<void>;
+  /** The memories the project also reads (its mounts); every member may list them. */
+  getProjectMemoryMounts(project: ForgeProject): Promise<ProjectMemoryMount[]>;
+  /** Owners attach a registered memory to the project. */
+  addProjectMemoryMount(
+    project: ForgeProject,
+    mount: { name: string; registryEntryId: string; access: 'read' | 'read_write' },
+  ): Promise<ProjectMemoryMount>;
+  removeProjectMemoryMount(project: ForgeProject, name: string): Promise<void>;
   /** Uses of the team's connections, newest first; `before` pages to older ones. */
   getTeamIntegrationUsage(
     project: ForgeProject,
@@ -332,6 +344,14 @@ export interface IVolundrService {
   /** People of the session's org who could be invited into the chat, for its owner and admins. */
   getParticipantCandidates(
     sessionId: string,
+    query: string,
+    options?: SessionReadOptions,
+  ): Promise<ParticipantCandidate[]>;
+  /**
+   * People of the org to invite into a team that does not exist yet: active members other
+   * than the caller, matching what was typed, on the Forge the team will start on.
+   */
+  getTeamInviteCandidates(
     query: string,
     options?: SessionReadOptions,
   ): Promise<ParticipantCandidate[]>;
@@ -415,6 +435,13 @@ export interface IVolundrService {
     /** Forge MCP grants for the session; the node's defaults and role grants apply on top. */
     forgeMcp?: ForgeMcpSessionOptions;
   }): Promise<VolundrSession>;
+  /**
+   * Starts a team: a root session that hosts one room and a member session per agent, all
+   * launched together. Forge creates all of it or none of it.
+   */
+  startTeam(request: StartTeamRequest): Promise<StartedTeam>;
+  /** The agents and people in a session's room, for anyone who may read the session. */
+  getSessionMembers(sessionId: string, options?: SessionReadOptions): Promise<SessionMembers>;
   evaluatePermissionAutoApproval(
     sessionId: string,
     request: PermissionAutoApprovalRequest,

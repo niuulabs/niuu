@@ -90,7 +90,6 @@ async function setup(page: Page) {
           status: 'healthy',
           pages: 2,
           sources: 1,
-          lint_issues: 0,
           last_write: NOW,
           embedding: 'all-minilm-l6-v2',
           size_kb: 512,
@@ -104,16 +103,12 @@ async function setup(page: Page) {
   await page.route('**/memory-test-api/eval/queries', (route) =>
     route.fulfill({ json: { total: 0, zero_result_count: 0, recent: [] } }),
   );
-  await page.route('**/memory-test-api/lint*', (route) =>
-    route.fulfill({ json: { issues: [], pages_checked: 2 } }),
-  );
   await page.route(
     (url) =>
       url.pathname.endsWith('/memory-test-api/page') &&
       url.searchParams.get('path') === '/platform/gateway-routing',
     (route) => route.fulfill({ json: gatewayPage }),
   );
-  await page.route('**/memory-test-api/evidence*', (route) => route.fulfill({ json: [] }));
   // Registered before the specific search below: Playwright runs the most
   // recently registered matching route first.
   await page.route('**/memory-test-api/search*', (route) => route.fulfill({ json: [] }));

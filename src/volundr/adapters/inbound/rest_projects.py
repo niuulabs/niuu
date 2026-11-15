@@ -43,6 +43,14 @@ class ProjectUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=120)
     description: str | None = Field(default=None, max_length=4000)
     brief: str | None = Field(default=None, max_length=PROJECT_BRIEF_MAX_CHARS)
+    memory_write_prefixes: list[str] | None = Field(
+        default=None,
+        description=(
+            "Page path prefixes (relative, such as 'decisions/') under which sessions of the "
+            "project write straight into its memory layer; any other write becomes a "
+            "proposal. Replaces the whole list; [] makes every write a proposal. Owner only."
+        ),
+    )
     status: Literal["active", "archived"] | None = None
     repo_url: str | None = Field(default=None, max_length=2048)
     workspace_path: str | None = Field(default=None, max_length=2048)

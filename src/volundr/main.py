@@ -26,6 +26,7 @@ from niuu.adapters.outbound.git_registry import create_provenance_verifier
 from niuu.adapters.postgres_credential_refresh_lock import PostgresCredentialRefreshLock
 from niuu.adapters.postgres_realms import PostgresRealmRepository
 from niuu.build_identity import build_identity
+from niuu.cap_telemetry import health_counts
 from niuu.config_models import SessionPreviewConfig
 from niuu.cors import apply_cors_middleware
 from niuu.domain.guild_membership import GuildInstance
@@ -70,6 +71,9 @@ from volundr.adapters.inbound.rest_git import create_git_router
 from volundr.adapters.inbound.rest_guild import create_guild_router
 from volundr.adapters.inbound.rest_integrations import create_canonical_integrations_router
 from volundr.adapters.inbound.rest_issues import create_canonical_issues_router
+from volundr.adapters.inbound.rest_memory_context import create_memory_context_router
+from volundr.adapters.inbound.rest_memory_gateway import create_memory_gateway_router
+from volundr.adapters.inbound.rest_memory_proposals import create_memory_proposals_router
 from volundr.adapters.inbound.rest_mesh_identity import create_mesh_identity_router
 from volundr.adapters.inbound.rest_message_delivery import create_message_delivery_router
 from volundr.adapters.inbound.rest_notifications import create_notifications_router
@@ -90,10 +94,14 @@ from volundr.adapters.inbound.rest_resources import (
 from volundr.adapters.inbound.rest_secret_requests import create_secret_requests_router
 from volundr.adapters.inbound.rest_secrets import create_canonical_secrets_router
 from volundr.adapters.inbound.rest_session_log import create_session_log_router
+from volundr.adapters.inbound.rest_session_members import create_session_members_router
 from volundr.adapters.inbound.rest_session_participants import (
     create_session_participants_router,
+    invitations_refused,
 )
 from volundr.adapters.inbound.rest_session_people import create_session_people_router
+from volundr.adapters.inbound.rest_session_voice import create_session_voice_router
+from volundr.adapters.inbound.rest_teams import create_teams_router
 from volundr.adapters.inbound.rest_trace import create_trace_router
 from volundr.adapters.inbound.rest_tracker import create_canonical_tracker_router
 from volundr.adapters.inbound.rest_user_storage import create_user_storage_router
@@ -194,11 +202,13 @@ from volundr.composition_builders import (  # noqa: F401
     create_oauth_client_registry,
     create_presented_file_store,
     create_project_memory,
+    create_session_voice_service,
     integration_database_pool,
+    require_memory_credentials,
     require_presented_file_uploads,
     with_oauth_device_runner,
 )
-from volundr.config import Settings
+from volundr.config import ALLOW_ALL_IDENTITY_ADAPTERS, Settings
 from volundr.domain.models import SessionStatus
 from volundr.domain.notifications import NotificationSinkInfo
 from volundr.domain.ports import OpenShellCredentialGrantPort
@@ -219,7 +229,9 @@ from volundr.domain.services.communication_ingress import CommunicationIngressSe
 from volundr.domain.services.credential import CredentialService
 from volundr.domain.services.credential_enrollment import CredentialEnrollmentService
 from volundr.domain.services.event_ingestion import EventIngestionService
-from volundr.domain.services.forge import catalog_session_definition
+from volundr.domain.services.forge import ForgeService, catalog_session_definition
+from volundr.domain.services.memory_context import MemoryContextService
+from volundr.domain.services.memory_layers import MemoryLayerService
 from volundr.domain.services.mesh_identity import MeshIdentityService
 from volundr.domain.services.mount_strategies import SecretMountStrategyRegistry
 from volundr.domain.services.notification_images import NotificationImageWorker
@@ -231,7 +243,9 @@ from volundr.domain.services.resident_runtime import (
 from volundr.domain.services.room_grants import RoomGrantSource
 from volundr.domain.services.secret_requests import SecretRequestService
 from volundr.domain.services.session_events import SessionEventStream
+from volundr.domain.services.session_members import SessionMembersService
 from volundr.domain.services.session_participants import SessionParticipantService
+from volundr.domain.services.team import TeamService
 from volundr.domain.services.telegram_ingress import TelegramIngressService
 from volundr.domain.services.tracker import TrackerService
 from volundr.domain.services.tracker_factory import TrackerFactory
@@ -729,6 +743,51 @@ def _create_otel_providers(otel_cfg):  # pragma: no cover
     return tracer_provider, meter_provider
 
 
+async def _start_audit_subscriber(bus, audit_repository) -> AuditSubscriber:
+    """Start the Sleipnir audit subscriber; a start that fails raises.
+
+    With ``sleipnir.enabled`` the audit trail is part of what Forge promises. A
+    subscriber that cannot start used to be logged, so Forge ran on with no audit
+    records and nothing said so.
+    """
+    subscriber = AuditSubscriber(bus, audit_repository)
+    await subscriber.start()
+    return subscriber
+
+
+async def _connect_rabbitmq_event_sink(rmq_cfg):
+    """Build and connect the RabbitMQ event sink, or raise.
+
+    ``event_pipeline.rabbitmq.enabled: true`` without aio-pika, or with a broker
+    Forge cannot reach, is configured-but-impossible: raise with the remedy
+    rather than run the event pipeline without the sink.
+    """
+    try:
+        import aio_pika  # noqa: F401  (the sink imports it lazily; fail here, at startup)
+
+        from volundr.adapters.outbound.rabbitmq_event_sink import RabbitMQEventSink
+    except ImportError as exc:
+        raise RuntimeError(
+            "event_pipeline.rabbitmq.enabled is true but aio-pika is not installed — "
+            "install the 'rabbitmq' extra (pip install 'volundr[rabbitmq]') or set "
+            "event_pipeline.rabbitmq.enabled: false"
+        ) from exc
+    sink = RabbitMQEventSink(
+        url=rmq_cfg.url,
+        exchange_name=rmq_cfg.exchange_name,
+        exchange_type=rmq_cfg.exchange_type,
+    )
+    try:
+        await sink.connect()
+    except Exception as exc:
+        raise RuntimeError(
+            f"event_pipeline.rabbitmq is enabled but Forge could not connect to the broker "
+            f"({type(exc).__name__}: {exc}); fix event_pipeline.rabbitmq.url or set "
+            "event_pipeline.rabbitmq.enabled: false"
+        ) from exc
+    return sink
+
+
 def _build_otel_event_sink(otel_cfg):
     """Build the OTel GenAI event sink from validated config, or raise.
 
@@ -1046,6 +1105,8 @@ def create_app(
 
             # Credential store (pluggable: memory, Vault, Infisical)
             credential_store = _create_credential_store(settings)
+            # Misconfigured voice is fatal here, not on a session's first call.
+            session_voice_service = create_session_voice_service(settings, credential_store)
             compute_provider = None
             compute_pool = None
             compute_pool_task = None
@@ -1622,6 +1683,10 @@ def create_app(
                 require_presented_file_uploads(
                     settings, delivers_session_credential=session_service.delivers_forge_session
                 )
+            require_memory_credentials(
+                settings,
+                delivers_session_credential=session_service.delivers_forge_session_somewhere,
+            )
             # Local-process brokers notify the session service when they exit so
             # the DB row is reconciled promptly (pod-status authoritative) rather
             # than waiting for the periodic sweep.
@@ -1995,6 +2060,12 @@ def create_app(
                 )
                 app.state.project_memory_service = project_memory_service
 
+            persona_playability = SkuldPersonaPlayability(
+                definitions=settings.session_definitions,
+                default_definition=settings.default_definition,
+                resolve_definition=partial(catalog_session_definition, pricing_provider),
+            )
+
             # Create and include routers
             forge_router = create_router(
                 session_service,
@@ -2031,11 +2102,7 @@ def create_app(
                 session_participant_service=session_participant_service,
                 presented_file_store=presented_file_store,
                 guild_membership=guild_membership,
-                persona_playability=SkuldPersonaPlayability(
-                    definitions=settings.session_definitions,
-                    default_definition=settings.default_definition,
-                    resolve_definition=partial(catalog_session_definition, pricing_provider),
-                ),
+                persona_playability=persona_playability,
             )
             app.include_router(forge_router)
             app.include_router(
@@ -2280,11 +2347,9 @@ def create_app(
 
             audit_repository = PostgresAuditRepository(pool)
             if settings.sleipnir.enabled and sleipnir_bus is not None:
-                try:
-                    audit_subscriber = AuditSubscriber(sleipnir_bus, audit_repository)
-                    await audit_subscriber.start()
-                except Exception:
-                    logger.exception("Failed to start audit subscriber")
+                # sleipnir.enabled with a subscriber that cannot start is fatal: the
+                # audit trail would otherwise stop recording while Forge looked healthy.
+                audit_subscriber = await _start_audit_subscriber(sleipnir_bus, audit_repository)
             app.include_router(create_canonical_audit_router(audit_repository))
             app.include_router(create_audit_router(audit_repository))
 
@@ -2294,27 +2359,9 @@ def create_app(
             # Optional: RabbitMQ sink
             rabbitmq_sink = None
             if settings.event_pipeline.rabbitmq.enabled:
-                try:
-                    from volundr.adapters.outbound.rabbitmq_event_sink import (
-                        RabbitMQEventSink,
-                    )
-
-                    rmq_cfg = settings.event_pipeline.rabbitmq
-                    rabbitmq_sink = RabbitMQEventSink(
-                        url=rmq_cfg.url,
-                        exchange_name=rmq_cfg.exchange_name,
-                        exchange_type=rmq_cfg.exchange_type,
-                    )
-                    await rabbitmq_sink.connect()
-                    event_sinks.append(rabbitmq_sink)
-                    logger.info("RabbitMQ event sink enabled")
-                except ImportError:
-                    logger.warning(
-                        "RabbitMQ sink enabled but aio-pika not installed. "
-                        "Install with: pip install volundr[rabbitmq]"
-                    )
-                except Exception:
-                    logger.exception("Failed to connect RabbitMQ event sink")
+                rabbitmq_sink = await _connect_rabbitmq_event_sink(settings.event_pipeline.rabbitmq)
+                event_sinks.append(rabbitmq_sink)
+                logger.info("RabbitMQ event sink enabled")
 
             # Optional: OTel sink (GenAI semantic conventions)
             otel_sink = None
@@ -2406,6 +2453,41 @@ def create_app(
                 create_mesh_identity_router(mesh_identity_service, prefix="/api/v1/forge")
             )
             app.include_router(
+                create_session_voice_router(
+                    session_voice_service, session_service, prefix="/api/v1/forge"
+                )
+            )
+            app.include_router(
+                create_memory_context_router(
+                    MemoryContextService(
+                        project_service.repository if project_service is not None else None,
+                        session_service,
+                    ),
+                    session_service,
+                    prefix="/api/v1/forge",
+                )
+            )
+            app.include_router(
+                create_memory_gateway_router(
+                    MemoryLayerService(session_service),
+                    project_service,
+                    service_subject=settings.memory.gateway_service_subject,
+                    allow_all_identity=settings.identity.adapter in ALLOW_ALL_IDENTITY_ADAPTERS,
+                    prefix="/api/v1/forge",
+                )
+            )
+            if project_service is not None and project_member_repository is not None:
+                # The memory gateway tells a project's deciders that a proposal waits.
+                app.include_router(
+                    create_memory_proposals_router(
+                        session_service,
+                        project_service,
+                        project_member_repository,
+                        notification_service,
+                        prefix="/api/v1/forge",
+                    )
+                )
+            app.include_router(
                 create_message_delivery_router(PostgresMessageDelivery(pool), session_service)
             )
             if push_gateway is not None:
@@ -2420,6 +2502,49 @@ def create_app(
                     runtime_backend=runtime_backend,
                     room_role_source=settings.pod_manager.room_role_source,
                     identity_header_names=settings.identity.kwargs,
+                )
+            )
+            app.include_router(
+                create_teams_router(
+                    TeamService(
+                        ForgeService(
+                            session_service,
+                            stats_service=stats_service,
+                            token_service=token_service,
+                            pricing_provider=pricing_provider,
+                            repo_service=repo_service,
+                            chronicle_service=chronicle_service,
+                            archive_service=archive_service,
+                            project_service=project_service,
+                            session_participant_service=session_participant_service,
+                            persona_playability=persona_playability,
+                        ),
+                        session_participant_service,
+                        runtime_backend=runtime_backend,
+                        invitations_refused=invitations_refused(
+                            runtime_backend, settings.pod_manager.room_role_source
+                        ),
+                        persona_provider=session_persona_provider,
+                        voice_enabled=settings.voice.enabled,
+                        voice_default_persona=settings.voice.default_persona,
+                    ),
+                    session_participant_service,
+                    server_public_host=settings.server_public_host,
+                    instance_fields=(
+                        guild_membership.instance.fields()
+                        if guild_membership is not None and guild_membership.instance is not None
+                        else None
+                    ),
+                )
+            )
+            app.include_router(
+                create_session_members_router(
+                    SessionMembersService(
+                        repository,
+                        session_service,
+                        session_participant_service,
+                        session_room_port,
+                    )
                 )
             )
             app.include_router(
@@ -2699,6 +2824,7 @@ def create_app(
         store = getattr(app.state, "presented_file_store", None)
         if quota is not None and store is not None:
             health["presented_files"] = await quota.usage(store)
+        health["caps"] = health_counts()
         return health
 
     return app

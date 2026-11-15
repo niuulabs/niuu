@@ -63,8 +63,8 @@ runtime, agent and platform behaviour can be diagnosed apart.
 |---|---|
 | HTTP (REST, A2A) | OpenTelemetry instrumentation of FastAPI and httpx; the workflow engine parents its A2A span on the request headers |
 | Process spawn | Forge sets `TRACEPARENT` / `TRACESTATE` for the session; the session gateway attaches them at start and the runtime inherits them |
-| Event bus | `SleipnirEvent.trace_context` field, serialised with the event |
-| Mesh | `MeshEvent.trace_context`, carried in the payload by the event bus mesh adapter |
+| Event bus | `SleipnirEvent.trace_context`, filled from the active span when the event is created and serialised with it |
+| Mesh | `MeshEvent.trace_context`: in the shared event encoding for nng and webhook, in the payload for the event bus mesh adapter |
 | Rooms and Telegram | `trace_context` in directed-message metadata and in the opaque reply context, so a reply resumes the original trace |
 
 Export is off until `observability.enabled` is set; then `trace_endpoint`, `metric_endpoint`

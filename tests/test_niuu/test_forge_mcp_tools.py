@@ -1536,7 +1536,11 @@ class TestReply:
         result = await toolbox.call("reply", {"message_id": "m-3", "content": "agreed"})
 
         assert not result.is_error and result.structured["via"] == "room"
-        assert client.calls == [("post_room_message", (PEER, "huddle-1", "agreed"))]
+        # The same path room_post takes, so a mesh member's answer reaches its host.
+        assert host.room_posts == [
+            {"room_id": "huddle-1", "content": "agreed", "host_session_id": PEER}
+        ]
+        assert client.calls == []
 
     async def test_a_message_with_no_reply_route_is_refused_with_the_reason(self) -> None:
         toolbox, client, host = _toolbox(ForgeMcpGrant.MESSAGE)
@@ -2198,3 +2202,152 @@ class TestUnconfirmedSends:
 
         assert result.is_error and "may have been delivered" in result.text
         assert "'r-3'" in result.text and host.asks == []
+
+
+class TestTeammatesAnswerEachOther:
+    """A team's agents talk to each other: a message to a teammate can be answered."""
+
+    def _team_toolbox(self) -> tuple[ForgeMcpToolbox, FakeHost]:
+        host = FakeHost()
+        toolbox = ForgeMcpToolbox(
+            client=FakeClient(),
+            host=host,
+            grants=(),
+            limits=LIMITS,
+            mesh_replies_by_default=True,
+        )
+        return toolbox, host
+
+    async def test_a_team_agents_message_can_be_answered_by_default(self) -> None:
+        toolbox, host = self._team_toolbox()
+
+        await toolbox.call("mesh_send", {"peer": "peer-7", "content": "hello"})
+
+        assert host.mesh_sends[0]["expect_reply"] is True
+
+    async def test_saying_no_answer_is_wanted_still_holds(self) -> None:
+        toolbox, host = self._team_toolbox()
+
+        await toolbox.call("mesh_send", {"peer": "peer-7", "content": "fyi", "expect_reply": False})
+
+        assert host.mesh_sends[0]["expect_reply"] is False
+
+    async def test_any_other_session_asks_for_an_answer_only_when_it_says_so(self) -> None:
+        toolbox, _, host = _toolbox()
+
+        await toolbox.call("mesh_send", {"peer": "peer-7", "content": "hello"})
+
+        assert host.mesh_sends[0]["expect_reply"] is False
+
+    def test_a_team_agent_is_told_its_peers_answer_by_default(self) -> None:
+        toolbox, _ = self._team_toolbox()
+
+        (spec,) = [tool for tool in toolbox.list_tools() if tool["name"] == "mesh_send"]
+
+        assert spec["inputSchema"]["properties"]["expect_reply"]["default"] is True
+        assert "may answer you" in spec["description"]
+
+
+class TestATeamsConversationIsShownInItsRoom:
+    """What a team's agents say to each other is said in their room, as it is sent."""
+
+    def _team_toolbox(self) -> tuple[ForgeMcpToolbox, FakeHost]:
+        host = FakeHost()
+
+        async def peers(**_query):
+            return {"peers": [{"peer_id": "p-rev", "name": "reviewer"}], "count": 1}
+
+        host.mesh_peers = peers  # type: ignore[method-assign]
+        toolbox = ForgeMcpToolbox(
+            client=FakeClient(),
+            host=host,
+            grants=(),
+            limits=LIMITS,
+            mesh_replies_by_default=True,
+            team_room_id="team-1",
+        )
+        return toolbox, host
+
+    async def test_a_message_to_a_teammate_is_said_in_the_room_addressed_to_them(self) -> None:
+        toolbox, host = self._team_toolbox()
+
+        result = await toolbox.call("mesh_send", {"peer": "p-rev", "content": "hello!"})
+
+        assert not result.is_error
+        assert host.room_posts == [
+            {"room_id": "team-1", "content": "@reviewer hello!", "host_session_id": ""}
+        ]
+
+    async def test_an_answer_to_a_teammate_is_said_in_the_room_addressed_to_them(self) -> None:
+        toolbox, host = self._team_toolbox()
+        host.inbox["m-9"] = _envelope(
+            message_id="m-9",
+            sender=PeerAddress(kind=PeerKind.SESSION, id=PEER, name="coder"),
+            reply=ReplyRoute(kind=ReplyKind.MESH, target="p-coder"),
+        )
+
+        result = await toolbox.call("reply", {"message_id": "m-9", "content": "hi coder"})
+
+        assert not result.is_error
+        assert host.room_posts[-1]["content"] == "@coder hi coder"
+
+    async def test_a_question_to_teammates_is_said_in_the_room_before_it_is_asked(self) -> None:
+        toolbox, host = self._team_toolbox()
+        order: list[str] = []
+        posted = host.post_room_message
+
+        async def post(*args, **kwargs):
+            order.append("room")
+            return await posted(*args, **kwargs)
+
+        asked = host.mesh_ask
+
+        async def ask(*args, **kwargs):
+            order.append("ask")
+            return await asked(*args, **kwargs)
+
+        host.post_room_message = post  # type: ignore[method-assign]
+        host.mesh_ask = ask  # type: ignore[method-assign]
+
+        await toolbox.call("mesh_ask", {"content": "is this safe?", "peers": ["p-rev"]})
+
+        assert host.room_posts[-1]["content"] == "@reviewer is this safe?"
+        assert order == ["room", "ask"]
+
+    async def test_a_question_the_room_cannot_show_is_not_asked(self) -> None:
+        toolbox, host = self._team_toolbox()
+
+        async def refuse(*_args, **_kwargs):
+            raise ForgeApiError("room gone", status=404)
+
+        host.post_room_message = refuse  # type: ignore[method-assign]
+
+        result = await toolbox.call("mesh_ask", {"content": "q", "producers_of": "review.done"})
+
+        assert result.is_error and "Nothing was asked" in result.text
+        assert host.asks_made == []
+
+    async def test_a_room_that_cannot_show_it_is_said_so_and_the_message_is_not_resent(
+        self,
+    ) -> None:
+        toolbox, host = self._team_toolbox()
+
+        async def refuse(*_args, **_kwargs):
+            raise ForgeApiError("room gone", status=404)
+
+        host.post_room_message = refuse  # type: ignore[method-assign]
+
+        result = await toolbox.call("mesh_send", {"peer": "p-rev", "content": "hello!"})
+
+        assert result.is_error
+        assert "delivered to reviewer" in result.text and "Do not send it again" in result.text
+        assert len(host.mesh_sends) == 1
+
+    async def test_a_session_without_a_team_room_keeps_its_messages_between_the_two(
+        self,
+    ) -> None:
+        toolbox, _, host = _toolbox()
+
+        await toolbox.call("mesh_send", {"peer": "p-1", "content": "hello"})
+
+        assert host.room_posts == []

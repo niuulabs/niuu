@@ -1,4 +1,4 @@
-"""Tests for replayable Environment huddles in Skuld rooms."""
+"""Tests for recorded Environment huddles in Skuld rooms."""
 
 from __future__ import annotations
 
@@ -7,6 +7,15 @@ from unittest.mock import AsyncMock, MagicMock
 from skuld.collaboration_adapter import SkuldCollaborationAdapter
 from skuld.config import RoomConfig
 from sleipnir.domain import registry as event_registry
+
+
+def _room_log(bridge, room_id: str, *, from_sequence: int = 0) -> list[dict]:
+    """The room's recorded events after a sequence (what the transcript is built from)."""
+    return [
+        event
+        for event in bridge._room_event_log.get(room_id, [])
+        if int(event.get("sequence", 0)) > from_sequence
+    ]
 
 
 def _make_bridge(publish_presence_event=None):
@@ -43,7 +52,7 @@ async def test_huddle_open_records_context_and_canonical_events() -> None:
     )
 
     assert opened["type"] == "room_opened"
-    replay = bridge.replay_huddle("huddle-1")
+    replay = _room_log(bridge, "huddle-1")
     assert [event["type"] for event in replay] == [
         "room_opened",
         "room_context_snapshot",
@@ -98,7 +107,7 @@ async def test_late_join_replay_orders_human_and_mesh_messages() -> None:
         },
     )
 
-    replay = bridge.replay_huddle("huddle-2", from_sequence=2)
+    replay = _room_log(bridge, "huddle-2", from_sequence=2)
     messages = [event for event in replay if event["type"] == "room_message"]
     assert [event["participantId"] for event in messages] == [
         "human:approver",

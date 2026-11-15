@@ -15,7 +15,7 @@ when packaged dependencies are absent.
 | `guild` | Service instance groups, discovery, and routing |
 | `bifrost` | Model gateway |
 | `observatory` | Topology and observability |
-| `mimir` | Knowledge service; the umbrella can include multiple aliases |
+| `mimir` | Knowledge service; the umbrella can include multiple aliases. Disabled in the umbrella by default: each instance needs `config.backend.mcpUrl` and `config.backend.apiTokenSecret.name` (a gbrain endpoint and its token Secret), and the chart refuses to render without them |
 
 The exact enabled dependencies and versions are in the selected chart's
 `Chart.yaml`. Do not assume that a chart existing in the repository means the

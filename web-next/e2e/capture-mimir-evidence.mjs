@@ -36,9 +36,6 @@ await shoot('03-search-debug-breakdown');
 await tab('Analytics');
 await shoot('04-analytics');
 
-await tab('Doctor');
-await shoot('05-doctor');
-
 await tab('Graph');
 await page.waitForTimeout(2000);
 await shoot('06-graph');

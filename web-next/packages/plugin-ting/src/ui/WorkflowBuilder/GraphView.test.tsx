@@ -565,7 +565,6 @@ describe('GraphView', () => {
               lifecycle: 'registered',
               role: 'shared',
               url: 'https://mimir.example',
-              path: '/shared',
               categories: ['decision'],
               authRef: 'mimir-secret',
               defaultReadPriority: 5,

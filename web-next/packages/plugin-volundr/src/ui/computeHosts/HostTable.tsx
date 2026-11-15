@@ -18,6 +18,7 @@ const COLUMN_COUNT = 7;
 const ACTION_LABEL: Record<HostAction, string> = {
   open: 'Open',
   check: 'Check now',
+  edit_slots: 'Edit slots',
   drain: 'Drain',
   drain_remove: 'Drain and remove',
   cancel_drain: 'Cancel drain',

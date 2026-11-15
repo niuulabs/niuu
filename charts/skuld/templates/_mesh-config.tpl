@@ -89,6 +89,9 @@ mesh:
   {{- if .Values.mesh.realmId }}
   realm_id: {{ .Values.mesh.realmId | toJson }}
   {{- end }}
+  {{- if .Values.mesh.displayName }}
+  display_name: {{ .Values.mesh.displayName | toJson }}
+  {{- end }}
   {{- if not (kindIs "invalid" .Values.mesh.persona) }}
   persona: {{ .Values.mesh.persona | toJson }}
   {{- end }}

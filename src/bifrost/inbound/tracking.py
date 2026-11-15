@@ -168,14 +168,13 @@ async def _stream_with_tracking(
         )
 
         cost = calculate_cost(model, usage, pricing_overrides)
-        # router.stream() already recorded the request/provider/failover
-        # attributes on the active span when it picked a candidate — token
+        # router.stream() already recorded the request/provider
+        # attributes on the active span when it picked its provider — token
         # usage isn't known until the stream is fully drained (it arrives as
         # SSE deltas), so it's attached here once accumulation is done.
         record_genai_span_attributes(
             requested_model=model,
             provider=provider,
-            failover_attempts=0,
             cache_hit=False,
             response_model=model,
             usage=usage,

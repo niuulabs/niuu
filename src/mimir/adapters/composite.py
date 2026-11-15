@@ -1,17 +1,18 @@
 """CompositeMimirAdapter — fan-out across multiple MimirPort instances.
 
 Reads from all mounted Mímirs in priority order (lower ``read_priority`` first)
-and merges results.  Routes writes based on category-prefix config or explicit
-agent override — exactly parallel to ``CompositeMeshAdapter``.
+and merges results.  Every write goes to exactly one mount, chosen by an
+explicit ``mimir=`` name, a category-prefix rule or the configured default —
+never to several, and never to "whichever mounts exist".
 
-Example (two mounts — local filesystem + shared HTTP service)::
+Example (two mounts — a gbrain store + a shared HTTP service)::
 
-    from mimir.adapters.markdown import MarkdownMimirAdapter
+    from mimir.adapters.gbrain import GBrainMimirAdapter
     from mimir.adapters.http import HttpMimirAdapter
     from mimir.adapters.composite import CompositeMimirAdapter
     from mimir.domain import MimirAuth, MimirMount, WriteRouting
 
-    local = MarkdownMimirAdapter(root="~/.ravn/mimir")
+    local = GBrainMimirAdapter(mcp_url="http://localhost:3131/mcp", api_token="...")
     shared = HttpMimirAdapter(
         base_url="https://mimir.odin.niuu.world",
         auth=MimirAuth(type="spiffe", trust_domain="niuu.world"),
@@ -20,7 +21,6 @@ Example (two mounts — local filesystem + shared HTTP service)::
     routing = WriteRouting(
         rules=[
             ("self/", ["local"]),
-            ("technical/", ["local", "shared"]),
             ("household/", ["shared"]),
         ],
         default=["local"],
@@ -43,18 +43,18 @@ import time
 from collections.abc import Awaitable, Callable
 
 from mimir.domain import MimirMount, WriteRouting
-from mimir.exceptions import MimirUnavailableError, MimirWriteRefusedError
+from mimir.exceptions import (
+    MimirConfigurationError,
+    MimirUnavailableError,
+    MimirWriteRefusedError,
+)
 from niuu.domain.mimir import (
-    LintIssue,
-    MimirLintReport,
     MimirMountSummary,
     MimirPage,
     MimirPageMeta,
     MimirQueryResult,
     MimirSource,
     MimirSourceMeta,
-    ThreadOwnershipError,
-    ThreadState,
 )
 from niuu.ports.mimir import MimirPort
 
@@ -95,7 +95,7 @@ class CompositeMimirAdapter(MimirPort):
 
     Read operations merge results from all mounts in ``read_priority`` order
     (de-duplicated by page path).  Write operations are routed by category
-    prefix or explicit ``mimir=`` override.
+    prefix or explicit ``mimir=`` override, and each goes to exactly one mount.
 
     **A mount that fails fails the call.** Every fan-out here used to catch,
     log and carry on, which meant a configured mount could be unreachable for
@@ -135,8 +135,8 @@ class CompositeMimirAdapter(MimirPort):
     def _refuse_write(self, mount: MimirMount, operation: str, path: str | None = None) -> None:
         """Raise ``MimirWriteRefusedError`` unless ``mount`` allows this write.
 
-        ``path`` is the page being written; an operation with no single path (ingest, a
-        lint fix) is allowed only on a mount with no restriction at all.
+        ``path`` is the page being written; an operation with no single path (an
+        ingest) is allowed only on a mount with no restriction at all.
         """
         if not mount.restricted:
             return
@@ -178,40 +178,46 @@ class CompositeMimirAdapter(MimirPort):
             )
         return mount
 
-    def ingest_targets(self, explicit: str | None = None) -> list[str]:
-        """Return the mount names an ingest should target.
+    def _single_write_target(self, operation: str, names: list[str]) -> MimirMount:
+        """The one mount a write goes to.
 
-        Explicit routing wins. Otherwise we prefer the configured default write
-        targets and fall back to all mounted instances to preserve the legacy
-        fan-out behavior.
+        A write is never copied to several mounts and never falls through to
+        "every mount": the routing must select exactly one, by name.
+        """
+        if len(names) != 1:
+            raise MimirConfigurationError(
+                f"{operation} must go to exactly one Mímir mount, but write routing selects "
+                f"{names or '(none)'}; mounted: {self._mount_names() or '(none)'}. Name the "
+                "mount (mimir=...), or set write_routing.default and its rules to one mount "
+                "each — a write is never copied to several mounts."
+            )
+        mount = self._mount_map.get(names[0])
+        if mount is None:
+            raise _unknown_mount(operation, names[0], self._mount_names())
+        return mount
+
+    def ingest_targets(self, explicit: str | None = None) -> list[str]:
+        """Return the one mount name an ingest targets.
+
+        An explicit name wins; otherwise the configured ``write_routing.default``
+        must name exactly one mounted instance, and anything else raises.
         """
         if explicit:
             return [explicit] if explicit in self._mount_map else []
-
-        configured_default = [
-            mount_name
-            for mount_name in self._write_routing.default
-            if mount_name in self._mount_map
-        ]
-        if configured_default:
-            return configured_default
-        return [mount.name for mount in self._mounts]
+        return [self._single_write_target("ingest", list(self._write_routing.default)).name]
 
     # ------------------------------------------------------------------
     # MimirPort — read operations (fan-out, merge, de-dup by path)
     # ------------------------------------------------------------------
 
     async def ingest(self, source: MimirSource) -> list[str]:
-        """Ingest into all mounts, merge returned page paths."""
-        all_paths: list[str] = []
-        for mount in self._mounts:
-            self._refuse_write(mount, "ingest")
-            try:
-                paths = await mount.port.ingest(source)
-            except Exception as exc:
-                raise _mount_failed("ingest", mount.name, exc) from exc
-            all_paths.extend(paths)
-        return list(dict.fromkeys(all_paths))
+        """Ingest into the one mount write routing selects; raises when it selects none or many."""
+        mount = self._single_write_target("ingest", list(self._write_routing.default))
+        self._refuse_write(mount, "ingest")
+        try:
+            return await mount.port.ingest(source)
+        except Exception as exc:
+            raise _mount_failed("ingest", mount.name, exc) from exc
 
     async def ingest_to(self, source: MimirSource, mount_name: str) -> list[str]:
         """Ingest into a specific mount only.
@@ -336,10 +342,8 @@ class CompositeMimirAdapter(MimirPort):
         """
         page_count = 0
         source_count = 0
-        lint_issues = 0
         categories: set[str] = set()
         last_write = None
-        lint_checked_at = None
 
         for mount in self._mounts:
             try:
@@ -349,24 +353,17 @@ class CompositeMimirAdapter(MimirPort):
 
             page_count += summary.page_count
             source_count += summary.source_count
-            lint_issues += summary.lint_issues
             categories.update(summary.categories)
             if summary.last_write is not None and (
                 last_write is None or summary.last_write > last_write
             ):
                 last_write = summary.last_write
-            if summary.lint_checked_at is not None and (
-                lint_checked_at is None or summary.lint_checked_at > lint_checked_at
-            ):
-                lint_checked_at = summary.lint_checked_at
 
         return MimirMountSummary(
             page_count=page_count,
             source_count=source_count,
             categories=sorted(categories),
             last_write=last_write,
-            lint_issues=lint_issues,
-            lint_checked_at=lint_checked_at,
         )
 
     async def read_source(self, source_id: str) -> MimirSource | None:
@@ -497,122 +494,6 @@ class CompositeMimirAdapter(MimirPort):
 
         return results
 
-    async def lint(self, fix: bool = False) -> MimirLintReport:
-        """Run lint on all mounts, merge issue lists.
-
-        A mount that could not be linted must not be silently dropped: the
-        merged report would read as a clean bill of health over a corpus that
-        was never checked.
-        """
-        all_issues: list[LintIssue] = []
-        pages_checked = 0
-
-        for mount in self._mounts:
-            if fix:
-                self._refuse_write(mount, "lint --fix")
-            try:
-                report = await mount.port.lint(fix=fix)
-            except Exception as exc:
-                raise _mount_failed("lint", mount.name, exc) from exc
-            all_issues.extend(report.issues)
-            pages_checked += report.pages_checked
-
-        return MimirLintReport(issues=all_issues, pages_checked=pages_checked)
-
-    async def list_threads(
-        self,
-        state: ThreadState | None = None,
-        limit: int = 100,
-    ) -> list[MimirPage]:
-        """List threads from all mounts in priority order, de-dup by path."""
-        seen_paths: set[str] = set()
-        results: list[MimirPage] = []
-
-        for mount in self._mounts:
-            try:
-                pages = await mount.port.list_threads(state=state, limit=limit)
-            except Exception as exc:
-                raise _mount_failed("list_threads", mount.name, exc) from exc
-            for page in pages:
-                if page.meta.path not in seen_paths:
-                    seen_paths.add(page.meta.path)
-                    results.append(page)
-                    if len(results) >= limit:
-                        return results
-
-        return results
-
-    async def get_thread_queue(
-        self,
-        owner_id: str | None = None,
-        limit: int = 50,
-    ) -> list[MimirPage]:
-        """Return open threads sorted by weight from all mounts, de-dup by path."""
-        seen_paths: set[str] = set()
-        results: list[MimirPage] = []
-
-        for mount in self._mounts:
-            try:
-                pages = await mount.port.get_thread_queue(owner_id=owner_id, limit=limit)
-            except Exception as exc:
-                raise _mount_failed("get_thread_queue", mount.name, exc) from exc
-            for page in pages:
-                if page.meta.path not in seen_paths:
-                    seen_paths.add(page.meta.path)
-                    results.append(page)
-
-        results.sort(key=lambda p: p.meta.thread_weight or 0.0, reverse=True)
-        return results[:limit]
-
-    async def update_thread_state(self, path: str, state: ThreadState) -> None:
-        """Transition thread state on routed mounts."""
-        target_names = self._write_routing.resolve(path)
-        for name in target_names:
-            mount = self._mount_map.get(name)
-            if mount is None:
-                raise _unknown_mount(f"update_thread_state({path!r})", name, self._mount_names())
-            self._refuse_write(mount, "update_thread_state", path)
-            try:
-                await mount.port.update_thread_state(path, state)
-            except Exception as exc:
-                raise _mount_failed("update_thread_state", name, exc) from exc
-
-    async def assign_thread_owner(self, path: str, owner_id: str | None) -> None:
-        """Claim thread ownership on routed mounts.
-
-        Re-raises ``ThreadOwnershipError`` — callers must handle the race.
-        """
-        target_names = self._write_routing.resolve(path)
-        for name in target_names:
-            mount = self._mount_map.get(name)
-            if mount is None:
-                raise _unknown_mount(f"assign_thread_owner({path!r})", name, self._mount_names())
-            self._refuse_write(mount, "assign_thread_owner", path)
-            try:
-                await mount.port.assign_thread_owner(path, owner_id)
-            except ThreadOwnershipError:
-                raise
-            except Exception as exc:
-                raise _mount_failed("assign_thread_owner", name, exc) from exc
-
-    async def update_thread_weight(
-        self,
-        path: str,
-        weight: float,
-        signals: dict | None = None,
-    ) -> None:
-        """Update thread weight on routed mounts (same routing as upsert_page)."""
-        target_names = self._write_routing.resolve(path)
-        for name in target_names:
-            mount = self._mount_map.get(name)
-            if mount is None:
-                raise _unknown_mount(f"update_thread_weight({path!r})", name, self._mount_names())
-            self._refuse_write(mount, "update_thread_weight", path)
-            try:
-                await mount.port.update_thread_weight(path, weight, signals)
-            except Exception as exc:
-                raise _mount_failed("update_thread_weight", name, exc) from exc
-
     # ------------------------------------------------------------------
     # MimirPort — write operations (routed)
     # ------------------------------------------------------------------
@@ -629,34 +510,31 @@ class CompositeMimirAdapter(MimirPort):
         Routing precedence:
         1. Explicit ``mimir=`` parameter (agent override — bypasses all rules).
         2. Category-prefix matching from ``write_routing.rules``.
-        3. ``write_routing.default`` fallback.
+        3. ``write_routing.default``.
+
+        The selection must name exactly one mount; several or none raises.
         """
-        target_names = self._write_routing.resolve(path, explicit=mimir)
-        for name in target_names:
-            mount = self._mount_map.get(name)
-            if mount is None:
-                raise _unknown_mount(f"upsert_page({path!r})", name, self._mount_names())
-            self._refuse_write(mount, "upsert_page", path)
-            try:
-                await mount.port.upsert_page(path, content, meta=meta)
-            except Exception as exc:
-                raise _mount_failed("upsert_page", name, exc) from exc
-            logger.debug(
-                "composite mimir: wrote %s to mount %s",
-                _sanitize_log(path),
-                _sanitize_log(name),
-            )
+        mount = self._single_write_target(
+            f"upsert_page({path!r})", self._write_routing.resolve(path, explicit=mimir)
+        )
+        self._refuse_write(mount, "upsert_page", path)
+        try:
+            await mount.port.upsert_page(path, content, meta=meta)
+        except Exception as exc:
+            raise _mount_failed("upsert_page", mount.name, exc) from exc
+        logger.debug(
+            "composite mimir: wrote %s to mount %s",
+            _sanitize_log(path),
+            _sanitize_log(mount.name),
+        )
 
     async def delete_page(self, path: str, mimir: str | None = None) -> bool:
         """Delete *path* from the mounts selected by normal write routing."""
-        deleted = False
-        for name in self._write_routing.resolve(path, explicit=mimir):
-            mount = self._mount_map.get(name)
-            if mount is None:
-                raise _unknown_mount(f"delete_page({path!r})", name, self._mount_names())
-            self._refuse_write(mount, "delete_page", path)
-            try:
-                deleted = await mount.port.delete_page(path) or deleted
-            except Exception as exc:
-                raise _mount_failed("delete_page", name, exc) from exc
-        return deleted
+        mount = self._single_write_target(
+            f"delete_page({path!r})", self._write_routing.resolve(path, explicit=mimir)
+        )
+        self._refuse_write(mount, "delete_page", path)
+        try:
+            return await mount.port.delete_page(path)
+        except Exception as exc:
+            raise _mount_failed("delete_page", mount.name, exc) from exc

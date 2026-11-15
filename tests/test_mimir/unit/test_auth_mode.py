@@ -31,10 +31,12 @@ from identity.adapters.identity import (
     AllowAllHeaderAuthenticationAdapter,
     EnvoyHeaderAuthenticationAdapter,
 )
-from mimir.adapters.markdown import MarkdownMimirAdapter
 from mimir.app import create_app
 from mimir.config import MimirServiceConfig
 from mimir.router import MimirRouter
+from tests.test_mimir.unit.fakes import InMemoryMimirAdapter
+
+_BACKEND = {"adapter": "tests.test_mimir.unit.fakes.InMemoryMimirAdapter"}
 
 ISSUER = "https://idp.test/realms/niuu"
 AUDIENCE = "mimir"
@@ -106,7 +108,7 @@ class TestRequireDeployAuth:
         app = FastAPI()
         app.include_router(
             MimirRouter(
-                MarkdownMimirAdapter(root=tmp_path),
+                InMemoryMimirAdapter(),
                 deployment=deployment,
                 auth=auth,
             ).router
@@ -174,9 +176,7 @@ class TestRequestScopeTenantlessWriteGate:
     def test_tenantless_verified_token_rejected_on_write(self, tmp_path: Path) -> None:
         respx.get(JWKS_URI).mock(return_value=Response(200, json={"keys": [PUBLIC_JWK]}))
         app = FastAPI()
-        app.include_router(
-            MimirRouter(MarkdownMimirAdapter(root=tmp_path), auth=_jwks_adapter()).router
-        )
+        app.include_router(MimirRouter(InMemoryMimirAdapter(), auth=_jwks_adapter()).router)
         # A write role is granted so _require_write_auth's separate role
         # check cannot also explain the 403 — this isolates _request_scope's
         # own "no tenant" rule (router.py's WRITE_ROLES check requires a
@@ -195,9 +195,7 @@ class TestRequestScopeTenantlessWriteGate:
     def test_tenantless_verified_token_still_allowed_on_read(self, tmp_path: Path) -> None:
         respx.get(JWKS_URI).mock(return_value=Response(200, json={"keys": [PUBLIC_JWK]}))
         app = FastAPI()
-        app.include_router(
-            MimirRouter(MarkdownMimirAdapter(root=tmp_path), auth=_jwks_adapter()).router
-        )
+        app.include_router(MimirRouter(InMemoryMimirAdapter(), auth=_jwks_adapter()).router)
         token = _bearer_token(tenant_id="")
         with TestClient(app) as client:
             resp = client.get("/stats", headers={"authorization": f"Bearer {token}"})
@@ -222,7 +220,7 @@ class TestWriteRoleGateScopedToOidc:
     def _app(self, tmp_path: Path, *, auth, auth_mode: str) -> FastAPI:
         app = FastAPI()
         app.include_router(
-            MimirRouter(MarkdownMimirAdapter(root=tmp_path), auth=auth, auth_mode=auth_mode).router
+            MimirRouter(InMemoryMimirAdapter(), auth=auth, auth_mode=auth_mode).router
         )
         return app
 
@@ -301,11 +299,14 @@ class TestWriteRoleGateScopedToOidc:
 
 class TestCreateAppAuthModeGuard:
     def test_default_envoy_config_starts_fine(self, tmp_path: Path) -> None:
-        create_app(MimirServiceConfig(path=str(tmp_path / "mimir")))  # must not raise
+        create_app(
+            MimirServiceConfig(path=str(tmp_path / "mimir"), backend=_BACKEND)
+        )  # must not raise
 
     def test_oidc_mode_with_envoy_trusting_adapter_refuses_to_start(self, tmp_path: Path) -> None:
         config = MimirServiceConfig(
             path=str(tmp_path / "mimir"),
+            backend=_BACKEND,
             auth_mode="oidc",
             identity_adapter=("identity.adapters.identity.EnvoyHeaderAuthenticationAdapter"),
         )
@@ -315,6 +316,7 @@ class TestCreateAppAuthModeGuard:
     def test_none_mode_with_envoy_trusting_adapter_refuses_to_start(self, tmp_path: Path) -> None:
         config = MimirServiceConfig(
             path=str(tmp_path / "mimir"),
+            backend=_BACKEND,
             auth_mode="none",
             identity_adapter=("identity.adapters.identity.EnvoyHeaderAuthenticationAdapter"),
         )
@@ -324,6 +326,7 @@ class TestCreateAppAuthModeGuard:
     def test_oidc_mode_with_allow_all_adapter_refuses_to_start(self, tmp_path: Path) -> None:
         config = MimirServiceConfig(
             path=str(tmp_path / "mimir"),
+            backend=_BACKEND,
             auth_mode="oidc",
             identity_adapter="identity.adapters.identity.AllowAllHeaderAuthenticationAdapter",
         )
@@ -333,6 +336,7 @@ class TestCreateAppAuthModeGuard:
     def test_oidc_mode_with_jwks_adapter_starts_fine(self, tmp_path: Path) -> None:
         config = MimirServiceConfig(
             path=str(tmp_path / "mimir"),
+            backend=_BACKEND,
             auth_mode="oidc",
             identity_adapter="identity.adapters.jwks.JwksBearerAuthenticationAdapter",
             identity_kwargs=_OIDC_ISSUER_KWARGS,
@@ -342,6 +346,7 @@ class TestCreateAppAuthModeGuard:
     def test_none_mode_with_allow_all_adapter_starts_fine(self, tmp_path: Path) -> None:
         config = MimirServiceConfig(
             path=str(tmp_path / "mimir"),
+            backend=_BACKEND,
             auth_mode="none",
             identity_adapter="identity.adapters.identity.AllowAllHeaderAuthenticationAdapter",
         )
@@ -352,7 +357,9 @@ class TestEnforceInstanceTenant:
     def test_default_envoy_config_matches_today_header_based_behaviour(
         self, tmp_path: Path
     ) -> None:
-        config = MimirServiceConfig(path=str(tmp_path / "mimir"), tenant_id="tenant-a")
+        config = MimirServiceConfig(
+            path=str(tmp_path / "mimir"), backend=_BACKEND, tenant_id="tenant-a"
+        )
         app = create_app(config)
         with TestClient(app) as client:
             assert client.get("/mimir/stats").status_code == 403
@@ -372,6 +379,7 @@ class TestEnforceInstanceTenant:
         respx.get(JWKS_URI).mock(return_value=Response(200, json={"keys": [PUBLIC_JWK]}))
         config = MimirServiceConfig(
             path=str(tmp_path / "mimir"),
+            backend=_BACKEND,
             tenant_id="tenant-a",
             auth_mode="oidc",
             identity_adapter="identity.adapters.jwks.JwksBearerAuthenticationAdapter",
@@ -392,6 +400,7 @@ class TestEnforceInstanceTenant:
         respx.get(JWKS_URI).mock(return_value=Response(200, json={"keys": [PUBLIC_JWK]}))
         config = MimirServiceConfig(
             path=str(tmp_path / "mimir"),
+            backend=_BACKEND,
             tenant_id="acme",
             auth_mode="oidc",
             identity_adapter="identity.adapters.jwks.JwksBearerAuthenticationAdapter",
@@ -408,6 +417,7 @@ class TestEnforceInstanceTenant:
         respx.get(JWKS_URI).mock(return_value=Response(200, json={"keys": [PUBLIC_JWK]}))
         config = MimirServiceConfig(
             path=str(tmp_path / "mimir"),
+            backend=_BACKEND,
             tenant_id="acme",
             auth_mode="oidc",
             identity_adapter="identity.adapters.jwks.JwksBearerAuthenticationAdapter",
@@ -426,6 +436,7 @@ class TestEnforceInstanceTenant:
         """
         config = MimirServiceConfig(
             path=str(tmp_path / "mimir"),
+            backend=_BACKEND,
             auth_mode="none",
             identity_adapter="identity.adapters.identity.AllowAllHeaderAuthenticationAdapter",
         )
@@ -447,16 +458,17 @@ class TestNoneModeRegistryTenantScoping:
     def _app(self, tmp_path: Path) -> FastAPI:
         config = MimirServiceConfig(
             path=str(tmp_path / "mimir"),
+            backend=_BACKEND,
             auth_mode="none",
             identity_adapter="identity.adapters.identity.AllowAllHeaderAuthenticationAdapter",
         )
         return create_app(config)
 
-    def test_local_mount_registry_create_succeeds(self, tmp_path: Path) -> None:
+    def test_registry_mount_create_succeeds(self, tmp_path: Path) -> None:
         with TestClient(self._app(tmp_path)) as client:
             resp = client.post(
                 "/mimir/registry/mounts",
-                json={"name": "other", "kind": "local", "path": str(tmp_path / "other-wiki")},
+                json={"name": "other", "kind": "remote", "url": "https://other.test"},
             )
             assert resp.status_code == 200
 
@@ -464,7 +476,7 @@ class TestNoneModeRegistryTenantScoping:
         with TestClient(self._app(tmp_path)) as client:
             created = client.post(
                 "/mimir/registry/mounts",
-                json={"name": "other", "kind": "local", "path": str(tmp_path / "other-wiki")},
+                json={"name": "other", "kind": "remote", "url": "https://other.test"},
             ).json()
             entry_id = created["id"]
 
@@ -472,8 +484,8 @@ class TestNoneModeRegistryTenantScoping:
                 f"/mimir/registry/mounts/{entry_id}",
                 json={
                     "name": "renamed",
-                    "kind": "local",
-                    "path": str(tmp_path / "other-wiki"),
+                    "kind": "remote",
+                    "url": "https://other.test",
                 },
             )
             assert updated.status_code == 200
@@ -504,6 +516,7 @@ class TestAppLevelOidcGate:
         """
         config = MimirServiceConfig(
             path=str(tmp_path / "mimir"),
+            backend=_BACKEND,
             auth_mode="oidc",
             identity_adapter="identity.adapters.jwks.JwksBearerAuthenticationAdapter",
             identity_kwargs=_OIDC_ISSUER_KWARGS,
@@ -520,7 +533,7 @@ class TestAppLevelOidcGate:
     def test_anonymous_local_mount_registry_write_is_rejected(self, tmp_path: Path) -> None:
         """The exact probe that used to 200 and create a host-path mount."""
         with TestClient(self._app(tmp_path)) as client:
-            resp = client.post("/mimir/registry/mounts", json={"kind": "local", "path": "/etc"})
+            resp = client.post("/mimir/registry/mounts", json={"kind": "local"})
             assert resp.status_code == 401
 
     @respx.mock
@@ -586,9 +599,9 @@ class TestAppLevelOidcGate:
     ) -> None:
         """A valid credential clears the new authentication gate (no 401);
 
-        the same malicious local-path payload is then still correctly
+        the same malicious local-mount payload is then still correctly
         rejected by Mímir's existing tenant-scoping (a tenant-scoped caller
-        cannot register a host-path mount) — a 422, not a 401. Authentication
+        cannot register a local mount) — a 422, not a 401. Authentication
         and authorization are separate failures here and this pins both.
         """
         respx.get(JWKS_URI).mock(return_value=Response(200, json={"keys": [PUBLIC_JWK]}))
@@ -597,7 +610,7 @@ class TestAppLevelOidcGate:
             resp = client.post(
                 "/mimir/registry/mounts",
                 headers={"authorization": f"Bearer {token}"},
-                json={"kind": "local", "path": "/etc"},
+                json={"kind": "local"},
             )
             assert resp.status_code == 422
 
@@ -614,4 +627,4 @@ def test_router_construction_requires_an_explicit_auth(tmp_path: Path) -> None:
     auth_mode actually is.
     """
     with pytest.raises(TypeError, match="auth"):
-        MimirRouter(MarkdownMimirAdapter(root=tmp_path))  # type: ignore[call-arg]
+        MimirRouter(InMemoryMimirAdapter())  # type: ignore[call-arg]

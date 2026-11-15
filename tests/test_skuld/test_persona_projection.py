@@ -107,6 +107,37 @@ def test_the_outcome_block_the_persona_implies_is_part_of_its_instructions() -> 
     ).count("---outcome---")
 
 
+def test_a_conversational_session_plays_the_persona_without_its_outcome_contract() -> None:
+    definition = {
+        "system_prompt_template": "Review.",
+        "produces": {
+            "event_type": "review.completed",
+            "schema": {"verdict": {"type": "enum", "values": ["pass", "fail"]}},
+        },
+    }
+
+    composed = compose_instructions(definition, "Be brief.", outcome_contract=False)
+
+    assert composed == "Review.\n\nBe brief."
+
+
+@pytest.mark.parametrize("name", ["coder", "reviewer", "security-auditor", "memory-compiler"])
+def test_a_builtin_personas_outcome_contract_is_its_schema_alone(name: str) -> None:
+    """Written once: a conversation can leave it out, and a workflow gets all of it."""
+    import yaml
+
+    builtin = Path(__file__).parents[2] / "src" / "personas" / "builtin" / f"{name}.yaml"
+    raw = yaml.safe_load(builtin.read_text())
+    definition = {
+        "system_prompt_template": raw["system_prompt_template"],
+        "produces": raw["produces"],
+    }
+
+    assert "---outcome---" not in raw["system_prompt_template"]
+    assert "---outcome---" in compose_instructions(definition, "")
+    assert "---outcome---" not in compose_instructions(definition, "", outcome_contract=False)
+
+
 def test_a_persona_without_limits_projects_only_its_instructions(tmp_path: Path) -> None:
     projection = claude(tmp_path, system_prompt_template="Hello.")
 

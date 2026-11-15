@@ -1,13 +1,13 @@
 import { useQuery } from '@tanstack/react-query';
 import { useService } from '@niuulabs/plugin-sdk';
 import type { IMimirService } from '../ports';
-import type { MimirGraph } from '../domain/api-types';
+import type { KnowledgeGraph } from '../domain/api-types';
 
-/** The knowledge graph for the Memory Explore view, optionally scoped to one mount. */
-export function useMemoryGraph(mountName?: string) {
+/** The knowledge graph of every memory layer the signed-in person can read (`GET /memory/graph`). */
+export function useMemoryGraph() {
   const service = useService<IMimirService>('mimir');
-  return useQuery<MimirGraph>({
-    queryKey: ['mimir', 'memory-graph', mountName ?? null],
-    queryFn: () => service.pages.getGraph(mountName ? { mountName } : undefined),
+  return useQuery<KnowledgeGraph>({
+    queryKey: ['mimir', 'knowledge-graph'],
+    queryFn: () => service.pages.getKnowledgeGraph(),
   });
 }

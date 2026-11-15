@@ -131,20 +131,23 @@ class TestMember:
         assert result.pod_spec is adapter.pod_spec_additions.return_value
         adapter.ensure_secret_provider_class.assert_called_once()
 
-    async def test_a_vm_unit_keeps_each_members_own_guest_agent(self):
-        adapter = _adapter(guest_agents=True)
-        guest = PodSpecAdditions(service_account="guest")
-        adapter.guest_agent_pod_spec_additions.return_value = guest
+    @pytest.mark.parametrize("per_pod", [True, False])
+    async def test_a_vm_unit_member_runs_on_its_roots_guest_agent(self, per_pod):
+        # The VM is the unit's one machine: the member's container mounts the secrets the
+        # root's agent renders, so it adds no agent of its own.
+        adapter = _adapter(per_pod=per_pod, guest_agents=True)
         context = SessionContext(
             runtime_backend="vm",
             integration_connections=(_connection("test", "cred", "c-1"),),
         )
 
-        result = await SecretInjectionContributor(secret_injection=adapter).contribute(
-            _member(_root()), context
-        )
+        result = await SecretInjectionContributor(
+            secret_injection=adapter, integration_registry=_registry(test={"TOKEN": "token"})
+        ).contribute(_member(_root()), context)
 
-        assert result.pod_spec is guest
+        assert result.pod_spec is None
+        adapter.ensure_secret_provider_class.assert_not_called()
+        adapter.guest_agent_pod_spec_additions.assert_not_called()
 
     async def test_a_member_with_credentials_and_no_injection_configured_is_refused(self):
         context = SessionContext(integration_connections=(_connection("test", "cred", "c-1"),))
@@ -239,21 +242,24 @@ class TestRoot:
                 _root(), context
             )
 
-    async def test_a_vm_unit_root_does_not_take_on_its_members_credentials(self):
+    async def test_a_vm_unit_root_renders_its_members_credentials_too(self):
         adapter = _adapter(guest_agents=True)
         adapter.guest_agent_pod_spec_additions.return_value = PodSpecAdditions()
         context = SessionContext(
             runtime_backend="vm",
             integration_connections=(_connection("test", "root-cred", "c-1"),),
-            unit_members=(_scope("m-1", _connection("test", "member-cred", "c-2")),),
+            unit_members=(_scope("m-1", _connection("other", "member-cred", "c-2")),),
         )
 
         await SecretInjectionContributor(
-            secret_injection=adapter, integration_registry=_registry(test={"TOKEN": "token"})
+            secret_injection=adapter,
+            integration_registry=_registry(test={"TOKEN": "token"}, other={"OTHER_TOKEN": "token"}),
         ).contribute(_root(), context)
 
         mappings = adapter.ensure_secret_provider_class.call_args[0][1]
-        assert [m.credential_name for m in mappings] == ["root-cred"]
+        assert [m.credential_name for m in mappings] == ["root-cred", "member-cred"]
+        guest_mappings = adapter.guest_agent_pod_spec_additions.call_args[0][2]
+        assert [m.credential_name for m in guest_mappings] == ["root-cred", "member-cred"]
 
     async def test_a_context_without_members_is_unchanged(self):
         adapter = _adapter()

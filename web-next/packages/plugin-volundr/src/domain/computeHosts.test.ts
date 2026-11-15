@@ -301,10 +301,27 @@ describe('row actions', () => {
   it('offers resume on an out-of-service host', () => {
     expect(hostActions({ ...skinfaxi, state: 'out_of_service', sessions: [] })).toEqual([
       'check',
+      'edit_slots',
       'reprepare',
       'resume',
       'remove',
     ]);
+  });
+
+  it('offers edit slots only where Forge lets the slots change', () => {
+    expect(hostActions({ ...skinfaxi, state: 'out_of_service', sessions: [] })).toContain(
+      'edit_slots',
+    );
+    expect(hostActions({ ...skinfaxi, state: 'ready', slots: 4, sessions: [] })).toContain(
+      'edit_slots',
+    );
+    // An in-service or draining host is held by an allocation: drain it first.
+    expect(hostActions(hrimfaxi)).not.toContain('edit_slots');
+    expect(hostActions(arvak)).not.toContain('edit_slots');
+    // A host with no slots yet sets them through Open, not Edit slots.
+    expect(hostActions({ ...skinfaxi, state: 'out_of_service', slots: null })).not.toContain(
+      'edit_slots',
+    );
   });
 
   it('opens a joining host and a ready one that waits for its capacity', () => {
@@ -313,6 +330,7 @@ describe('row actions', () => {
     expect(hostActions(waiting)).toEqual(['open', 'check', 'reprepare', 'drain', 'remove']);
     expect(hostActions({ ...skinfaxi, state: 'ready', sessions: [] })).toEqual([
       'check',
+      'edit_slots',
       'reprepare',
       'drain',
       'remove',

@@ -404,7 +404,7 @@ class RedisStreamsTransport(SleipnirPublisher, SleipnirSubscriber):
         if not any(match_event_type(p, event.event_type) for p in patterns):
             return
 
-        await enqueue_with_overflow(queue, event, self._ring_buffer_depth, logger)
+        await enqueue_with_overflow(queue, event, self._ring_buffer_depth)
 
     async def flush(self) -> None:
         """Wait until every queued event has been processed by its handler.

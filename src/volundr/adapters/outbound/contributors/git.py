@@ -22,10 +22,11 @@ logger = logging.getLogger(__name__)
 
 
 class GitContributor(SessionContributor):
-    """Resolve the attached Settings integration for Kubernetes session Git.
+    """Resolve the attached Settings integration for Kubernetes and VM session Git.
 
-    Kubernetes values carry only a clean URL and injected token file reference.
-    Local processes retain provider URL authentication; OpenShell owns its auth.
+    Kubernetes and VM values carry only a clean URL and the injected token file's
+    path (the session's secret injection renders the token there). Local processes
+    retain provider URL authentication; OpenShell owns its auth.
     """
 
     def __init__(
@@ -63,7 +64,7 @@ class GitContributor(SessionContributor):
                 }
             )
 
-        if context.runtime_backend in {"kubernetes", "openshell"} and context.principal:
+        if context.runtime_backend in {"kubernetes", "openshell", "vm"} and context.principal:
             if self._user_integration is None:
                 raise ValueError("Session Git requires the Settings integration service")
             resolved = await self._user_integration.find_session_git_provider(
@@ -94,7 +95,7 @@ class GitContributor(SessionContributor):
                             "secretName": "",
                             "tokenFile": (
                                 git_token_path(connection.id)
-                                if context.runtime_backend == "kubernetes"
+                                if context.runtime_backend in {"kubernetes", "vm"}
                                 else ""
                             ),
                             "username": parsed.username,

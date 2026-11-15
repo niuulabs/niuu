@@ -1016,6 +1016,22 @@ class RoomParticipantInfo:
 
 
 @dataclass(frozen=True)
+class ConnectedPerson:
+    """A person with a live, verified browser connection to a session's room."""
+
+    user_id: str
+    display_name: str = ""
+
+
+@dataclass(frozen=True)
+class RoomRoster:
+    """Everyone a live room reports: its seated participants and the people connected to it."""
+
+    participants: list[RoomParticipantInfo]
+    connected_people: list[ConnectedPerson]
+
+
+@dataclass(frozen=True)
 class SessionCommunicationTarget:
     """Resolved external communication target exposed by a live session."""
 

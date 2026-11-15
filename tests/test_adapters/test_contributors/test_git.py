@@ -63,7 +63,7 @@ class TestGitContributor:
         result = await c.contribute(session, SessionContext())
         assert result.values == {}
 
-    @pytest.mark.parametrize("backend", ["kubernetes", "openshell"])
+    @pytest.mark.parametrize("backend", ["kubernetes", "openshell", "vm"])
     async def test_user_integration_provides_mounted_token(self, session, backend):
         provider = MagicMock()
         provider.get_clone_url.return_value = (
@@ -84,7 +84,8 @@ class TestGitContributor:
         git = result.values["git"]
         assert git["cloneUrl"] == "https://github.com/org/repo.git"
         assert git["credentials"]["secretName"] == ""
-        if backend == "kubernetes":
+        if backend in {"kubernetes", "vm"}:
+            # The session's secret injection renders the token there (a VM's guest agent).
             assert git["credentials"]["tokenFile"].startswith("/run/secrets/git/")
         else:
             assert git["credentials"]["tokenFile"] == ""
@@ -107,4 +108,15 @@ class TestGitContributor:
 
         with pytest.raises(ValueError, match="Attach a source-control integration"):
             await c.contribute(session, SessionContext(principal=principal))
+        registry.get_clone_url.assert_not_called()
+
+    async def test_a_vm_session_without_an_integration_is_refused_like_kubernetes(self, session):
+        user_integration = AsyncMock()
+        user_integration.find_session_git_provider.return_value = None
+        registry = MagicMock()
+        principal = Principal(user_id="u1", email="u@test.com", tenant_id="t1", roles=[])
+        c = GitContributor(git_registry=registry, user_integration=user_integration)
+
+        with pytest.raises(ValueError, match="Attach a source-control integration"):
+            await c.contribute(session, SessionContext(principal=principal, runtime_backend="vm"))
         registry.get_clone_url.assert_not_called()

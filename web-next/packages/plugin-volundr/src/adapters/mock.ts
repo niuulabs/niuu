@@ -10,6 +10,7 @@ import type {
   SessionParticipant,
   TeamCatalogEntry,
   TeamIntegration,
+  ProjectMemoryMount,
   TeamIntegrationUse,
   TeamRoute,
 } from '../models/volundr.model';
@@ -1334,7 +1335,9 @@ const MOCK_USAGE_PAGE_SIZE = 3;
 
 export function createMockVolundrService(): IVolundrService {
   const sessions = [...SEED_SESSIONS];
+  let teamsStarted = 0;
   const projects = SEED_PROJECTS.map((project) => ({ ...project }));
+  const memoryMounts = new Map<string, ProjectMemoryMount[]>();
   /** Project members by project id; every seeded project starts with its creator as owner. */
   const projectMembers = new Map<string, ProjectMember[]>(
     projects.map((project) => [
@@ -1578,6 +1581,21 @@ export function createMockVolundrService(): IVolundrService {
           email: person.email,
         }));
     },
+    getTeamInviteCandidates: async (query) => {
+      const needle = query.trim().toLowerCase();
+      return orgPeople
+        .filter(
+          (person) =>
+            !needle ||
+            person.display_name.toLowerCase().includes(needle) ||
+            person.email.toLowerCase().includes(needle),
+        )
+        .map((person) => ({
+          userId: person.user_id,
+          displayName: person.display_name,
+          email: person.email,
+        }));
+    },
     inviteSessionParticipant: async (sessionId, invitation) => {
       const person = orgPeople.find((candidate) => candidate.user_id === invitation.userId);
       if (!person) throw new Error('Cannot invite this user');
@@ -1717,6 +1735,31 @@ export function createMockVolundrService(): IVolundrService {
         (teamRoutes.get(project.id) ?? []).filter((route) => route.event !== event),
       );
     },
+    getProjectMemoryMounts: async (project) =>
+      (memoryMounts.get(project.id) ?? []).map((mount) => ({ ...mount })),
+    addProjectMemoryMount: async (project, mount) => {
+      const mounts = memoryMounts.get(project.id) ?? [];
+      if (mounts.some((existing) => existing.name === mount.name))
+        throw new Error(`Project already mounts a memory named ${mount.name}`);
+      const now = new Date().toISOString();
+      const added = {
+        name: mount.name,
+        registry_entry_id: mount.registryEntryId,
+        access: mount.access,
+        write_prefixes: [],
+        added_by: 'mock-user',
+        created_at: now,
+        updated_at: now,
+      };
+      memoryMounts.set(project.id, [...mounts, added]);
+      return { ...added };
+    },
+    removeProjectMemoryMount: async (project, name) => {
+      memoryMounts.set(
+        project.id,
+        (memoryMounts.get(project.id) ?? []).filter((mount) => mount.name !== name),
+      );
+    },
     getTeamIntegrationUsage: async (project, before) => {
       membersOf(project.id);
       const uses = (teamUsage.get(project.id) ?? []).filter(
@@ -1839,6 +1882,94 @@ export function createMockVolundrService(): IVolundrService {
           ? 'Mock Volundr GPU'
           : 'Mock Volundr',
     }),
+
+    startTeam: async (request) => {
+      if (request.members.filter((member) => member.lead).length !== 1) {
+        throw new Error('A team has exactly one lead');
+      }
+      const taskTo = request.task?.trim() ? (request.taskTo ?? null) : null;
+      if (request.task?.trim() && !request.taskTo) {
+        throw new Error('A team started with a task says who gets it: the lead or everyone');
+      }
+      const rootId = `team-${teamsStarted + 1}`;
+      teamsStarted += 1;
+      const common = {
+        source: request.source,
+        status: 'starting' as const,
+        lastActive: Date.now(),
+        messageCount: 0,
+        tokensUsed: 0,
+        instanceId: request.instanceId ?? 'mock-volundr-default',
+        instanceName: request.instanceId ? 'Selected Mock Volundr' : 'Mock Volundr',
+      };
+      const root: VolundrSession = {
+        ...common,
+        id: rootId,
+        name: request.name,
+        model: request.members.find((member) => member.lead)?.model ?? '',
+        team: { taskTo },
+        // An invitee counts once they have joined.
+        peopleCount: 1,
+      };
+      const members: VolundrSession[] = request.members.map((member, index) => ({
+        ...common,
+        id: `${rootId}-member-${index + 1}`,
+        name: `${request.name}-${member.personaName || `agent-${index + 1}`}`,
+        model: member.model,
+        sessionDefinition: member.definition,
+        personaName: member.personaName || undefined,
+        hostedBy: rootId,
+        teamMember: { lead: member.lead },
+      }));
+      sessions.push(root, ...members);
+      for (const userId of request.invitees ?? []) {
+        const person = orgPeople.find((candidate) => candidate.user_id === userId);
+        if (!person) throw new Error('Cannot invite this user');
+        participantsOf(rootId).push({
+          userId,
+          displayName: person.display_name,
+          role: 'viewer',
+          status: 'invited',
+          invitedBy: 'u1',
+          expiresAt: null,
+        });
+      }
+      return { session: root, members };
+    },
+
+    getSessionMembers: async (sessionId) => {
+      const session = sessions.find((item) => item.id === sessionId);
+      if (!session) throw new Error('Session not found');
+      const hosted = sessions.filter((item) => item.hostedBy === sessionId);
+      const agentSessions = session.team ? hosted : [session];
+      return {
+        agents: agentSessions.map((agent) => ({
+          sessionId: agent.id,
+          name: agent.name,
+          personaName: agent.personaName ?? '',
+          model: agent.model,
+          definition: agent.sessionDefinition ?? null,
+          status: agent.status,
+          lead: agent.teamMember?.lead === true,
+        })),
+        people: [
+          {
+            userId: session.ownerId ?? 'u1',
+            displayName: 'Dev',
+            role: 'owner',
+            status: 'active',
+            online: session.status === 'running' ? true : null,
+          },
+          ...participantsOf(sessionId).map((grant) => ({
+            userId: grant.userId,
+            displayName: grant.displayName,
+            role: grant.role,
+            status: grant.status,
+            online: session.status === 'running' && grant.status === 'active' ? false : null,
+          })),
+        ],
+      };
+    },
 
     evaluatePermissionAutoApproval: async (_sessionId, request) => ({
       canAutoApprove: Boolean(request.command?.startsWith('./start-dev')),

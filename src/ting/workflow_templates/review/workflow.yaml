@@ -58,6 +58,7 @@ graph:
   - id: revise
     source: review
     target: draft
+    rework: true
     label: artifact.changes_requested -> artifact.changes_requested
   - id: finish
     source: review

@@ -59,8 +59,8 @@ Bifröst refuses to start when:
 - `passthrough: true` is set on a provider whose adapter has no native protocol (it does
   not implement `bifrost.ports.native.NativePassthroughPort`) — e.g. the Anthropic adapter,
   whose canonical path already *is* its native protocol;
-- the providers of one model disagree on the path (failover cannot switch protocol
-  mid-request);
+- the providers of one model disagree on the path (the protocol of a request must not
+  depend on which provider is selected);
 - `cache.mode` is not `disabled` while any provider has passthrough (the response cache
   stores canonical responses only).
 

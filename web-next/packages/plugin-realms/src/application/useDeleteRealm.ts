@@ -1,22 +1,13 @@
 import { useCallback, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { useService } from '@niuulabs/plugin-sdk';
-import type { IMimirService } from '@niuulabs/plugin-mimir';
-import { routingRuleIdFor } from '../domain/realm';
 import type { IRealmGovernanceService } from '../ports';
 import { REALMS_QUERY_KEY, REALM_GOVERNANCE_SERVICE_KEY } from './useRealmGovernance';
 
-/** The create recipe run backwards: the routing rule, then the realm record. */
-export const TEARDOWN_STEPS = [
-  { id: 'routing', label: 'drop the memory routing rule' },
-  { id: 'realm', label: 'delete the workspace' },
-] as const;
+/** The create recipe run backwards: the realm record. */
+export const TEARDOWN_STEPS = [{ id: 'realm', label: 'delete the workspace' }] as const;
 
 export type TeardownStepId = (typeof TEARDOWN_STEPS)[number]['id'];
-
-function isMissing(error: unknown): boolean {
-  return (error as { status?: number }).status === 404;
-}
 
 /**
  * Deletes a realm and everything the wizard created for it that the platform can
@@ -25,7 +16,6 @@ function isMissing(error: unknown): boolean {
  */
 export function useDeleteRealm(slug: string) {
   const realms = useService<IRealmGovernanceService>(REALM_GOVERNANCE_SERVICE_KEY);
-  const mimir = useService<IMimirService>('mimir');
   const queryClient = useQueryClient();
   const [failedStep, setFailedStep] = useState<TeardownStepId | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -45,22 +35,12 @@ export function useDeleteRealm(slug: string) {
         throw caught;
       }
     };
-    const tolerateMissing = async (work: () => Promise<unknown>) => {
-      try {
-        await work();
-      } catch (caught) {
-        if (!isMissing(caught)) throw caught;
-      }
-    };
 
-    await step('routing', () =>
-      tolerateMissing(() => mimir.mounts.deleteRoutingRule(routingRuleIdFor(slug))),
-    );
     await step('realm', () => realms.deleteRealm(slug));
 
     await queryClient.invalidateQueries({ queryKey: REALMS_QUERY_KEY });
     setRunning(false);
-  }, [mimir, queryClient, realms, slug]);
+  }, [queryClient, realms, slug]);
 
   return { run, running, failedStep, error };
 }

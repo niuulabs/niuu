@@ -652,8 +652,15 @@ daemon in a slot** run on registered hosts:
 
 ## macOS hosts
 
-A Mac joins like a Linux host, and always as an **exclusive one-slot host**: one
-session at a time.
+A Mac joins like a Linux host, and by default as an **exclusive one-slot host**: one
+session at a time. With **shared slots** (`computeHosts.darwin.sharedSlots`) it runs
+several, slot `n` as user `niuu-slot-<n>` with its own loopback ports
+(`broker_port + n`, `guest_platform_port + n`) and guest agent address
+(`169.254.169.(254 − n)`), audited one slot at a time. That is the operator accepting
+the user as the only boundary: the slots share the Mac's network (a session can reach
+another slot's listeners, its guest agent included) and its CPUs and memory, so slot
+counts are not sized from limits; fixed-path links outside a session's storage are not
+made, and a workflow run's unit is refused there.
 
 **Slot boundary.** On macOS the boundary is a user, and nothing else. A darwin
 runtime runs the session as a dedicated macOS user, `niuu-slot-0` (uid
@@ -665,7 +672,7 @@ reused. Nix is the multi-user install for darwin (its
 own APFS volume and `org.nixos.nix-daemon`), with only root in `trusted-users`.
 There is no network namespace, cgroup or per-slot nft: a session shares the
 Mac's network and has no CPU or memory limit, so a Mac has no `slot_limits`, and
-one session per Mac is what keeps sessions apart.
+one session per Mac is what keeps sessions apart unless the operator shares slots.
 
 **Join.** The same `curl … | sudo sh` line. The script detects `Darwin` and runs
 its own steps: root, no earlier registration, the tools (`launchctl`, `dscl`,

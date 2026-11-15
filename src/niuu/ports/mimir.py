@@ -8,19 +8,15 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import replace
-from pathlib import Path
 
 from niuu.domain.knowledge_graph import KnowledgeGraph
 from niuu.domain.mimir import (
-    MimirLintReport,
     MimirMountSummary,
     MimirPage,
     MimirPageMeta,
     MimirQueryResult,
     MimirSource,
     MimirSourceMeta,
-    ThreadContextRef,
-    ThreadState,
 )
 
 
@@ -29,22 +25,12 @@ class MimirPort(ABC):
 
     Mímir maintains a persistent, LLM-written wiki that accumulates synthesised
     knowledge between agent sessions.  Raw sources flow in via ``ingest()``;
-    the wiki layer is queried via ``query()`` and ``search()``; idle-time
-    maintenance is driven by ``lint()``.
+    the wiki layer is queried via ``query()`` and ``search()``.
 
     Adapters may expose optional capabilities beyond this interface (link
-    graph traversal, entity index, doctor checks); callers discover them via
+    graph traversal, entity index); callers discover them via
     ``getattr`` and degrade gracefully (the HTTP router answers 501).
     """
-
-    def filesystem_root(self) -> Path | None:
-        """Root directory of a filesystem-backed store, or ``None``.
-
-        Filesystem-coupled features (doctor checks, eval artifacts under
-        ``<root>/evals/``) use this instead of reaching into adapter
-        internals. Remote/composite adapters keep the ``None`` default.
-        """
-        return None
 
     async def inspect_instance(self) -> dict:
         return {
@@ -74,8 +60,6 @@ class MimirPort(ABC):
         should override it; this fallback keeps naive implementations correct
         at the cost of walking the corpus.
 
-        Never runs lint — the returned counts come from the last lint that
-        actually ran, if any.
         """
         pages = await self.list_pages()
         sources = await self.list_sources()
@@ -106,16 +90,6 @@ class MimirPort(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    async def lint(self, fix: bool = False) -> MimirLintReport:
-        """Health-check the wiki across 12 check types (L01–L12).
-
-        When *fix* is ``True``, auto-fixable issues (L05, L11, L12) are
-        corrected in-place before the report is returned.  Appends an entry
-        to ``wiki/log.md``.
-        """
-        raise NotImplementedError
-
-    @abstractmethod
     async def search(self, query: str) -> list[MimirPage]:
         """Full-text search over wiki pages, ranked by relevance."""
         raise NotImplementedError
@@ -137,9 +111,9 @@ class MimirPort(ABC):
         route writes to a specific named Mímir instance, bypassing the default
         category-based routing.
 
-        The optional *meta* parameter carries updated page metadata (e.g. thread
-        fields written by the thread enricher).  Adapters that support it will
-        persist the metadata alongside the content; others may ignore it.
+        The optional *meta* parameter carries updated page metadata.  Adapters
+        that support it will persist the metadata alongside the content; others
+        may ignore it.
         """
         raise NotImplementedError
 
@@ -217,87 +191,5 @@ class MimirPort(ABC):
         matching source_id) and not of an operational type
         (``OPERATIONAL_SOURCE_TYPES``) — exhaust is never synthesis work, so
         it must not read as backlog.
-        """
-        raise NotImplementedError
-
-    # ------------------------------------------------------------------
-    # Thread methods — optional extension point
-    # ------------------------------------------------------------------
-    # Not declared abstract so that existing adapters (HttpMimirAdapter,
-    # CompositeMimirAdapter) do not need to implement them in this ticket.
-    # Only MarkdownMimirAdapter provides a real implementation.
-    # ------------------------------------------------------------------
-
-    async def create_thread(
-        self,
-        title: str,
-        weight: float = 0.5,
-        context_refs: list[ThreadContextRef] | None = None,
-        next_action_hint: str | None = None,
-    ) -> MimirPage:
-        """Create a new thread with the given title and initial metadata.
-
-        Creates ``threads/{slug}.yaml`` and ``threads/{slug}.md`` under the
-        Mímir root.  Returns a ``MimirPage`` representing the new thread.
-        Raises ``FileExistsError`` if a thread with the same slug already exists.
-        """
-        raise NotImplementedError
-
-    async def get_thread(self, path: str) -> MimirPage:
-        """Return full thread data including the Markdown working notes.
-
-        *path* is the stem path, e.g. ``"threads/retrieval-architecture"``.
-        Raises ``FileNotFoundError`` if the thread YAML does not exist.
-        """
-        raise NotImplementedError
-
-    async def get_thread_queue(
-        self,
-        owner_id: str | None = None,
-        limit: int = 50,
-    ) -> list[MimirPage]:
-        """Return open threads sorted by weight descending.
-
-        Hot path — only reads ``.yaml`` files, never opens ``.md`` files.
-        Optionally filtered to *owner_id*.
-        """
-        raise NotImplementedError
-
-    async def update_thread_state(self, path: str, state: ThreadState) -> None:
-        """Transition a thread to *state*.
-
-        Writes only the YAML file.  Raises ``FileNotFoundError`` if the thread
-        does not exist.
-        """
-        raise NotImplementedError
-
-    async def list_threads(
-        self,
-        state: ThreadState | None = None,
-        limit: int = 100,
-    ) -> list[MimirPage]:
-        """List thread pages, optionally filtered by *state*."""
-        raise NotImplementedError
-
-    async def update_thread_weight(
-        self,
-        path: str,
-        weight: float,
-        signals: dict | None = None,
-    ) -> None:
-        """Update the weight score for a thread.
-
-        Writes only the YAML file.  Raises ``FileNotFoundError`` if the thread
-        does not exist.  If *signals* are provided they are stored alongside the
-        weight for later recomputation.
-        """
-        raise NotImplementedError
-
-    async def assign_thread_owner(self, path: str, owner_id: str | None) -> None:
-        """Assign (or clear) the owner of a thread.
-
-        Uses a ``.lock`` file for mutual exclusion.  Raises
-        ``ThreadOwnershipError`` if the thread already has a different owner.
-        Raises ``FileNotFoundError`` if the thread does not exist.
         """
         raise NotImplementedError

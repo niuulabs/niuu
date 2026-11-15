@@ -94,7 +94,7 @@ broker and returns the delivery acknowledgement (`send_session_message` in `rest
 | Case | Path | Code |
 |---|---|---|
 | Model marked `provider: local` in the model catalog | Forge's `ModelGatewayContributor` sets `SKULD__MODEL_GATEWAY__URL`; the session gateway spawns Claude Code with `ANTHROPIC_BASE_URL` pointing at the model gateway. Its `/v1/messages` route sends it (`ModelRouter`) to an adapter (Anthropic, OpenAI-compatible, Ollama) | `volundr/adapters/outbound/contributors/model_gateway.py`, `skuld/transports/claude_env.py`, `bifrost/inbound/routes.py`, `bifrost/router.py` |
-| Any other model | No gateway env; the runtime uses its own provider login (`SKULD__CLAUDE_AUTH`, default `subscription`) | `skuld/transports/claude_env.py` |
+| Any other model | No gateway env; the runtime uses its own provider login (the `claude_auth` setting, env `SKULD__CLAUDE_AUTH`, default `subscription`) | `skuld/transports/claude_env.py` |
 
 A gateway URL with a blank token raises at spawn time; it never falls back to the
 host's own login.
@@ -106,7 +106,6 @@ host's own login.
 | Session WebSocket | Every runtime event, live: `_handle_cli_event` → `ChannelRegistry.broadcast` → `WebSocketChannel` | `skuld/broker.py`, `skuld/channels.py` |
 | Session event log | The same frames, batched to `POST /api/v1/forge/sessions/{id}/log` and stored in `session_event_log`; read back for history and replay | `skuld/event_log.py`, `volundr/adapters/inbound/rest_session_log.py`, `volundr/adapters/outbound/pg_session_event_log.py` |
 | Fleet SSE | Session list and notification changes, not chat tokens: `/api/v1/forge/sessions/stream` | `rest.py` (`stream_sessions`), `volundr/adapters/outbound/broadcaster.py` |
-| Event bus | Platform events the session gateway subscribes to and forwards to the socket; a side channel, not the transcript | `skuld/sleipnir_bridge.py` |
 
 ## Levers
 
@@ -117,7 +116,7 @@ host's own login.
 | `host_auth.mode` | `none` | Mini-mode host verifies JWTs (`oidc`) or explicitly allows all | CLI settings |
 | `transport_adapter` | `SDKTransport` | Which runtime the session gateway drives | Session gateway settings (`skuld/config.py`) |
 | `bifrost.session_gateway_url` | empty | Gateway URL given to sessions on local models | Forge `bifrost:` |
-| `SKULD__CLAUDE_AUTH` | `subscription` | How Claude Code signs in when no gateway is set | Session environment |
+| `claude_auth` (env `SKULD__CLAUDE_AUTH`) | `subscription` | How Claude Code signs in when no gateway is set; `subscription` or `api_key`, anything else is refused at startup | Session gateway settings, overridden by the session environment |
 
 ## Tradeoffs
 

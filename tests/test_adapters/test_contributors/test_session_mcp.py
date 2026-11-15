@@ -41,7 +41,7 @@ class TestSessionMCPContributor:
                     "registry_refs": [
                         {
                             "mount_name": "shared-knowledge",
-                            "path": "/tmp/mimir/shared",
+                            "url": "https://mimir.example.test/shared",
                             "role": "shared",
                             "categories": ["project", "decision"],
                         }
@@ -55,16 +55,28 @@ class TestSessionMCPContributor:
         assert [server["name"] for server in result.values["mcpServers"]] == [
             "mimir-shared-knowledge",
         ]
-        assert result.values["mcpServers"][0]["args"] == [
-            "-m",
-            "mimir",
-            "mcp",
-            "--path",
-            "/tmp/mimir/shared",
-            "--name",
-            "shared-knowledge",
-        ]
+        assert result.values["mcpServers"][0] == {
+            "name": "mimir-shared-knowledge",
+            "type": "http",
+            "url": "https://mimir.example.test/shared",
+            "description": (
+                "Mimir knowledge mount 'shared-knowledge' "
+                "(role: shared; categories: project, decision)"
+            ),
+        }
         assert result.pod_spec is None
+
+    async def test_a_directory_mount_is_refused(self, session):
+        context = SessionContext(
+            workload_type="session",
+            workload_config={
+                "mimir": {"registry_refs": [{"mount_name": "wiki", "path": "/tmp/mimir/wiki"}]}
+            },
+        )
+
+        with pytest.raises(MimirMountConfigError, match="'wiki' has no adapter or url") as raised:
+            await SessionMCPContributor().contribute(session, context)
+        assert "path" not in str(raised.value)
 
     async def test_url_backed_mimir_becomes_http_mcp_server(self, session):
         contributor = SessionMCPContributor()
@@ -98,7 +110,7 @@ class TestSessionMCPContributor:
             workload_config={
                 "mimir": {
                     "registry_refs": [
-                        {"mount_name": "shared", "path": "/tmp/shared"},
+                        {"mount_name": "shared", "url": "https://shared.example"},
                     ]
                 }
             },
@@ -121,18 +133,15 @@ class TestMimirHelpers:
         assert _string_list("bad") == []
 
     def test_normalize_instance_and_workload_config_helpers(self):
-        assert _normalize_instance({"name": "shared", "path": "/tmp/shared"}) == {
-            "name": "shared",
-            "role": "shared",
-            "path": "/tmp/shared",
-        }
         assert _normalize_instance({"name": "shared", "url": "https://mimir.example"}) == {
             "name": "shared",
             "role": "shared",
             "url": "https://mimir.example",
         }
-        with pytest.raises(MimirMountConfigError, match="'shared' has no adapter, url or path"):
+        with pytest.raises(MimirMountConfigError, match="'shared' has no adapter or url"):
             _normalize_instance({"name": "shared"})
+        with pytest.raises(MimirMountConfigError, match="'shared' has no adapter or url"):
+            _normalize_instance({"name": "shared", "path": "/tmp/shared"})
         with pytest.raises(MimirMountConfigError, match="has no name"):
             _normalize_instance({"url": "https://mimir.example"})
 
@@ -150,11 +159,17 @@ class TestMimirHelpers:
                 "hosted_url": "https://hosted.example",
                 "instances": [
                     {"name": "shared", "url": "https://shared.example", "categories": ["entity"]},
+                    {
+                        "name": "scratch",
+                        "url": "https://scratch.example",
+                        "role": "local",
+                        "categories": ["draft"],
+                    },
+                    {"name": "scratch-2", "url": "https://scratch-2.example", "role": "local"},
                 ],
                 "registry_refs": [
                     {
                         "mount_name": "registry-a",
-                        "path": "/mnt/registry-a",
                         "url": "https://registry-a.example",
                         "role": "shared",
                         "categories": ["directive"],
@@ -167,10 +182,6 @@ class TestMimirHelpers:
                         "mount_name": "hosted-backed",
                         "role": "shared",
                     },
-                ],
-                "ephemeral_locals": [
-                    {"mount_name": "scratch", "categories": ["draft"]},
-                    {"mountName": "scratch-2"},
                 ],
                 "bindings": [
                     {
@@ -191,11 +202,11 @@ class TestMimirHelpers:
 
         assert [instance["name"] for instance in instances] == [
             "shared",
+            "scratch",
+            "scratch-2",
             "registry-a",
             "registry-b",
             "hosted-backed",
-            "scratch",
-            "scratch-2",
         ]
         assert {"prefix": "self/", "mounts": ["scratch"]} in routing["rules"]
         assert {"prefix": "docs/", "mounts": ["registry-a"]} in routing["rules"]
@@ -204,40 +215,51 @@ class TestMimirHelpers:
         assert routing["default"] == ["scratch"]
         registry_a = next(instance for instance in instances if instance["name"] == "registry-a")
         assert registry_a["url"] == "https://registry-a.example"
-        assert "path" not in registry_a
 
     @pytest.mark.parametrize(
         ("config", "message"),
         [
             ({"instances": ["bad"]}, r"instances\[0\] must be an object"),
             (
-                {"instances": [{"name": "a", "path": "/a"}, {"name": "a", "path": "/b"}]},
+                {
+                    "instances": [
+                        {"name": "a", "url": "https://a.example"},
+                        {"name": "a", "url": "https://b.example"},
+                    ]
+                },
                 "'a' twice",
             ),
             ({"instances": [{"url": "https://x"}]}, "has no name"),
-            ({"instances": [{"name": "a"}]}, "'a' has no adapter, url or path"),
+            ({"instances": [{"name": "a"}]}, "'a' has no adapter or url"),
             ({"registry_refs": ["bad"]}, r"registry_refs\[0\] must be an object"),
             ({"registry_refs": [{"role": "shared"}]}, r"registry_refs\[0\] names no mount"),
             (
-                {"registry_refs": [{"mount_name": "a", "path": "/a"}] * 2},
+                {"registry_refs": [{"mount_name": "a", "url": "https://a.example"}] * 2},
                 "'a' is configured twice",
             ),
             (
                 {"registry_refs": [{"mount_name": "a", "registry_entry_id": "e"}]},
-                "'a' has no adapter, url or path.*registry entry must exist",
+                "'a' has no adapter or url.*registry entry must exist",
             ),
             ({"ephemeral_locals": ["bad"]}, r"ephemeral_locals\[0\] must be an object"),
             ({"ephemeral_locals": [{"categories": []}]}, r"ephemeral_locals\[0\] names no mount"),
             (
+                {"ephemeral_locals": [{"mount_name": "scratch"}]},
+                "scratch mount 'scratch'.*no longer served",
+            ),
+            (
                 {
-                    "instances": [{"name": "a", "path": "/a"}],
+                    "instances": [{"name": "a", "url": "https://a.example"}],
                     "ephemeral_locals": [{"mount_name": "a"}],
                 },
                 "'a' is configured twice",
             ),
             ({"bindings": ["bad"]}, r"bindings\[0\] must be an object"),
             (
-                {"instances": [{"name": "a", "path": "/a"}], "bindings": [{"mount_name": "b"}]},
+                {
+                    "instances": [{"name": "a", "url": "https://a.example"}],
+                    "bindings": [{"mount_name": "b"}],
+                },
                 r"bindings\[0\] is for the mount 'b'.*mounted: a",
             ),
             ({"write_routing": ["bad"]}, "write_routing must be an object"),
@@ -245,17 +267,20 @@ class TestMimirHelpers:
             ({"write_routing": {"rules": [{"prefix": "x/"}]}}, "needs a prefix and at least one"),
             (
                 {
-                    "instances": [{"name": "a", "path": "/a"}],
+                    "instances": [{"name": "a", "url": "https://a.example"}],
                     "write_routing": {"rules": [{"prefix": "x/", "mounts": ["a", "ghost"]}]},
                 },
                 r"rules\[0\].mounts names 'ghost'",
             ),
             (
-                {"instances": [{"name": "a", "path": "/a"}], "write_routing": {"default": ["g"]}},
+                {
+                    "instances": [{"name": "a", "url": "https://a.example"}],
+                    "write_routing": {"default": ["g"]},
+                },
                 "write_routing.default names 'g'",
             ),
             (
-                {"instances": [{"name": "a", "path": "/a"}], "default_mounts": ["g"]},
+                {"instances": [{"name": "a", "url": "https://a.example"}], "default_mounts": ["g"]},
                 "default_mounts names 'g'",
             ),
         ],
@@ -298,19 +323,6 @@ def _enforced(name, access, prefixes=(), **ref):
 
 
 class TestEnforcedAccessLimits:
-    def test_a_read_only_path_mount_is_started_read_only(self):
-        instances, _ = _resolve_mimir_runtime(_enforced("a", "read", path="/m/a"))
-        assert instances[0]["read_only"] is True
-
-    def test_write_prefixes_are_held_and_unioned(self):
-        config = _enforced("a", "read_write", ["x/"], path="/m/a")
-        config["bindings"].append(
-            {"mount_name": "a", "access": "read_write", "write_prefixes": ["y/"], "enforce": True}
-        )
-        instances, _ = _resolve_mimir_runtime(config)
-        assert instances[0]["write_prefixes"] == ["x/", "y/"]
-        assert "read_only" not in instances[0]
-
     def test_unrestricted_write_access_holds_nothing(self):
         instances, _ = _resolve_mimir_runtime(_enforced("a", "read_write", url="https://m"))
         assert "read_only" not in instances[0] and "write_prefixes" not in instances[0]
@@ -322,34 +334,9 @@ class TestEnforcedAccessLimits:
         assert "read_only" not in instances[0]
 
     @pytest.mark.parametrize(("access", "prefixes"), [("read", ()), ("read_write", ("x/",))])
-    def test_a_limit_on_a_mount_served_elsewhere_raises(self, access, prefixes):
-        with pytest.raises(MimirMountConfigError, match="'a' limits writes.*cannot be held"):
+    def test_a_limit_a_session_cannot_hold_raises(self, access, prefixes):
+        with pytest.raises(MimirMountConfigError, match="'a' limits writes.*memory gateway"):
             _resolve_mimir_runtime(_enforced("a", access, prefixes, url="https://m"))
-
-    def test_read_only_and_prefixes_on_one_mount_raise(self):
-        config = _enforced("a", "read", path="/m/a")
-        config["bindings"].append(
-            {"mount_name": "a", "access": "read_write", "write_prefixes": ["x/"], "enforce": True}
-        )
-        with pytest.raises(MimirMountConfigError, match="both read-only and write-limited"):
-            _resolve_mimir_runtime(config)
-        config["bindings"].reverse()
-        with pytest.raises(MimirMountConfigError, match="both read-only and write-limited"):
-            _resolve_mimir_runtime(config)
-
-    async def test_the_server_is_started_with_the_flags(self, session):
-        contributor = SessionMCPContributor()
-        config = _enforced("a", "read", path="/m/a")
-        config["registry_refs"].append({"mount_name": "b", "path": "/m/b"})
-        config["bindings"].append(
-            {"mount_name": "b", "access": "read_write", "write_prefixes": ["x/"], "enforce": True}
-        )
-        result = await contributor.contribute(
-            session, SessionContext(workload_config={"mimir": config})
-        )
-        args = {s["name"]: s["args"] for s in result.values["mcpServers"]}
-        assert args["mimir-a"][-1] == "--read-only"
-        assert args["mimir-b"][-2:] == ["--write-prefix", "x/"]
 
     async def test_an_adapter_only_mount_has_no_endpoint_and_raises(self, session):
         config = {
@@ -361,3 +348,83 @@ class TestEnforcedAccessLimits:
             await SessionMCPContributor().contribute(
                 session, SessionContext(workload_config={"mimir": config})
             )
+
+
+GATEWAY = "http://127.0.0.1:8080/api/v1/mimir"
+
+
+class TestWithTheMemoryGateway:
+    """With memory.gateway_url the gateway holds the limits; no per-mount server is started."""
+
+    def _context(self, mimir: dict) -> SessionContext:
+        return SessionContext(workload_config={"mimir": mimir})
+
+    async def test_no_per_mount_server_is_emitted(self, session):
+        mimir = {
+            "registry_refs": [
+                {"mount_name": "a", "registry_entry_id": "e1", "url": "https://a.example"},
+                {"mount_name": "b", "registry_entry_id": "e2", "url": "https://b.example"},
+            ]
+        }
+
+        result = await SessionMCPContributor(memory_gateway_url=GATEWAY).contribute(
+            session, self._context(mimir)
+        )
+
+        assert result.values == {}
+        # Without the gateway the same config starts one server per mount.
+        without = await SessionMCPContributor().contribute(session, self._context(mimir))
+        assert [s["name"] for s in without.values["mcpServers"]] == ["mimir-a", "mimir-b"]
+
+    @pytest.mark.parametrize(("access", "prefixes"), [("read", ()), ("read_write", ("x/",))])
+    async def test_a_restricted_mount_is_not_refused(self, session, access, prefixes):
+        mimir = _enforced("a", access, prefixes, registry_entry_id="e1", url="https://m")
+
+        result = await SessionMCPContributor(memory_gateway_url=GATEWAY).contribute(
+            session, self._context(mimir)
+        )
+
+        assert result.values == {}
+        with pytest.raises(MimirMountConfigError, match="'a' limits writes.*memory gateway"):
+            await SessionMCPContributor().contribute(session, self._context(mimir))
+
+    async def test_an_adapter_only_mount_needs_no_endpoint(self, session):
+        mimir = {
+            "registry_refs": [
+                {
+                    "mount_name": "g",
+                    "registry_entry_id": "e1",
+                    "adapter": "mimir.adapters.gbrain.GBrainMimirAdapter",
+                }
+            ]
+        }
+
+        result = await SessionMCPContributor(memory_gateway_url=GATEWAY).contribute(
+            session, self._context(mimir)
+        )
+
+        assert result.values == {}
+
+    @pytest.mark.parametrize(
+        ("mimir", "message"),
+        [
+            ({"instances": [{"name": "a", "url": "https://a"}]}, "instances.*registry_refs"),
+            ({"hosted_url": "https://h"}, "hosted_url.*registry_refs"),
+            ({"registry_refs": [{"mount_name": "a", "url": "https://a"}]}, "registry_entry_id"),
+            ({"ephemeral_locals": [{"mount_name": "s"}]}, "ephemeral_locals"),
+        ],
+    )
+    async def test_a_mount_the_gateway_could_not_open_is_refused_not_dropped(
+        self, session, mimir, message
+    ):
+        with pytest.raises(MimirMountConfigError, match=message):
+            await SessionMCPContributor(memory_gateway_url=GATEWAY).contribute(
+                session, self._context(mimir)
+            )
+
+    async def test_a_session_without_mimir_config_is_untouched(self, session):
+        result = await SessionMCPContributor(memory_gateway_url=GATEWAY).contribute(
+            session, SessionContext()
+        )
+
+        assert result.values == {}

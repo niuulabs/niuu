@@ -9,12 +9,14 @@ are not recorded.
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any
 from uuid import UUID
 
 from niuu.cap_telemetry import record_degraded
 from niuu.domain.models import IntegrationUsage
 from niuu.ports.integrations import IntegrationUsageLog
+from ting.domain.memory_imports import UpdatedIssue
 from ting.domain.models import (
     Phase,
     PhaseStatus,
@@ -26,10 +28,13 @@ from ting.domain.models import (
     TrackerMilestone,
     TrackerProject,
 )
+from ting.ports.memory_imports import IssueUpdateReader
 from ting.ports.tracker import TrackerPort
 
 #: ``IntegrationUsage.actor`` of every use Ting makes.
 USAGE_ACTOR = "ting"
+#: ``IntegrationUsage.action`` of a memory import's read of a team connection.
+IMPORT_ACTION = "import"
 #: ``record_degraded`` path: the write happened and its usage record could not be saved.
 DEGRADED_PATH = "ting.team_tracker_usage"
 
@@ -227,3 +232,45 @@ class TeamTrackerRecorder(TrackerPort):
 
     async def get_session_messages(self, tracker_id: str) -> list[SessionMessage]:
         return await self._inner.get_session_messages(tracker_id)
+
+
+class TeamIssueReader(IssueUpdateReader):
+    """A memory import's read of a team connection, recorded before it is made.
+
+    Unlike the tracker writes above, an import's reads are the whole use of the connection,
+    so each is recorded as ``IntegrationUsage(action="import", actor="ting")`` first: a read
+    whose use cannot be recorded does not happen, and the failure is raised.
+    """
+
+    def __init__(
+        self,
+        inner: IssueUpdateReader,
+        *,
+        usage_log: IntegrationUsageLog,
+        connection_id: str,
+        project_id: str,
+        acting_for: str,
+    ) -> None:
+        self._inner = inner
+        self._usage_log = usage_log
+        self._connection_id = connection_id
+        self._project_id = project_id
+        self._acting_for = acting_for
+
+    async def issues_updated_since(
+        self, tracker_project_id: str, since: datetime | None
+    ) -> list[UpdatedIssue]:
+        await self._usage_log.record(
+            IntegrationUsage(
+                connection_id=self._connection_id,
+                project_id=self._project_id,
+                action=IMPORT_ACTION,
+                acting_for=self._acting_for,
+                actor=USAGE_ACTOR,
+                subject=tracker_project_id,
+            )
+        )
+        return await self._inner.issues_updated_since(tracker_project_id, since)
+
+    async def close(self) -> None:
+        await self._inner.close()

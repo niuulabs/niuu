@@ -215,7 +215,6 @@ async def _try_cache_hit(
     record_genai_span_attributes(
         requested_model=model,
         provider=provider,
-        failover_attempts=0,
         cache_hit=True,
         response_model=cached.model,
         usage=cached.usage,

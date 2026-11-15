@@ -147,7 +147,10 @@ def build_app(
 
     if registry is None:
         registry = PluginRegistry()
-        registry.discover_entry_points()
+        enabled = settings.plugins.enabled or {}
+        registry.discover_entry_points(
+            disabled=frozenset(name for name, on in enabled.items() if not on)
+        )
         registry.discover_config(settings.plugins.extra)
         registry.apply_config(settings.plugins.enabled)
 

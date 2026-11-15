@@ -16,6 +16,7 @@ import asyncpg
 
 from niuu.adapters.linear import GraphQLError, LinearGraphQLClient
 from niuu.domain.models import LINEAR_API_URL
+from ting.domain.memory_imports import IssueComment, UpdatedIssue
 from ting.domain.models import (
     Phase,
     PhaseStatus,
@@ -28,6 +29,7 @@ from ting.domain.models import (
     TrackerMilestone,
     TrackerProject,
 )
+from ting.ports.memory_imports import IssueUpdateReader
 from ting.ports.tracker import TrackerPort
 
 logger = logging.getLogger(__name__)
@@ -57,6 +59,14 @@ _LINEAR_TO_RUN: dict[str, RunStatus] = {
 
 _UNASSIGNED_PHASE_PREFIX = "__unassigned__:"
 _MAX_LINEAR_PROJECT_DESCRIPTION_LENGTH = 255
+
+
+def _parse_linear_time(value: str) -> datetime:
+    """A Linear timestamp (ISO 8601, ``Z`` or an offset) as an aware datetime."""
+    parsed = datetime.fromisoformat(value)
+    if parsed.tzinfo is None:
+        raise GraphQLError(f"Linear sent a timestamp without a timezone: {value!r}")
+    return parsed
 
 
 def _linear_project_description(text: str) -> str:
@@ -366,6 +376,41 @@ query GetIssue($id: String!) {
 }
 """
 
+#: Page size of the import reads. Linear caps a page at 250; the reads page to exhaustion, so
+#: this bounds one request, never how many tickets or comments are read.
+_IMPORT_PAGE_SIZE = 100
+
+_LIST_ISSUES_UPDATED_QUERY = """
+query ListIssuesUpdated($filter: IssueFilter!, $first: Int!, $after: String) {
+  issues(filter: $filter, first: $first, after: $after, orderBy: updatedAt) {
+    nodes {
+      id
+      identifier
+      title
+      description
+      state { name }
+      assignee { name }
+      labels { nodes { name } }
+      url
+      createdAt
+      updatedAt
+    }
+    pageInfo { hasNextPage endCursor }
+  }
+}
+"""
+
+_ISSUE_COMMENTS_QUERY = """
+query IssueComments($id: String!, $first: Int!, $after: String) {
+  issue(id: $id) {
+    comments(first: $first, after: $after) {
+      nodes { id body createdAt user { name } }
+      pageInfo { hasNextPage endCursor }
+    }
+  }
+}
+"""
+
 _GET_MILESTONE_QUERY = """
 query GetMilestone($id: String!) {
   projectMilestone(id: $id) {
@@ -415,7 +460,7 @@ mutation AddComment($issueId: String!, $body: String!) {
 """
 
 
-class LinearTrackerAdapter(TrackerPort):
+class LinearTrackerAdapter(TrackerPort, IssueUpdateReader):
     """Linear tracker adapter: Project=Saga, Milestone=Phase, Issue=Run."""
 
     def __init__(
@@ -1178,6 +1223,78 @@ class LinearTrackerAdapter(TrackerPort):
 
         available = [s["name"] for s in states]
         raise GraphQLError(f"State '{state_name}' not found. Available: {', '.join(available)}")
+
+    async def issues_updated_since(
+        self, tracker_project_id: str, since: datetime | None
+    ) -> list[UpdatedIssue]:
+        """Tickets of a Linear project updated after ``since``, each with all its comments.
+
+        Pages to exhaustion; any failure raises. Not cached: an import must see what changed.
+        """
+        issue_filter: dict[str, object] = {"project": {"id": {"eq": tracker_project_id}}}
+        if since is not None:
+            issue_filter["updatedAt"] = {"gt": since.isoformat()}
+        nodes: list[dict] = []
+        after: str | None = None
+        while True:
+            data = await self._gql.query(
+                _LIST_ISSUES_UPDATED_QUERY,
+                {"filter": issue_filter, "first": _IMPORT_PAGE_SIZE, "after": after},
+            )
+            connection = data.get("issues") or {}
+            nodes.extend(connection.get("nodes") or [])
+            page_info = connection.get("pageInfo") or {}
+            if not page_info.get("hasNextPage"):
+                break
+            after = str(page_info.get("endCursor") or "").strip()
+            if not after:
+                raise GraphQLError("Linear issues pagination omitted endCursor")
+        issues = [await self._node_to_updated_issue(node) for node in nodes]
+        return sorted(issues, key=lambda issue: issue.updated_at)
+
+    async def _issue_comments(self, issue_id: str) -> tuple[IssueComment, ...]:
+        comments: list[IssueComment] = []
+        after: str | None = None
+        while True:
+            data = await self._gql.query(
+                _ISSUE_COMMENTS_QUERY,
+                {"id": issue_id, "first": _IMPORT_PAGE_SIZE, "after": after},
+            )
+            issue = data.get("issue")
+            if issue is None:
+                raise GraphQLError(f"Linear issue not found while reading comments: {issue_id}")
+            connection = issue.get("comments") or {}
+            for node in connection.get("nodes") or []:
+                comments.append(
+                    IssueComment(
+                        author=(node.get("user") or {}).get("name") or "",
+                        body=node.get("body") or "",
+                        created_at=_parse_linear_time(node["createdAt"]),
+                    )
+                )
+            page_info = connection.get("pageInfo") or {}
+            if not page_info.get("hasNextPage"):
+                break
+            after = str(page_info.get("endCursor") or "").strip()
+            if not after:
+                raise GraphQLError("Linear comments pagination omitted endCursor")
+        return tuple(sorted(comments, key=lambda comment: comment.created_at))
+
+    async def _node_to_updated_issue(self, node: dict) -> UpdatedIssue:
+        created = node.get("createdAt")
+        return UpdatedIssue(
+            id=node["id"],
+            identifier=node.get("identifier", ""),
+            title=node.get("title", ""),
+            description=node.get("description") or "",
+            status=(node.get("state") or {}).get("name", "Unknown"),
+            assignee=(node.get("assignee") or {}).get("name"),
+            labels=tuple(n["name"] for n in (node.get("labels") or {}).get("nodes", [])),
+            url=node.get("url", ""),
+            created_at=_parse_linear_time(created) if created else None,
+            updated_at=_parse_linear_time(node["updatedAt"]),
+            comments=await self._issue_comments(node["id"]),
+        )
 
     async def close(self) -> None:
         """Close the underlying HTTP client."""

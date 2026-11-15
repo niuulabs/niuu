@@ -264,6 +264,8 @@ def create_admin_settings_router(
                             placeholder="Unset" if _nullable_number(key) else None,
                         )
                         for key, value in policy.items()
+                        # Registered hosts have no machine maximum: the pool is the hosts.
+                        if not (key == "max_machines" and value is None)
                     ],
                 )
             )

@@ -12,6 +12,7 @@ from typing import Any
 import httpx
 from fastapi import WebSocket
 
+from niuu.cap_telemetry import record_cap_hit
 from niuu.domain.conversation_timeline import TIMELINE_KEY, observation, timeline
 from niuu.domain.message_author import AUTHOR_KEY, MessageAuthor
 from niuu.observability import get_observability
@@ -25,6 +26,9 @@ FORGE_TRACE_SPANS_START_PATH = "/api/v1/forge/spans/start"
 FORGE_TRACE_SPANS_COMPLETE_PATH = "/api/v1/forge/spans/complete"
 
 logger = logging.getLogger("skuld.broker")
+
+#: The setting that bounds unflushed event-log frames held in memory.
+EVENT_LOG_MAX_BUFFER_KNOB = "event_log_max_buffer"
 
 
 class EventLogRejectedError(RuntimeError):
@@ -476,8 +480,8 @@ class EventLogMixin:
             entry["role"] = role[:32]
         self._event_log_buffer.append(entry)
         # Safety valve: cap memory if the backend is unreachable for a long time.
-        # Dropping the oldest is the least-bad option vs OOM-killing the broker,
-        # and is logged loudly so the loss is visible.
+        # Dropping the oldest is the least-bad option vs OOM-killing the broker;
+        # the drop is a counted cap hit and a log_gap row, so the loss is visible.
         overflow = len(self._event_log_buffer) - self._settings.event_log_max_buffer
         if overflow <= 0:
             return entry
@@ -491,20 +495,23 @@ class EventLogMixin:
         true_dropped = 0
         first_dropped_seq = dropped[0].get("first_seq", dropped[0]["seq"])
         last_dropped_seq = dropped[-1].get("last_seq", dropped[-1]["seq"])
-        for entry in dropped:
-            payload = entry.get("payload")
+        for lost in dropped:
+            payload = lost.get("payload")
             if isinstance(payload, dict) and payload.get("type") == "log_gap":
                 true_dropped += int(payload.get("dropped", 0))
-                first_dropped_seq = min(first_dropped_seq, payload.get("first_seq", entry["seq"]))
-                last_dropped_seq = max(last_dropped_seq, payload.get("last_seq", entry["seq"]))
+                first_dropped_seq = min(first_dropped_seq, payload.get("first_seq", lost["seq"]))
+                last_dropped_seq = max(last_dropped_seq, payload.get("last_seq", lost["seq"]))
                 continue
             true_dropped += 1
-            first_dropped_seq = min(first_dropped_seq, entry["seq"])
-            last_dropped_seq = max(last_dropped_seq, entry["seq"])
+            first_dropped_seq = min(first_dropped_seq, lost["seq"])
+            last_dropped_seq = max(last_dropped_seq, lost["seq"])
         del self._event_log_buffer[:overflow]
-        logger.warning(
-            "event log buffer overflow — dropped %d oldest frames (backend unreachable?)",
-            true_dropped,
+        record_cap_hit(
+            EVENT_LOG_MAX_BUFFER_KNOB,
+            f"event log buffer overflow: dropped the {true_dropped} oldest unflushed frame(s) "
+            f"(seq {first_dropped_seq}..{last_dropped_seq}) because Forge has not accepted a "
+            f"flush; a log_gap row marks the hole. Fix Forge's event-log endpoint, or raise "
+            f"{EVENT_LOG_MAX_BUFFER_KNOB} if the broker has the memory to wait longer",
         )
         # INV-2 durability floor: never leave a SILENT hole. Replace the dropped
         # frames with a single queryable sentinel so any reader can DETECT the

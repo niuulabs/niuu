@@ -5,7 +5,6 @@ from pathlib import Path
 from typing import Any
 
 from mimir.adapters.http import HttpMimirAdapter
-from mimir.adapters.markdown import MarkdownMimirAdapter
 from mimir.domain import MimirAuth
 from mimir.registry import MimirRegistryStore
 from niuu.ports.mimir import MimirPort
@@ -18,7 +17,6 @@ def resolve_mimir_connection(
     kwargs: dict[str, Any] | None = None,
     secret_kwargs_env: dict[str, str] | None = None,
     url: str = "",
-    path: str = "",
     auth: MimirAuth | None = None,
     environment_id: str = "",
 ) -> MimirPort:
@@ -38,9 +36,7 @@ def resolve_mimir_connection(
         return cls(**resolved)
     if url:
         return HttpMimirAdapter(base_url=url, auth=auth, environment_id=environment_id)
-    if path:
-        return MarkdownMimirAdapter(root=path)
-    raise ValueError("Memory well has no adapter, path or url; configure its connection")
+    raise ValueError("Memory well has no adapter or url; configure its connection")
 
 
 def normalize_mimir_workload_config(
@@ -62,7 +58,7 @@ def resolve_mimir_registry_refs(
     *,
     registry_path: str = "",
 ) -> dict[str, Any]:
-    """Hydrate registry-backed Mimir refs with concrete path/url metadata.
+    """Hydrate registry-backed Mimir refs with concrete adapter/url metadata.
 
     Workflow snapshots currently preserve registry IDs, mount names, and binding
     metadata. Before dispatching a flock, resolve those IDs against the local
@@ -98,14 +94,14 @@ def resolve_mimir_registry_refs(
         ).strip()
         entry = by_id.get(lookup_key) or by_name.get(lookup_key)
         if entry is None:
-            if not (resolved.get("adapter") or resolved.get("url") or resolved.get("path")):
+            if not (resolved.get("adapter") or resolved.get("url")):
                 where = (
                     f"the Mimir registry at {registry_path}"
                     if registry_path.strip()
                     else "a Mimir registry (none is configured: set registry_path)"
                 )
                 raise ValueError(
-                    f"Memory well {lookup_key!r} has no adapter, url or path and is not in "
+                    f"Memory well {lookup_key!r} has no adapter or url and is not in "
                     f"{where}. Register it there, or give the ref its own connection"
                 )
             resolved_refs.append(resolved)
@@ -117,8 +113,6 @@ def resolve_mimir_registry_refs(
             resolved["secret_kwargs_env"] = dict(entry.secret_kwargs_env)
         if not entry.enabled:
             raise ValueError(f"Memory well {entry.name!r} is disabled")
-        if entry.path and not str(resolved.get("path") or "").strip():
-            resolved["path"] = entry.path
         if entry.url and not str(resolved.get("url") or "").strip():
             resolved["url"] = entry.url
         if entry.role and not str(resolved.get("role") or "").strip():
@@ -168,7 +162,6 @@ def resolve_mimir_workload(
                 kwargs=ref.get("kwargs"),
                 secret_kwargs_env=ref.get("secret_kwargs_env"),
                 url=str(ref.get("url") or "").strip(),
-                path=str(ref.get("path") or "").strip(),
                 auth=auth,
             )
 

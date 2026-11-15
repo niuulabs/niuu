@@ -25,6 +25,7 @@ from pydantic import BaseModel, Field
 
 from niuu.adapters.identity_headers import parse_roles_header
 from niuu.build_identity import build_identity
+from niuu.cap_telemetry import health_counts
 from niuu.domain.conversation_timeline import resolve_timeline_turn
 from niuu.domain.history_paging import InvalidHistoryCursorError
 from niuu.domain.json_text import json_text_safe
@@ -54,6 +55,7 @@ from skuld.event_log import FORGE_SESSIONS_PATH
 from skuld.file_routes import register_file_routes
 from skuld.forge_mcp.routes import register_forge_mcp_routes
 from skuld.harness_control import HarnessControl, HarnessControlError
+from skuld.memory_mcp.routes import register_memory_mcp_routes
 from skuld.path_security import (
     UnsafePathError,
     resolve_contained_path,
@@ -72,6 +74,7 @@ from skuld.presented_durable import (
 from skuld.preview import PreviewMiddleware
 from skuld.room_role_port import RoomRoleResolutionError
 from skuld.service_manager import ServiceCreateRequest, ServiceStatus
+from skuld.voice.channel import register_voice_routes
 from skuld.websocket_auth import author_from_headers
 from skuld.workflow_steps import WorkflowOfferRefusedError, WorkflowStepNotHostedError
 from volundr.log_aggregate import aggregate_workspace_logs
@@ -414,6 +417,7 @@ async def health() -> dict:
         "session_id": broker.session_id,
         **startup,
         **_BUILD_IDENTITY,
+        "caps": health_counts(),
     }
 
 
@@ -1013,6 +1017,9 @@ async def get_preview_ports() -> dict:
 # handling or room-role gate (skuld.preview).
 app.add_middleware(PreviewMiddleware, forwarder_provider=lambda: broker.preview_forwarder)
 register_forge_mcp_routes(app, lambda: broker, dependencies=_LOOPBACK_GUARD)
+register_memory_mcp_routes(app, lambda: broker, dependencies=_LOOPBACK_GUARD)
+# The session voice channel at /voice: owner-only, answered 404 while it is off.
+register_voice_routes(app, lambda: broker._voice_channel)
 
 # --------------------------------------------------------------------------- present-file
 #
@@ -1860,8 +1867,16 @@ async def close_room(body: _RoomCloseRequest) -> dict:
 
 @app.get("/api/room/participants")
 async def get_room_participants(environment_id: str | None = Query(default=None)) -> dict:
-    """Return the current participants in the active room session."""
-    return {"participants": broker.get_room_participants(environment_id=environment_id)}
+    """Return the current participants in the active room session.
+
+    ``connected_people`` is apart from ``participants`` on purpose: the verified people with a
+    live browser connection, ``[{"user_id", "display_name"}]``. They are not seated in the
+    room, so nothing that routes to its participants sees them.
+    """
+    return {
+        "participants": broker.get_room_participants(environment_id=environment_id),
+        "connected_people": broker.connected_people(),
+    }
 
 
 class _HelpAnswerRequest(BaseModel):

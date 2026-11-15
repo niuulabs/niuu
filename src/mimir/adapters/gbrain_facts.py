@@ -47,18 +47,18 @@ found" when it might only have been beyond the cap.
 
 from __future__ import annotations
 
-import base64
-import hashlib
-import hmac
-import json
 import logging
 from datetime import UTC, datetime
-from pathlib import Path
 from typing import Any
 
-import httpx
-
-from mimir.adapters.gbrain import _parse_mcp_response, _text_result
+from mimir.adapters.gbrain_mcp import (
+    GBrainMcpClient,
+    GBrainTransportError,
+    Sealer,
+    read_secret,
+    result_payload,
+    text_result,
+)
 from niuu.cap_telemetry import record_cap_hit
 from niuu.domain.mimir_facts import (
     AuthorKind,
@@ -116,6 +116,179 @@ def _moment(value: Any) -> datetime | None:
     return moment if moment.tzinfo else moment.replace(tzinfo=UTC)
 
 
+class FactCodec:
+    """Turns facts into gbrain ``remember`` provenance and recall rows back into facts.
+
+    Shared by :class:`GBrainFactAdapter` and the memory gateway's gbrain backend,
+    which also seals the fact's layer namespace (``ns``) into the provenance.
+
+    Args:
+        sealer: seals and verifies the provenance envelope.
+        provenance_max_chars: gbrain's limit on ``provenance`` (500 in v1).
+    """
+
+    def __init__(self, sealer: Sealer, *, provenance_max_chars: int) -> None:
+        if provenance_max_chars < 1:
+            raise ValueError("provenance_max_chars must be positive")
+        self._sealer = sealer
+        self._provenance_max = provenance_max_chars
+
+    @property
+    def sealer(self) -> Sealer:
+        return self._sealer
+
+    def provenance_text(
+        self, new: NewFact, written_at: datetime, *, namespace: str | None = None
+    ) -> str:
+        draft = new.draft
+        payload: dict[str, Any] = {
+            "a": new.author.ref,
+            "t": int(new.trust),
+            "ev": list(draft.evidence),
+            "w": written_at.isoformat(),
+        }
+        if namespace is not None:
+            payload["ns"] = namespace
+        if draft.valid_from:
+            payload["vf"] = draft.valid_from.isoformat()
+        if draft.derived_from:
+            payload["dr"] = list(draft.derived_from)
+        if draft.replaces:
+            payload["rp"] = list(draft.replaces)
+        if new.imported_by:
+            payload["ib"] = new.imported_by.ref
+        if new.origin:
+            payload["o"] = {
+                "a": new.origin.author.ref,
+                "t": int(new.origin.claimed_trust),
+                "id": new.origin.fact_id,
+                "s": new.origin.source,
+                "ev": list(new.origin.evidence),
+            }
+        text = self._sealer.seal(_TAG, payload)
+        if len(text) > self._provenance_max:
+            record_cap_hit(
+                _PROVENANCE_KNOB,
+                f"a fact's sealed provenance is {len(text)} characters but gbrain stores at "
+                f"most {self._provenance_max}; give fewer or shorter evidence references",
+            )
+            raise FactValidationError(
+                f"the provenance for this fact is {len(text)} characters; gbrain keeps at most "
+                f"{self._provenance_max} (knob {_PROVENANCE_KNOB}). Cite fewer or shorter "
+                "evidence references (ids and paths, not quotations)"
+            )
+        return text
+
+    def retirement_note(self, note: dict[str, Any]) -> str:
+        return self._sealer.seal(f"{_TAG}r", note)
+
+    def _provenance_of(
+        self, row: dict[str, Any]
+    ) -> tuple[FactProvenance, TrustLevel, datetime | None, str | None]:
+        source = row.get("provenance") or row.get("source")
+        payload = self._sealer.open(_TAG, source)
+        if payload is None:
+            return (
+                FactProvenance(
+                    author=FactAuthor(
+                        AuthorKind.EXTERNAL, str(source or "unknown")[:80] or "unknown"
+                    ),
+                    evidence=(str(source),) if source else (),
+                    attested=False,
+                ),
+                TrustLevel.AGENT,
+                None,
+                None,
+            )
+        origin = payload.get("o")
+        provenance = FactProvenance(
+            author=FactAuthor.parse(payload["a"]),
+            evidence=tuple(payload.get("ev", ())),
+            derived_from=tuple(payload.get("dr", ())),
+            replaces=tuple(payload.get("rp", ())),
+            origin=SharedOrigin(
+                author=FactAuthor.parse(origin["a"]),
+                claimed_trust=TrustLevel.parse(origin["t"]),
+                fact_id=origin["id"],
+                source=origin["s"],
+                evidence=tuple(origin.get("ev", ())),
+            )
+            if origin
+            else None,
+            imported_by=FactAuthor.parse(payload["ib"]) if payload.get("ib") else None,
+        )
+        namespace = payload.get("ns")
+        return (
+            provenance,
+            TrustLevel.parse(payload["t"]),
+            _moment(payload.get("vf")),
+            str(namespace) if namespace is not None else None,
+        )
+
+    def decode(
+        self, row: dict[str, Any], *, subject: str | None = None, id_entity: str | None = None
+    ) -> tuple[Fact, str | None]:
+        """The fact a recall row holds and the namespace sealed into it (None if none).
+
+        *subject* replaces the row's entity slug as the fact's subject (the id keeps
+        the slug, which ``get`` needs to find the row again). *id_entity* replaces the
+        entity part of the ids the fact carries (its own and its successor's) when the
+        row's slug alone does not say where to find it, as in a brain that keeps each
+        layer in a source of its own.
+        """
+        provenance, trust, claimed_from, namespace = self._provenance_of(row)
+        slug = id_entity if id_entity is not None else row.get("entity_slug")
+        recorded = _moment(row.get("created_at")) or _moment(row.get("valid_from"))
+        native_from = _moment(row.get("valid_from")) or recorded
+        if recorded is None or native_from is None:
+            raise FactBackendError(f"gbrain returned a fact without timestamps: {row.get('id')}")
+        expired = _moment(row.get("expired_at"))
+        retirement = None
+        if expired is not None:
+            note = self._sealer.open(f"{_TAG}r", row.get("context"))
+            retirement = Retirement(
+                at=expired,
+                by=note["by"] if note else "unrecorded",
+                why=note["why"] if note else str(row.get("context") or "not recorded"),
+                superseded_by=(note or {}).get("sb")
+                or (
+                    fact_id(row["superseded_by"], slug)
+                    if row.get("superseded_by") not in (None, "")
+                    else None
+                ),
+            )
+        fact = Fact(
+            id=fact_id(row.get("fact_id") or row["id"], slug),
+            subject=subject if subject is not None else str(slug or ""),
+            statement=str(row["fact"]),
+            kind=FactKind(row.get("kind") or "fact"),
+            trust=trust,
+            provenance=provenance,
+            recorded_at=recorded,
+            valid_from=claimed_from or native_from,
+            valid_until=_moment(row.get("valid_until")),
+            retired=retirement,
+        )
+        return fact, namespace
+
+
+def verb_payload(name: str, result: dict[str, Any]) -> dict[str, Any]:
+    """A memory verb's answer object; a verb error raises with gbrain's own words."""
+    parsed = result_payload(result)
+    payload = parsed if isinstance(parsed, dict) else {}
+    if result.get("isError") or ("error" in payload and "protocol_version" in payload):
+        code = payload.get("error", "error")
+        detail = payload.get("message") or text_result(result)
+        suggestion = payload.get("suggestion", "")
+        text = f"gbrain {name} failed ({code}): {detail}" + (
+            f" — {suggestion}" if suggestion else ""
+        )
+        if code == "not_found":
+            raise FactNotFoundError(text)
+        raise FactBackendError(text)
+    return payload
+
+
 class GBrainFactAdapter(MimirFactPort):
     """Typed facts on a gbrain brain, reached over its MCP endpoint.
 
@@ -146,15 +319,13 @@ class GBrainFactAdapter(MimirFactPort):
     ) -> None:
         if not mcp_url:
             raise ValueError("GBrainFactAdapter requires an MCP URL")
-        if api_token_file:
-            api_token = Path(api_token_file).expanduser().read_text().strip()
+        api_token = read_secret(api_token, api_token_file, what="gbrain API token")
         if not api_token:
             raise ValueError(
                 "GBrainFactAdapter requires an API token; create one with "
                 "`gbrain auth create <name>` or set api_token_file"
             )
-        if signing_key_file:
-            signing_key = Path(signing_key_file).expanduser().read_text().strip()
+        signing_key = read_secret(signing_key, signing_key_file, what="fact signing key")
         if not signing_key:
             raise ValueError(
                 "GBrainFactAdapter requires a signing key (signing_key or signing_key_file): "
@@ -165,226 +336,35 @@ class GBrainFactAdapter(MimirFactPort):
             raise ValueError("visibility must be 'world' or 'private'")
         if recall_limit < 1 or provenance_max_chars < 1:
             raise ValueError("recall_limit and provenance_max_chars must be positive")
-        self._mcp_url = mcp_url.rstrip("/")
-        self._token = api_token
-        self._key = signing_key.encode()
-        self._timeout = float(timeout_seconds)
+        self._mcp = GBrainMcpClient(mcp_url, api_token, timeout_seconds=timeout_seconds)
+        self._mcp_url = self._mcp.url
+        self._codec = FactCodec(Sealer(signing_key), provenance_max_chars=provenance_max_chars)
         self._visibility = visibility
         self._recall_limit = recall_limit
-        self._provenance_max = provenance_max_chars
-        self._client: httpx.AsyncClient | None = None
 
     # ------------------------------------------------------------------
     # Transport
     # ------------------------------------------------------------------
 
-    def _http(self) -> httpx.AsyncClient:
-        if self._client is None:
-            self._client = httpx.AsyncClient(timeout=self._timeout)
-        return self._client
-
     async def close(self) -> None:
-        if self._client is not None and not self._client.is_closed:
-            await self._client.aclose()
-        self._client = None
+        await self._mcp.close()
 
     async def _verb(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         """Call one gbrain memory verb; any failure is a FactBackendError."""
         try:
-            response = await self._http().post(
-                self._mcp_url,
-                headers={
-                    "Authorization": f"Bearer {self._token}",
-                    "Accept": "application/json, text/event-stream",
-                    "Content-Type": "application/json",
-                },
-                json={
-                    "jsonrpc": "2.0",
-                    "id": 1,
-                    "method": "tools/call",
-                    "params": {"name": name, "arguments": arguments},
-                },
-            )
-            response.raise_for_status()
-            message = _parse_mcp_response(response.text)
-        except (httpx.HTTPError, RuntimeError, ValueError) as exc:
+            result = await self._mcp.call(name, arguments)
+        except GBrainTransportError as exc:
             raise FactBackendError(
-                f"gbrain {name} failed at {self._mcp_url}: {exc}. Check that the brain is "
-                "running and the token has read and write scope"
+                f"{exc}. Check that the brain is running and the token has read and write scope"
             ) from exc
-        if "error" in message:
-            raise FactBackendError(f"gbrain {name} returned an MCP error: {message['error']}")
-        result = message.get("result")
-        if not isinstance(result, dict):
-            raise FactBackendError(f"gbrain {name} returned no result object: {message}")
-        payload = self._payload(result)
-        if result.get("isError") or ("error" in payload and "protocol_version" in payload):
-            code = payload.get("error", "error")
-            detail = payload.get("message") or _text_result(result)
-            suggestion = payload.get("suggestion", "")
-            text = f"gbrain {name} failed ({code}): {detail}" + (
-                f" — {suggestion}" if suggestion else ""
-            )
-            if code == "not_found":
-                raise FactNotFoundError(text)
-            raise FactBackendError(text)
-        return payload
-
-    @staticmethod
-    def _payload(result: dict[str, Any]) -> dict[str, Any]:
-        structured = result.get("structuredContent")
-        if isinstance(structured, dict):
-            return structured
-        text = _text_result(result)
-        try:
-            parsed = json.loads(text) if text else {}
-        except json.JSONDecodeError:
-            return {}
-        return parsed if isinstance(parsed, dict) else {}
-
-    # ------------------------------------------------------------------
-    # Envelope: sealed provenance text
-    # ------------------------------------------------------------------
-
-    def _sign(self, body: str) -> str:
-        digest = hmac.new(self._key, body.encode(), hashlib.sha256).digest()[:16]
-        return base64.urlsafe_b64encode(digest).decode().rstrip("=")
-
-    def _seal(self, tag: str, payload: dict[str, Any]) -> str:
-        body = json.dumps(payload, separators=(",", ":"), sort_keys=True, ensure_ascii=False)
-        return f"{tag}.{self._sign(body)}.{body}"
-
-    def _open(self, tag: str, text: str | None) -> dict[str, Any] | None:
-        """The payload of a sealed text, or None when it is not ours or does not verify."""
-        if not text or not text.startswith(f"{tag}."):
-            return None
-        _, _, rest = text.partition(".")
-        signature, sep, body = rest.partition(".")
-        if not sep or not hmac.compare_digest(signature, self._sign(body)):
-            logger.error(
-                "gbrain fact carries a %s envelope whose signature does not verify; "
-                "reading it as an unattested external fact",
-                tag,
-            )
-            return None
-        try:
-            payload = json.loads(body)
-        except json.JSONDecodeError:
-            return None
-        return payload if isinstance(payload, dict) else None
-
-    def _provenance_text(self, new: NewFact, written_at: datetime) -> str:
-        draft = new.draft
-        payload: dict[str, Any] = {
-            "a": new.author.ref,
-            "t": int(new.trust),
-            "ev": list(draft.evidence),
-            "w": written_at.isoformat(),
-        }
-        if draft.valid_from:
-            payload["vf"] = draft.valid_from.isoformat()
-        if draft.derived_from:
-            payload["dr"] = list(draft.derived_from)
-        if draft.replaces:
-            payload["rp"] = list(draft.replaces)
-        if new.imported_by:
-            payload["ib"] = new.imported_by.ref
-        if new.origin:
-            payload["o"] = {
-                "a": new.origin.author.ref,
-                "t": int(new.origin.claimed_trust),
-                "id": new.origin.fact_id,
-                "s": new.origin.source,
-                "ev": list(new.origin.evidence),
-            }
-        text = self._seal(_TAG, payload)
-        if len(text) > self._provenance_max:
-            record_cap_hit(
-                _PROVENANCE_KNOB,
-                f"a fact's sealed provenance is {len(text)} characters but gbrain stores at "
-                f"most {self._provenance_max}; give fewer or shorter evidence references",
-            )
-            raise FactValidationError(
-                f"the provenance for this fact is {len(text)} characters; gbrain keeps at most "
-                f"{self._provenance_max} (knob {_PROVENANCE_KNOB}). Cite fewer or shorter "
-                "evidence references (ids and paths, not quotations)"
-            )
-        return text
-
-    def _provenance_of(
-        self, row: dict[str, Any]
-    ) -> tuple[FactProvenance, TrustLevel, datetime | None]:
-        source = row.get("provenance") or row.get("source")
-        payload = self._open(_TAG, source)
-        if payload is None:
-            return (
-                FactProvenance(
-                    author=FactAuthor(
-                        AuthorKind.EXTERNAL, str(source or "unknown")[:80] or "unknown"
-                    ),
-                    evidence=(str(source),) if source else (),
-                    attested=False,
-                ),
-                TrustLevel.AGENT,
-                None,
-            )
-        origin = payload.get("o")
-        provenance = FactProvenance(
-            author=FactAuthor.parse(payload["a"]),
-            evidence=tuple(payload.get("ev", ())),
-            derived_from=tuple(payload.get("dr", ())),
-            replaces=tuple(payload.get("rp", ())),
-            origin=SharedOrigin(
-                author=FactAuthor.parse(origin["a"]),
-                claimed_trust=TrustLevel.parse(origin["t"]),
-                fact_id=origin["id"],
-                source=origin["s"],
-                evidence=tuple(origin.get("ev", ())),
-            )
-            if origin
-            else None,
-            imported_by=FactAuthor.parse(payload["ib"]) if payload.get("ib") else None,
-        )
-        return provenance, TrustLevel.parse(payload["t"]), _moment(payload.get("vf"))
+        return verb_payload(name, result)
 
     # ------------------------------------------------------------------
     # Rows
     # ------------------------------------------------------------------
 
     def _fact(self, row: dict[str, Any]) -> Fact:
-        provenance, trust, claimed_from = self._provenance_of(row)
-        slug = row.get("entity_slug")
-        recorded = _moment(row.get("created_at")) or _moment(row.get("valid_from"))
-        native_from = _moment(row.get("valid_from")) or recorded
-        if recorded is None or native_from is None:
-            raise FactBackendError(f"gbrain returned a fact without timestamps: {row.get('id')}")
-        expired = _moment(row.get("expired_at"))
-        retirement = None
-        if expired is not None:
-            note = self._open(f"{_TAG}r", row.get("context"))
-            retirement = Retirement(
-                at=expired,
-                by=note["by"] if note else "unrecorded",
-                why=note["why"] if note else str(row.get("context") or "not recorded"),
-                superseded_by=(note or {}).get("sb")
-                or (
-                    fact_id(row["superseded_by"], slug)
-                    if row.get("superseded_by") not in (None, "")
-                    else None
-                ),
-            )
-        return Fact(
-            id=fact_id(row.get("fact_id") or row["id"], slug),
-            subject=str(slug or ""),
-            statement=str(row["fact"]),
-            kind=FactKind(row.get("kind") or "fact"),
-            trust=trust,
-            provenance=provenance,
-            recorded_at=recorded,
-            valid_from=claimed_from or native_from,
-            valid_until=_moment(row.get("valid_until")),
-            retired=retirement,
-        )
+        return self._codec.decode(row)[0]
 
     async def _rows(
         self, entity: str | None, *, include_expired: bool, contains: str | None = None
@@ -421,7 +401,7 @@ class GBrainFactAdapter(MimirFactPort):
         now = datetime.now(UTC)
         arguments: dict[str, Any] = {
             "fact": draft.statement,
-            "provenance": self._provenance_text(new, now),
+            "provenance": self._codec.provenance_text(new, now),
             "entity": draft.subject,
             "kind": draft.kind.value,
             "visibility": self._visibility,
@@ -497,7 +477,9 @@ class GBrainFactAdapter(MimirFactPort):
         note: dict[str, Any] = {"by": by, "why": why}
         if superseded_by:
             note["sb"] = superseded_by
-        payload = await self._verb("forget", {"id": raw, "reason": self._seal(f"{_TAG}r", note)})
+        payload = await self._verb(
+            "forget", {"id": raw, "reason": self._codec.retirement_note(note)}
+        )
         if "expired" not in payload:
             raise FactBackendError(f"gbrain forget returned an unusable result: {payload}")
         return await self.get(fact_id_)

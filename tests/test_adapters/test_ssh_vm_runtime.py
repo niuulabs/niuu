@@ -20,6 +20,8 @@ from tests.support.workflow_steps import (
     ROOT_STEPS_VALUES,
 )
 from volundr.adapters.outbound import ssh_vm_runtime as module
+from volundr.adapters.outbound import vm_slot_supervisor
+from volundr.adapters.outbound.ssh_guest_access import SshGuestAccess
 from volundr.adapters.outbound.ssh_host_preparation import SshHostPreparation
 from volundr.adapters.outbound.ssh_vm_runtime import SshContainerVmRuntime
 from volundr.domain.compute import (
@@ -1013,6 +1015,65 @@ def test_start_program_can_run_only_the_pod_containers(tmp_path: Path):
     assert "--name niuu-sidecar-agent" in recorded
     assert "niuu-skuld" not in recorded
     assert (tmp_path / "tokens").is_dir()
+
+
+def test_a_failed_init_container_names_its_stage_and_exit_code_only(tmp_path: Path):
+    """The guest's output may hold secrets: only the step and its exit code leave it."""
+    binary = tmp_path / "bin"
+    binary.mkdir()
+    docker = binary / "docker"
+    docker.write_text('#!/bin/sh\necho "secret token abc" >&2\nexit 3\n')
+    docker.chmod(0o755)
+    payload = {
+        "allocation_id": str(uuid4()),
+        "init_containers": [
+            {
+                "name": "openbao-agent-init",
+                "image": "test/agent:1",
+                "command": [],
+                "args": [],
+                "environment": {},
+                "mounts": [],
+            }
+        ],
+        "containers_only": True,
+    }
+
+    result = subprocess.run(
+        [sys.executable, "-c", module._START],
+        input=json.dumps(payload),
+        capture_output=True,
+        text=True,
+        check=False,
+        env={"PATH": f"{binary}:/usr/bin:/bin"},
+    )
+
+    assert result.returncode != 0
+    with pytest.raises(VmRuntimeStageError) as raised:
+        SshGuestAccess._raise_command_error(
+            result.returncode,
+            result.stderr.encode(),
+            safe_error_prefix=vm_slot_supervisor.STAGE_PREFIX,
+            safe_detail_prefix=vm_slot_supervisor.DETAIL_PREFIX,
+        )
+    assert str(raised.value) == (
+        "Guest runtime startup failed at stage init-openbao-agent-init: exit code 3"
+    )
+    assert "secret" not in str(raised.value)
+
+
+async def test_starting_skuld_reads_the_failed_stage_from_the_guest(tmp_path):
+    runtime = SshContainerVmRuntime(
+        host_key=HOST_KEY, data_dir=str(tmp_path / "runtime-data"), skuld_image="test/skuld:dev"
+    )
+    runtime._guest_access = AsyncMock()
+    runtime._step = lambda *args: None
+
+    await runtime._launch_skuld(AsyncMock(), AsyncMock(), {"allocation_id": "a"})
+
+    kwargs = runtime._guest_access.execute.await_args.kwargs
+    assert kwargs["safe_error_prefix"] == vm_slot_supervisor.STAGE_PREFIX
+    assert kwargs["safe_detail_prefix"] == vm_slot_supervisor.DETAIL_PREFIX
 
 
 def test_a_runtime_hands_ssh_the_pools_key_from_the_credential_store(tmp_path):

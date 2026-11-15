@@ -123,7 +123,7 @@ registered key; the connect endpoint's limits are in
 | `pod_manager.adapter` | `…flux.FluxPodManager` | Which backend starts sessions | Forge config |
 | `pod_manager.kwargs.local` / `.pool` | — | The two managers under `PlacementPodManager` | Forge config |
 | `compute` | unset (no pool) | Turns the compute pool on | Forge config |
-| `compute.pool_id`, `max_machines`, `provider` | required | Pool identity, size cap, machine provider adapter | Forge config |
+| `compute.pool_id`, `max_machines`, `provider` | required (`max_machines` only for VM providers; registered hosts have none) | Pool identity, size cap, machine provider adapter | Forge config |
 | `compute.runtime` / `execution_catalog` | unset | The VM runtime, or the catalog of execution profiles | Forge config |
 | `compute.slots_per_machine` | 1 | Sessions per machine at once | Forge config |
 | `compute.warm_min` | 0 | Free slots kept warm | Forge config, or pool policy |

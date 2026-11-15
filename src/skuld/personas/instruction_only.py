@@ -73,7 +73,11 @@ class InstructionOnlyProjector:
                 )
             )
         kwargs: dict[str, object] = {}
-        instructions = compose_instructions(persona.definition, context.request_prompt)
+        instructions = compose_instructions(
+            persona.definition,
+            context.request_prompt,
+            outcome_contract=context.outcome_contract,
+        )
         if self._delivery == "unsupported":
             if instructions:
                 gaps.append(

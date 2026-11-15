@@ -1241,6 +1241,7 @@ MESH_VALUES = {
     "transport": "nats",
     "peerId": "reviewer-1",
     "realmId": "flock-a",
+    "displayName": "reviewer",
     "persona": "reviewer",
     "role": "reviewer",
     "description": "Reviews pull requests.",
@@ -1273,6 +1274,7 @@ MESH_KEYS = {
     "transport": "transport",
     "peerId": "peer_id",
     "realmId": "realm_id",
+    "displayName": "display_name",
     "persona": "persona",
     "role": "role",
     "description": "description",
@@ -1769,6 +1771,56 @@ def test_a_runs_room_session_runs_no_agent_of_its_own():
 
 
 @pytest.mark.skipif(shutil.which("helm") is None, reason="Helm is required")
+def test_a_teams_agent_is_rendered_conversational():
+    from skuld.config import SkuldSettings
+
+    agent = _rendered_skuld_config("skuld", "--set", "team.conversational=true")
+    ordinary = _rendered_skuld_config("skuld")
+
+    assert SkuldSettings(**agent).session.conversational is True
+    assert SkuldSettings(**ordinary).session.conversational is False
+
+
+@pytest.mark.skipif(shutil.which("helm") is None, reason="Helm is required")
+def test_a_session_is_seated_in_the_rooms_it_is_given_without_hosting_one():
+    from skuld.config import SkuldSettings
+
+    config = _rendered_skuld_config(
+        "skuld",
+        "--set",
+        "roomSeats[0].roomId=team-1",
+        "--set",
+        "roomSeats[0].hostSessionId=root-1",
+    )
+
+    room = SkuldSettings(**config).room
+    assert room.enabled is False
+    assert [(seat.room_id, seat.host_session_id) for seat in room.seats] == [("team-1", "root-1")]
+    assert "room" not in _rendered_skuld_config("skuld")
+
+
+@pytest.mark.skipif(shutil.which("helm") is None, reason="Helm is required")
+def test_a_rooms_untargeted_delivery_is_rendered_and_refuse_by_default():
+    from skuld.config import SkuldSettings
+
+    room = (
+        "--set",
+        "mesh.enabled=true",
+        "--set",
+        "mesh.realmId=team-1",
+        "--set",
+        "room.enabled=true",
+    )
+    everyone = _rendered_skuld_config(
+        "skuld", *room, "--set", "room.routed=true", "--set", "room.untargetedDelivery=everyone"
+    )
+    ordinary = _rendered_skuld_config("skuld", *room)
+
+    assert SkuldSettings(**everyone).room.untargeted_delivery == "everyone"
+    assert SkuldSettings(**ordinary).room.untargeted_delivery == "refuse"
+
+
+@pytest.mark.skipif(shutil.which("helm") is None, reason="Helm is required")
 def test_a_run_member_shares_its_work_with_the_runs_room():
     from skuld.config import SkuldSettings
 
@@ -2176,3 +2228,33 @@ class TestUnitMembers:
 
         assert defaults.is_symlink()
         assert defaults.resolve() == (CHART_DIR / "values.yaml").resolve()
+
+
+@pytest.mark.skipif(shutil.which("helm") is None, reason="Helm is required")
+class TestVoiceTuning:
+    """voice: the session voice channel's tuning; Forge turns the channel on per launch."""
+
+    def test_unset_renders_no_voice_section(self):
+        assert "voice_channel" not in _skuld_config()
+
+    def test_set_values_reach_the_broker_settings(self):
+        from skuld.config import VoiceConfig
+
+        config = _skuld_config(
+            "--set",
+            "voice.timeZone=Europe/Amsterdam",
+            "--set",
+            "voice.cardRecentTurns=4",
+            "--set",
+            "voice.sendConfirmSeconds=10",
+            "--set",
+            "voice.models.grok=grok-voice-3.0",
+            "--set",
+            "voice.models.gpt-realtime=gpt-realtime-2.1",
+        )
+        voice = VoiceConfig.model_validate(config["voice_channel"])
+        assert voice.enabled is False
+        assert voice.time_zone == "Europe/Amsterdam"
+        assert voice.card_recent_turns == 4
+        assert voice.send_confirm_seconds == 10
+        assert voice.models["grok"] == "grok-voice-3.0"

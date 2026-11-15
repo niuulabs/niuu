@@ -12,6 +12,7 @@ import {
 import { errorText } from '../errorText';
 import { useMinuteClock } from '../sessions/timeFact';
 import { AddHostFlow } from './AddHostFlow';
+import { EditSlotsDialog } from './EditSlotsDialog';
 import { HostRemovalDialog, type RemovalMode } from './HostRemovalDialog';
 import { HostSummaryCards } from './HostSummaryCards';
 import { HostTable } from './HostTable';
@@ -52,6 +53,7 @@ export function ComputeHostsPanel({ instanceId }: { instanceId: string }) {
   const [tags, setTags] = useState<string[]>([]);
   const [match, setMatch] = useState<TagMatch>('all');
   const [removal, setRemoval] = useState<{ host: ComputeHost; mode: RemovalMode } | null>(null);
+  const [resizing, setResizing] = useState<ComputeHost | null>(null);
   const [busy, setBusy] = useState<ReadonlySet<string>>(new Set());
   const [failure, setFailure] = useState<string | null>(null);
 
@@ -90,6 +92,10 @@ export function ComputeHostsPanel({ instanceId }: { instanceId: string }) {
   const onAction = (host: ComputeHost, action: HostAction) => {
     if (action === 'open') {
       setScreen({ kind: 'add', followHostId: host.id });
+      return;
+    }
+    if (action === 'edit_slots') {
+      setResizing(host);
       return;
     }
     if (action === 'check') {
@@ -213,6 +219,16 @@ export function ComputeHostsPanel({ instanceId }: { instanceId: string }) {
           </span>
         ))}
       </div>
+
+      {resizing ? (
+        <EditSlotsDialog
+          host={resizing}
+          onSave={(slots) =>
+            actions.update.mutateAsync({ hostId: resizing.id, changes: { slots } })
+          }
+          onClose={() => setResizing(null)}
+        />
+      ) : null}
 
       {removal ? (
         <HostRemovalDialog

@@ -1,9 +1,10 @@
 """Shared MeshEvent JSON serialization for mesh adapters (NIU-517).
 
-Both NngMeshAdapter and SleipnirMeshAdapter encode/decode MeshEvent objects
-identically — only the framing differs (nng prepends a topic prefix, Sleipnir
-uses raw bytes).  This module owns the common event ↔ dict ↔ bytes conversion
-so neither adapter duplicates it.
+NngMeshAdapter and WebhookMeshAdapter encode/decode MeshEvent objects with
+these helpers — only the framing differs (nng prepends a topic prefix, the
+webhook wraps the event in a publish envelope). The W3C trace context travels
+with the event, so a receiver's spans join the sender's trace. This module owns
+the common event ↔ dict ↔ bytes conversion so neither adapter duplicates it.
 """
 
 from __future__ import annotations
@@ -26,6 +27,7 @@ def event_to_dict(event: MeshEvent) -> dict:
         "session_id": event.session_id,
         "task_id": event.task_id,
         "root_correlation_id": event.root_correlation_id,
+        "trace_context": dict(event.trace_context),
         "event_id": event.event_id,
         "attestation": event.attestation,
     }
@@ -43,6 +45,7 @@ def dict_to_event(raw: dict) -> MeshEvent:
         session_id=raw["session_id"],
         task_id=raw.get("task_id"),
         root_correlation_id=raw.get("root_correlation_id", ""),
+        trace_context=dict(raw.get("trace_context") or {}),
         **({"event_id": raw["event_id"]} if raw.get("event_id") else {}),
         attestation=dict(raw.get("attestation") or {}),
     )

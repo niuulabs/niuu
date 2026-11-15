@@ -329,13 +329,6 @@ SYSTEM_METRIC: str = "system.metric"
 SYSTEM_DLQ_MESSAGE: str = "system.dlq.message"
 
 # ---------------------------------------------------------------------------
-# mimir — Mimir knowledge-base events
-# ---------------------------------------------------------------------------
-
-#: A wiki page was written (created or updated) by the Mimir adapter.
-MIMIR_PAGE_WRITTEN: str = "mimir.page.written"
-
-# ---------------------------------------------------------------------------
 # github — GitHub webhook events
 # ---------------------------------------------------------------------------
 

@@ -35,7 +35,6 @@ describe('buildMimirHttpAdapter', () => {
         status: 'healthy',
         pages: 42,
         sources: 18,
-        lint_issues: 3,
         last_write: '2026-04-18T14:22:00Z',
         embedding: 'all-minilm-l6-v2',
         size_kb: 512,
@@ -47,7 +46,6 @@ describe('buildMimirHttpAdapter', () => {
         name: 'local',
         role: 'local',
         pages: 42,
-        lintIssues: 3,
         lastWrite: '2026-04-18T14:22:00Z',
         sizeKb: 512,
       });
@@ -98,7 +96,6 @@ describe('buildMimirHttpAdapter', () => {
               status: 'healthy',
               pages: 40,
               sources: 12,
-              lint_issues: 0,
               last_write: '2026-04-18T14:22:00Z',
               embedding: 'all-minilm-l6-v2',
               size_kb: 512,
@@ -127,7 +124,6 @@ describe('buildMimirHttpAdapter', () => {
       lifecycle: 'registered' as const,
       role: 'shared',
       url: 'https://mimir.internal',
-      path: '/shared',
       categories: ['entity'],
       authRef: 'mimir-secret',
       defaultReadPriority: 5,
@@ -146,7 +142,6 @@ describe('buildMimirHttpAdapter', () => {
           lifecycle: 'registered',
           role: 'shared',
           url: 'https://mimir.internal',
-          path: '/shared',
           categories: ['entity'],
           auth_ref: 'mimir-secret',
           default_read_priority: 5,
@@ -168,7 +163,6 @@ describe('buildMimirHttpAdapter', () => {
         lifecycle: 'registered',
         role: 'shared',
         url: 'https://mimir.internal',
-        path: '/shared',
         categories: ['entity'],
         auth_ref: 'mimir-secret',
         default_read_priority: 5,
@@ -189,7 +183,6 @@ describe('buildMimirHttpAdapter', () => {
           lifecycle: 'registered',
           role: 'shared',
           url: 'https://mimir.internal',
-          path: '/shared',
           categories: ['entity'],
           auth_ref: null,
           default_read_priority: 5,
@@ -220,7 +213,6 @@ describe('buildMimirHttpAdapter', () => {
         lifecycle: 'registered',
         role: 'shared',
         url: 'https://mimir.internal',
-        path: '/shared',
         categories: ['entity'],
         auth_ref: null,
         default_read_priority: 5,
@@ -506,118 +498,139 @@ describe('buildMimirHttpAdapter', () => {
     });
   });
 
-  describe('lint.getLintReport', () => {
-    it('calls GET /lint', async () => {
-      const client = makeClient({
-        get: vi.fn().mockResolvedValue({ issues: [], pages_checked: 0 }),
-      });
-      await buildMimirHttpAdapter(client).lint.getLintReport();
-      expect(client.get).toHaveBeenCalledWith('/lint');
-    });
-
-    it('maps raw lint issues with snake_case fields', async () => {
-      const rawIssue = {
-        id: 'lint-1',
-        rule: 'L05',
-        severity: 'error',
-        page: '/a',
-        mount: 'local',
-        auto_fix: true,
-        message: 'Broken link',
-      };
-      const client = makeClient({
-        get: vi.fn().mockResolvedValue({ issues: [rawIssue], pages_checked: 5 }),
-      });
-      const report = await buildMimirHttpAdapter(client).lint.getLintReport();
-      expect(report.issues[0]).toMatchObject({
-        id: 'lint-1',
-        rule: 'L05',
-        autoFix: true,
-      });
-    });
-
-    it('maps the current backend lint issue shape', async () => {
-      const client = makeClient({
-        get: vi.fn().mockResolvedValue({
-          issues: [
-            {
-              id: 'L12',
-              severity: 'warning',
-              message: 'Invalid frontmatter',
-              page_path: '/arch/overview',
-              auto_fixable: true,
-            },
-          ],
-          pages_checked: 3,
-        }),
-      });
-
-      const report = await buildMimirHttpAdapter(client).lint.getLintReport();
-
-      expect(report).toMatchObject({
-        pagesChecked: 3,
-        summary: { error: 0, warn: 1, info: 0 },
-      });
-      expect(report.issues[0]).toMatchObject({
-        rule: 'L12',
-        severity: 'warn',
-        page: '/arch/overview',
-        mount: 'local',
-        autoFix: true,
-      });
-    });
-  });
-
-  describe('lint.runAutoFix', () => {
-    it('calls POST /lint/fix with empty body when no ids', async () => {
-      const client = makeClient();
-      await buildMimirHttpAdapter(client).lint.runAutoFix();
-      expect(client.post).toHaveBeenCalledWith('/lint/fix', {});
-    });
-
-    it('passes issue_ids when provided', async () => {
-      const client = makeClient();
-      await buildMimirHttpAdapter(client).lint.runAutoFix(['lint-1', 'lint-2']);
-      expect(client.post).toHaveBeenCalledWith('/lint/fix', {
-        issue_ids: ['lint-1', 'lint-2'],
-      });
-    });
-  });
-
-  describe('lint.getActivityLog', () => {
-    it('calls GET /activity with limit', async () => {
-      const client = makeClient({ get: vi.fn().mockResolvedValue([]) });
-      await buildMimirHttpAdapter(client).lint.getActivityLog(10);
-      expect(client.get).toHaveBeenCalledWith('/activity?limit=10');
-    });
-
-    it('maps raw activity event fields', async () => {
-      const raw = [
+  describe('pages.getKnowledgeGraph (G1, GET /memory/graph)', () => {
+    const rawKnowledgeGraph = {
+      layers: [
+        { id: 'org', name: 'Org' },
+        { id: 'project:p1', name: 'Booking platform' },
+      ],
+      nodes: [
         {
-          id: 'act-1',
-          timestamp: '2026-04-19T10:00:00Z',
-          kind: 'write',
-          mount: 'local',
-          ravn: 'ravn-fjolnir',
-          message: 'wrote some page',
-          page: 'some/page.md',
+          id: 'project:p1/projects/booking-cutover',
+          layer: 'project:p1',
+          path: 'projects/booking-cutover',
+          title: 'Booking cut-over',
+          kind: 'decision',
+          summary: 'Bookings move to booking-api v2.',
+          updated_at: '2026-11-12T09:00:00Z',
+          first_seen: '2026-11-03',
+          changed_at: '2026-11-12',
         },
-      ];
-      const client = makeClient({ get: vi.fn().mockResolvedValue(raw) });
-      const events = await buildMimirHttpAdapter(client).lint.getActivityLog();
-      expect(events[0]).toMatchObject({
-        id: 'act-1',
-        kind: 'write',
-        mount: 'local',
-        ravn: 'ravn-fjolnir',
-        message: 'wrote some page',
-        page: 'some/page.md',
+        {
+          id: 'project:p1/sources/lin-501',
+          layer: 'project:p1',
+          path: 'sources/lin-501',
+          title: 'LIN-501',
+          kind: 'ticket',
+          summary: '',
+          updated_at: '2026-11-12T08:00:00Z',
+          first_seen: null,
+          changed_at: null,
+        },
+        {
+          id: 'org/people/ines',
+          layer: 'org',
+          path: 'people/ines',
+          title: 'Ines Moreau',
+          kind: 'person',
+          summary: 'Lead.',
+          updated_at: null,
+          first_seen: null,
+          changed_at: null,
+        },
+      ],
+      edges: [
+        {
+          source: 'project:p1/sources/lin-501',
+          target: 'project:p1/projects/booking-cutover',
+          relation: 'moved',
+          since: '2026-11-12',
+        },
+        {
+          source: 'org/people/ines',
+          target: 'project:p1/projects/booking-cutover',
+          relation: 'owns',
+          since: null,
+        },
+      ],
+      unresolved: [{ source: 'org/people/ines', target_slug: 'teams/booking' }],
+    };
+
+    it('calls GET /memory/graph, narrowed by ?layers= only when layers are given', async () => {
+      const client = makeClient({ get: vi.fn().mockResolvedValue(rawKnowledgeGraph) });
+      const adapter = buildMimirHttpAdapter(client);
+      await adapter.pages.getKnowledgeGraph();
+      await adapter.pages.getKnowledgeGraph({ layers: [] });
+      await adapter.pages.getKnowledgeGraph({ layers: ['org', 'project:p1'] });
+      const calls = (client.get as ReturnType<typeof vi.fn>).mock.calls.map((c) => c[0]);
+      expect(calls).toEqual([
+        '/memory/graph',
+        '/memory/graph',
+        `/memory/graph?layers=${encodeURIComponent('org,project:p1')}`,
+      ]);
+    });
+
+    it('maps G1 nodes onto the scene graph: layer clusters, kind, summary, dates', async () => {
+      const client = makeClient({ get: vi.fn().mockResolvedValue(rawKnowledgeGraph) });
+      const graph = await buildMimirHttpAdapter(client).pages.getKnowledgeGraph();
+      expect(graph.layers).toEqual(rawKnowledgeGraph.layers);
+      expect(graph.nodes[0]).toEqual({
+        id: 'project:p1/projects/booking-cutover',
+        title: 'Booking cut-over',
+        category: 'projects',
+        path: 'projects/booking-cutover',
+        kind: 'decision',
+        summary: 'Bookings move to booking-api v2.',
+        mount: 'project:p1',
+        layer: 'project:p1',
+        updatedAt: '2026-11-12T09:00:00Z',
+        firstSeen: '2026-11-03',
+        changedAt: '2026-11-12',
+        confidence: null,
       });
     });
 
-    it('returns an empty list when activity is not implemented yet', async () => {
-      const client = makeClient({ get: vi.fn().mockRejectedValue(missingRoute()) });
-      await expect(buildMimirHttpAdapter(client).lint.getActivityLog()).resolves.toEqual([]);
+    it('a page with no dated timeline row has no known first-seen date, not its last write', async () => {
+      // An import writes every page on one day; that must not read as "new this week".
+      const client = makeClient({ get: vi.fn().mockResolvedValue(rawKnowledgeGraph) });
+      const graph = await buildMimirHttpAdapter(client).pages.getKnowledgeGraph();
+      expect(graph.nodes[1]).toMatchObject({
+        updatedAt: '2026-11-12T08:00:00Z',
+        firstSeen: '',
+        changedAt: null,
+      });
+      expect(graph.nodes[2]).toMatchObject({ updatedAt: '', firstSeen: '', changedAt: null });
+    });
+
+    it('maps edges with relation and since, and unresolved links', async () => {
+      const client = makeClient({ get: vi.fn().mockResolvedValue(rawKnowledgeGraph) });
+      const graph = await buildMimirHttpAdapter(client).pages.getKnowledgeGraph();
+      expect(graph.edges).toEqual([
+        {
+          source: 'project:p1/sources/lin-501',
+          target: 'project:p1/projects/booking-cutover',
+          relation: 'moved',
+          since: '2026-11-12',
+        },
+        {
+          source: 'org/people/ines',
+          target: 'project:p1/projects/booking-cutover',
+          relation: 'owns',
+          since: null,
+        },
+      ]);
+      expect(graph.unresolved).toEqual([
+        { source: 'org/people/ines', targetSlug: 'teams/booking' },
+      ]);
+    });
+
+    it('propagates a failed layer as a failed call', async () => {
+      const client = makeClient({
+        get: vi.fn().mockRejectedValue(new Error('layer project:p1 could not be read')),
+      });
+      await expect(buildMimirHttpAdapter(client).pages.getKnowledgeGraph()).rejects.toThrow(
+        'layer project:p1 could not be read',
+      );
     });
   });
 
@@ -700,7 +713,7 @@ describe('buildMimirHttpAdapter', () => {
         confidence: 'high',
       });
       expect(graph.nodes[1]).toMatchObject({ kind: 'topic', confidence: null });
-      expect(graph.edges[0]).toMatchObject({ type: 'contradicts' });
+      expect(graph.edges[0]).toMatchObject({ relation: 'contradicts' });
     });
 
     it('passes a null confidence through as null', async () => {
@@ -1291,43 +1304,6 @@ describe('buildMimirHttpAdapter', () => {
     });
   });
 
-  describe('mounts.listRoutingRules', () => {
-    it('returns an empty list when routing rules are unavailable', async () => {
-      const client = makeClient({ get: vi.fn().mockRejectedValue(missingRoute()) });
-      await expect(buildMimirHttpAdapter(client).mounts.listRoutingRules()).resolves.toEqual([]);
-    });
-
-    it('treats 501 as a missing-route compatibility case too', async () => {
-      const client = makeClient({ get: vi.fn().mockRejectedValue(missingRoute(501)) });
-      await expect(buildMimirHttpAdapter(client).mounts.listRoutingRules()).resolves.toEqual([]);
-    });
-  });
-
-  describe('mounts.upsertRoutingRule', () => {
-    it('calls PUT /routing/rules/{id} with the rule body', async () => {
-      const client = makeClient();
-      const rule = {
-        id: 'rule-1',
-        prefix: '/arch',
-        mountName: 'local',
-        priority: 1,
-        active: true,
-      };
-
-      await buildMimirHttpAdapter(client).mounts.upsertRoutingRule(rule);
-
-      expect(client.put).toHaveBeenCalledWith('/routing/rules/rule-1', rule);
-    });
-  });
-
-  describe('mounts.deleteRoutingRule', () => {
-    it('calls DELETE /routing/rules/{id}', async () => {
-      const client = makeClient();
-      await buildMimirHttpAdapter(client).mounts.deleteRoutingRule('rule-1');
-      expect(client.delete).toHaveBeenCalledWith('/routing/rules/rule-1');
-    });
-  });
-
   describe('mounts.getEvalReport', () => {
     it('calls GET /eval/latest and maps the wire shape', async () => {
       const client = makeClient({
@@ -1391,75 +1367,6 @@ describe('buildMimirHttpAdapter', () => {
     it('rethrows non-404 errors', async () => {
       const client = makeClient({ get: vi.fn().mockRejectedValue(new Error('boom')) });
       await expect(buildMimirHttpAdapter(client).mounts.getQueryStats()).rejects.toThrow('boom');
-    });
-  });
-
-  describe('mounts.getDoctor', () => {
-    const rawReport = {
-      score: '5/6',
-      // Live API wire field is `status`; mapped to DoctorReport.worst.
-      status: 'warn',
-      checks: [
-        {
-          id: 'embedding-coverage',
-          title: 'Embedding coverage',
-          status: 'warn',
-          detail: '12 pages missing embeddings',
-          remediation: 'Re-run the embedding backfill',
-          fixable: true,
-        },
-      ],
-    };
-
-    it('calls GET /doctor and maps the wire shape', async () => {
-      const client = makeClient({ get: vi.fn().mockResolvedValue(rawReport) });
-
-      const report = await buildMimirHttpAdapter(client).mounts.getDoctor();
-
-      expect(client.get).toHaveBeenCalledWith('/doctor');
-      expect(report).toEqual({
-        score: '5/6',
-        worst: 'warn',
-        checks: [
-          {
-            id: 'embedding-coverage',
-            title: 'Embedding coverage',
-            status: 'warn',
-            detail: '12 pages missing embeddings',
-            remediation: 'Re-run the embedding backfill',
-            fixable: true,
-          },
-        ],
-      });
-    });
-
-    it('returns null when the doctor route is unavailable', async () => {
-      const client = makeClient({ get: vi.fn().mockRejectedValue(missingRoute()) });
-      await expect(buildMimirHttpAdapter(client).mounts.getDoctor()).resolves.toBeNull();
-    });
-
-    it('rethrows non-404 errors', async () => {
-      const client = makeClient({ get: vi.fn().mockRejectedValue(new Error('boom')) });
-      await expect(buildMimirHttpAdapter(client).mounts.getDoctor()).rejects.toThrow('boom');
-    });
-
-    it('runs fixes through POST /doctor/fix', async () => {
-      const client = makeClient({ post: vi.fn().mockResolvedValue(rawReport) });
-
-      const report = await buildMimirHttpAdapter(client).mounts.runDoctorFixes();
-
-      expect(client.post).toHaveBeenCalledWith('/doctor/fix', {});
-      expect(report).toMatchObject({ score: '5/6', worst: 'warn' });
-    });
-
-    it('returns null when the fix route is unavailable', async () => {
-      const client = makeClient({ post: vi.fn().mockRejectedValue(missingRoute()) });
-      await expect(buildMimirHttpAdapter(client).mounts.runDoctorFixes()).resolves.toBeNull();
-    });
-
-    it('rethrows non-404 errors from the fix route', async () => {
-      const client = makeClient({ post: vi.fn().mockRejectedValue(new Error('boom')) });
-      await expect(buildMimirHttpAdapter(client).mounts.runDoctorFixes()).rejects.toThrow('boom');
     });
   });
 });

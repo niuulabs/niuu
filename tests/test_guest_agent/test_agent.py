@@ -108,6 +108,26 @@ async def test_asks_for_its_own_slot(config_dict: dict) -> None:
     await agent.close()
 
 
+async def test_a_members_agent_names_the_member_it_fetches_for(config_dict: dict) -> None:
+    # A unit member's agent asks Forge for that member's own credential.
+    member = "7d0c6a8e-5f1f-4c55-9d8c-2f7b9a4c1e01"
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200, json=credentials_body())
+
+    agent = make_agent(parse_config({**config_dict, "session_id": member}), handler)
+    await agent.fetch()
+
+    assert json.loads(seen[0].content) == {
+        "allocation_id": ALLOCATION_ID,
+        "slot": 0,
+        "session_id": member,
+    }
+    await agent.close()
+
+
 async def test_trailing_slash_in_metadata_url_is_stripped(make_config) -> None:
     seen: list[str] = []
 

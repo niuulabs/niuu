@@ -3450,6 +3450,131 @@ class ArtifactsConfig(BaseModel):
     type_names: dict[str, str] = Field(default_factory=_default_artifact_type_names)
 
 
+class SessionVoiceProviderConfig(BaseModel):
+    """One realtime voice provider Forge mints call credentials for (a dynamic adapter).
+
+    ``adapter`` is the minter's class path (``volundr.adapters.outbound.realtime_voice.
+    OpenAIRealtimeMinter`` or ``XaiRealtimeMinter``) and ``kwargs`` its constructor
+    arguments (base URL, secret lifetime, request timeout). The owner's API key is read
+    per call from Forge's credential store: the user credential named
+    ``credential_name``, field ``credential_key``. A missing credential is an error with
+    the remedy, never another provider.
+    """
+
+    adapter: str = Field(min_length=1, description="Fully-qualified minter class path.")
+    kwargs: dict[str, Any] = Field(
+        default_factory=dict, description="Keyword arguments for the minter's constructor."
+    )
+    credential_name: str = Field(
+        min_length=1,
+        description="The owner's stored credential (owner type user) holding the API key.",
+    )
+    credential_key: str = Field(
+        default="api_key",
+        min_length=1,
+        description="The field of that credential holding the API key.",
+    )
+
+
+class SessionVoiceConfig(BaseModel):
+    """Realtime voice calls with ordinary Forge sessions (the Skuld voice channel).
+
+    When enabled, every session Forge launches runs Skuld's voice channel (``skuld.voice``):
+    the owner's phone holds a realtime voice call bound to that one session, and Forge
+    advertises the session's voice endpoint while it runs. The phone's realtime model talks
+    to the provider directly; Forge mints its short-lived credential from the owner's own
+    provider key (``providers``), so the key never enters the session pod.
+
+    Requires session credentials (``forge_mcp.session_tokens.enabled``): the broker mints
+    through Forge with them. Disabled is the operator's decision to run without voice.
+    """
+
+    enabled: bool = Field(
+        default=False,
+        description="Run the voice channel in every session this Forge launches.",
+    )
+    default_persona: str = Field(
+        default="",
+        description=(
+            "Persona (by name, from the owner's persona catalog) whose voice: section a "
+            "session uses when its own persona has none, or it plays no persona. Required "
+            "when enabled; a launch fails when the persona is missing or has no voice."
+        ),
+    )
+    providers: dict[str, SessionVoiceProviderConfig] = Field(
+        default_factory=dict,
+        description=(
+            "Realtime providers Forge mints credentials for, by the name the phone asks "
+            "for (openai, xai). A provider not listed is refused, never substituted."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _enabled_needs_persona_and_providers(self) -> "SessionVoiceConfig":
+        if not self.enabled:
+            return self
+        if not self.default_persona.strip():
+            raise ValueError(
+                "voice.enabled is true but voice.default_persona is empty: name a persona "
+                "with a voice: section, or set voice.enabled: false"
+            )
+        if not self.providers:
+            raise ValueError(
+                "voice.enabled is true but voice.providers is empty: configure openai and/or "
+                "xai with the credential holding the owner's key, or set voice.enabled: false"
+            )
+        return self
+
+
+class MemoryConfig(BaseModel):
+    """How sessions reach the memory gateway (the Mimir service) for their memory server."""
+
+    gateway_url: str = Field(
+        default="",
+        description=(
+            "Base URL of the memory gateway as reachable from a session, e.g. "
+            "http://127.0.0.1:8080/api/v1/mimir. When set, every session gets Skuld "
+            "memory.enabled: true and memory.gateway_url, and Forge requires session "
+            "credentials (forge_mcp.session_tokens) so the broker can authenticate to the "
+            "gateway. When set, the gateway also holds the limits of every attached memory "
+            "(read-only mounts, write prefixes), so Forge no longer refuses a restricted "
+            "mount at launch and no longer starts a per-mount mimir-<name> MCP server. "
+            "Empty runs sessions without a memory server and keeps those refusals."
+        ),
+    )
+    gateway_service_subject: str = Field(
+        default="",
+        description=(
+            "The workload subject of the memory gateway's own service credential, e.g. "
+            "system:serviceaccount:niuu:mimir: the workload-identity exchange puts it in the "
+            "'act.sub' claim of the token the gateway presents to Forge. Only that credential "
+            "may call POST /api/v1/forge/memory/ended (when run and session layers ended); a "
+            "person, a session credential or any other service gets 403. Required with "
+            "memory.gateway_url when the identity adapter verifies callers; the allow-all "
+            "identity adapter of local mini mode needs none (its local caller passes). The "
+            "exchange only sets 'act' when the workload is not the token's own subject, so "
+            "map the gateway to an owner that is not the subject itself."
+        ),
+    )
+
+    @field_validator("gateway_service_subject")
+    @classmethod
+    def _trimmed_subject(cls, value: str) -> str:
+        return value.strip()
+
+    @field_validator("gateway_url")
+    @classmethod
+    def _http_url(cls, value: str) -> str:
+        url = value.strip()
+        if url and not url.startswith(("http://", "https://")):
+            raise ValueError(
+                f"memory.gateway_url must be an http(s) URL such as "
+                f"http://127.0.0.1:8080/api/v1/mimir, got {value!r}; leave it empty to run "
+                "sessions without a memory server"
+            )
+        return url.rstrip("/")
+
+
 class ProjectMemoryConfig(BaseModel):
     """The memory a project owns: where its mounts are stored and looked up."""
 
@@ -3722,6 +3847,8 @@ class Settings(BaseSettings):
     artifacts: ArtifactsConfig = Field(default_factory=ArtifactsConfig)
     host_identity: HostIdentityConfig = Field(default_factory=HostIdentityConfig)
     forge_mcp: ForgeMcpConfig = Field(default_factory=ForgeMcpConfig)
+    memory: MemoryConfig = Field(default_factory=MemoryConfig)
+    voice: SessionVoiceConfig = Field(default_factory=SessionVoiceConfig)
     mesh: MeshSettings = Field(default_factory=MeshSettings)
     identity: IdentityConfig = Field(default_factory=IdentityConfig)
     authorization: AuthorizationConfig = Field(default_factory=AuthorizationConfig)

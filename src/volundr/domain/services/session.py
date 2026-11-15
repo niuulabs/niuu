@@ -7,7 +7,7 @@ import logging
 from collections.abc import AsyncIterator, Iterable, Mapping
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from uuid import NAMESPACE_URL, UUID, uuid5
 
 try:
@@ -96,6 +96,7 @@ from volundr.domain.services.forge_session_launch import (
 )
 from volundr.domain.services.session_startup import SessionStartupRecorder
 from volundr.domain.session_changes import SessionChanges
+from volundr.domain.session_launch_facts import LAUNCH_FACTS_KEY, without_launch_facts
 from volundr.domain.session_read_state import SessionReadState, SessionReadStateChange
 from volundr.domain.session_runtimes import SessionRuntimeOffer, requested_grants
 from volundr.ports.workflow_execution_credentials import ExecutionCredentialProjectionPort
@@ -458,6 +459,13 @@ class SessionService:
         membership); this is a lookup, not an authorization.
         """
         return await self._repository.list_by_project(project_ids, tenant_id)
+
+    async def list_workflow_run_sessions(self, run_ids: list[str]) -> list[Session]:
+        """Sessions of the workflow runs, across tenants, oldest first, without access checks.
+
+        A lookup for the memory routes, which scope the answer to their caller themselves.
+        """
+        return await self._repository.list_by_workflow_runs(run_ids)
 
     async def with_read_states(
         self, sessions: list[Session], principal: Principal | None
@@ -1369,6 +1377,10 @@ class SessionService:
         require_workload_type_available(workload_type)
         if not workload_config and session.workload_config:
             workload_config = dict(session.workload_config)
+        if workload_config and LAUNCH_FACTS_KEY in workload_config:
+            # The previous launch's facts end with it, and a caller cannot set them: the
+            # launch records what its own contributors establish (``_record_launch_facts``).
+            workload_config = without_launch_facts(workload_config)
         if self._execution_resolver is not None:
             workload_config = await self._resolve_execution_config(
                 session, workload_config or {}, launch_spec
@@ -1773,7 +1785,9 @@ class SessionService:
             workload_type=workload_type,
             # Contributors never see the credential bookkeeping: an otherwise
             # empty workload config must still read as empty to them.
-            workload_config=without_forge_mcp(workload_config),
+            # Nor the record of the previous launch's facts: a contributor reports what
+            # this launch establishes and never reads what an earlier one did.
+            workload_config=without_launch_facts(without_forge_mcp(workload_config)),
             unit_members=await self._unit_member_contexts(session, principal),
         )
 
@@ -1781,6 +1795,7 @@ class SessionService:
         for contributor in self._contributors:
             contribution = await contributor.contribute(session, context)
             contributions.append(contribution)
+        session = await self._record_launch_facts(session, contributions)
 
         spec = SessionSpec.merge(contributions)
         if any(
@@ -1809,6 +1824,37 @@ class SessionService:
             )
         self._overlay_resume_session(session, spec)
         return session, spec
+
+    async def _record_launch_facts(
+        self,
+        session: Session,
+        contributions: list[SessionContribution],
+    ) -> Session:
+        """Record what this launch's contributors established on the session, and return it.
+
+        The record replaces the whole of the previous one (and whatever a request carried
+        under its key), and is dropped when this launch established nothing, so a fact
+        never outlives the launch that made it. Two contributors may report the same fact
+        only with the same value.
+        """
+        facts: dict[str, tuple[str, Any]] = {}
+        for contributor, contribution in zip(self._contributors, contributions, strict=True):
+            for key, value in contribution.launch_facts.items():
+                if key in facts and facts[key][1] != value:
+                    raise ValueError(
+                        f"Launch fact {key!r} is reported as {facts[key][1]!r} by "
+                        f"{facts[key][0]!r} and as {value!r} by {contributor.name!r}; "
+                        "two contributors must not disagree about the same fact"
+                    )
+                facts[key] = (contributor.name, value)
+        recorded = without_launch_facts(session.workload_config)
+        if facts:
+            recorded[LAUNCH_FACTS_KEY] = {key: value for key, (_, value) in facts.items()}
+        if session.workload_config == recorded:
+            return session
+        session = session.model_copy(update={"workload_config": recorded})
+        await self._repository.update(session)
+        return session
 
     # -- A workflow run's unit: members hosted by the unit root ----------------------------
 
@@ -2140,6 +2186,23 @@ class SessionService:
         if getattr(self._pod_manager, "delivers_forge_session_token", False):
             return True
         return self._forge_session_projection is not None
+
+    @property
+    def delivers_forge_session_somewhere(self) -> bool:
+        """Whether some launch can give its broker the session credential.
+
+        A placement manager runs sessions on several runtimes. A feature that needs the
+        credential is possible when one of them delivers it; a session placed on one that
+        does not finds out at its own start, where Skuld refuses the feature by name.
+        """
+        if self._forge_session_tokens is None:
+            return False
+        if self._forge_session_projection is not None:
+            return True
+        somewhere = getattr(self._pod_manager, "delivers_forge_session_token_somewhere", None)
+        if somewhere is not None:
+            return bool(somewhere)
+        return bool(getattr(self._pod_manager, "delivers_forge_session_token", False))
 
     def _delivers_forge_session_to(self, session: Session) -> bool:
         """Whether the pod manager that runs *session* hands its broker the credential.

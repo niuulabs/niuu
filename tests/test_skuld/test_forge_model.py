@@ -10,7 +10,7 @@ does) and acknowledges ``/model`` on screen. Two paths change the model:
 
 Either way the usage frames carry the model Volundr projects onto the session.
 
-    SKULD__TMUX_REMOTE_CONTROL=0 uv run pytest -m integration \\
+    uv run pytest -m integration \\
         tests/test_skuld/test_forge_model.py -p no:cacheprovider -q -rs
 """
 

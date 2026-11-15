@@ -144,6 +144,38 @@ def test_the_header_names_the_room_the_relay_and_the_message_answered() -> None:
     assert "[In reply to your message m-0]" in text
 
 
+def test_a_room_message_to_an_agent_whose_turns_are_shown_there_is_answered_by_writing() -> None:
+    said = message(room_id="team-1", reply=ReplyRoute(ReplyKind.ROOM, "s-host"))
+
+    text = render_for_harness(said, turns_shown_in_room="team-1")
+
+    assert "Answer by writing your reply" in text and "room team-1" in text
+    assert f"`{REPLY_TOOL}` tool" not in text
+
+
+def test_a_message_from_another_room_is_still_answered_with_the_tool() -> None:
+    said = message(room_id="huddle-9", reply=ReplyRoute(ReplyKind.ROOM, "s-host"))
+
+    text = render_for_harness(said, turns_shown_in_room="team-1")
+
+    assert f"`{REPLY_TOOL}` tool" in text
+
+
+def test_a_team_agent_answers_a_teammate_with_the_tool_and_says_nothing_more() -> None:
+    said = message(reply=ReplyRoute(ReplyKind.MESH, "p-coder"))
+
+    text = render_for_harness(said, turns_shown_in_room="team-1")
+
+    assert f'`{REPLY_TOOL}` tool, message_id "m-1"' in text
+    assert "shown in room team-1" in text and "end your turn without text" in text
+
+
+def test_a_team_agent_does_not_report_a_teammates_notice() -> None:
+    text = render_for_harness(message(reply=None), turns_shown_in_room="team-1")
+
+    assert "takes no reply" in text and "do not report that this message arrived" in text
+
+
 def test_a_notice_says_no_reply_is_taken() -> None:
     text = render_for_harness(message(reply=None))
 

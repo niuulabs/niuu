@@ -55,7 +55,7 @@ endpoint must actually serve each listed model. A route without `judge` selects
 among its targets using relative weights (7 and 3 mean approximately 70/30).
 
 For classifier selection, set the route's `judge` to a declared target and add
-`prompt` and optional `max_tokens` (default 512). At least two answer target names
+`prompt` and `max_tokens` (required, no default: the judge's answer, reasoning included, must fit in it; a cut-off answer fails the request and is counted as a cap hit). At least two answer target names
 are required. The prompt must request JSON with `target` equal to an allowed
 target name. Weights do not apply to classifier routes. Judge and answer calls
 use the existing providers, authorization, usage records, and quota enforcement;

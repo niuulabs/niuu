@@ -23,7 +23,7 @@ import { computeVisibility } from './visibility';
 import type { LitLevel, SceneVisibility } from './visibility';
 import { memoryPalette } from './palette';
 import type { MemoryPalette } from './palette';
-import { nodeColour } from './colour';
+import { edgeColour, nodeColour } from './colour';
 import { pickNearestNode, isDragGesture } from './picking';
 import type { ProjectedPoint } from './picking';
 import { layoutLabels } from './labelLayout';
@@ -42,10 +42,13 @@ import type { OrbitCamera } from './orbitCamera';
 import {
   CAMERA3D,
   CLICK_DRAG_THRESHOLD_PX,
+  FOCUS_RIG,
   FOG,
   HUB_LABEL_COUNT,
+  LABEL_TIER,
   NODE3D,
   PICK_RADIUS_PX,
+  RELATION_LABEL_BOX,
 } from './scene3dConfig';
 import type { Vec3 } from './vec3';
 import './MemoryScene.css';
@@ -88,24 +91,31 @@ const NODE_SPRITE_SCALE = 5;
 const PARTICLE_SPEED_PER_MS = 1 / 1400;
 const MAX_PARTICLES = 300;
 
-/** A lit link's relation, drawn at the link's midpoint. */
+/**
+ * A lit link's relation, drawn at the link's midpoint. Only the focus's own
+ * links and a traced path's steps carry one (`visibility.ts`); the label
+ * layout drops any that would overlap a page name or another relation.
+ */
 interface EdgeLabelTarget {
   key: string;
   source: string;
   target: string;
   label: string;
+  recent: boolean;
 }
 
-/** Most relation labels drawn at once; beyond this a spotlight is a tangle, not a reading. */
-const MAX_EDGE_LABELS = 40;
+/** Prefix that keeps relation ids apart from node ids in the shared label layout. */
+const RELATION_LABEL_PREFIX = 'relation:';
 
 interface LatestData {
   graph: MemorySceneProps['graph'];
   layout: SceneLayout;
   visibility: SceneVisibility;
   view: '2d' | '3d';
-  colourBy: 'type' | 'proof' | 'age';
+  colourBy: MemorySceneProps['colourBy'];
   maxDegree: number;
+  /** The focused node's world position when it is drawn, else null. */
+  focusPosition: Vec3 | null;
   /** Read from the tokens once the container mounts; null before that. */
   palette: MemoryPalette | null;
   nodeById: Map<string, GraphNode>;
@@ -128,6 +138,8 @@ interface ThreeBag {
   dashedEdgeLines: THREE.LineSegments | null;
   particlePoints: THREE.Points | null;
   rings: THREE.Group;
+  /** The focused node's orbital rings, spun every frame. */
+  focusRig: THREE.Group;
 }
 
 function projectToScreen(
@@ -164,11 +176,15 @@ function disposeThreeBag(bag: ThreeBag): void {
   (bag.dashedEdgeLines?.material as THREE.Material | undefined)?.dispose();
   bag.particlePoints?.geometry.dispose();
   (bag.particlePoints?.material as THREE.Material | undefined)?.dispose();
-  for (const child of [...bag.rings.children]) {
-    bag.rings.remove(child);
-    if (child instanceof THREE.Line || child instanceof THREE.LineLoop) {
-      child.geometry.dispose();
-      (child.material as THREE.Material).dispose();
+  for (const group of [bag.rings, bag.focusRig]) {
+    for (const child of [...group.children]) {
+      group.remove(child);
+      child.traverse((object) => {
+        if (object instanceof THREE.Line) {
+          object.geometry.dispose();
+          (object.material as THREE.Material).dispose();
+        }
+      });
     }
   }
 }
@@ -184,6 +200,8 @@ export function MemoryScene(props: MemorySceneProps): React.JSX.Element {
     view,
     colourBy,
     hiddenGroups,
+    kinds,
+    layerNames,
     focus,
     answers,
     path,
@@ -191,7 +209,6 @@ export function MemoryScene(props: MemorySceneProps): React.JSX.Element {
     markers,
     questions,
     showQuestions,
-    disputedIds,
     camera,
     onSelectNode,
     onBackgroundClick,
@@ -210,9 +227,8 @@ export function MemoryScene(props: MemorySceneProps): React.JSX.Element {
     [layout3D, view],
   );
   const visibility = useMemo(
-    () => computeVisibility(graph, { hiddenGroups, focus, answers, path, asOf, disputedIds }),
-
-    [graph, hiddenGroups, focus, answers, path, asOf, disputedIds],
+    () => computeVisibility(graph, { hiddenGroups, focus, answers, path, asOf, kinds }),
+    [graph, hiddenGroups, focus, answers, path, asOf, kinds],
   );
 
   const nodeById = useMemo(() => new Map(graph.nodes.map((n) => [n.id, n])), [graph]);
@@ -232,20 +248,33 @@ export function MemoryScene(props: MemorySceneProps): React.JSX.Element {
     [visibility],
   );
 
+  /** The focused node, when it is drawn. */
+  const focusId = focus && visibility.nodes.get(focus.nodeId)?.visible ? focus.nodeId : null;
+  const focusPosition = focusId ? (layout.nodes.get(focusId)?.position ?? null) : null;
+
+  /**
+   * Names are read near the focus only: with a node focused, just it and the
+   * pages it lights; otherwise the best-connected hubs plus anything lit.
+   */
   const labelledIds = useMemo(() => {
-    const ranked = [...layout.nodes.values()]
-      .filter((n) => visibility.nodes.get(n.id)?.visible)
-      .sort((a, b) => b.degree - a.degree)
-      .slice(0, HUB_LABEL_COUNT)
-      .map((n) => n.id);
-    const ids = new Set(ranked);
+    const ids = new Set<string>();
     if (visibility.hasSpotlight) {
       for (const [id, v] of visibility.nodes) {
         if (v.visible && v.litLevel === 'lit') ids.add(id);
       }
     }
+    if (focusId) return ids;
+    const ranked = [...layout.nodes.values()]
+      .filter((n) => {
+        const v = visibility.nodes.get(n.id);
+        return v?.visible && v.litLevel !== 'dim-strong';
+      })
+      .sort((a, b) => b.degree - a.degree)
+      .slice(0, HUB_LABEL_COUNT)
+      .map((n) => n.id);
+    for (const id of ranked) ids.add(id);
     return ids;
-  }, [layout, visibility]);
+  }, [layout, visibility, focusId]);
 
   const markerTargets = useMemo(
     () => markers.filter((m) => layout.nodes.has(m.nodeId)),
@@ -263,9 +292,22 @@ export function MemoryScene(props: MemorySceneProps): React.JSX.Element {
   const edgeLabelTargets = useMemo<EdgeLabelTarget[]>(
     () =>
       visibility.edges
-        .filter((e) => e.visible && e.litLevel === 'lit' && e.label !== null)
-        .slice(0, MAX_EDGE_LABELS)
-        .map((e) => ({ key: e.key, source: e.source, target: e.target, label: e.label! })),
+        .filter((e) => e.label !== null)
+        .map((e) => ({
+          key: e.key,
+          source: e.source,
+          target: e.target,
+          label: e.label!,
+          recent: e.recent,
+        })),
+    [visibility],
+  );
+  const recentCount = useMemo(
+    () => [...visibility.nodes.values()].filter((v) => v.visible && v.recent).length,
+    [visibility],
+  );
+  const litCount = useMemo(
+    () => [...visibility.nodes.values()].filter((v) => v.visible && v.litLevel === 'lit').length,
     [visibility],
   );
   /** The pages a spotlight lights, as a stable key: the camera frames them when it changes. */
@@ -286,6 +328,7 @@ export function MemoryScene(props: MemorySceneProps): React.JSX.Element {
     view,
     colourBy,
     maxDegree,
+    focusPosition,
     palette: null,
     nodeById,
     labelledIds,
@@ -320,6 +363,7 @@ export function MemoryScene(props: MemorySceneProps): React.JSX.Element {
   const edgeLabelElsRef = useRef(new Map<string, HTMLDivElement>());
   const lastSpotlightKeyRef = useRef('');
   const hoverCardElRef = useRef<HTMLDivElement | null>(null);
+  const reticleElRef = useRef<HTMLDivElement | null>(null);
 
   // Keep `latestRef` current every render — a layout effect (not a plain
   // assignment during render, which React's hook linter now flags) so it
@@ -333,6 +377,7 @@ export function MemoryScene(props: MemorySceneProps): React.JSX.Element {
       view,
       colourBy,
       maxDegree,
+      focusPosition,
       palette: latestRef.current.palette,
       nodeById,
       labelledIds,
@@ -356,6 +401,8 @@ export function MemoryScene(props: MemorySceneProps): React.JSX.Element {
     const camera3 = new THREE.PerspectiveCamera(CAMERA3D.FOV, 1, 0.1, 2000);
     const rings = new THREE.Group();
     scene.add(rings);
+    const focusRig = new THREE.Group();
+    scene.add(focusRig);
     host.appendChild(renderer.domElement);
 
     threeRef.current = {
@@ -368,6 +415,7 @@ export function MemoryScene(props: MemorySceneProps): React.JSX.Element {
       dashedEdgeLines: null,
       particlePoints: null,
       rings,
+      focusRig,
     };
 
     if (containerRef.current) {
@@ -526,6 +574,12 @@ export function MemoryScene(props: MemorySceneProps): React.JSX.Element {
         positions.needsUpdate = true;
       }
 
+      // The focus's orbital rings turn slowly, each its own way.
+      bag.focusRig.children.forEach((holder, i) => {
+        const ring = holder.children[0];
+        if (ring) ring.rotation.y = now * (FOCUS_RIG.SPIN_PER_MS[i] ?? 0);
+      });
+
       updateOverlay(screenById, width, height);
 
       bag.renderer.render(bag.scene, bag.camera);
@@ -545,16 +599,64 @@ export function MemoryScene(props: MemorySceneProps): React.JSX.Element {
         edgeLabelTargets: currentEdgeLabels,
       } = latestRef.current;
 
-      // Labels — collision-avoided screen placement for hub/lit nodes.
+      // Labels — page names and the relations on lit links share one
+      // collision-avoided layout: the focus first, then names, then
+      // relations, so a relation never covers a name.
+      const nodeVisibility = latestRef.current.visibility.nodes;
       const candidates: LabelCandidate[] = [];
       for (const id of currentLabelledIds) {
         const p = screenById.get(id);
         const node = currentLayout.nodes.get(id);
         if (!p || !node) continue;
-        candidates.push({ id, anchorX: p.x, anchorY: p.y, priority: node.degree });
+        candidates.push({
+          id,
+          anchorX: p.x,
+          anchorY: p.y,
+          priority: node.degree,
+          tier: nodeVisibility.get(id)?.isFocus ? LABEL_TIER.FOCUS : LABEL_TIER.NODE,
+        });
       }
-      const placedLabels = layoutLabels(candidates);
-      applyPlacements(labelElsRef.current, placedLabels);
+      for (const edge of currentEdgeLabels) {
+        const a = screenById.get(edge.source);
+        const b = screenById.get(edge.target);
+        if (!a || !b) continue;
+        candidates.push({
+          id: RELATION_LABEL_PREFIX + edge.key,
+          anchorX: (a.x + b.x) / 2,
+          anchorY: (a.y + b.y) / 2,
+          priority: edge.recent ? 1 : 0,
+          tier: LABEL_TIER.RELATION,
+          box: RELATION_LABEL_BOX,
+          centred: true,
+        });
+      }
+      const placed = layoutLabels(candidates);
+      const placedIds = new Set(placed.map((p) => p.id));
+      applyPlacements(
+        labelElsRef.current,
+        placed.filter((p) => !p.id.startsWith(RELATION_LABEL_PREFIX)),
+      );
+      applyPlacements(
+        edgeLabelElsRef.current,
+        placed
+          .filter((p) => p.id.startsWith(RELATION_LABEL_PREFIX))
+          .map((p) => ({ ...p, id: p.id.slice(RELATION_LABEL_PREFIX.length) })),
+      );
+      // A relation whose link end is off screen has no placement: hide it.
+      for (const edge of currentEdgeLabels) {
+        if (placedIds.has(RELATION_LABEL_PREFIX + edge.key)) continue;
+        const el = edgeLabelElsRef.current.get(edge.key);
+        if (el) el.style.display = 'none';
+      }
+
+      // Targeting reticle — on the focused node.
+      const reticle = reticleElRef.current;
+      const focusWorld = latestRef.current.focusPosition;
+      if (reticle && focusWorld) {
+        const p = projectToScreen(threeRef.current!.camera, focusWorld, width, height);
+        reticle.style.display = p.inFront ? '' : 'none';
+        reticle.style.transform = `translate(-50%, -50%) translate(${p.x}px, ${p.y}px)`;
+      }
 
       // Answer badges — anchored directly on the node.
       for (const answer of currentAnswers) {
@@ -564,20 +666,6 @@ export function MemoryScene(props: MemorySceneProps): React.JSX.Element {
         if (p) {
           el.style.display = '';
           el.style.transform = `translate(${p.x - 9}px, ${p.y - 9}px)`;
-        } else {
-          el.style.display = 'none';
-        }
-      }
-
-      // Relation labels — at the midpoint of each lit link.
-      for (const edge of currentEdgeLabels) {
-        const a = screenById.get(edge.source);
-        const b = screenById.get(edge.target);
-        const el = edgeLabelElsRef.current.get(edge.key);
-        if (!el) continue;
-        if (a && b) {
-          el.style.display = '';
-          el.style.transform = `translate(-50%, -50%) translate(${(a.x + b.x) / 2}px, ${(a.y + b.y) / 2}px)`;
         } else {
           el.style.display = 'none';
         }
@@ -703,7 +791,8 @@ export function MemoryScene(props: MemorySceneProps): React.JSX.Element {
       positions[i * 3] = node.position.x;
       positions[i * 3 + 1] = node.position.y;
       positions[i * 3 + 2] = node.position.z;
-      const colourHex = nodeColour(graphNode, colourBy, palette, now);
+      // The focus always glows in the signal colour; its own recent change is on its card.
+      const colourHex = nodeColour(graphNode, colourBy, palette, now, v.recent && !v.isFocus);
       const colour = new THREE.Color(colourHex);
       colours[i * 3] = colour.r;
       colours[i * 3 + 1] = colour.g;
@@ -714,8 +803,6 @@ export function MemoryScene(props: MemorySceneProps): React.JSX.Element {
       alphas[i] = LIT_ALPHA[v.litLevel];
       nodeIdByIndex.push(id);
 
-      if (v.disputed)
-        addRing(bag.rings, node.position, sizes[i]! * NODE3D.DISPUTE_RING_SCALE, palette.dispute);
       if (v.bornRing)
         addRing(bag.rings, node.position, sizes[i]! * NODE3D.BORN_RING_SCALE, colourHex);
     });
@@ -758,10 +845,13 @@ export function MemoryScene(props: MemorySceneProps): React.JSX.Element {
       const a = layout.nodes.get(edge.source);
       const b = layout.nodes.get(edge.target);
       if (!a || !b) continue;
-      const alpha = edge.contradiction
-        ? Math.max(EDGE_BRIGHTNESS[edge.litLevel], LIT_ALPHA['dim-soft'])
-        : EDGE_BRIGHTNESS[edge.litLevel];
-      const baseHex = edge.contradiction ? palette.dispute : palette.kind.topic;
+      // A disagreement stays readable at rest, except in the heads-up display,
+      // where only the focus and recent change may stand out of the cloud.
+      const alpha =
+        edge.contradiction && colourBy !== 'hud'
+          ? Math.max(EDGE_BRIGHTNESS[edge.litLevel], LIT_ALPHA['dim-soft'])
+          : EDGE_BRIGHTNESS[edge.litLevel];
+      const baseHex = edgeColour(edge, colourBy, palette);
       const colour = dimColour(new THREE.Color(baseHex), bgColour, alpha);
       const target = edge.contradiction ? dashedPositions : solidPositions;
       const targetColour = edge.contradiction ? dashedColours : solidColours;
@@ -824,7 +914,7 @@ export function MemoryScene(props: MemorySceneProps): React.JSX.Element {
       const particleMaterial = new THREE.PointsMaterial({
         size: 4,
         sizeAttenuation: false,
-        color: new THREE.Color(palette.kind.topic),
+        color: new THREE.Color(colourBy === 'hud' ? palette.focus : palette.kind.topic),
         transparent: true,
         opacity: 0.9,
       });
@@ -832,6 +922,22 @@ export function MemoryScene(props: MemorySceneProps): React.JSX.Element {
       particlePoints.userData.segments = litSegments;
       bag.scene.add(particlePoints);
       bag.particlePoints = particlePoints;
+    }
+
+    // ---- the focused node's orbital rings ----
+    const focusIndex = focusId ? nodeIdByIndex.indexOf(focusId) : -1;
+    if (focusId && focusIndex >= 0) {
+      const centre = layout.nodes.get(focusId)!.position;
+      FOCUS_RIG.RING_SCALES.forEach((ringScale, i) => {
+        bag.focusRig.add(
+          focusRing(
+            centre,
+            sizes[focusIndex]! * ringScale,
+            FOCUS_RIG.RING_TILTS[i] ?? 0,
+            palette.focus,
+          ),
+        );
+      });
     }
 
     // ---- question markers: a deterministic world position per question ----
@@ -859,7 +965,17 @@ export function MemoryScene(props: MemorySceneProps): React.JSX.Element {
     // Paint immediately with the content/camera state just computed, rather
     // than waiting for the next animation frame.
     renderFrameRef.current?.();
-  }, [layout, visibility, colourBy, view, nodeById, maxDegree, questionTargets, paletteRevision]);
+  }, [
+    layout,
+    visibility,
+    colourBy,
+    view,
+    nodeById,
+    maxDegree,
+    questionTargets,
+    paletteRevision,
+    focusId,
+  ]);
 
   // ---- explicit camera commands from the caller ----
   useEffect(() => {
@@ -873,7 +989,14 @@ export function MemoryScene(props: MemorySceneProps): React.JSX.Element {
             .map((id) => layout.nodes.get(id)?.position)
             .filter((p): p is Vec3 => Boolean(p))
         : layoutPoints(layout);
-    let destination = fitOrbitCamera(points, bag.camera.aspect || 1, cameraStateRef.current);
+    const centre =
+      camera.kind === 'fly-to' && camera.centre ? layout.nodes.get(camera.centre) : null;
+    let destination = fitOrbitCamera(
+      points,
+      bag.camera.aspect || 1,
+      cameraStateRef.current,
+      centre ? { centre: centre.position, widthShare: CAMERA3D.FOCUS_WIDTH_SHARE } : {},
+    );
     if (view === '2d') destination = lockTo2D(destination);
     destinationRef.current = destination;
   }, [camera, layout, view]);
@@ -894,10 +1017,17 @@ export function MemoryScene(props: MemorySceneProps): React.JSX.Element {
             .split('\n')
             .map((id) => layout.nodes.get(id)?.position)
             .filter((p): p is Vec3 => Boolean(p));
-    let destination = fitOrbitCamera(points, bag.camera.aspect || 1, cameraStateRef.current);
+    // A focused node sits at the centre of the view, its neighbourhood framed around it.
+    const centred = spotlightKey !== '' && focusPosition;
+    let destination = fitOrbitCamera(
+      points,
+      bag.camera.aspect || 1,
+      cameraStateRef.current,
+      centred ? { centre: focusPosition, widthShare: CAMERA3D.FOCUS_WIDTH_SHARE } : {},
+    );
     if (view === '2d') destination = lockTo2D(destination);
     destinationRef.current = destination;
-  }, [spotlightKey, layout, view]);
+  }, [spotlightKey, layout, view, focusPosition]);
 
   if (unsupported) {
     return (
@@ -915,6 +1045,7 @@ export function MemoryScene(props: MemorySceneProps): React.JSX.Element {
 
   const ariaLabel = `Memory: ${visibleNodeCount.toLocaleString()} pages, ${visibleEdgeCount.toLocaleString()} links`;
   const hoveredNode = hoveredId ? nodeById.get(hoveredId) : null;
+  const focusNode = focusId ? nodeById.get(focusId) : null;
   const hoveredLayoutNode = hoveredId ? layout.nodes.get(hoveredId) : null;
 
   return (
@@ -926,9 +1057,29 @@ export function MemoryScene(props: MemorySceneProps): React.JSX.Element {
       />
 
       <div className="niuu-memory-overlay">
+        {focusId && focusNode ? (
+          <div
+            ref={reticleElRef}
+            className="niuu-memory-reticle"
+            data-testid="memory-reticle"
+            aria-hidden
+          >
+            <span className="niuu-memory-reticle-corners" />
+            <span className="niuu-memory-reticle-pulse" />
+          </div>
+        ) : null}
+
         {[...labelledIds].map((id) => {
           const node = nodeById.get(id);
-          if (!node) return null;
+          const v = visibility.nodes.get(id);
+          if (!node || !v) return null;
+          const className = [
+            'niuu-memory-label',
+            v.isFocus ? 'niuu-memory-label--focus' : '',
+            colourBy === 'hud' && v.recent && !v.isFocus ? 'niuu-memory-label--recent' : '',
+          ]
+            .filter(Boolean)
+            .join(' ');
           return (
             <div
               key={id}
@@ -936,10 +1087,11 @@ export function MemoryScene(props: MemorySceneProps): React.JSX.Element {
                 if (el) labelElsRef.current.set(id, el);
                 else labelElsRef.current.delete(id);
               }}
-              className="niuu-memory-label"
+              className={className}
               data-testid={`memory-label-${id}`}
             >
               {node.title}
+              {colourBy === 'hud' && v.fresh && !v.isFocus ? ' · new this week' : ''}
             </div>
           );
         })}
@@ -965,7 +1117,11 @@ export function MemoryScene(props: MemorySceneProps): React.JSX.Element {
               if (el) edgeLabelElsRef.current.set(edge.key, el);
               else edgeLabelElsRef.current.delete(edge.key);
             }}
-            className="niuu-memory-relation"
+            className={
+              colourBy === 'hud' && edge.recent
+                ? 'niuu-memory-relation niuu-memory-relation--recent'
+                : 'niuu-memory-relation'
+            }
             data-testid={`memory-relation-${edge.key}`}
           >
             {edge.label}
@@ -1010,14 +1166,83 @@ export function MemoryScene(props: MemorySceneProps): React.JSX.Element {
           >
             <div className="niuu-memory-hover-card-title">{hoveredNode.title}</div>
             <div className="niuu-memory-hover-card-meta">
-              {hoveredNode.kind ?? hoveredNode.category} · {hoveredNode.mount} ·{' '}
-              {hoveredLayoutNode?.degree ?? 0} links · click to focus
+              {hoveredNode.kind ?? hoveredNode.category} ·{' '}
+              {layerNames.get(hoveredNode.mount) ?? hoveredNode.mount} ·{' '}
+              {hoveredLayoutNode?.degree ?? 0} links · click to fly
             </div>
           </div>
         ) : null}
       </div>
+
+      <div className="niuu-memory-hud" aria-hidden>
+        <span className="niuu-memory-hud-corner niuu-memory-hud-corner--tl" />
+        <span className="niuu-memory-hud-corner niuu-memory-hud-corner--tr" />
+        <span className="niuu-memory-hud-corner niuu-memory-hud-corner--bl" />
+        <span className="niuu-memory-hud-corner niuu-memory-hud-corner--br" />
+      </div>
+
+      <dl className="niuu-memory-readout" data-testid="memory-readout">
+        <div>
+          <dt>NODES</dt>
+          <dd>{visibleNodeCount.toLocaleString()}</dd>
+        </div>
+        <div>
+          <dt>LINKS</dt>
+          <dd>{visibleEdgeCount.toLocaleString()}</dd>
+        </div>
+        {visibility.hasSpotlight ? (
+          <div>
+            <dt>LIT</dt>
+            <dd>{litCount.toLocaleString()}</dd>
+          </div>
+        ) : null}
+        {colourBy === 'hud' ? (
+          <div className="niuu-memory-readout--recent">
+            <dt>CHANGED THIS WEEK</dt>
+            <dd>{recentCount.toLocaleString()}</dd>
+          </div>
+        ) : null}
+        {focusPosition ? (
+          <div>
+            <dt>FOCUS</dt>
+            <dd data-testid="memory-focus-coords">
+              {formatCoord('X', focusPosition.x)} {formatCoord('Y', focusPosition.y)}{' '}
+              {formatCoord('Z', focusPosition.z)}
+            </dd>
+          </div>
+        ) : null}
+      </dl>
     </div>
   );
+}
+
+/** "X +12.3" — fixed width, so the readout does not jitter between focuses. */
+function formatCoord(axis: string, value: number): string {
+  const sign = value < 0 ? '-' : '+';
+  return `${axis} ${sign}${Math.abs(value).toFixed(1).padStart(5, '0')}`;
+}
+
+/** One of the focused node's orbital rings: a circle about `centre`, tilted about x by `tilt`. */
+function focusRing(centre: Vec3, radius: number, tilt: number, colourHex: string): THREE.Group {
+  const points: THREE.Vector3[] = [];
+  for (let i = 0; i < FOCUS_RIG.SEGMENTS; i += 1) {
+    const angle = (i / FOCUS_RIG.SEGMENTS) * Math.PI * 2;
+    points.push(new THREE.Vector3(Math.cos(angle) * radius, 0, Math.sin(angle) * radius));
+  }
+  const geometry = new THREE.BufferGeometry().setFromPoints(points);
+  const material = new THREE.LineBasicMaterial({
+    color: new THREE.Color(colourHex),
+    transparent: true,
+    opacity: FOCUS_RIG.OPACITY,
+    depthWrite: false,
+  });
+  const ring = new THREE.LineLoop(geometry, material);
+  // The tilt lives on a parent so the per-frame spin turns the ring in its own plane.
+  const holder = new THREE.Group();
+  holder.position.set(centre.x, centre.y, centre.z);
+  holder.rotation.x = tilt;
+  holder.add(ring);
+  return holder;
 }
 
 function addRing(group: THREE.Group, centre: Vec3, radiusPx: number, colourHex: string): void {

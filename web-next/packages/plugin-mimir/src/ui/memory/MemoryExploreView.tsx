@@ -1,48 +1,42 @@
 /**
- * MemoryExploreView — the navigable Memory scene at `/mimir`: Explore
- * (default) / Focus (a node is focused) / Ask (a question is asked) / Replay
- * (`asOf` is set). Composes the 3D scene (`ui/scene/MemoryScene`) with the
- * panels in this directory.
+ * MemoryExploreView — the memory knowledge graph at `/mimir`, as a
+ * search-first heads-up display over the 3D scene (`ui/scene/MemoryScene`).
  *
- * Node ids are opaque, mount-qualified graph ids
- * (`domain/graphIndex.ts#encodeNodeId`), never page paths — every lookup
- * from a node id back to a page goes through `nodeIndex(graph)`.
+ * Type a name and the camera flies to it: the node sits glowing at the
+ * centre with its rings and reticle, its own links carry their relation,
+ * what changed this week glows amber, and everything else recedes into a dim
+ * cloud you can still orbit. A glass card describes the focused item; the
+ * scrubber along the bottom replays how memory looked on an earlier day;
+ * Everything / People / Decisions / Tickets keeps one kind lit.
  *
- * Ask is answered inline, in the scene: `useMemoryAsk` runs the search and
- * verbatim quoting (`domain/quoteFacts.ts`, shared with `AskAnswerCard`) and
- * maps answering pages to graph node ids for the scene's `answers` prop.
+ * The graph is `GET /memory/graph` (`useMemoryGraph`): every layer the
+ * signed-in person can read. A name that matches nothing is asked as a
+ * question instead (Ask, `?q=`), answered inline by `AskAnswerCard`.
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate } from '@tanstack/react-router';
 import { LoadingState, ErrorState, EmptyState } from '@niuulabs/ui';
 import { useMemoryUrl } from '../../application/useMemoryUrl';
 import { useMemoryGraph } from '../../application/useMemoryGraph';
-import { useLiveActivity } from '../../application/useLiveActivity';
-import { useQueryStats } from '../../application/useAnalytics';
-import { useLint } from '../../application/useLint';
 import { useMemoryAsk } from '../../application/useMemoryAsk';
-import { useMimirPage } from '../useMimirPages';
 import { MemoryScene } from '../scene/MemoryScene';
-import type {
-  SceneQuestion,
-  FocusDepth,
-  ColourBy,
-  SceneView,
-  SceneCameraCommand,
-} from '../scene/types';
-import { ExplorePanel, AddSourceForm } from './ExplorePanel';
-import { FocusPanel } from './FocusPanel';
-import { ReplayPanel } from './ReplayPanel';
-import { ReplayTimeline } from './ReplayTimeline';
-import { ColourByPanel } from './ColourByPanel';
-import { AskBox } from './AskBox';
+import type { FocusDepth, SceneView, SceneCameraCommand } from '../scene/types';
+import { AddSourceForm } from './ExplorePanel';
 import { AskAnswerCard } from './AskAnswerCard';
-import { HowItAnsweredPanel } from './HowItAnsweredPanel';
+import { GraphSearch } from './GraphSearch';
+import { HudCard } from './HudCard';
+import { HudFilters } from './HudFilters';
+import { ReplayTimeline } from './ReplayTimeline';
 import { shortestPath } from '../../domain/pathTrace';
-import { zeroResultQueries } from '../../domain/analytics';
-import { nearestNodeForQuestion } from '../../domain/questionMatch';
-import { recentMarkers } from '../../domain/liveMarkers';
 import { nodeIndex } from '../../domain/graphIndex';
+import { neighborsWithinDepth } from '../../domain/graphNeighbors';
+import {
+  filterKinds,
+  neighbourhood,
+  recentChangeLine,
+  replayMarks,
+  type HudFilterId,
+} from '../../domain/hud';
 import {
   earliestFirstSeen,
   endOfReplayDay,
@@ -52,97 +46,127 @@ import {
   type ReplaySpeed,
 } from '../../domain/replayHistogram';
 import type { KindGroup } from '../../domain/memoryKinds';
-import type { MimirGraph } from '../../domain/api-types';
-import type { Page } from '../../domain/page';
+import type { KnowledgeGraph } from '../../domain/api-types';
+import './MemoryHud.css';
 
-const MAX_SUGGESTIONS = 3;
-const EXPLORE_HINT =
-  'drag to orbit · shift-drag to pan · scroll to zoom · click a page to focus · shift-click a second page to trace the path';
-const FOCUS_HINT =
-  'esc to step back · shift-click another page to trace the path · drag to orbit around this page';
+const HINT = 'drag to orbit · click to fly · type to search';
 
-/** A stable empty graph so hooks that need `MimirGraph` can run before the real graph loads. */
-const EMPTY_GRAPH: MimirGraph = { nodes: [], edges: [] };
+/** A stable empty graph so hooks that need one can run before the real graph loads. */
+const EMPTY_GRAPH: KnowledgeGraph = { nodes: [], edges: [], layers: [], unresolved: [] };
+
+/** Legend groups are not switched off in the heads-up display; the kind filter does that job. */
+const NO_HIDDEN_GROUPS: ReadonlySet<KindGroup> = new Set();
 
 function errorMessage(error: unknown, fallback: string): string {
   return error instanceof Error ? error.message : fallback;
 }
 
+function toFilterId(show: 'people' | 'decisions' | 'tickets' | undefined): HudFilterId {
+  return show ?? 'all';
+}
+
+function plural(count: number, one: string, many: string): string {
+  return `${count.toLocaleString()} ${count === 1 ? one : many}`;
+}
+
+/** The traced path's outcome, kept so the status line can say "no path" as well as "path". */
+interface TraceResult {
+  from: string;
+  to: string;
+  path: string[];
+}
+
 export function MemoryExploreView() {
   const navigate = useNavigate();
-  const {
-    search,
-    focusNode,
-    setQuestion,
-    setAsOf,
-    setDepth,
-    setMount,
-    setView,
-    setColour,
-    handleEscape,
-  } = useMemoryUrl();
+  const { search, focusNode, setQuestion, setAsOf, setView, setShow, handleEscape } =
+    useMemoryUrl();
 
   const mountName = search.mount;
   const depth: FocusDepth = search.depth ?? 1;
   const view: SceneView = search.view ?? '3d';
-  const colour: ColourBy = search.colour ?? 'type';
+  const filter = toFilterId(search.show);
   const focusId = search.focus ?? null;
   const question = search.q ?? null;
   const askMode = question !== null;
   const asOf = search.asOf ?? null;
   const replayMode = asOf !== null;
 
-  const graphQuery = useMemoryGraph(mountName);
-  const liveActivityQuery = useLiveActivity();
-  const queryStatsQuery = useQueryStats();
-  const lintQuery = useLint(mountName);
-
+  const graphQuery = useMemoryGraph();
   const graph = graphQuery.data;
   const index = useMemo(() => nodeIndex(graph ?? EMPTY_GRAPH), [graph]);
   const focusedNode = focusId ? index.byId(focusId) : undefined;
-  const focusPageQuery = useMimirPage(focusedNode?.path ?? null, focusedNode?.mount);
   const askResult = useMemoryAsk(question ?? '', mountName, graph ?? EMPTY_GRAPH);
 
-  const [hiddenGroups, setHiddenGroups] = useState<Set<KindGroup>>(new Set());
-  const [showQuestions, setShowQuestions] = useState(true);
-  const [tracedPath, setTracedPath] = useState<string[]>([]);
+  const layerNames = useMemo(
+    () => new Map((graph?.layers ?? []).map((l) => [l.id, l.name])),
+    [graph],
+  );
+  const kinds = useMemo(() => filterKinds(filter), [filter]);
+
+  const [trace, setTrace] = useState<TraceResult | null>(null);
+  const [tracing, setTracing] = useState(false);
   const [camera, setCamera] = useState<SceneCameraCommand | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
   const [speed, setSpeed] = useState<ReplaySpeed>(1);
-  const [pendingAskFocus, setPendingAskFocus] = useState(false);
+
+  const tracedPath = useMemo(() => trace?.path ?? [], [trace]);
+
+  const clearTrace = useCallback(() => {
+    setTrace(null);
+    setTracing(false);
+  }, []);
 
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
       if (e.key !== 'Escape') return;
-      handleEscape(tracedPath, () => setTracedPath([]));
+      handleEscape(tracedPath, clearTrace);
     }
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [handleEscape, tracedPath]);
+  }, [handleEscape, tracedPath, clearTrace]);
 
-  /** Focus a node (or clear focus with null), always dropping any traced path — the path only makes sense relative to the previous focus. */
+  /** Focus a node (or clear focus with null), always dropping any traced path — it only makes sense from the previous focus. */
   const focusAndClearPath = useCallback(
     (id: string | null) => {
-      setTracedPath([]);
+      clearTrace();
       focusNode(id);
     },
-    [focusNode],
+    [focusNode, clearTrace],
+  );
+
+  const traceTo = useCallback(
+    (from: string, to: string) => {
+      if (!graph) return;
+      setTracing(false);
+      setTrace({ from, to, path: shortestPath(graph, from, to) });
+    },
+    [graph],
   );
 
   const handleSelectNode = useCallback(
     (id: string, options?: { shift?: boolean }) => {
-      if (options?.shift && focusId && graph) {
-        setTracedPath(shortestPath(graph, focusId, id));
+      if (options?.shift && focusId) {
+        traceTo(focusId, id);
         return;
       }
       focusAndClearPath(id);
     },
-    [focusId, focusAndClearPath, graph],
+    [focusId, focusAndClearPath, traceTo],
   );
 
-  const handleBackgroundClick = useCallback(() => {
-    focusAndClearPath(null);
-  }, [focusAndClearPath]);
+  /** Search picked a node: fly to it (re-fly when it is already the focus), or end a trace there. */
+  function handleSearchSelect(id: string) {
+    if (tracing && focusId) {
+      traceTo(focusId, id);
+      return;
+    }
+    if (id === focusId && graph) {
+      const around = neighborsWithinDepth(graph, id, depth).map((link) => link.node.id);
+      setCamera({ kind: 'fly-to', nodeIds: [id, ...around], centre: id, key: Date.now() });
+      return;
+    }
+    focusAndClearPath(id);
+  }
 
   useEffect(() => {
     if (!replayMode || !isPlaying || !graph) return;
@@ -152,7 +176,7 @@ export function MemoryExploreView() {
       cursor.setUTCDate(cursor.getUTCDate() + daysPerTick(speed));
       const next = cursor.toISOString().slice(0, 10);
       if (next >= today) {
-        setAsOf(today);
+        setAsOf(null);
         setIsPlaying(false);
         return;
       }
@@ -161,111 +185,53 @@ export function MemoryExploreView() {
     return () => window.clearInterval(id);
   }, [replayMode, isPlaying, graph, asOf, speed, setAsOf]);
 
-  /** Node ids of pages flagged with a contradiction (lint L02) — looked up by (mount, path), never by path alone. */
-  const disputedIds = useMemo(() => {
-    if (!graph) return new Set<string>();
-    const ids = new Set<string>();
-    for (const issue of lintQuery.issues) {
-      if (issue.rule !== 'L02') continue;
-      const node = index.byMountPath(issue.mount, issue.page);
-      if (node) ids.add(node.id);
-    }
-    return ids;
-  }, [lintQuery.issues, graph, index]);
-
-  const trimmedQuestion = question?.trim() ?? '';
-
-  const questions: SceneQuestion[] = useMemo(() => {
-    if (!graph) return [];
-    const out: SceneQuestion[] = [];
-    const stats = queryStatsQuery.data;
-    if (stats) {
-      zeroResultQueries(stats).forEach((entry, i) => {
-        out.push({
-          id: `zero-${i}-${entry.ts}`,
-          label: entry.query,
-          nearNodeId: nearestNodeForQuestion(entry.query, graph.nodes),
-        });
-      });
-    }
-    if (
-      askMode &&
-      trimmedQuestion.length > 0 &&
-      !askResult.isLoading &&
-      !askResult.isError &&
-      askResult.results.length === 0
-    ) {
-      out.push({ id: `ask-zero-${trimmedQuestion}`, label: trimmedQuestion, nearNodeId: null });
-    }
-    return out;
-  }, [
-    graph,
-    queryStatsQuery.data,
-    askMode,
-    trimmedQuestion,
-    askResult.isLoading,
-    askResult.isError,
-    askResult.results.length,
-  ]);
-
-  const markers = useMemo(
-    () => (graph ? recentMarkers(liveActivityQuery.data ?? [], graph) : []),
-    [liveActivityQuery.data, graph],
-  );
-
-  const suggestions = useMemo(() => {
-    const stats = queryStatsQuery.data;
-    if (!stats) return [];
-    const seen = new Set<string>();
-    const out: string[] = [];
-    for (const entry of stats.recent) {
-      if (entry.resultCount === 0 || seen.has(entry.query)) continue;
-      seen.add(entry.query);
-      out.push(entry.query);
-      if (out.length >= MAX_SUGGESTIONS) break;
-    }
-    return out;
-  }, [queryStatsQuery.data]);
-
-  const histogram = useMemo(() => {
-    if (!graph) return [];
-    const earliest = earliestFirstSeen(graph.nodes);
-    if (!earliest) return [];
-    return perDayHistogram(graph.nodes, earliest, new Date().toISOString().slice(0, 10));
+  const timeline = useMemo(() => {
+    const today = new Date().toISOString().slice(0, 10);
+    if (!graph) return { today, histogram: [] };
+    const earliest = earliestFirstSeen(graph.nodes.filter((n) => n.firstSeen));
+    return {
+      today,
+      histogram: earliest ? perDayHistogram(graph.nodes, earliest, today) : [],
+    };
   }, [graph]);
 
-  function handleFit() {
-    setCamera({ kind: 'fit', key: Date.now() });
-  }
+  /** The moment the scene shows: the end of the replayed day, or now. */
+  const refMs = useMemo(
+    () => Date.parse(endOfReplayDay(asOf ?? timeline.today)),
+    [asOf, timeline.today],
+  );
 
-  function handleEnterReplay() {
-    if (!graph) return;
-    const earliest = earliestFirstSeen(graph.nodes);
-    if (earliest) setAsOf(earliest);
-  }
+  const marks = useMemo(
+    () => (graph && focusId ? replayMarks(graph, focusId, refMs) : []),
+    [graph, focusId, refMs],
+  );
+  const changeLine = useMemo(
+    () => (graph && focusId ? recentChangeLine(graph, focusId, refMs) : null),
+    [graph, focusId, refMs],
+  );
 
-  function handleReadPage(page: Page) {
-    void navigate({ to: '/mimir/read', search: { path: page.path, mount: page.mounts[0] } });
-  }
+  const status = useMemo(() => {
+    if (!graph) return '';
+    const title = (id: string) => index.byId(id)?.title ?? id;
+    if (tracing && focusedNode) return `Pick where a path from ${focusedNode.title} should go`;
+    if (trace) {
+      if (trace.path.length === 0) return `No path from ${title(trace.from)} to ${title(trace.to)}`;
+      return `Path · ${trace.path.map(title).join(' → ')} · ${plural(trace.path.length - 1, 'hop', 'hops')}`;
+    }
+    if (focusedNode) {
+      const around = neighbourhood(graph, focusedNode.id);
+      return `Flew to ${focusedNode.title} · ${plural(around.connections, 'connection', 'connections')} · ${around.nearby.toLocaleString()} more nearby`;
+    }
+    if (focusId) return 'That item is not in the memory you can read';
+    return `${plural(graph.nodes.length, 'item', 'items')} across ${plural(graph.layers.length, 'layer', 'layers')} · type a name to fly there`;
+  }, [graph, index, tracing, trace, focusedNode, focusId]);
 
-  function handleAskAbout(page: Page) {
-    setQuestion(page.title);
-  }
-
-  function handleAsk(q: string) {
-    setQuestion(q);
-  }
-
-  function handleFollowUp() {
-    setQuestion(null);
-    setPendingAskFocus(true);
-  }
-
-  /** Fly the camera to a mount's pages — `?mount=` stays the scoping param realm links use; this never changes it. */
-  function handleFlyToMount(mountToFly: string) {
-    if (!graph) return;
-    const nodeIds = graph.nodes.filter((n) => n.mount === mountToFly).map((n) => n.id);
-    setCamera({ kind: 'fly-to', nodeIds, key: Date.now() });
+  function handleOpenPage() {
+    if (!focusedNode) return;
+    void navigate({
+      to: '/mimir/read',
+      search: { path: focusedNode.path, mount: focusedNode.layer ?? focusedNode.mount },
+    });
   }
 
   if (graphQuery.isLoading) {
@@ -286,69 +252,63 @@ export function MemoryExploreView() {
       <div className="niuu:absolute niuu:inset-0">
         <MemoryScene
           graph={graph}
-          colourBy={colour}
-          hiddenGroups={hiddenGroups}
-          showQuestions={showQuestions}
+          colourBy="hud"
+          hiddenGroups={NO_HIDDEN_GROUPS}
+          kinds={kinds}
+          layerNames={layerNames}
+          showQuestions={false}
           view={view}
           focus={focusId ? { nodeId: focusId, depth } : null}
           answers={askMode ? askResult.answers : []}
           path={tracedPath.length > 0 ? tracedPath : null}
           asOf={asOf === null ? null : endOfReplayDay(asOf)}
-          markers={markers}
-          questions={questions}
-          disputedIds={disputedIds}
+          markers={[]}
+          questions={[]}
           camera={camera}
           onSelectNode={(id, options) => handleSelectNode(id, { shift: options.shift })}
-          onBackgroundClick={handleBackgroundClick}
+          onBackgroundClick={() => focusAndClearPath(null)}
         />
       </div>
 
-      <div className="niuu:absolute niuu:inset-0 niuu:flex niuu:flex-col niuu:p-4 niuu:pointer-events-none niuu:gap-3">
-        {/* ── Top row: scope chip + toolbar + as-of ───────────────────── */}
-        <div className="niuu:flex niuu:items-start niuu:justify-between niuu:pointer-events-none">
-          <div className="niuu:pointer-events-auto">
-            {mountName && (
-              <div className="niuu:flex niuu:items-center niuu:gap-2 niuu:bg-bg-secondary niuu:border niuu:border-border-subtle niuu:rounded-lg niuu:px-3 niuu:py-1.5 niuu:text-xs niuu:text-text-secondary">
-                <span>Scoped to {mountName}</span>
-                <button
-                  type="button"
-                  onClick={() => setMount(null)}
-                  className="niuu:text-brand-300"
-                >
-                  Show all memory
-                </button>
-              </div>
-            )}
+      <div className="niuu:absolute niuu:inset-0 niuu:flex niuu:flex-col niuu:px-10 niuu:pt-8 niuu:pb-6 niuu:pointer-events-none niuu:gap-4">
+        {/* ── Top: search on the left, filters and scene controls on the right ── */}
+        <div className="niuu:flex niuu:items-start niuu:justify-between niuu:gap-6">
+          <div className="niuu:pointer-events-auto niuu:w-full niuu:max-w-xl">
+            <GraphSearch
+              // A fresh box for each mode: a trace never starts from the name just flown to.
+              key={tracing ? 'trace' : 'find'}
+              nodes={graph.nodes}
+              layerNames={layerNames}
+              mode={tracing ? 'trace' : 'find'}
+              traceFrom={focusedNode?.title}
+              status={status}
+              onSelect={handleSearchSelect}
+              onAsk={setQuestion}
+              onCancelTrace={() => setTracing(false)}
+            />
           </div>
-          {!replayMode && (
+          <div className="niuu:pointer-events-auto niuu:flex niuu:flex-col niuu:items-end niuu:gap-3">
+            <HudFilters value={filter} onChange={(id) => setShow(id === 'all' ? null : id)} />
             <div
-              className="niuu:pointer-events-auto niuu:flex niuu:items-center niuu:gap-1 niuu:bg-bg-secondary niuu:border niuu:border-border-subtle niuu:rounded-lg niuu:p-1"
               role="toolbar"
               aria-label="Scene controls"
+              className="niuu:flex niuu:items-center niuu:gap-3"
             >
               <button
                 type="button"
-                onClick={handleFit}
-                className="niuu:px-3 niuu:py-1 niuu:text-xs niuu:rounded-sm niuu:text-text-secondary niuu:hover:bg-bg-tertiary"
+                onClick={() => setCamera({ kind: 'fit', key: Date.now() })}
+                className="niuu-hud-link niuu-hud-caption"
               >
                 Fit
               </button>
-              <button
-                type="button"
-                onClick={handleEnterReplay}
-                className="niuu:px-3 niuu:py-1 niuu:text-xs niuu:rounded-sm niuu:text-text-secondary niuu:hover:bg-bg-tertiary"
-              >
-                Replay
-              </button>
-              <div className="niuu:w-px niuu:h-4 niuu:bg-border-subtle niuu:mx-1" aria-hidden />
               <button
                 type="button"
                 aria-pressed={view === '3d'}
                 onClick={() => setView('3d')}
                 className={
                   view === '3d'
-                    ? 'niuu:px-3 niuu:py-1 niuu:text-xs niuu:rounded-sm niuu:bg-bg-tertiary niuu:text-text-primary'
-                    : 'niuu:px-3 niuu:py-1 niuu:text-xs niuu:rounded-sm niuu:text-text-muted'
+                    ? 'niuu-hud-link niuu-hud-caption'
+                    : 'niuu-hud-link niuu-hud-caption niuu-hud-caption--muted'
                 }
               >
                 3D
@@ -359,169 +319,86 @@ export function MemoryExploreView() {
                 onClick={() => setView('2d')}
                 className={
                   view === '2d'
-                    ? 'niuu:px-3 niuu:py-1 niuu:text-xs niuu:rounded-sm niuu:bg-bg-tertiary niuu:text-text-primary'
-                    : 'niuu:px-3 niuu:py-1 niuu:text-xs niuu:rounded-sm niuu:text-text-muted'
+                    ? 'niuu-hud-link niuu-hud-caption'
+                    : 'niuu-hud-link niuu-hud-caption niuu-hud-caption--muted'
                 }
               >
                 2D
               </button>
+              {graph.unresolved.length > 0 && (
+                <span
+                  className="niuu-hud-caption niuu-hud-caption--muted"
+                  title="Links in page text that point at no page you can read"
+                >
+                  {plural(graph.unresolved.length, 'unresolved link', 'unresolved links')}
+                </span>
+              )}
             </div>
-          )}
-          <div className="niuu:pointer-events-auto niuu:flex niuu:items-center niuu:gap-2 niuu:bg-bg-secondary niuu:border niuu:border-border-subtle niuu:rounded-lg niuu:px-3 niuu:py-1.5">
-            <span className="niuu:text-xs niuu:text-text-secondary">
-              {asOf === null ? 'As of now' : `As of ${asOf}`}
-            </span>
-            <input
-              type="date"
-              value={asOf ?? ''}
-              onChange={(e) => setAsOf(e.target.value || null)}
-              aria-label="Replay date"
-              className="niuu:bg-transparent niuu:text-xs niuu:text-text-muted niuu:border-0 niuu:w-28"
-            />
-            {asOf !== null && (
-              <button
-                type="button"
-                onClick={() => setAsOf(null)}
-                aria-label="Back to now"
-                className="niuu:text-xs niuu:text-brand-300"
-              >
-                now
-              </button>
-            )}
           </div>
         </div>
 
-        {/* ── Middle row: left panel + colour-by panel ────────────── */}
-        <div className="niuu:flex-1 niuu:flex niuu:items-start niuu:justify-between niuu:overflow-hidden">
-          <div className="niuu:pointer-events-auto niuu:h-full niuu:overflow-hidden">
-            {isEmpty ? (
+        {/* ── Middle: the focused item's card on the right ── */}
+        <div className="niuu:flex-1 niuu:flex niuu:items-start niuu:justify-end niuu:overflow-hidden">
+          {isEmpty && (
+            <div className="niuu:pointer-events-auto niuu:mx-auto niuu:self-center">
               <EmptyState
                 title="Nothing in memory yet"
                 description="Niuu hasn't written anything yet."
                 action={<AddSourceForm />}
               />
-            ) : replayMode ? (
-              <ReplayPanel
-                graph={graph}
-                asOf={asOf!}
-                onExitReplay={() => setAsOf(null)}
-                onFocus={focusAndClearPath}
+            </div>
+          )}
+          {focusedNode && (
+            <div className="niuu:pointer-events-auto niuu:mt-8">
+              <HudCard
+                node={focusedNode}
+                layerName={layerNames.get(focusedNode.mount) ?? focusedNode.mount}
+                changeLine={changeLine}
+                tracing={tracing}
+                onOpenPage={handleOpenPage}
+                onTracePath={() => {
+                  setTrace(null);
+                  setTracing((v) => !v);
+                }}
               />
-            ) : focusId ? (
-              <FocusPanel
-                focusId={focusId}
-                page={focusPageQuery.data ?? null}
-                isLoading={focusPageQuery.isLoading}
-                isError={focusPageQuery.isError}
-                graph={graph}
-                depth={depth}
-                disputedIds={disputedIds}
-                onDepthChange={setDepth}
-                onClearFocus={() => focusAndClearPath(null)}
-                onFocusPage={focusAndClearPath}
-                onReadPage={handleReadPage}
-                onAskAbout={handleAskAbout}
-              />
-            ) : askMode ? (
-              <HowItAnsweredPanel
-                question={question!}
-                mountName={mountName}
-                resultCount={askResult.results.length}
-                isLoading={askResult.isLoading}
-                isError={askResult.isError}
-                elapsedSeconds={askResult.elapsedSeconds}
-                onFollowUp={handleFollowUp}
-              />
-            ) : (
-              <ExplorePanel
-                graph={graph}
-                liveActivity={liveActivityQuery.data}
-                liveActivityIsError={liveActivityQuery.isError}
-                onFocus={focusAndClearPath}
-                onFlyToMount={handleFlyToMount}
-              />
-            )}
-          </div>
-
-          <div className="niuu:pointer-events-auto">
-            <ColourByPanel
-              graph={graph}
-              colour={colour}
-              onColourChange={setColour}
-              hiddenGroups={hiddenGroups}
-              onToggleGroup={(id) =>
-                setHiddenGroups((prev) => {
-                  const next = new Set(prev);
-                  if (next.has(id)) next.delete(id);
-                  else next.add(id);
-                  return next;
-                })
-              }
-              showQuestions={showQuestions}
-              onToggleQuestions={() => setShowQuestions((v) => !v)}
-              questionCount={questions.length}
-            />
-          </div>
+            </div>
+          )}
         </div>
 
-        {/* ── Bottom row: hint + ask bar / answer card / replay timeline ── */}
-        <div className="niuu:flex niuu:flex-col niuu:items-center niuu:gap-2 niuu:pointer-events-none">
-          <div className="niuu:w-full niuu:flex niuu:justify-start niuu:pointer-events-auto">
-            <p className="niuu:text-xs niuu:text-text-muted niuu:m-0">
-              {focusId ? FOCUS_HINT : EXPLORE_HINT}
-            </p>
+        {/* ── Bottom: the answer card when asked, the replay scrubber, the hint ── */}
+        {askMode && (
+          <div className="niuu:pointer-events-auto niuu:w-full niuu:flex niuu:justify-center">
+            <AskAnswerCard
+              question={question!}
+              quoted={askResult.quoted}
+              rankByPath={askResult.rankByPath}
+              nodeIdByPath={askResult.nodeIdByPath}
+              resultCount={askResult.results.length}
+              isLoading={askResult.isLoading}
+              isError={askResult.isError}
+              onAsk={setQuestion}
+              onFocusPage={focusAndClearPath}
+            />
           </div>
-          {!replayMode && askMode && (
-            <div className="niuu:pointer-events-auto niuu:w-full niuu:flex niuu:justify-center">
-              <AskAnswerCard
-                question={question!}
-                quoted={askResult.quoted}
-                rankByPath={askResult.rankByPath}
-                nodeIdByPath={askResult.nodeIdByPath}
-                resultCount={askResult.results.length}
-                isLoading={askResult.isLoading}
-                isError={askResult.isError}
-                onAsk={handleAsk}
-                onFocusPage={focusAndClearPath}
-              />
-            </div>
-          )}
-          {!replayMode && !askMode && (
-            <div className="niuu:pointer-events-auto niuu:w-full niuu:max-w-2xl niuu:flex niuu:flex-col niuu:gap-2">
-              <AskBox
-                placeholder="Ask what Niuu knows…"
-                onAsk={handleAsk}
-                autoFocus={pendingAskFocus}
-              />
-              {suggestions.length > 0 && (
-                <div className="niuu:flex niuu:gap-2 niuu:flex-wrap niuu:justify-center">
-                  {suggestions.map((s) => (
-                    <button
-                      key={s}
-                      type="button"
-                      onClick={() => handleAsk(s)}
-                      className="niuu:px-3 niuu:py-1 niuu:text-xs niuu:rounded-full niuu:bg-bg-secondary niuu:border niuu:border-border-subtle niuu:text-text-secondary niuu:hover:text-text-primary"
-                    >
-                      {s}
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
-          )}
-          {replayMode && (
-            <div className="niuu:pointer-events-auto niuu:w-full niuu:flex niuu:justify-center">
-              <ReplayTimeline
-                histogram={histogram}
-                asOf={asOf!}
-                onAsOfChange={setAsOf}
-                isPlaying={isPlaying}
-                onTogglePlay={() => setIsPlaying((v) => !v)}
-                speed={speed}
-                onSpeedChange={setSpeed}
-              />
-            </div>
-          )}
+        )}
+        <div className="niuu:flex niuu:items-end niuu:gap-8">
+          <div className="niuu:pointer-events-auto niuu:flex-1 niuu:max-w-4xl">
+            <ReplayTimeline
+              histogram={timeline.histogram}
+              asOf={asOf}
+              today={timeline.today}
+              onAsOfChange={(date) => {
+                if (date === null) setIsPlaying(false);
+                setAsOf(date);
+              }}
+              isPlaying={isPlaying}
+              onTogglePlay={() => setIsPlaying((v) => !v)}
+              speed={speed}
+              onSpeedChange={setSpeed}
+              marks={marks}
+            />
+          </div>
+          <p className="niuu-hud-mono niuu:m-0 niuu:ml-auto niuu:text-right">{HINT}</p>
         </div>
       </div>
     </div>

@@ -21,8 +21,8 @@ bifrost:
 
   # ── Routing Strategy ──────────────────────────────────────────────────────
   #
-  # direct: always use the first (and only) configured provider with no
-  # failover. Correct for Pi mode where there is a single local endpoint.
+  # direct: always use the first (and only) configured provider; no other
+  # provider is ever tried. Correct for Pi mode where there is a single local endpoint.
   #
   routing_strategy: direct
 

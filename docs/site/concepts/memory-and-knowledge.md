@@ -31,9 +31,10 @@ A **source** preserves ingested material. A **page** synthesizes knowledge from
 sources. A **mount** identifies a knowledge store available to a client; several
 mounts can expose separate stores without merging their ownership.
 
-The knowledge service's filesystem store contains `raw/` sources and `wiki/` pages. The search
-index can be rebuilt; the source files and knowledge pages are the durable data.
-Back up the store, not only its search database.
+The knowledge service holds no knowledge itself. It serves a configured backend,
+today a gbrain instance, which stores the sources and pages and indexes them.
+Back up the backend. The service's own state directory holds only its mount
+registry and captured eval queries.
 
 ## Evidence and current understanding
 
@@ -42,9 +43,10 @@ evidence. Updating an assessment should preserve the evidence explaining how
 that assessment changed. Sources pending synthesis and pages with missing or
 inconsistent evidence are different maintenance problems.
 
-Retrieval uses full-text search and can use configured embeddings. Enabling an
-embedding backend adds model and runtime requirements; configure those explicitly.
-A healthy HTTP endpoint alone says nothing about retrieval quality.
+Retrieval and ranking are the backend's. Embeddings are configured on the backend
+(gbrain), not on the knowledge service. A healthy HTTP endpoint alone says nothing
+about retrieval quality; `python -m mimir eval` scores a populated store against
+the golden set.
 
 ## Giving an agent memory
 

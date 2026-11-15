@@ -369,7 +369,7 @@ class TestEnvironment:
                     "name": "mimir-local",
                     "type": "stdio",
                     "command": "python3",
-                    "args": ["-m", "mimir", "mcp", "--path", "/mimir/local", "--name", "local"],
+                    "args": ["-m", "mimir", "mcp", "--name", "local"],
                 }
             ]
         )
@@ -381,7 +381,7 @@ class TestEnvironment:
                 "name": "mimir-local",
                 "type": "stdio",
                 "command": "python3",
-                "args": ["-m", "mimir", "mcp", "--path", "/mimir/local", "--name", "local"],
+                "args": ["-m", "mimir", "mcp", "--name", "local"],
             }
         ]
 

@@ -92,12 +92,25 @@ export function RoomMessage({
   host,
 }: RoomMessageProps) {
   const speaker = messageSpeaker(message, workerRoom, host);
+  // An agent of the room that posted into it speaks as itself, not as a person typing here.
+  const agentPost =
+    message.role === 'user' &&
+    message.participant !== undefined &&
+    message.participant.participantType !== 'human';
   const style = speaker ? ({ '--niuu-persona-color': speaker.color } as CSSProperties) : undefined;
   const body = (
     <>
       {message.metadata?.messageType === 'system' && <SystemMessage message={message} />}
-      {message.metadata?.messageType !== 'system' && message.role === 'user' && (
+      {message.metadata?.messageType !== 'system' && message.role === 'user' && !agentPost && (
         <UserMessage message={message} />
+      )}
+      {message.metadata?.messageType !== 'system' && agentPost && (
+        <AssistantMessage
+          message={{ ...message, role: 'assistant' }}
+          onCopy={onCopy}
+          onBookmark={onBookmark}
+          bookmarked={bookmarked}
+        />
       )}
       {message.metadata?.messageType !== 'system' &&
         message.role === 'assistant' &&
