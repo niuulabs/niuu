@@ -1,9 +1,17 @@
 """Run a session directly on a Mac registered as a host, as a fresh macOS user.
 
-A Mac is an exclusive one-slot host: macOS has no network namespaces or cgroups, so the
-only boundary is a user. Each session gets ``niuu-slot-0`` (uid ``uid_base``), created
-when it starts and deleted, provably, when it stops; the darwin audit
-(``host_checks.DARWIN_AUDIT_SH``) is what ``down`` checks before the Mac is offered again.
+macOS has no network namespaces or cgroups, so the only boundary between sessions is a
+user. Slot ``n`` is the user ``niuu-slot-<n>`` (uid ``uid_base + n``), created when its
+session starts and deleted, provably, when it stops; the darwin audit
+(``host_checks.DARWIN_AUDIT_SH``) is what ``down`` checks before the slot is offered again.
+
+By default a Mac is an exclusive one-slot host. ``shared_slots`` is the operator's
+decision to run several sessions on one Mac with the user as their only boundary: their
+files, homes and processes are apart, but they share the Mac's network (each can reach
+the others' loopback listeners) and its CPUs and memory, with no limits. Each slot then
+has its own ports on the Mac's loopback (Skuld's, and where its callbacks to Forge
+arrive) and its own metadata address; fixed-path links outside a session's storage are
+not made, since only one session could own such a path.
 
 Everything the Linux runtimes take from the Skuld image comes from the **session bundle**
 (``containers/skuld-darwin``): a relocatable CPython with niuu, Node and the agent CLIs,
@@ -42,6 +50,7 @@ from dataclasses import dataclass
 from pathlib import PurePosixPath
 
 from volundr.adapters.outbound import darwin_guest_programs as programs
+from volundr.adapters.outbound.guest_credential_delivery import AGENT_CONFIG_FILE
 from volundr.adapters.outbound.host_checks import DARWIN_AUDIT_SH
 from volundr.adapters.outbound.host_session_programs import SESSION_BOOT
 from volundr.adapters.outbound.ssh_guest_access import SshGuestAccess
@@ -60,6 +69,7 @@ from volundr.adapters.outbound.vm_slot_supervisor import DETAIL_PREFIX, STAGE_PR
 from volundr.domain.compute import AllocationRef, MachineBootstrap, SlotLease
 from volundr.domain.compute_hosts import HostPlatform
 from volundr.domain.models import Session
+from volundr.domain.ports import HostedUnitError
 from volundr.domain.vm_runtime import SessionImages, SlotLimits
 
 #: Where bundles are unpacked on the Mac, one directory per digest.
@@ -80,8 +90,10 @@ SECRETS_TARGET = "/run/secrets"
 _SYSTEM_PATH = "/usr/bin:/bin:/usr/sbin:/sbin"
 _BUNDLE = re.compile(r"[^/\s]+/[^@\s]+@sha256:([a-f0-9]{64})")
 #: Session mount targets a tool reads at a fixed place outside the session's storage: root
-#: links them to their source (one session per Mac, so the place is the session's alone).
+#: links them to their source on a one-slot Mac, where the place is the session's alone.
 _LINKED_TARGET_PREFIXES = ("/var/run/", "/private/var/run/")
+#: The last octet of slot 0's metadata address (169.254.169.254); slot n has 254 - n.
+_METADATA_LAST_OCTET = 254
 
 MAC_HINT = (
     "You are running directly on a Mac (macOS) as the unprivileged user {user}, not in a "
@@ -114,16 +126,47 @@ def translate(text: str, places: dict[str, str]) -> str:
 
 @dataclass(frozen=True, kw_only=True)
 class DarwinSlotLayout(SlotPlace):
-    """The one slot of a Mac, at the paths the darwin audit checks."""
+    """A slot of a Mac, at the paths the darwin audit checks.
+
+    ``shared`` is the Forge's ``shared_slots``: without it a Mac has only slot 0. Slot
+    ``n`` has its own loopback ports, ``broker_port + n`` and ``platform_port + n``.
+    """
 
     uid_base: int
+    shared: bool = False
+    broker_port: int
+    platform_port: int
 
     def __post_init__(self) -> None:
-        if self.slot != 0:
+        if self.slot != 0 and not self.shared:
             raise ValueError(
                 f"A Mac runs one session at a time, but slot {self.slot} was asked for; "
-                "set the host's slots to 1"
+                "set the host's slots to 1, or computeHosts.darwin.sharedSlots to run "
+                "several sessions on one Mac"
             )
+        if self.slot >= _METADATA_LAST_OCTET:
+            raise ValueError(f"A Mac has at most {_METADATA_LAST_OCTET} slots, not {self.slot + 1}")
+        low, high = sorted((self.broker_port, self.platform_port))
+        if low + self.slot >= high:
+            raise ValueError(
+                f"Slot {self.slot}'s ports overlap: Skuld's run from {self.broker_port} and "
+                f"its callbacks' from {self.platform_port}, one per slot; move broker_port "
+                "or guest_platform_port further apart"
+            )
+
+    @property
+    def skuld_port(self) -> int:
+        return self.broker_port + self.slot
+
+    @property
+    def callback_port(self) -> int:
+        """Where the slot's calls back to Forge arrive on the Mac's loopback."""
+        return self.platform_port + self.slot
+
+    @property
+    def metadata_address(self) -> str:
+        """The slot's own guest agent address (slot 0 has the usual 169.254.169.254)."""
+        return f"169.254.169.{_METADATA_LAST_OCTET - self.slot}"
 
     @property
     def label(self) -> str:
@@ -220,12 +263,13 @@ class SshDarwinHostRuntime(HostModeRuntime):
         skuld_bundle: str | None = None,
         session_images: SessionImages | None = None,
         uid_base: int = 61000,
+        shared_slots: bool = False,
         **kwargs,
     ):
         if "slot_isolation" in kwargs:
             raise ValueError(
-                "A Mac runs one session at a time and its boundary is the slot user; remove "
-                "slot_isolation (set uid_base instead)"
+                "A Mac's only boundary is the slot user; remove slot_isolation (set uid_base "
+                "instead, and shared_slots to run several sessions on one Mac)"
             )
         if "skuld_image" in kwargs:
             raise ValueError(
@@ -253,10 +297,22 @@ class SshDarwinHostRuntime(HostModeRuntime):
         self._bundle_root = f"{BUNDLE_CACHE}/{self._bundle_digest}"
         self._native_images = frozenset(native)
         self._uid_base = uid_base
+        self._shared_slots = shared_slots
 
     @property
     def host_platforms(self) -> frozenset[HostPlatform]:
         return frozenset({HostPlatform.DARWIN})
+
+    @property
+    def supports_slots(self) -> bool:
+        """Only with ``shared_slots``, and a delivery each slot receives its own credentials from.
+
+        The slot user is the only boundary: the operator decides that is enough.
+        """
+        if not self._shared_slots:
+            return False
+        delivery = self._credential_delivery
+        return delivery is None or delivery.serves_slots
 
     @property
     def slot_limits(self) -> SlotLimits | None:
@@ -266,7 +322,12 @@ class SshDarwinHostRuntime(HostModeRuntime):
 
     def _layout(self, lease: AllocationRef) -> DarwinSlotLayout:  # type: ignore[override]
         return DarwinSlotLayout(
-            allocation_id=lease.id, slot=slot_index(lease), uid_base=self._uid_base
+            allocation_id=lease.id,
+            slot=slot_index(lease),
+            uid_base=self._uid_base,
+            shared=self._shared_slots,
+            broker_port=self._broker_port,
+            platform_port=self._guest_platform_port,
         )
 
     def _python(self, program: str, *args: str) -> str:  # type: ignore[override]
@@ -381,7 +442,7 @@ class SshDarwinHostRuntime(HostModeRuntime):
             stop_timeout=self._stop_timeout,
             poll=self._poll,
             links=[item["target"] for item in self._root_links(layout, launch)],
-            metadata_address=launch.get("metadata_address"),
+            metadata_address=layout.metadata_address if launch.get("metadata_address") else None,
         )
 
     def _session_mounts(self, layout: DarwinSlotLayout, launch: dict) -> list[dict]:
@@ -391,6 +452,10 @@ class SshDarwinHostRuntime(HostModeRuntime):
         ]
 
     def _root_links(self, layout: DarwinSlotLayout, launch: dict) -> list[dict]:
+        # On a Mac with shared slots a fixed path could be only one session's: the session
+        # reads its own copy where its environment says, and no link is made.
+        if self._shared_slots:
+            return []
         return [
             {"target": mount["target"], "source": mount["source"]}
             for mount in self._session_mounts(layout, launch)
@@ -398,13 +463,12 @@ class SshDarwinHostRuntime(HostModeRuntime):
         ]
 
     async def start(self, lease: SlotLease, bootstrap: MachineBootstrap) -> None:
-        layout = self._layout(lease)
         self._step(lease, "guest_bundle", "Fetching the session bundle onto the Mac")
         await self._install(lease, bootstrap)
         await self._guest_access.execute(
             lease,
             bootstrap,
-            self._python(programs.PRUNE, BUNDLE_CACHE, self._bundle_digest, layout.label),
+            self._python(programs.PRUNE, BUNDLE_CACHE, self._bundle_digest, SESSION_LABEL),
         )
         await super().start(lease, bootstrap)
 
@@ -427,19 +491,37 @@ class SshDarwinHostRuntime(HostModeRuntime):
         layout = self._layout(lease)
         relocations = layout.relocations()
         items = [
-            {**item, "content": translate(item["content"], relocations)}
+            {**item, "content": self._agent_file(layout, item, relocations)}
             if item["directory"] == GUEST_AGENT_DIRECTORY
             else item
             for item in items
         ]
         await super().write_files(lease, bootstrap, items)
 
+    def _callbacks(self, layout: DarwinSlotLayout, text: str) -> str:
+        """``text`` with Forge's loopback callback address moved to the slot's own port."""
+        if layout.callback_port == self._guest_platform_port:
+            return text
+        return text.replace(
+            f"127.0.0.1:{self._guest_platform_port}", f"127.0.0.1:{layout.callback_port}"
+        )
+
+    def _agent_file(self, layout: DarwinSlotLayout, item: dict, relocations: dict) -> str:
+        """A guest agent file at the Mac's places; its configuration names the slot's address."""
+        content = self._callbacks(layout, translate(item["content"], relocations))
+        if item["name"] != AGENT_CONFIG_FILE:
+            return content
+        config = json.loads(content)
+        config["listen"] = {**config["listen"], "address": layout.metadata_address}
+        return json.dumps(config)
+
     def _tunnel_ends(self, layout: DarwinSlotLayout) -> dict:  # type: ignore[override]
-        # One session per Mac and no namespaces: the broker listens on the Mac's loopback
-        # and its callbacks reach the Mac's loopback port Forge forwards.
+        # No namespaces: the slot's broker listens on the Mac's loopback at its own port, and
+        # its callbacks reach the slot's own loopback port Forge forwards.
         return {
+            "remote_port": layout.skuld_port,
             "reverse_bind_host": self._guest_platform_bind_host,
-            "reverse_port": self._guest_platform_port,
+            "reverse_port": layout.callback_port,
             "key": layout.key,
         }
 
@@ -460,12 +542,15 @@ class SshDarwinHostRuntime(HostModeRuntime):
             **layout.session_places(),
         }
         environment = {
-            key: translate(value, places) for key, value in placed["environment"].items()
+            key: self._callbacks(layout, translate(value, places))
+            for key, value in placed["environment"].items()
         }
         environment["SKULD__SESSION__SYSTEM_PROMPT"] = environment.get(
             "SKULD__SESSION__SYSTEM_PROMPT", ""
         ).replace("{slot_user}", layout.name)
         environment["TMPDIR"] = layout.tmp
+        # The slot's own loopback port: every slot shares the Mac's network.
+        environment["SKULD__PORT"] = str(layout.skuld_port)
         if SECRETS_TARGET in places:
             environment["NIUU_SECRETS_DIR"] = places[SECRETS_TARGET]
         environment["NIUU_SESSION_PLACES"] = json.dumps(layout.session_places())
@@ -485,7 +570,8 @@ class SshDarwinHostRuntime(HostModeRuntime):
                 mount["target"]: layout.relocate(mount["source"]) for mount in container["mounts"]
             }
             container["environment"] = {
-                key: translate(value, mounts) for key, value in container["environment"].items()
+                key: self._callbacks(layout, translate(value, mounts))
+                for key, value in container["environment"].items()
             }
             container["command"] = [translate(part, mounts) for part in container["command"]]
             container["args"] = [translate(part, mounts) for part in container["args"]]
@@ -495,6 +581,8 @@ class SshDarwinHostRuntime(HostModeRuntime):
             "data_root": layout.session_data,
             "marker": layout.key,
         }
+        if placed.get("metadata_address"):
+            placed["metadata_address"] = layout.metadata_address
         placed["darwin"] = {
             "label": layout.label,
             "python": self._python_binary,
@@ -512,6 +600,15 @@ class SshDarwinHostRuntime(HostModeRuntime):
             "start_timeout": self._session_start_timeout,
         }
         return placed
+
+    def _add_members(self, session: Session, launch: dict, entries: list[dict]) -> None:
+        if self._shared_slots:
+            raise HostedUnitError(
+                f"Unit {session.id} hosts a workflow run, whose members listen on ports the "
+                "unit picks; on a Mac with shared slots those ports are every slot's. Run "
+                "the run on Linux hosts, or turn computeHosts.darwin.sharedSlots off"
+            )
+        super()._add_members(session, launch, entries)
 
     async def _launch_skuld(
         self, lease: SlotLease, bootstrap: MachineBootstrap, payload: dict

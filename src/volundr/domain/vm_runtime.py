@@ -176,9 +176,16 @@ class VmRuntime(ABC):
         The contract is a per-slot user, network namespace, cgroup and runtime state keyed
         by (allocation, slot), and credentials each slot receives for itself only, with
         the allocation's own identity out of the slots' reach. A runtime that does not
-        declare it serves one session per machine.
+        declare it serves one session per machine. The one exception is the darwin
+        runtime with ``shared_slots``: the operator decides that a Mac's slot users,
+        without a network namespace or cgroup, are boundary enough.
         """
         return False
+
+    @property
+    def slot_platforms(self) -> frozenset[HostPlatform]:
+        """The registered-host platforms on which this runtime runs more than one slot."""
+        return self.host_platforms if self.supports_slots else frozenset()
 
     @property
     def supports_reuse(self) -> bool:

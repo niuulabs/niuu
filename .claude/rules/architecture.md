@@ -502,6 +502,13 @@ Limits of this exception, enforced together:
   `VmRuntime.supports_slots`; `SshContainerVmRuntime` does only with
   `slot_isolation` and a credential delivery that serves slots. Forge refuses
   more than one slot per machine unless every configured runtime declares it.
+  The one sanctioned exception is a Mac with shared slots
+  (`SshDarwinHostRuntime(shared_slots=True)`, `computeHosts.darwin.sharedSlots`):
+  the operator decides that slot users alone are boundary enough. The identity
+  (the Mac's sshd host key) stays root-only, but the slots share the Mac's
+  network, so a session can reach another slot's guest agent and read that
+  slot's credentials. Do not turn it on for a Mac whose sessions belong to
+  different people, and never extend it to Linux, which has the real boundary.
 - **Exactly one route.** Do not extend either identity to another route without
   adding it to the same enforcement points this one touches: the router, the
   Volundr chart's Envoy `jwt_authn` bypass and Cedar `ext_authz` skip

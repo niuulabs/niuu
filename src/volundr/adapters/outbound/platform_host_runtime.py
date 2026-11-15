@@ -138,6 +138,10 @@ class PlatformHostRuntime(VmRuntime):
         return any(runtime.supports_slots for runtime in self._all())
 
     @property
+    def slot_platforms(self) -> frozenset[HostPlatform]:
+        return frozenset().union(*(runtime.slot_platforms for runtime in self._all()))
+
+    @property
     def supports_reuse(self) -> bool:
         return all(runtime.supports_reuse for runtime in self._all())
 

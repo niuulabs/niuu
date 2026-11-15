@@ -109,6 +109,8 @@ def test_runtime_is_a_platform_runtime_with_a_child_per_platform(tmp_path):
     assert linux["kwargs"]["containers"] == {}
     assert darwin["kwargs"]["guest_platform_port"] == 19000
     assert darwin["kwargs"]["uid_base"] == 70000
+    # A Mac runs one session at a time unless the operator shares its slots.
+    assert darwin["kwargs"]["shared_slots"] is False
     # The images a Mac runs natively are session images, not catalog content.
     assert "native_images" not in darwin["kwargs"]
 
@@ -252,3 +254,18 @@ def test_nix_version_is_the_installers_default_everywhere():
     assert pinned is not None
     assert NIX_VERSION == default.group(1)
     assert pinned.group(1) == default.group(1)
+
+
+def test_shared_mac_slots_reach_the_darwin_runtime(tmp_path):
+    catalog = BuiltinHostCatalog(
+        pool_id="hosts",
+        provider_binding="hosts",
+        data_dir=str(tmp_path),
+        platform_port=8080,
+        darwin_shared_slots=True,
+    )
+
+    children = catalog._platform_runtimes()
+
+    assert children["darwin"]["kwargs"]["shared_slots"] is True
+    assert "shared_slots" not in children["linux"]["kwargs"]

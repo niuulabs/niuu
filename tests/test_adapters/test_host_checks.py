@@ -409,12 +409,18 @@ class TestMacAudit:
             "only 257684 MiB free on /, below the floor of 999999 MiB",
         )
 
-    def test_more_than_one_slot_is_a_finding(self, tmp_path):
-        clean = {**_LEFTOVERS, "dscl": "true", "ps": "true", "launchctl": "exit 1", "ipcs": "true"}
+    def test_a_mac_with_more_than_one_slot_audits_every_slot(self, tmp_path):
+        clean = {**_LEFTOVERS, "dscl": "true", "launchctl": "exit 1", "ipcs": "true"}
         clean["dseditgroup"] = "exit 67"
+        clean["ps"] = 'printf "61001  4243 /opt/agent/bin/left\\n"'
         assert self._run(tmp_path, clean, "61000", "2", "", "2048", "check") == (
-            "macOS hosts run one slot, but this one is set to 2",
+            "process /opt/agent/bin/left (pid 4243) still runs as uid 61001",
         )
+
+    def test_one_slot_alone_leaves_the_others_running_sessions_alone(self, tmp_path):
+        # Slot 0's user, process and jobs are a running session's while slot 1 is audited.
+        findings = self._run(tmp_path, _LEFTOVERS, "61000", "2", "", "2048", "check", "1")
+        assert findings == ("niuu-slot-0 is in group admin",)
 
     def test_the_folder_skeleton_macos_keeps_for_a_user_is_not_a_leftover(self):
         # The skeleton is flagged sunlnk (not even root may remove it); BSD find skips it.

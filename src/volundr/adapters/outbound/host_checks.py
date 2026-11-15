@@ -11,10 +11,11 @@ group ``niuu-slot-<n>`` with uid ``uid_base + n``, directories ``/var/lib/niuu/s
 and ``/run/niuu/slots/<n>``, netns ``niuu-slot-<n>``, link ``niuuslot<n>`` and slice
 ``niuu_slot_<n>.slice``.
 
-On macOS a host has one slot, 0, and nothing but its user keeps a session apart: user and
-group ``niuu-slot-0`` with uid ``uid_base``, directories ``/var/lib/niuu/slots/0`` and
-``/var/run/niuu/slots/0``, and the session's launchd job ``world.niuu.slot.0`` in the
-system domain (``/Library/LaunchDaemons/world.niuu.slot.0.plist``).
+On macOS nothing but its user keeps a session apart: user and group ``niuu-slot-<n>``
+with uid ``uid_base + n``, directories ``/var/lib/niuu/slots/<n>`` and
+``/var/run/niuu/slots/<n>``, and the session's launchd job ``world.niuu.slot.<n>`` in the
+system domain (``/Library/LaunchDaemons/world.niuu.slot.<n>.plist``). A Mac has one slot
+unless the Forge runs shared slots (``darwin_shared_slots``).
 """
 
 from __future__ import annotations
@@ -159,7 +160,7 @@ echo "fact os $(sw_vers -productName) $(sw_vers -productVersion)"
 #: IPC, cron, Nix profile) and that no slot user holds a group that reaches past it.
 DARWIN_AUDIT_SH = r"""
 set -u
-uid_base=$1; slots=$2; live=",$3,"; floor_mib=$4; mode=$5
+uid_base=$1; slots=$2; live=",$3,"; floor_mib=$4; mode=$5; only=${6:-}
 if [ "$(uname -s)" != Darwin ]; then
   echo "finding this host is not macOS (uname -s says $(uname -s)); remove it and join it again"
   exit 0
@@ -167,8 +168,11 @@ fi
 if [ "$mode" = clean ]; then
   rm -f /var/lib/niuu/bootstrap.sha256 /var/lib/niuu/bootstrap-state.json
 fi
-[ "$slots" -le 1 ] || echo "finding macOS hosts run one slot, but this one is set to $slots"
-is_live() { case "$live" in *",$1,"*) return 0 ;; esac; return 1; }
+# With a slot given, that slot alone: the others may be running sessions.
+is_live() {
+  [ -n "$only" ] && [ "$1" != "$only" ] && return 0
+  case "$live" in *",$1,"*) return 0 ;; esac; return 1
+}
 slot_users=$(dscl . -list /Users | awk '/^niuu-slot-[0-9]+$/')
 for user in $slot_users; do
   is_live "${user#niuu-slot-}" && continue

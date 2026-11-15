@@ -388,6 +388,12 @@ computeHosts:
     cpu: 2
     memoryMib: 8192
     pids: 16384
+  darwin:
+    # -- Let a Mac run more than one session (its slots, set per host). Each runs as its
+    # own macOS user and nothing else separates them: they share the Mac's network (each
+    # can reach the others' loopback listeners) and its CPUs and memory, with no limits.
+    # false: a Mac runs one session at a time
+    sharedSlots: false
   # -- Session images; empty: <image.registry>/openshell:<image.tag> and
   # <image.registry>/skuld-darwin:<image.tag>, the ones published with this release
   sessionImages:

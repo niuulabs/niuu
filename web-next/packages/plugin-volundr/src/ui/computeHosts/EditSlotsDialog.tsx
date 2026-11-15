@@ -51,7 +51,8 @@ export function EditSlotsDialog({ host, onSave, onClose }: EditSlotsDialogProps)
       <DialogContent title={`Slots of ${host.name}`}>
         <div className="niuu:space-y-3">
           <p className="niuu:text-sm niuu:text-text-secondary">
-            How many sessions the host runs at once. 1 is an exclusive host; a Mac always runs one.
+            How many sessions the host runs at once. 1 is an exclusive host; a Mac runs one unless
+            this Forge shares Mac slots.
           </p>
           {suggested ? (
             <div

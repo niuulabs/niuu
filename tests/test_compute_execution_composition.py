@@ -602,6 +602,7 @@ def test_registered_hosts_describe_each_execution_with_its_runtime_limits_and_ss
         forge_public_key=accesses["vm"].public_key,
         ssh_user="ubuntu",
         platforms=LINUX_ONLY,
+        slot_platforms=LINUX_ONLY,
     )
     assert container.refusal is not None
     host = hosts.executions[str(plans["vm-b"].execution)]
@@ -635,6 +636,30 @@ def test_a_mac_host_runtime_is_labelled_as_macos(tmp_path):
     assert (mac.label, mac.platforms) == ("Host · macOS (one session, its own user)", darwin)
     linux = hosts.executions[str(plans["vm"].execution)]
     assert linux.label == "Host · Nix + rootless Podman"
+
+
+def test_a_mac_runtime_with_shared_slots_says_its_sessions_share_the_network(tmp_path):
+    resolver = _catalog_resolver(tmp_path)
+    plans = {plan.execution.id: plan for plan in resolver.plans()}
+    accesses = {name: _ssh_access(tmp_path, name, "root") for name in ("vm", "vm-b")}
+    darwin = frozenset({HostPlatform.DARWIN})
+    both = frozenset({HostPlatform.LINUX, HostPlatform.DARWIN})
+    execution = _components(
+        resolver,
+        {
+            "vm": _HostRuntime("vm", SessionRuntimeKind.HOST, slots=True, platforms=both),
+            "vm-b": _HostRuntime("vm-b", SessionRuntimeKind.HOST, slots=True, platforms=darwin),
+        },
+        accesses,
+    )
+
+    hosts = module.build_registered_hosts(_hosts_config(), MagicMock(), execution)
+
+    mac = hosts.executions[str(plans["vm-b"].execution)]
+    assert mac.label == "Host · macOS (sessions as their own users, sharing the network)"
+    assert mac.slot_platforms == darwin
+    shared = hosts.executions[str(plans["vm"].execution)]
+    assert shared.label == "Host · Linux (Nix + rootless Podman) or macOS (shared slots)"
 
 
 def test_a_runtime_without_a_kind_is_labelled_by_its_execution(tmp_path):

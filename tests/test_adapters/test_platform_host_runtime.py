@@ -327,6 +327,8 @@ def test_properties_aggregate_the_children():
     assert runtime.host_platforms == frozenset({LINUX, DARWIN})
     assert runtime.requires_root_daemon is True
     assert runtime.supports_slots is True
+    # Only the platform whose runtime keeps slots apart runs more than one per host.
+    assert runtime.slot_platforms == frozenset({LINUX})
     assert runtime.supports_reuse is False
     assert runtime.slot_limits == LIMITS
     assert runtime.session_runtime == SessionRuntimeKind.HOST
@@ -339,6 +341,7 @@ def test_properties_when_no_child_separates_slots_or_needs_a_daemon():
 
     assert runtime.requires_root_daemon is False
     assert runtime.supports_slots is False
+    assert runtime.slot_platforms == frozenset()
     assert runtime.slot_limits is None
     assert runtime.supports_reuse is True
 

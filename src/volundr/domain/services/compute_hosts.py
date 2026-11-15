@@ -63,10 +63,11 @@ FORGE_KEY_COMMENT = "niuu-forge"
 JOIN_SCRIPT_FILENAME = "niuu-join.sh"
 #: How the host list and refusals name a platform.
 PLATFORM_LABELS = {HostPlatform.LINUX: "Linux", HostPlatform.DARWIN: "macOS"}
-#: Why a Mac takes one session at a time: there is nothing to keep two apart.
+#: Why a Mac takes one session at a time unless the Forge runs shared slots.
 MACOS_ONE_SLOT = (
-    "macOS hosts run one session at a time: macOS has no network namespaces or cgroups, so "
-    "there is no boundary between two sessions on one Mac"
+    "macOS hosts run one session at a time here: macOS has no network namespaces or "
+    "cgroups, so only a user keeps two sessions on one Mac apart. Set "
+    "computeHosts.darwin.sharedSlots (the host catalog's darwin_shared_slots) to accept that"
 )
 
 
@@ -100,6 +101,8 @@ class HostExecution:
     forge_public_key: str
     ssh_user: str
     platforms: frozenset[HostPlatform]
+    #: The platforms whose runtime runs more than one slot per host.
+    slot_platforms: frozenset[HostPlatform] = frozenset()
 
     @property
     def refusal(self) -> str | None:
@@ -377,12 +380,12 @@ class ComputeHostService:
                 f"Connector {pairing.connector!r} cannot set up {label} hosts; mint a code "
                 "with another connector"
             )
-        if platform is HostPlatform.DARWIN and pairing.slots not in (None, 1):
+        if not _many_slots(platform, execution) and pairing.slots not in (None, 1):
             raise ComputeHostError(
                 f"{MACOS_ONE_SLOT}. This code was minted for {pairing.slots} slots: mint one "
                 "for this Mac with slots 1, or with slots left open"
             )
-        slots = _platform_slots(platform, pairing.slots)
+        slots = _platform_slots(platform, pairing.slots, execution)
         host = RegisteredHost(
             id=uuid4(),
             pool_id=self._pool_id,
@@ -466,6 +469,9 @@ class ComputeHostService:
         ]
 
     def suggestion(self, host: RegisteredHost) -> tuple[int, tuple[str, ...]] | None:
+        if host.platform is HostPlatform.DARWIN:
+            # No per-slot limits on a Mac to size its slots from.
+            return None
         execution = self._executions.get(host.execution)
         return suggest_slots(
             host.facts,
@@ -502,8 +508,9 @@ class ComputeHostService:
                 raise ComputeHostStateError(
                     "Drain the host before changing its slots: sessions are placed by them"
                 )
-            self._require_slot_count(self._execution(host.execution), slots)
-            _platform_slots(host.platform, slots)
+            execution = self._execution(host.execution)
+            self._require_slot_count(execution, slots)
+            _platform_slots(host.platform, slots, execution)
             self._require_capacity(host, slots)
             changes["slots"] = slots
         if not changes:
@@ -841,9 +848,13 @@ class ComputeHostService:
         """A slot count the measured host cannot hold is a finding, with the arithmetic."""
         if host.slots is None:
             return ()
-        if host.platform is HostPlatform.DARWIN and host.slots != 1:
-            return (f"{MACOS_ONE_SLOT}; this host is set to {host.slots} slots: set it to 1",)
         execution = self._executions.get(host.execution)
+        if not _many_slots(host.platform, execution) and host.slots != 1:
+            return (f"{MACOS_ONE_SLOT}; this host is set to {host.slots} slots: set it to 1",)
+        if host.platform is HostPlatform.DARWIN:
+            # A Mac's sessions have no CPU or memory limits, so no per-slot size bounds how
+            # many it holds: that is the operator's call.
+            return ()
         suggestion = suggest_slots(
             facts,
             execution.slot_limits if execution is not None else None,
@@ -885,9 +896,18 @@ def _joining_platform(facts: Mapping[str, JsonValue]) -> HostPlatform:
         ) from None
 
 
-def _platform_slots(platform: HostPlatform, slots: int | None) -> int | None:
-    """The slots a host on ``platform`` runs: a Mac runs exactly one, never more."""
+def _many_slots(platform: HostPlatform, execution: HostExecution | None) -> bool:
+    """Whether a host on ``platform`` may run more than one slot: a Mac only with shared slots."""
     if platform is not HostPlatform.DARWIN:
+        return True
+    return execution is not None and HostPlatform.DARWIN in execution.slot_platforms
+
+
+def _platform_slots(
+    platform: HostPlatform, slots: int | None, execution: HostExecution | None
+) -> int | None:
+    """The slots a host on ``platform`` runs: a Mac runs one unless the Forge shares slots."""
+    if _many_slots(platform, execution):
         return slots
     if slots is not None and slots != 1:
         raise ComputeHostError(f"{MACOS_ONE_SLOT}; set slots to 1, not {slots}")

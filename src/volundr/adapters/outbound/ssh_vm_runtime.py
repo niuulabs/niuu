@@ -1456,13 +1456,16 @@ class SshContainerVmRuntime(BrokeredCredentialPodManager, VmRuntime):
         }
 
     async def target(self, lease: AllocationRef, bootstrap: MachineBootstrap) -> SessionProxyTarget:
+        ends = self._tunnel_ends(self._layout(lease))
+        # A runtime whose slots share one loopback gives each slot's broker its own port.
+        remote_port = ends.pop("remote_port", self._broker_port)
         target = await self._guest_access.open_tunnel(
             lease,
             bootstrap,
-            remote_port=self._broker_port,
+            remote_port=remote_port,
             controller_host=self._platform_host,
             controller_port=self._platform_port,
-            **self._tunnel_ends(self._layout(lease)),
+            **ends,
         )
         await self._resume_delivery(lease, bootstrap)
         return target
@@ -1720,6 +1723,7 @@ class SshContainerVmRuntime(BrokeredCredentialPodManager, VmRuntime):
         layout = self._layout(lease)
         member = self._member(bootstrap, member_id)
         ends = self._tunnel_ends(layout)
+        ends.pop("remote_port", None)
         ends["reverse_port"] = 0
         ends["key"] = f"{ends.get('key') or lease.id}-m{member['port']}"
         return await self._guest_access.open_tunnel(

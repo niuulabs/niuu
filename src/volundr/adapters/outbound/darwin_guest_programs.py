@@ -106,13 +106,16 @@ finally:
     shutil.rmtree(str(work), ignore_errors=True)
 """
 
-#: Remove every unpacked bundle but the current one, while no session job is loaded.
-#: argv: the bundle root, the current digest, the session job's label.
+#: Remove every unpacked bundle but the current one, while no slot's session job is
+#: loaded (another slot may run an older bundle). argv: the bundle root, the current digest,
+#: the session jobs' label prefix (``world.niuu.slot``).
 PRUNE = r"""
 import pathlib, shutil, subprocess, sys
-cache, current, label = pathlib.Path(sys.argv[1]), sys.argv[2], sys.argv[3]
-loaded = subprocess.run(['launchctl', 'print', 'system/' + label], capture_output=True)
-if loaded.returncode == 0 or not cache.is_dir():
+cache, current, prefix = pathlib.Path(sys.argv[1]), sys.argv[2], sys.argv[3]
+listed = subprocess.run(['launchctl', 'list'], check=True, capture_output=True,
+    text=True).stdout.splitlines()[1:]
+loaded = [line.split()[-1] for line in listed if line.split()]
+if any(label.startswith(prefix + '.') for label in loaded) or not cache.is_dir():
     sys.exit(0)
 for entry in cache.iterdir():
     if entry.name != current:
@@ -292,7 +295,8 @@ if record('Users', user) is not None:
 if record('Groups', user) is not None:
     ds('-delete', '/Groups/' + user)
 subprocess.run(['dscacheutil', '-flushcache'], check=True)
-audit = subprocess.run(['sh', '-s', '--', str(s['uid_base']), '1', '', '0', 'check', '0'],
+audit = subprocess.run(['sh', '-s', '--', str(s['uid_base']), str(s['slot'] + 1), '', '0',
+    'check', str(s['slot'])],
     input=s['audit'], check=True, capture_output=True, text=True).stdout
 findings = [line[len('finding '):] for line in audit.splitlines() if line.startswith('finding ')]
 if findings:

@@ -541,6 +541,7 @@ the join and connector settings, and with guestMetadata the guest credential del
   "slot_cpu" $c.slot.cpu
   "slot_memory_mib" $c.slot.memoryMib
   "slot_pids" $c.slot.pids
+  "darwin_shared_slots" (($c.darwin).sharedSlots | default false)
 -}}
 {{- if $c.defaultServiceAccount -}}
 {{- $_ := set $catalog "default_service_account" $c.defaultServiceAccount -}}

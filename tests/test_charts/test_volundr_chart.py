@@ -2463,6 +2463,15 @@ class TestComputeHosts:
         # Teams and workflow runs on the hosts talk over the pod manager's mesh.
         assert config["pod_manager"]["kwargs"]["mesh"] == {"enabled": True}
 
+    def test_macs_share_their_slots_only_when_asked(self):
+        catalog = self._config(*self.ON)["compute"]["execution_catalog"]["kwargs"]
+        assert catalog["darwin_shared_slots"] is False
+
+        config = self._config(*self.ON, "--set", "computeHosts.darwin.sharedSlots=true")
+
+        catalog = config["compute"]["execution_catalog"]["kwargs"]
+        assert catalog["darwin_shared_slots"] is True
+
     def test_the_catalog_it_renders_resolves(self, tmp_path):
         from niuu.utils import import_class
         from volundr.compute.config import ComputeConfig
