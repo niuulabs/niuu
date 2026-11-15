@@ -667,7 +667,7 @@ class TestChecks:
         observe.return_value.count.assert_called_once()
 
     async def test_suggestion_for_a_host(self):
-        host = make_host(facts={"cpus": 20, "memory_mib": 40960})
+        host = make_host(facts={"platform": "linux", "cpus": 20, "memory_mib": 40960})
         service, *_ = _service(host)
         assert service.suggestion(host)[0] == 2  # memory (40960 − 8192) // 16384
         assert service.suggestion(make_host(execution="gone@1")) is None
@@ -687,13 +687,25 @@ MAC = {"platform": "darwin", "cpus": 10, "memory_mib": 32768}
 BOTH = frozenset(HostPlatform)
 
 
-def _mac_service(*hosts, execution_platforms=BOTH, connector_platforms=BOTH, inspector=None):
+def _mac_service(
+    *hosts,
+    execution_platforms=BOTH,
+    connector_platforms=BOTH,
+    inspector=None,
+    slot_platforms=frozenset({HostPlatform.LINUX}),
+):
     return _service(
         *hosts,
         inspector=inspector,
         connector=Connector(platforms=connector_platforms),
-        executions={"host@1": make_execution(platforms=execution_platforms)},
+        executions={
+            "host@1": make_execution(platforms=execution_platforms, slot_platforms=slot_platforms)
+        },
     )
+
+
+#: An execution whose darwin runtime runs shared slots (``darwin_shared_slots``).
+SHARED = frozenset(HostPlatform)
 
 
 class TestMacHosts:
@@ -753,7 +765,7 @@ class TestMacHosts:
         service, *_ = _mac_service(mac)
         with pytest.raises(
             ComputeHostError,
-            match="no boundary between two sessions on one Mac; set slots to 1, not 2",
+            match="only a user keeps two sessions on one Mac apart.*set slots to 1, not 2",
         ):
             await service.update(ADMIN, mac.id, slots=2)
 
@@ -763,6 +775,42 @@ class TestMacHosts:
         checked = await service.check(mac)
         assert checked.health is HostHealth.QUARANTINED
         assert "set to 2 slots: set it to 1" in checked.findings[0]
+
+    async def test_refusals_name_the_setting_that_shares_a_macs_slots(self):
+        mac = make_host(slots=1, facts=MAC)
+        service, *_ = _mac_service(mac)
+        with pytest.raises(ComputeHostError, match="computeHosts.darwin.sharedSlots"):
+            await service.update(ADMIN, mac.id, slots=4)
+
+    async def test_with_shared_slots_a_mac_joins_with_the_codes_slots(self):
+        service, *_ = _mac_service(slot_platforms=SHARED)
+        _, host = await self._join(service, slots=3)
+        assert (host.slots, host.platform) == (3, HostPlatform.DARWIN)
+
+    async def test_with_shared_slots_a_mac_joins_with_its_slots_left_open(self):
+        service, *_ = _mac_service(slot_platforms=SHARED)
+        _, host = await self._join(service, slots=None)
+        assert host.slots is None
+
+    async def test_with_shared_slots_a_macs_slots_can_change(self):
+        # (16 − 4) ÷ 4 CPUs and (65536 − 8192) ÷ 16384 MiB: three slots fit.
+        mac = make_host(slots=1, facts={**MAC, "cpus": 16, "memory_mib": 65536})
+        service, *_ = _mac_service(mac, slot_platforms=SHARED)
+        updated = await service.update(ADMIN, mac.id, slots=3)
+        assert updated.slots == 3
+
+    async def test_a_macs_slots_are_not_sized_from_the_linux_slot_limits(self):
+        # Its sessions have no limits: the Linux arithmetic (one slot here) does not apply.
+        mac = make_host(slots=1, facts=MAC)
+        service, *_ = _mac_service(mac, slot_platforms=SHARED)
+        assert (await service.update(ADMIN, mac.id, slots=6)).slots == 6
+        assert service.suggestion(mac) is None
+
+    async def test_with_shared_slots_a_mac_with_more_slots_is_not_quarantined(self):
+        mac = make_host(slots=1, facts=MAC)
+        service, *_ = _mac_service(mac, inspector=Inspector(facts=MAC), slot_platforms=SHARED)
+        checked = await service.check(mac)
+        assert checked.health is HostHealth.HEALTHY
 
     async def test_a_host_that_changed_platform_is_quarantined_and_keeps_its_own(self):
         host = make_host()  # joined as linux

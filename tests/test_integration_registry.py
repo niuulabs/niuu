@@ -749,3 +749,65 @@ def test_generic_mcp_uses_connection_endpoint_without_static_server(sample_conne
     }
     with pytest.raises(ValueError, match="reconnect"):
         registry.build_mcp_server_config(connection, {})
+
+
+class TestTeamInstall:
+    BASE = {
+        "slug": "x",
+        "name": "X",
+        "integration_type": "issue_tracker",
+        "oauth": {"authorize_url": "https://a", "token_url": "https://t"},
+    }
+
+    def test_parses_an_app_install(self):
+        from volundr.domain.models import TeamInstallMethod
+
+        [defn] = definitions_from_config(
+            [
+                {
+                    **self.BASE,
+                    "team_install": {
+                        "method": "oauth",
+                        "authorize_params": {"actor": "app"},
+                        "team_only": True,
+                    },
+                }
+            ]
+        )
+        assert defn.team_install.method is TeamInstallMethod.OAUTH
+        assert defn.team_install.authorize_params == {"actor": "app"}
+        assert defn.team_install.team_only is True
+
+    def test_parses_a_service_account(self):
+        [defn] = definitions_from_config(
+            [
+                {
+                    **self.BASE,
+                    "oauth": None,
+                    "team_install": {
+                        "method": "client_credentials",
+                        "token_url": "https://t",
+                        "token_params": {"audience": "api"},
+                        "required_config": ["cloud_id"],
+                    },
+                }
+            ]
+        )
+        assert defn.team_install.required_config == ("cloud_id",)
+        assert defn.team_install.token_params == {"audience": "api"}
+
+    def test_an_oauth_team_install_needs_oauth(self):
+        with pytest.raises(ValueError, match="has no oauth"):
+            definitions_from_config(
+                [{**self.BASE, "oauth": None, "team_install": {"method": "oauth"}}]
+            )
+
+    def test_client_credentials_need_a_token_url(self):
+        with pytest.raises(ValueError, match="needs token_url"):
+            definitions_from_config(
+                [{**self.BASE, "team_install": {"method": "client_credentials"}}]
+            )
+
+    def test_absent_means_personal_only(self):
+        [defn] = definitions_from_config([self.BASE])
+        assert defn.team_install is None

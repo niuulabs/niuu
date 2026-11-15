@@ -7,7 +7,7 @@ import logging
 from collections.abc import AsyncIterator, Iterable, Mapping
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from uuid import NAMESPACE_URL, UUID, uuid5
 
 try:
@@ -73,6 +73,14 @@ from volundr.domain.ports import (
     UnitMemberContext,
 )
 from volundr.domain.presented_files import PresentedFileStore
+from volundr.domain.project_memory import (
+    MIMIR_SERVER_PREFIX,
+    ProjectMemoryResolver,
+    has_derived,
+    merge_memory,
+    offers_facts,
+    with_memory_instructions,
+)
 from volundr.domain.projects import SessionCoordination
 from volundr.domain.secret_request_ports import SessionSecretCleanup
 from volundr.domain.services.forge_session_launch import (
@@ -88,6 +96,7 @@ from volundr.domain.services.forge_session_launch import (
 )
 from volundr.domain.services.session_startup import SessionStartupRecorder
 from volundr.domain.session_changes import SessionChanges
+from volundr.domain.session_launch_facts import LAUNCH_FACTS_KEY, without_launch_facts
 from volundr.domain.session_read_state import SessionReadState, SessionReadStateChange
 from volundr.domain.session_runtimes import SessionRuntimeOffer, requested_grants
 from volundr.ports.workflow_execution_credentials import ExecutionCredentialProjectionPort
@@ -209,6 +218,7 @@ class SessionService:
         forge_session_projection: ExecutionCredentialProjectionPort | None = None,
         secret_cleanup: SessionSecretCleanup | None = None,
         mesh_identity: MeshIdentityRetirer | None = None,
+        project_memory: ProjectMemoryResolver | None = None,
     ):
         if forge_session_projection is not None and not forge_session_projection.supports(
             runtime_backend
@@ -221,6 +231,7 @@ class SessionService:
         self._presented_file_store = presented_file_store
         self._secret_cleanup = secret_cleanup
         self._mesh_identity = mesh_identity
+        self._project_memory = project_memory
         self._pod_manager = pod_manager
         self._git_registry = git_registry
         self._user_integration = user_integration
@@ -441,6 +452,21 @@ class SessionService:
         """Batch-fetch sessions by ID. Returns only the ones that exist."""
         return await self._repository.get_many(session_ids)
 
+    async def list_project_sessions(self, project_ids: list[UUID], tenant_id: str) -> list[Session]:
+        """Sessions of *tenant_id* attached to any of the projects, without access checks.
+
+        Callers decide what the caller may do with them (room role through project
+        membership); this is a lookup, not an authorization.
+        """
+        return await self._repository.list_by_project(project_ids, tenant_id)
+
+    async def list_workflow_run_sessions(self, run_ids: list[str]) -> list[Session]:
+        """Sessions of the workflow runs, across tenants, oldest first, without access checks.
+
+        A lookup for the memory routes, which scope the answer to their caller themselves.
+        """
+        return await self._repository.list_by_workflow_runs(run_ids)
+
     async def with_read_states(
         self, sessions: list[Session], principal: Principal | None
     ) -> list[Session]:
@@ -458,12 +484,14 @@ class SessionService:
         reader_id = principal.user_id if principal is not None else None
         return await self._repository.changes_since(cursor, reader_id)
 
-    async def get_read_state(self, session_id: UUID, principal: Principal) -> SessionReadState:
-        session = await self._repository.get(session_id)
-        if session is None:
-            raise SessionNotFoundError(session_id)
-        await self._check_access(session, principal, "read")
-        states = await self._repository.get_read_states([session_id], principal.user_id)
+    async def get_read_state(self, session_id: UUID, reader_id: str) -> SessionReadState:
+        """*reader_id*'s read state of a session the caller has already authorized.
+
+        Whoever may read the session's transcript has a read state of it: the owner,
+        admins and tenant viewers ("read") and the people in its room ("read_room"),
+        so ``ForgeService`` checks both before calling this.
+        """
+        states = await self._repository.get_read_states([session_id], reader_id)
         if session_id not in states:
             raise SessionNotFoundError(session_id)
         return states[session_id]
@@ -472,14 +500,11 @@ class SessionService:
         self,
         session_id: UUID,
         change: SessionReadStateChange,
-        principal: Principal,
+        reader_id: str,
     ) -> SessionReadState:
-        session = await self._repository.get(session_id)
-        if session is None:
-            raise SessionNotFoundError(session_id)
-        await self._check_access(session, principal, "read")
-        state = await self._repository.change_read_state(session_id, principal.user_id, change)
-        await self.notify_read_state_changed(session_id, reader_id=principal.user_id)
+        """Change *reader_id*'s read state of a session the caller has already authorized."""
+        state = await self._repository.change_read_state(session_id, reader_id, change)
+        await self.notify_read_state_changed(session_id, reader_id=reader_id)
         return state
 
     async def notify_read_state_changed(
@@ -1352,6 +1377,10 @@ class SessionService:
         require_workload_type_available(workload_type)
         if not workload_config and session.workload_config:
             workload_config = dict(session.workload_config)
+        if workload_config and LAUNCH_FACTS_KEY in workload_config:
+            # The previous launch's facts end with it, and a caller cannot set them: the
+            # launch records what its own contributors establish (``_record_launch_facts``).
+            workload_config = without_launch_facts(workload_config)
         if self._execution_resolver is not None:
             workload_config = await self._resolve_execution_config(
                 session, workload_config or {}, launch_spec
@@ -1374,6 +1403,14 @@ class SessionService:
         project_context = session.workload_config.get("project_context", "")
         if project_context:
             workload_config = {**(workload_config or {}), "project_context": project_context}
+
+        # The project's memory mounts are derived again at every launch, so a mount added or
+        # removed since the last one applies to this one. A mount the registry no longer has,
+        # or two sources that disagree about one, refuse the start before the session flips
+        # to STARTING.
+        workload_config = await self.with_project_memory(
+            session, workload_config, launch_spec, workload_type
+        )
 
         # A restart ends the previous launch: its mesh peer ids are freed and its mesh
         # certificates revoked, exactly like its session credential (a launch that was
@@ -1446,6 +1483,53 @@ class SessionService:
         self._startup.watch(session_id)
 
         return starting
+
+    async def with_project_memory(
+        self,
+        session: Session,
+        workload_config: dict | None,
+        launch_spec: str | None,
+        workload_type: str = "session",
+    ) -> dict | None:
+        """``workload_config`` with its ``mimir`` merged from the session's project, the
+        launch spec and what the session itself sets.
+
+        A session in no project, or in a project with no mounts that has not had any derived
+        before, is returned as it is. Raises ``MemoryMountUnavailableError`` naming a project
+        mount the registry cannot give this session's owner, and ``MemoryMountClashError``
+        naming a mount two sources point at different targets.
+        """
+        if self._project_memory is None or session.coordination is None:
+            return workload_config
+        config = workload_config or {}
+        project = await self._project_memory.for_launch(
+            session.coordination.project_id,
+            tenant_id=session.tenant_id or "",
+            owner_id=session.owner_id or "",
+        )
+        if not project and not has_derived(config.get("mimir")):
+            return workload_config
+        merged = merge_memory(
+            config.get("mimir"), self._launch_spec_memory(launch_spec, workload_type), project
+        )
+        without = {key: value for key, value in config.items() if key != "mimir"}
+        return {**without, "mimir": merged} if merged else without
+
+    def _launch_spec_memory(self, launch_spec: str | None, workload_type: str) -> dict:
+        provider = self._launch_spec_provider
+        if provider is None:
+            return {}
+        spec = provider.get(launch_spec) if launch_spec else None
+        if spec is None and workload_type != "session":
+            spec = provider.get_default(workload_type)
+        if spec is None:
+            return {}
+        raw = spec.workload_config.get("mimir")
+        memory = dict(raw) if isinstance(raw, dict) else {}
+        hosted = spec.workload_config.get("mimir_hosted_url")
+        if hosted and not memory.get("hosted_url"):
+            memory["hosted_url"] = hosted
+        return memory
 
     async def _provision_background(
         self,
@@ -1668,6 +1752,11 @@ class SessionService:
         # A caller cannot change the internally persisted execution during contribution.
         if "_compute_execution" in session.workload_config:
             workload_config["_compute_execution"] = session.workload_config["_compute_execution"]
+        # Every launch, including a hosted member's at its unit's start, gets its project's
+        # memory as the project holds it now.
+        workload_config = await self.with_project_memory(
+            session, workload_config, launch_spec, workload_type
+        )
         resolved_connections = await self._resolve_connections(
             session, principal, integration_ids, workload_config
         )
@@ -1696,7 +1785,9 @@ class SessionService:
             workload_type=workload_type,
             # Contributors never see the credential bookkeeping: an otherwise
             # empty workload config must still read as empty to them.
-            workload_config=without_forge_mcp(workload_config),
+            # Nor the record of the previous launch's facts: a contributor reports what
+            # this launch establishes and never reads what an earlier one did.
+            workload_config=without_launch_facts(without_forge_mcp(workload_config)),
             unit_members=await self._unit_member_contexts(session, principal),
         )
 
@@ -1704,8 +1795,22 @@ class SessionService:
         for contributor in self._contributors:
             contribution = await contributor.contribute(session, context)
             contributions.append(contribution)
+        session = await self._record_launch_facts(session, contributions)
 
         spec = SessionSpec.merge(contributions)
+        if any(
+            str(server.get("name", "")).startswith(MIMIR_SERVER_PREFIX)
+            for server in spec.values.get("mcpServers", [])
+            if isinstance(server, dict)
+        ):
+            # Appended after persona and launch-spec resolution, as the project brief is,
+            # so every harness is told how to use the session's memory whichever prompt
+            # the session was given.
+            session_values = spec.values.setdefault("session", {})
+            session_values["systemPrompt"] = with_memory_instructions(
+                session_values.get("systemPrompt", ""),
+                facts=offers_facts(workload_config.get("mimir")),
+            )
         spec.forge_session = await self._deliver_forge_session(session, spec)
         if session.coordination and (
             project_context := session.workload_config.get("project_context")
@@ -1719,6 +1824,37 @@ class SessionService:
             )
         self._overlay_resume_session(session, spec)
         return session, spec
+
+    async def _record_launch_facts(
+        self,
+        session: Session,
+        contributions: list[SessionContribution],
+    ) -> Session:
+        """Record what this launch's contributors established on the session, and return it.
+
+        The record replaces the whole of the previous one (and whatever a request carried
+        under its key), and is dropped when this launch established nothing, so a fact
+        never outlives the launch that made it. Two contributors may report the same fact
+        only with the same value.
+        """
+        facts: dict[str, tuple[str, Any]] = {}
+        for contributor, contribution in zip(self._contributors, contributions, strict=True):
+            for key, value in contribution.launch_facts.items():
+                if key in facts and facts[key][1] != value:
+                    raise ValueError(
+                        f"Launch fact {key!r} is reported as {facts[key][1]!r} by "
+                        f"{facts[key][0]!r} and as {value!r} by {contributor.name!r}; "
+                        "two contributors must not disagree about the same fact"
+                    )
+                facts[key] = (contributor.name, value)
+        recorded = without_launch_facts(session.workload_config)
+        if facts:
+            recorded[LAUNCH_FACTS_KEY] = {key: value for key, (_, value) in facts.items()}
+        if session.workload_config == recorded:
+            return session
+        session = session.model_copy(update={"workload_config": recorded})
+        await self._repository.update(session)
+        return session
 
     # -- A workflow run's unit: members hosted by the unit root ----------------------------
 
@@ -2050,6 +2186,23 @@ class SessionService:
         if getattr(self._pod_manager, "delivers_forge_session_token", False):
             return True
         return self._forge_session_projection is not None
+
+    @property
+    def delivers_forge_session_somewhere(self) -> bool:
+        """Whether some launch can give its broker the session credential.
+
+        A placement manager runs sessions on several runtimes. A feature that needs the
+        credential is possible when one of them delivers it; a session placed on one that
+        does not finds out at its own start, where Skuld refuses the feature by name.
+        """
+        if self._forge_session_tokens is None:
+            return False
+        if self._forge_session_projection is not None:
+            return True
+        somewhere = getattr(self._pod_manager, "delivers_forge_session_token_somewhere", None)
+        if somewhere is not None:
+            return bool(somewhere)
+        return bool(getattr(self._pod_manager, "delivers_forge_session_token", False))
 
     def _delivers_forge_session_to(self, session: Session) -> bool:
         """Whether the pod manager that runs *session* hands its broker the credential.

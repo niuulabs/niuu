@@ -25,9 +25,11 @@ from pydantic import BaseModel, Field
 
 from niuu.adapters.identity_headers import parse_roles_header
 from niuu.build_identity import build_identity
+from niuu.cap_telemetry import health_counts
 from niuu.domain.conversation_timeline import resolve_timeline_turn
 from niuu.domain.history_paging import InvalidHistoryCursorError
 from niuu.domain.json_text import json_text_safe
+from niuu.domain.message_author import MessageAuthor
 from niuu.domain.presented_files import (
     PRESENTED_ARTIFACT_KEY_FIELD,
     PRESENTED_ARTIFACT_KEY_PATTERN,
@@ -53,6 +55,7 @@ from skuld.event_log import FORGE_SESSIONS_PATH
 from skuld.file_routes import register_file_routes
 from skuld.forge_mcp.routes import register_forge_mcp_routes
 from skuld.harness_control import HarnessControl, HarnessControlError
+from skuld.memory_mcp.routes import register_memory_mcp_routes
 from skuld.path_security import (
     UnsafePathError,
     resolve_contained_path,
@@ -71,6 +74,8 @@ from skuld.presented_durable import (
 from skuld.preview import PreviewMiddleware
 from skuld.room_role_port import RoomRoleResolutionError
 from skuld.service_manager import ServiceCreateRequest, ServiceStatus
+from skuld.voice.channel import register_voice_routes
+from skuld.websocket_auth import author_from_headers
 from skuld.workflow_steps import WorkflowOfferRefusedError, WorkflowStepNotHostedError
 from volundr.log_aggregate import aggregate_workspace_logs
 
@@ -274,7 +279,10 @@ async def _effective_room_role(request: Request) -> str | None:
       gates every caller who reaches this pod at all, and participants are
       not supported on these backends (invites are refused with 409), so a
       missing header simply means owner — identical to this pod's behavior
-      before session_participants existed. This is NOT gated on
+      before session_participants existed. VM invites are allowed: every
+      browser request reaches a VM broker through Forge's session proxy,
+      which always stamps the header; only Forge's own tunnel and the guest
+      itself reach it without one. This is NOT gated on
       ``enforce_ownership``: a non-enforced Kubernetes deployment's nginx
       sidecar always sets x-forwarded-for on every request it proxies
       (charts/skuld/templates/nginx-configmap.yaml), so a loopback-based
@@ -409,6 +417,7 @@ async def health() -> dict:
         "session_id": broker.session_id,
         **startup,
         **_BUILD_IDENTITY,
+        "caps": health_counts(),
     }
 
 
@@ -1008,6 +1017,9 @@ async def get_preview_ports() -> dict:
 # handling or room-role gate (skuld.preview).
 app.add_middleware(PreviewMiddleware, forwarder_provider=lambda: broker.preview_forwarder)
 register_forge_mcp_routes(app, lambda: broker, dependencies=_LOOPBACK_GUARD)
+register_memory_mcp_routes(app, lambda: broker, dependencies=_LOOPBACK_GUARD)
+# The session voice channel at /voice: owner-only, answered 404 while it is off.
+register_voice_routes(app, lambda: broker._voice_channel)
 
 # --------------------------------------------------------------------------- present-file
 #
@@ -1481,11 +1493,9 @@ class _RoomJoinRequest(BaseModel):
     participant_id: str
     display_name: str = ""
     environment_id: str
-    role: str = "observer"
     room_id: str = ""
     capabilities: list[str] = Field(default_factory=list)
     surfaces: list[str] = Field(default_factory=lambda: ["skuld.room"])
-    environment_action_authorities: list[str] = Field(default_factory=list)
     participant_type: str = "human"
     session_id: str = ""
     subscribes_to: list[str] = Field(default_factory=list)
@@ -1514,13 +1524,6 @@ class _RoomCloseRequest(BaseModel):
     room_id: str
     reason: str = "closed"
     summary: str = ""
-
-
-class _RoomCapabilityRequest(BaseModel):
-    """Request body for verifying a participant control capability."""
-
-    participant_id: str
-    capability: str
 
 
 @app.post("/api/message", dependencies=_LOOPBACK_GUARD)
@@ -1588,6 +1591,20 @@ def _room_identity_fields(
     return None, f"room_{role}"
 
 
+def _request_author(request: Request) -> MessageAuthor | None:
+    """The verified person behind this request, for the message's author.
+
+    Read only from the headers the session proxy stamps (like the room role): never from
+    the body, so a caller below owner cannot name someone else as the author.
+    """
+    cfg = broker._settings.ws_auth
+    return author_from_headers(
+        request.headers,
+        user_id_header=cfg.user_id_header,
+        display_name_header=cfg.display_name_header,
+    )
+
+
 @app.post("/api/room/message")
 async def send_room_message(request: Request, body: _RoomMessageRequest) -> dict:
     """Inject a human-originated message into the active room session."""
@@ -1601,6 +1618,7 @@ async def send_room_message(request: Request, body: _RoomMessageRequest) -> dict
             participant_id=participant_id,
             metadata=metadata,
             deliver_to_transport=body.deliver_to_transport,
+            author=_request_author(request),
         )
     except ValueError as exc:
         raise HTTPException(400, str(exc))
@@ -1632,6 +1650,7 @@ async def send_directed_room_message(request: Request, body: _DirectedRoomMessag
             body.content,
             source=source,
             metadata=metadata,
+            author=_request_author(request),
         )
     except ValueError as exc:
         raise HTTPException(400, str(exc))
@@ -1778,11 +1797,9 @@ async def join_room(body: _RoomJoinRequest) -> dict:
             participant_id=body.participant_id,
             display_name=body.display_name,
             environment_id=body.environment_id,
-            role=body.role,
             room_id=body.room_id,
             capabilities=body.capabilities or None,
             surfaces=body.surfaces or None,
-            environment_action_authorities=body.environment_action_authorities,
             participant_type=body.participant_type,
             session_id=body.session_id,
             subscribes_to=body.subscribes_to or None,
@@ -1848,24 +1865,18 @@ async def close_room(body: _RoomCloseRequest) -> dict:
     return {"status": "closed", **closed}
 
 
-@app.post("/api/room/require-capability")
-async def require_room_capability(body: _RoomCapabilityRequest) -> dict:
-    """Verify a joined participant holds a control capability (403 otherwise)."""
-    try:
-        broker.require_room_capability(body.participant_id, body.capability)
-    except RuntimeError as exc:
-        raise HTTPException(503, str(exc))
-    except LookupError as exc:
-        raise HTTPException(404, str(exc))
-    except PermissionError as exc:
-        raise HTTPException(403, str(exc))
-    return {"status": "ok", "participant_id": body.participant_id, "capability": body.capability}
-
-
 @app.get("/api/room/participants")
 async def get_room_participants(environment_id: str | None = Query(default=None)) -> dict:
-    """Return the current participants in the active room session."""
-    return {"participants": broker.get_room_participants(environment_id=environment_id)}
+    """Return the current participants in the active room session.
+
+    ``connected_people`` is apart from ``participants`` on purpose: the verified people with a
+    live browser connection, ``[{"user_id", "display_name"}]``. They are not seated in the
+    room, so nothing that routes to its participants sees them.
+    """
+    return {
+        "participants": broker.get_room_participants(environment_id=environment_id),
+        "connected_people": broker.connected_people(),
+    }
 
 
 class _HelpAnswerRequest(BaseModel):

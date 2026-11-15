@@ -2449,8 +2449,28 @@ class TestComputeHosts:
         assert config["pod_manager"]["adapter"].endswith("VmPodManager")
         assert config["pod_manager"]["runtime_backend"] == "vm"
         assert config["pod_manager"]["kwargs"]["pool_id"] == compute.pool_id
+        # The pool is the hosts that joined: no machine maximum strands any of them.
+        assert "max_machines" not in config["compute"]
+        assert "max_machines" not in config["pod_manager"]["kwargs"]
         # Without guestMetadata there is no credential delivery to configure.
         assert compute.credential_delivery is None
+
+    def test_the_mesh_is_off_unless_it_is_asked_for(self):
+        assert "mesh" not in self._config(*self.ON)["pod_manager"]["kwargs"]
+
+        config = self._config(*self.ON, "--set", "computeHosts.mesh.enabled=true")
+
+        # Teams and workflow runs on the hosts talk over the pod manager's mesh.
+        assert config["pod_manager"]["kwargs"]["mesh"] == {"enabled": True}
+
+    def test_macs_share_their_slots_only_when_asked(self):
+        catalog = self._config(*self.ON)["compute"]["execution_catalog"]["kwargs"]
+        assert catalog["darwin_shared_slots"] is False
+
+        config = self._config(*self.ON, "--set", "computeHosts.darwin.sharedSlots=true")
+
+        catalog = config["compute"]["execution_catalog"]["kwargs"]
+        assert catalog["darwin_shared_slots"] is True
 
     def test_the_catalog_it_renders_resolves(self, tmp_path):
         from niuu.utils import import_class
@@ -2553,3 +2573,176 @@ def test_forge_keeps_its_private_files_private_across_restarts():
     assert deployment["spec"]["template"]["spec"]["securityContext"]["fsGroupChangePolicy"] == (
         "OnRootMismatch"
     )
+
+
+@pytest.mark.skipif(shutil.which("helm") is None, reason="Helm is required")
+class TestProjectMemoryDirectory:
+    """Where a project's memory mounts are resolved: the file in mini mode, the hosted Mimir."""
+
+    def test_without_a_hosted_mimir_the_file_directory_is_left_to_the_default(self):
+        from volundr.config import ProjectsConfig
+
+        config = _rendered_configmap()
+        memory = ProjectsConfig.model_validate(config["projects"]).memory
+        assert memory.directory_adapter.endswith("MimirRegistryFileDirectory")
+        assert "mimir" not in config["workload_identity"]["audiences"]
+
+    def test_a_hosted_mimir_makes_the_http_directory_the_default(self):
+        from volundr.config import ProjectsConfig
+
+        config = _rendered_configmap(
+            "--set", "projectMemory.mimirUrl=https://mimir.example.com", *WORKLOAD_SIGNING_KEY
+        )
+        memory = ProjectsConfig.model_validate(config["projects"]).memory
+        assert memory.directory_adapter.endswith("MimirRegistryHttpDirectory")
+        assert memory.directory_kwargs == {
+            "base_url": "https://mimir.example.com",
+            "audience": "mimir",
+        }
+        assert config["workload_identity"]["audiences"] == ["volundr-api", "mimir"]
+
+    def test_the_audience_is_not_listed_twice(self):
+        config = _rendered_configmap(
+            "--set",
+            "projectMemory.mimirUrl=https://mimir.example.com",
+            "--set-json",
+            'workloadIdentity.audiences=["volundr-api","mimir"]',
+            *WORKLOAD_SIGNING_KEY,
+        )
+        assert config["workload_identity"]["audiences"] == ["volundr-api", "mimir"]
+
+    def test_a_hosted_mimir_without_workload_identity_refuses_to_render(self):
+        command = [
+            "helm",
+            "template",
+            "test",
+            str(CHART_DIR),
+            *BIFROST_URL,
+            "--set",
+            "projectMemory.mimirUrl=https://mimir.example.com",
+        ]
+        result = subprocess.run(command, capture_output=True, text=True)
+        assert result.returncode != 0
+        assert "projectMemory.mimirUrl asks the hosted Mimir with a workload token" in result.stderr
+
+
+@pytest.mark.skipif(shutil.which("helm") is None, reason="Helm is required")
+class TestMemoryGateway:
+    """memory.gatewayUrl: the gateway every session's memory server calls."""
+
+    def test_without_a_gateway_no_memory_section_is_rendered(self):
+        assert "memory" not in _rendered_configmap()
+
+    def test_a_gateway_is_rendered_for_forge_to_hand_to_every_session(self):
+        from volundr.config import MemoryConfig
+
+        config = _rendered_configmap(
+            "--set",
+            "memory.gatewayUrl=http://mimir.volundr.svc/api/v1/mimir",
+            *WORKLOAD_SIGNING_KEY,
+        )
+        memory = MemoryConfig.model_validate(config["memory"])
+        assert memory.gateway_url == "http://mimir.volundr.svc/api/v1/mimir"
+
+    def test_the_gateways_service_subject_is_rendered_for_forge(self):
+        from volundr.config import MemoryConfig
+
+        config = _rendered_configmap(
+            "--set",
+            "memory.gatewayUrl=http://mimir.volundr.svc/api/v1/mimir",
+            "--set",
+            "memory.gatewayServiceSubject=system:serviceaccount:niuu:mimir",
+            *WORKLOAD_SIGNING_KEY,
+        )
+        memory = MemoryConfig.model_validate(config["memory"])
+        assert memory.gateway_service_subject == "system:serviceaccount:niuu:mimir"
+
+    def test_a_verifying_identity_needs_the_gateways_service_subject(self):
+        command = [
+            "helm",
+            "template",
+            "test",
+            str(CHART_DIR),
+            *BIFROST_URL,
+            *WORKLOAD_SIGNING_KEY,
+            "--set",
+            "memory.gatewayUrl=http://mimir.volundr.svc/api/v1/mimir",
+            "--set",
+            "identity.adapter=volundr.adapters.outbound.identity.EnvoyHeaderIdentityAdapter",
+        ]
+        result = subprocess.run(command, capture_output=True, text=True)
+        assert result.returncode != 0
+        assert "memory.gatewayServiceSubject" in result.stderr
+
+        with_subject = [
+            *command,
+            "--set",
+            "memory.gatewayServiceSubject=system:serviceaccount:niuu:mimir",
+        ]
+        assert subprocess.run(with_subject, capture_output=True, text=True).returncode == 0
+
+    def test_a_gateway_without_session_credentials_refuses_to_render(self):
+        command = [
+            "helm",
+            "template",
+            "test",
+            str(CHART_DIR),
+            *BIFROST_URL,
+            "--set",
+            "memory.gatewayUrl=http://mimir.volundr.svc/api/v1/mimir",
+        ]
+        result = subprocess.run(command, capture_output=True, text=True)
+        assert result.returncode != 0
+        assert "memory.gatewayUrl needs Forge session credentials" in result.stderr
+
+
+_VOICE_PROVIDER = (
+    "voice.providers.openai.adapter=volundr.adapters.outbound.realtime_voice.OpenAIRealtimeMinter",
+    "voice.providers.openai.credential_name=openai",
+)
+
+
+def _voice_args(*sets: str) -> list[str]:
+    args: list[str] = []
+    for value in sets:
+        args += ["--set", value]
+    return args
+
+
+@pytest.mark.skipif(shutil.which("helm") is None, reason="Helm is required")
+class TestSessionVoice:
+    """voice: realtime voice calls with ordinary sessions."""
+
+    def test_off_renders_no_voice_section(self):
+        assert "voice" not in _rendered_configmap()
+
+    def test_on_renders_what_forge_validates(self):
+        from volundr.config import SessionVoiceConfig
+
+        config = _rendered_configmap(
+            *_voice_args("voice.enabled=true", "voice.defaultPersona=lexi", *_VOICE_PROVIDER),
+            *WORKLOAD_SIGNING_KEY,
+        )
+        voice = SessionVoiceConfig.model_validate(config["voice"])
+        assert voice.enabled is True
+        assert voice.default_persona == "lexi"
+        assert voice.providers["openai"].credential_name == "openai"
+        assert voice.providers["openai"].credential_key == "api_key"
+
+    def test_without_session_credentials_refuses_to_render(self):
+        stderr = _render_failure(
+            *_voice_args("voice.enabled=true", "voice.defaultPersona=lexi", *_VOICE_PROVIDER)
+        )
+        assert "voice.enabled needs Forge session credentials" in stderr
+
+    def test_without_a_default_persona_refuses_to_render(self):
+        stderr = _render_failure(
+            *_voice_args("voice.enabled=true", *_VOICE_PROVIDER), *WORKLOAD_SIGNING_KEY
+        )
+        assert "voice.enabled needs voice.defaultPersona" in stderr
+
+    def test_without_providers_refuses_to_render(self):
+        stderr = _render_failure(
+            *_voice_args("voice.enabled=true", "voice.defaultPersona=lexi"), *WORKLOAD_SIGNING_KEY
+        )
+        assert "voice.enabled needs voice.providers" in stderr

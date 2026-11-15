@@ -25,11 +25,10 @@ spec:
         spec:
           restartPolicy: Never
           automountServiceAccountToken: false
+          {{- with .Values.podSecurityContext }}
           securityContext:
-            runAsNonRoot: true
-            runAsUser: 1000
-            runAsGroup: 1000
-            fsGroup: 1000
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
           {{- with .Values.imagePullSecrets }}
           imagePullSecrets: {{ toYaml . | nindent 12 }}
           {{- end }}
@@ -53,10 +52,10 @@ spec:
                     name: {{ .Values.existingSecret }}
               {{- end }}
               resources: {{ toYaml .Values.resources | nindent 16 }}
+              {{- with .Values.securityContext }}
               securityContext:
-                allowPrivilegeEscalation: false
-                capabilities:
-                  drop: [ALL]
+                {{- toYaml . | nindent 16 }}
+              {{- end }}
               volumeMounts:
                 - {name: data, mountPath: /data}
                 - {name: config, mountPath: /etc/gbrain, readOnly: true}

@@ -124,9 +124,10 @@ class TestPairingUrlScrape:
 
 
 class TestSpawnEnv:
-    async def test_file_token_mode_refuses_before_spawn_or_read(self, monkeypatch):
-        monkeypatch.setenv("SKULD__CLAUDE_OAUTH_TOKEN_FILE", "/test-only/unread-token")
-        transport = RemoteControlTransport("/tmp", session_id="tok12345")
+    async def test_file_token_mode_refuses_before_spawn_or_read(self):
+        transport = RemoteControlTransport(
+            "/tmp", session_id="tok12345", claude_oauth_token_file="/test-only/unread-token"
+        )
         with (
             patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as spawn,
             patch("skuld.transports.claude_env._read_oauth_token_file") as read,

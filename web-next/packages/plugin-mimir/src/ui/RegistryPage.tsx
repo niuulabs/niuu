@@ -27,7 +27,6 @@ const EMPTY_REGISTRY_MOUNT: Omit<RegistryMount, 'id'> = {
   lifecycle: 'registered',
   role: 'shared',
   url: '',
-  path: '',
   categories: [],
   authRef: null,
   defaultReadPriority: 10,
@@ -113,14 +112,6 @@ export function RegistryMountEditor({
             className={INPUT_CLS}
             value={mount.url}
             onChange={(event) => onChange({ ...mount, url: event.currentTarget.value })}
-          />
-        </label>
-        <label>
-          <span className={LABEL_CLS}>Path</span>
-          <input
-            className={INPUT_CLS}
-            value={mount.path}
-            onChange={(event) => onChange({ ...mount, path: event.currentTarget.value })}
           />
         </label>
         <label>
@@ -437,7 +428,7 @@ export function RegistryPage() {
                         </span>
                       </div>
                       <div className="niuu:font-mono niuu:text-[11px] niuu:text-text-muted niuu:mt-1">
-                        {mount.url || mount.path || 'Configured by host'}
+                        {mount.url || 'Configured by host'}
                       </div>
                       <p className="niuu:m-0 niuu:mt-2 niuu:text-sm niuu:text-text-secondary">
                         {mount.desc || 'No description provided.'}
@@ -490,7 +481,6 @@ export function RegistryPage() {
                                 lifecycle: mount.lifecycle,
                                 role: mount.role,
                                 url: mount.url,
-                                path: mount.path,
                                 categories: mount.categories ?? [],
                                 adapter: mount.adapter,
                                 kwargs: mount.kwargs,

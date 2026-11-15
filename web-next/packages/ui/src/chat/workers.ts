@@ -1,4 +1,5 @@
 import type { ChatMessage, MeshEvent, MeshOutcomeEvent, RoomParticipant } from './types';
+import { SESSION_AGENT_PEER_ID } from './types';
 import { extractOutcomeBlock, parseOutcomeFields } from './components/OutcomeCard';
 import { resolveParticipantColor } from './utils/participantColor';
 
@@ -100,9 +101,11 @@ export function verdictLabel(verdict: string | undefined): string {
 
 /**
  * A participant that works in the room. A Skuld session leads its own room; another Skuld
- * session in it (a member of the workflow run the room's host started) works there.
+ * session in it (a member of the workflow run the room's host started) works there. The
+ * stand-in the chat gives a session's own agent is that session, whatever its peer id.
  */
-function isWorker(participant: RoomParticipant, hostPeerId?: string): boolean {
+export function isRoomAgent(participant: RoomParticipant, hostPeerId?: string): boolean {
+  if (participant.peerId === SESSION_AGENT_PEER_ID) return false;
   const type = participant.participantType ?? 'ravn';
   if (type === 'skuld' && hostPeerId && participant.peerId !== hostPeerId) return true;
   return !LEAD_TYPES.has(type);
@@ -206,7 +209,7 @@ function departedWorkers(
   for (const message of messages) {
     const participant = message.participant;
     if (!participant || participants.has(participant.peerId)) continue;
-    if (departed.has(participant.peerId) || !isWorker(participant, hostPeerId)) continue;
+    if (departed.has(participant.peerId) || !isRoomAgent(participant, hostPeerId)) continue;
     departed.set(participant.peerId, { ...participant, status: 'left' });
   }
   for (const event of meshEvents) {
@@ -234,7 +237,7 @@ export function roomWorkers(
 ): Worker[] {
   const outcomes = workerOutcomes(meshEvents, messages);
   const present = [...participants.values()].filter((participant) =>
-    isWorker(participant, hostPeerId),
+    isRoomAgent(participant, hostPeerId),
   );
   const departed = departedWorkers(participants, meshEvents, messages, hostPeerId);
   return [...present, ...departed].map((participant) => {

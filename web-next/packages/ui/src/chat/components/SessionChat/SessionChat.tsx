@@ -42,10 +42,13 @@ import {
   messageModel,
   ModelSpeaker,
 } from '../ChatMessages';
+import { isNotificationCardTool, isSecretRequestTool } from '../ToolBlock/groupContentBlocks';
 import { RoomMessage } from '../RoomMessage';
 import { ThreadGroup } from '../ThreadGroup';
 import { WorkersStrip } from '../WorkersStrip';
 import { useSessionLinks, type SessionLink } from '../../sessionLinks';
+import { ChatAuthorshipProvider, conversationAuthorship } from '../../authorship';
+import { PersonQuestionsProvider, type PersonQuestionsState } from '../../personQuestions';
 import { ProgressLane } from '../ProgressLane';
 import { WorkerSheet } from '../WorkerSheet';
 import { HandoffRow, handoffParties } from '../HandoffRow';
@@ -143,6 +146,23 @@ function DefaultPermissionRequests({
 export interface SessionChatProps {
   /** All completed messages */
   messages: readonly ChatMessage[];
+  /**
+   * The signed-in person's id, as the broker records authors. With it, a message someone
+   * else wrote names its author even in a conversation of two; without it, authors are
+   * named only once several people have spoken.
+   */
+  viewerId?: string;
+  /**
+   * Questions the agent put to people: the accepted answers, the broker's refusals and the
+   * sends in flight (all by question id), and how to answer. `onAnswer` is omitted where the
+   * conversation cannot be answered in (a replay), so a card then only shows its state.
+   */
+  personQuestions?: Pick<PersonQuestionsState, 'answers' | 'errors' | 'sending' | 'onAnswer'>;
+  /**
+   * The viewer holds the approver room role or above, so may answer any question put to a
+   * person, not only their own. The broker enforces it.
+   */
+  roomApprover?: boolean;
   /** Currently streaming text (if any) */
   streamingContent?: string;
   /** Parts for the streaming message */
@@ -325,6 +345,16 @@ function groupStartedAt(
 }
 
 /** "54s", "2m 5s", "1h 12m": how long a turn worked, as Lexi writes it. */
+/** A turn that carries a card for the operator: a notification or a secret request. */
+function addressesOperator(message: ChatMessage): boolean {
+  return (message.parts ?? []).some(
+    (part) =>
+      part.type === 'tool_use' &&
+      !!part.name &&
+      (isNotificationCardTool(part.name) || isSecretRequestTool(part.name)),
+  );
+}
+
 function workedDuration(seconds: number): string {
   if (seconds < 60) return `${seconds}s`;
   const minutes = Math.floor(seconds / 60);
@@ -333,7 +363,37 @@ function workedDuration(seconds: number): string {
   return minutes % 60 ? `${hours}h ${minutes % 60}m` : `${hours}h`;
 }
 
-export function SessionChat({
+const NO_ENTRIES: ReadonlyMap<string, never> = new Map<string, never>();
+const NO_MEMBERS: ReadonlySet<string> = new Set<string>();
+
+/** The conversation: its messages know whether to name who sent them. */
+export function SessionChat(props: SessionChatProps) {
+  const { messages, viewerId, personQuestions, roomApprover = false } = props;
+  const authorship = useMemo(
+    () => conversationAuthorship(messages, viewerId),
+    [messages, viewerId],
+  );
+  const questions = useMemo<PersonQuestionsState>(
+    () => ({
+      viewerId,
+      approver: roomApprover,
+      answers: personQuestions?.answers ?? NO_ENTRIES,
+      errors: personQuestions?.errors ?? NO_ENTRIES,
+      sending: personQuestions?.sending ?? NO_MEMBERS,
+      onAnswer: personQuestions?.onAnswer,
+    }),
+    [viewerId, roomApprover, personQuestions],
+  );
+  return (
+    <ChatAuthorshipProvider value={authorship}>
+      <PersonQuestionsProvider value={questions}>
+        <SessionChatView {...props} />
+      </PersonQuestionsProvider>
+    </ChatAuthorshipProvider>
+  );
+}
+
+function SessionChatView({
   messages,
   streamingContent,
   streamingParts,
@@ -605,7 +665,9 @@ export function SessionChat({
 
   // Never fold across speakers, threads, visibility changes, or system notices.
   // Consecutive contributions remain in transcript order, including when a
-  // participant returns after another participant has spoken.
+  // participant returns after another participant has spoken. A notification or
+  // secret request is addressed to the operator, so it stands on its own like a
+  // notice instead of folding into the speaker's "Worked" row.
   const compactRoomGroups = useMemo(() => {
     const groups: (MessageGroup | { type: 'compact'; turn: CompactTurn })[] = [];
     let run: ChatMsg[] = [];
@@ -628,7 +690,8 @@ export function SessionChat({
       if (
         group.type === 'thread' ||
         group.message.role !== 'assistant' ||
-        group.message.metadata?.messageType
+        group.message.metadata?.messageType ||
+        addressesOperator(group.message)
       ) {
         flush();
         groups.push(group);
@@ -1494,6 +1557,7 @@ export function SessionChat({
               chatEndpoint={chatEndpoint}
               availableCommands={availableCommands}
               participants={participants}
+              hostPeerId={hostPeerId}
               onFetchFiles={onFetchFiles}
             />
           </div>

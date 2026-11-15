@@ -92,27 +92,35 @@ def member_spec(entry: Mapping[str, Any]) -> SessionSpec:
 
 
 def require_same_pod(root: SessionSpec, entry: Mapping[str, Any]) -> None:
-    """Refuse a member whose pod differs from the root's: a unit has one pod.
+    """Refuse a member that asks for a pod part its unit does not have: a unit has one pod.
 
     The unit's volumes, mounts, init containers, sidecars and ServiceAccount come from the
-    root's spec and are shared by every Skuld of the unit. A member that declares others
-    would silently run without them, so the unit does not start.
+    root's spec and are shared by every Skuld of the unit. A member may declare any of the
+    unit's own parts, or none (its secrets are rendered by the root's injection, and every
+    member's container mounts the root's volumes). A member that declares a part the root
+    lacks would silently run without it, so the unit does not start.
     """
     pod = entry["pod"]
-    wanted = {
+    unit = {
         "volumes": [dict(v) for v in root.pod_spec.volumes],
         "volume_mounts": [dict(v) for v in root.pod_spec.volume_mounts],
         "init_containers": [dict(v) for v in root.pod_spec.init_containers],
         "extra_containers": [dict(v) for v in root.pod_spec.extra_containers],
-        "service_account": root.pod_spec.service_account or "",
     }
-    for key, expected in wanted.items():
-        if pod[key] != expected:
+    for key, parts in unit.items():
+        if any(part not in parts for part in pod[key]):
             raise HostedUnitError(
                 f"Member session {entry['id']} declares its own {key.replace('_', ' ')}, which "
-                "differ from the unit root's: the members of a run share one VM and so one pod "
+                "its unit root does not have: the members of a run share one VM and so one pod "
                 "layout. Give the members and the root the same integrations and secrets"
             )
+    account = pod["service_account"]
+    if account and account != (root.pod_spec.service_account or ""):
+        raise HostedUnitError(
+            f"Member session {entry['id']} declares its own service account {account!r}, "
+            "which is not its unit root's: the members of a run share one VM and so one pod "
+            "layout. Give the members and the root the same integrations and secrets"
+        )
 
 
 @runtime_checkable

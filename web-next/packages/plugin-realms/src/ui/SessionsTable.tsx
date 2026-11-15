@@ -1,5 +1,5 @@
 import { Link } from '@tanstack/react-router';
-import type { VolundrSession } from '@niuulabs/plugin-volundr';
+import { isSharedSession, sharedSessionLabel, type VolundrSession } from '@niuulabs/plugin-volundr';
 import { Chip, EmptyState, Table } from '@niuulabs/ui';
 import { sessionRows, type SessionRow } from '../domain/sessionTree';
 
@@ -11,7 +11,14 @@ function indentFor(depth: number): string {
 }
 
 /** Sessions with what each one launched nested under it. */
-export function SessionsTable({ sessions }: { sessions: VolundrSession[] }) {
+export function SessionsTable({
+  sessions,
+  ownerNames,
+}: {
+  sessions: VolundrSession[];
+  /** Who owns the sessions shared with the viewer, by user id, where the project names them. */
+  ownerNames?: ReadonlyMap<string, string>;
+}) {
   if (sessions.length === 0)
     return (
       <EmptyState
@@ -37,6 +44,17 @@ export function SessionsTable({ sessions }: { sessions: VolundrSession[] }) {
               >
                 {row.session.name}
               </Link>
+              {row.session.room && isSharedSession(row.session) ? (
+                <span
+                  className="niuu:ml-2 niuu:text-xs niuu:text-brand-300"
+                  data-testid={`session-shared-${row.session.id}`}
+                >
+                  {sharedSessionLabel(row.session.room)}
+                  {ownerNames?.get(row.session.ownerId ?? '')
+                    ? ` · ${ownerNames.get(row.session.ownerId ?? '')}`
+                    : ''}
+                </span>
+              ) : null}
             </span>
           ),
         },

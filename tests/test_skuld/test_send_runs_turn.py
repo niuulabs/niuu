@@ -114,8 +114,46 @@ async def test_an_sdk_turn_longer_than_the_attempt_timeout_runs_once_and_is_deli
     assert [a["type"] for a in acks] == ["user_delivered"]
     assert (client.turns_started, client.turns_finished) == (1, 1)
     client.query.assert_awaited_once_with("hello")
-    assert broker._conversation_turns[0].metadata["steering_state"] != "failed"
     await transport.stop()
+
+
+async def test_a_message_whose_send_ran_the_turn_is_active_not_left_pending(
+    monkeypatch, tmp_path
+) -> None:
+    # The turn's output arrives while the delivery is in flight, so the pending->active
+    # backstop skips it, and no correlated consumption signal follows. Before, the turn
+    # stayed "pending" until the next message's output flipped it, and the session's last
+    # message stayed "Queued" in every client that loaded the history.
+    client = _SlowClient()
+    monkeypatch.setattr("skuld.transports.sdk.ClaudeSDKClient", lambda _options: client)
+    transport = SDKTransport(workspace_dir=str(tmp_path))
+    await transport.start()
+    broker = _broker(tmp_path, transport)
+
+    await _deliver(broker, "hello")
+
+    assert broker._conversation_turns[0].metadata["steering_state"] == "active"
+    frames = [e["kind"] for e in broker._event_log_buffer]
+    assert "user_active" in frames
+    # The turn is active before the delivery ack says it was delivered.
+    assert frames.index("user_active") < frames.index("user_delivered")
+    await transport.stop()
+
+
+async def test_a_send_that_only_hands_input_over_leaves_the_flip_to_consumption(
+    tmp_path,
+) -> None:
+    transport = MagicMock()
+    transport.is_alive = True
+    transport.capabilities = TransportCapabilities()
+    transport.send_message = AsyncMock(return_value=True)
+    broker = _broker(tmp_path, transport)
+
+    acks = await _deliver(broker, "hello")
+
+    assert [a["type"] for a in acks] == ["user_delivered"]
+    assert broker._conversation_turns[0].metadata["steering_state"] == "pending"
+    assert "user_active" not in [e["kind"] for e in broker._event_log_buffer]
 
 
 async def test_the_transports_own_turn_timeout_still_bounds_the_turn(monkeypatch, tmp_path) -> None:

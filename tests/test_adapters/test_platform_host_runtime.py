@@ -292,21 +292,23 @@ def test_children_must_offer_the_same_grants():
         )
 
 
-def test_slot_separating_children_must_share_limits():
-    other = SlotLimits(uid_base=1, cpu=None, memory_mib=None, pids=None)
-    with pytest.raises(ValueError, match="same slot limits"):
-        _runtime(
-            FakeRuntime(LINUX, slots=True, limits=LIMITS),
-            FakeRuntime(DARWIN, slots=True, limits=other),
-        )
-
-
-def test_slot_limits_may_differ_when_only_one_child_separates_slots():
+def test_each_platform_keeps_its_own_slot_limits():
+    # A Mac with shared slots separates slots but limits nothing; Linux limits them.
+    unlimited = SlotLimits(uid_base=61000, cpu=None, memory_mib=None, pids=None)
     runtime = _runtime(
-        FakeRuntime(LINUX, slots=True, limits=LIMITS),
-        FakeRuntime(DARWIN, slots=False, limits=None),
+        linux=FakeRuntime(LINUX, slots=True, limits=LIMITS),
+        darwin=FakeRuntime(DARWIN, slots=True, limits=unlimited),
     )
-    assert runtime.slot_limits == LIMITS
+
+    assert runtime.slot_limits_for(LINUX) == LIMITS
+    assert runtime.slot_limits_for(DARWIN) == unlimited
+    assert runtime.slot_platforms == frozenset({LINUX, DARWIN})
+
+
+def test_there_are_no_slot_limits_for_all_platforms_at_once():
+    runtime = _runtime(linux=FakeRuntime(LINUX, slots=True, limits=LIMITS))
+    with pytest.raises(TypeError, match="slot_limits_for"):
+        runtime.slot_limits  # noqa: B018
 
 
 # ── aggregated properties ───────────────────────────────────────────────────
@@ -327,8 +329,11 @@ def test_properties_aggregate_the_children():
     assert runtime.host_platforms == frozenset({LINUX, DARWIN})
     assert runtime.requires_root_daemon is True
     assert runtime.supports_slots is True
+    # Only the platform whose runtime keeps slots apart runs more than one per host.
+    assert runtime.slot_platforms == frozenset({LINUX})
     assert runtime.supports_reuse is False
-    assert runtime.slot_limits == LIMITS
+    assert runtime.slot_limits_for(LINUX) == LIMITS
+    assert runtime.slot_limits_for(DARWIN) is None
     assert runtime.session_runtime == SessionRuntimeKind.HOST
     assert runtime.session_grants == (SessionGrant.SUDO,)
     assert runtime.delivers_forge_session_token is True
@@ -339,7 +344,8 @@ def test_properties_when_no_child_separates_slots_or_needs_a_daemon():
 
     assert runtime.requires_root_daemon is False
     assert runtime.supports_slots is False
-    assert runtime.slot_limits is None
+    assert runtime.slot_platforms == frozenset()
+    assert runtime.slot_limits_for(LINUX) is None
     assert runtime.supports_reuse is True
 
 

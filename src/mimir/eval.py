@@ -2,33 +2,33 @@
 
 Three capabilities, all built on the same metric core:
 
-1. **Golden-set eval** — :func:`run_eval` builds a hermetic Mímir from a
-   committed fixture corpus, runs a set of golden queries against it, and
+1. **Golden-set eval** — :func:`run_eval` scores an already-populated store (named
+   as a dynamic-adapter ``MimirPort`` spec) against a set of golden queries and
    reports P@5, MRR, and recall@10 overall and per query category.
 2. **Comparison** — :func:`compare_reports` diffs two eval reports so a
    retrieval change can prove it did not regress (``mimir eval --against``).
 3. **Capture & replay** — :func:`append_capture` records production queries
    as JSONL (gated by ``MimirServiceConfig.eval_capture``);
-   :func:`replay_capture` re-runs them against the current code and reports
-   how much the rankings shifted.
+   :func:`replay_capture` re-runs them against a store and reports how much
+   the rankings shifted.
 
-The eval runner only ever writes inside a temporary directory; replay builds
-its search index in a temporary SQLite file and never touches the live
-``search.db``.
+The harness only reads: it never loads a corpus, builds an index or writes to the
+store it scores.
 """
 
 from __future__ import annotations
 
 import json
 import logging
-import shutil
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from tempfile import TemporaryDirectory
 from typing import Any
 
 import yaml
+
+from mimir.backend import build_backend
 
 logger = logging.getLogger(__name__)
 
@@ -217,7 +217,6 @@ class EvalReport:
 
     generated_at: str
     corpus: str
-    embedding_model: str | None
     queries: list[QueryEval] = field(default_factory=list)
 
     @property
@@ -235,7 +234,6 @@ class EvalReport:
         return {
             "generated_at": self.generated_at,
             "corpus": self.corpus,
-            "embedding_model": self.embedding_model,
             "query_count": len(self.queries),
             "overall": self.overall,
             "by_category": self.by_category,
@@ -247,14 +245,12 @@ class EvalReport:
         return cls(
             generated_at=data.get("generated_at", ""),
             corpus=data.get("corpus", ""),
-            embedding_model=data.get("embedding_model"),
             queries=[QueryEval.from_dict(raw) for raw in data.get("queries", [])],
         )
 
     def format_text(self) -> str:
         lines = [
-            f"Mímir retrieval eval — {len(self.queries)} queries "
-            f"(corpus: {self.corpus}, embeddings: {self.embedding_model or 'fts-only'})",
+            f"Mímir retrieval eval — {len(self.queries)} queries (store: {self.corpus})",
             "",
             _format_metric_row("overall", self.overall),
         ]
@@ -292,49 +288,31 @@ def _format_metric_row(label: str, metrics: dict[str, float]) -> str:
 # ---------------------------------------------------------------------------
 
 
-async def run_eval(
-    corpus_dir: Path,
-    golden_path: Path,
-    *,
-    embedding_model: str | None = None,
-    embedding_base_url: str = "",
-    embedding_api_key: str = "",
-) -> EvalReport:
-    """Run the golden-set eval against a hermetic Mímir built from *corpus_dir*.
+async def run_eval(backend: Mapping[str, Any], golden_path: Path) -> EvalReport:
+    """Score the store *backend* names against the golden set at *golden_path*.
 
-    The corpus is copied into a temporary Mímir root (as its ``wiki/``), a
-    fresh search index is built there, and every golden query is executed via
-    the same ``MarkdownMimirAdapter.search()`` path production uses.
+    *backend* is a dynamic-adapter spec (``{"adapter": "<MimirPort class>", **kwargs}``)
+    for a store that is already populated; nothing is loaded into it.
 
     Raises:
-        GoldenSetError: If the golden set is malformed or references pages
-            that do not exist in the corpus.
+        GoldenSetError: If the golden set is malformed.
+        MimirConfigurationError: If *backend* does not name a ``MimirPort``.
     """
     queries = load_golden_set(golden_path)
-    missing = validate_golden_paths(queries, corpus_dir)
-    if missing:
-        raise GoldenSetError(
-            f"Golden set references {len(missing)} paths missing from corpus "
-            f"{corpus_dir}: {', '.join(missing)}"
-        )
+    adapter = build_backend(backend, setting="--backend")
+    try:
+        return await evaluate_adapter(adapter, queries, corpus=str(backend["adapter"]))
+    finally:
+        await release_adapter(adapter)
 
-    with TemporaryDirectory(prefix="mimir-eval-") as tmp:
-        root = Path(tmp)
-        shutil.copytree(corpus_dir, root / "wiki", dirs_exist_ok=True)
-        adapter = _build_adapter(
-            root,
-            root / "search.db",
-            embedding_model,
-            embedding_base_url=embedding_base_url,
-            embedding_api_key=embedding_api_key,
-        )
-        await adapter.rebuild_search_index()
-        return await evaluate_adapter(
-            adapter,
-            queries,
-            corpus=str(corpus_dir),
-            embedding_model=embedding_model,
-        )
+
+async def release_adapter(adapter: Any) -> None:
+    """Close *adapter*'s connections when it holds any."""
+    for name in ("close", "aclose"):
+        close = getattr(adapter, name, None)
+        if close is not None:
+            await close()
+            return
 
 
 async def evaluate_adapter(
@@ -342,14 +320,12 @@ async def evaluate_adapter(
     queries: list[GoldenQuery],
     *,
     corpus: str,
-    embedding_model: str | None = None,
 ) -> EvalReport:
     """Score any knowledge store against a golden set.
 
     *adapter* only has to answer ``await adapter.search(query)`` with objects
     exposing ``meta.path`` — the ``MimirPort`` search contract. That is the
-    whole coupling, which is what makes a bake-off possible: the markdown
-    adapter and :class:`~mimir.adapters.gbrain.GBrainMimirAdapter` are
+    whole coupling, which is what makes a bake-off possible: any two stores are
     scored by identical code on identical queries, so a metric difference is a
     retrieval difference and nothing else.
 
@@ -376,31 +352,8 @@ async def evaluate_adapter(
     return EvalReport(
         generated_at=datetime.now(UTC).isoformat(),
         corpus=corpus,
-        embedding_model=embedding_model,
         queries=results,
     )
-
-
-def _build_adapter(
-    root: Path,
-    search_db: Path,
-    embedding_model: str | None,
-    *,
-    embedding_base_url: str = "",
-    embedding_api_key: str = "",
-):
-    """Construct a MarkdownMimirAdapter with the same wiring create_app uses."""
-    from mimir.adapters.markdown import MarkdownMimirAdapter
-    from mimir.app import _build_embed_fn
-    from niuu.adapters.search.sqlite import SqliteSearchAdapter
-
-    embed_fn = (
-        _build_embed_fn(embedding_model, base_url=embedding_base_url, api_key=embedding_api_key)
-        if embedding_model
-        else None
-    )
-    search_port = SqliteSearchAdapter(path=str(search_db), embed_fn=embed_fn)
-    return MarkdownMimirAdapter(root=root, search_port=search_port)
 
 
 # ---------------------------------------------------------------------------
@@ -574,7 +527,7 @@ class ReplayEntry:
 class ReplayReport:
     """Aggregated replay results: how much rankings moved vs capture time."""
 
-    mimir_root: str
+    backend: str
     entries: list[ReplayEntry] = field(default_factory=list)
 
     @property
@@ -585,7 +538,7 @@ class ReplayReport:
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "mimir_root": self.mimir_root,
+            "backend": self.backend,
             "query_count": len(self.entries),
             "mean_overlap": self.mean_overlap,
             "entries": [
@@ -602,7 +555,7 @@ class ReplayReport:
 
     def format_text(self) -> str:
         lines = [
-            f"Replay of {len(self.entries)} captured queries against {self.mimir_root}",
+            f"Replay of {len(self.entries)} captured queries against {self.backend}",
             f"  mean result overlap: {self.mean_overlap:.3f}",
         ]
         shifted = [entry for entry in self.entries if entry.overlap < 1.0]
@@ -621,37 +574,31 @@ class ReplayReport:
 
 
 async def replay_capture(
-    mimir_root: Path,
+    adapter: Any,
     captures: list[CapturedQuery],
     *,
-    embedding_model: str | None = None,
+    backend: str,
 ) -> ReplayReport:
-    """Re-run captured queries against the wiki at *mimir_root*.
+    """Re-run captured queries against *adapter*, a store named *backend* for the report.
 
-    The search index is built in a throwaway temporary database so the live
-    ``search.db`` is never touched. Overlap is Jaccard similarity between the
-    captured and fresh top-``RECALL_K`` result sets.
+    Overlap is Jaccard similarity between the captured and fresh
+    top-``RECALL_K`` result sets.
     """
-    report = ReplayReport(mimir_root=str(mimir_root))
-    with TemporaryDirectory(prefix="mimir-replay-") as tmp:
-        adapter = _build_adapter(mimir_root, Path(tmp) / "search.db", embedding_model)
-        await adapter.rebuild_search_index()
-
-        for captured in captures:
-            pages = await adapter.search(captured.query)
-            fresh = [page.meta.path for page in pages][:RECALL_K]
-            old = captured.result_paths[:RECALL_K]
-            old_set, fresh_set = set(old), set(fresh)
-            union = old_set | fresh_set
-            overlap = len(old_set & fresh_set) / len(union) if union else 1.0
-            report.entries.append(
-                ReplayEntry(
-                    query=captured.query,
-                    overlap=overlap,
-                    dropped=[path for path in old if path not in fresh_set],
-                    added=[path for path in fresh if path not in old_set],
-                    top_result_changed=bool(old or fresh) and (old[:1] != fresh[:1]),
-                )
+    report = ReplayReport(backend=backend)
+    for captured in captures:
+        pages = await adapter.search(captured.query)
+        fresh = [page.meta.path for page in pages][:RECALL_K]
+        old = captured.result_paths[:RECALL_K]
+        old_set, fresh_set = set(old), set(fresh)
+        union = old_set | fresh_set
+        overlap = len(old_set & fresh_set) / len(union) if union else 1.0
+        report.entries.append(
+            ReplayEntry(
+                query=captured.query,
+                overlap=overlap,
+                dropped=[path for path in old if path not in fresh_set],
+                added=[path for path in fresh if path not in old_set],
+                top_result_changed=bool(old or fresh) and (old[:1] != fresh[:1]),
             )
-
+        )
     return report

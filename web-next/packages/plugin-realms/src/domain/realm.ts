@@ -20,14 +20,6 @@ export function deploymentNameFor(slug: string): string {
   return `realm-${slug}`;
 }
 
-export function routingRuleIdFor(slug: string): string {
-  return `realm-${slug}`;
-}
-
-export function routingPrefixFor(slug: string): string {
-  return `realms/${slug}/`;
-}
-
 export function charterPagePathFor(slug: string): string {
   return `realms/${slug}/charter.md`;
 }

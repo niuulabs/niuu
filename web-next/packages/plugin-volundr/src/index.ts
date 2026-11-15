@@ -214,6 +214,7 @@ export {
 } from './ui/hooks/useNotifications';
 export { NewSessionPage } from './ui/NewSessionPage';
 export { useSessionList, useSessionDetail } from './ui/hooks/useSessionStore';
+export { useSharedOwnerNames, sharedProjects } from './ui/hooks/useSharedOwnerNames';
 export { useSessionRead, type UseSessionRead } from './ui/hooks/useSessionRead';
 export { sessionActivityTs, compareSessionsByActivity } from './ui/sessions/sessionLabels';
 export {
@@ -299,9 +300,33 @@ export type {
   StoredCredential,
   SecretType,
   SessionSource,
+  SessionRoom,
+  SessionRoomRole,
+  SessionParticipant,
+  SessionProjectPerson,
+  ParticipantCandidate,
+  ParticipantRole,
+  ParticipantStatus,
   ForgeProject,
   ForgeProjectChanges,
+  ProjectRole,
+  MemberSkill,
+  ProjectMember,
+  ProjectMemberCandidate,
+  ProjectMemberChange,
   SessionProjectMembership,
+  TeamInstallMethod,
+  TeamConfigField,
+  TeamCatalogEntry,
+  TeamIntegration,
+  ProjectMemoryMount,
+  TeamRouteEvent,
+  TeamDeliverTo,
+  TeamRoute,
+  TeamRouteChange,
+  TeamIntegrationUse,
+  TeamIntegrationUsagePage,
+  TeamServiceAccountConnect,
   SessionDefinition,
   SessionOrigin,
   ExternalSession,
@@ -334,3 +359,13 @@ export type {
 } from './domain/computeHosts';
 
 export { ForgeSessionSettings } from './ui/ForgeSessionSettings';
+
+export {
+  PROJECT_ROLES,
+  isSharedSession,
+  isInvitation,
+  canAnswerGates,
+  sharedSessionLabel,
+  roomRoleOfProjectRole,
+  PARTICIPANT_ROLES,
+} from './models/volundr.model';

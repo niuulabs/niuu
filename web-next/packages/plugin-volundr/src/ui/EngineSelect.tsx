@@ -14,7 +14,7 @@ const LINK_CLASS = 'niuu:text-text-secondary niuu:underline niuu:hover:text-text
 
 export interface EngineSelectProps {
   /** The engines the person can launch, with the providers that power each. */
-  engines: EngineOption[];
+  engines: readonly EngineOption[];
   /** The selected session definition key. */
   value: string;
   onChange: (definitionKey: string) => void;
@@ -36,6 +36,16 @@ export interface EngineSelectProps {
   /** The engine the value names when it is not launchable (no provider). */
   unavailableName?: string;
   testId?: string;
+  /**
+   * `field` (default) is the labelled, stacked picker of the launch dialogs. `inline` renders only
+   * the selects (engine, account when several power the engine, model when the provider serves
+   * some) as siblings, to sit in a row that already has its own labels, states and notices.
+   */
+  variant?: 'field' | 'inline';
+  /** `inline` only: appended to each select's accessible name ("Engine of agent 2"). */
+  labelSuffix?: string;
+  /** `inline` only: the class of every select, so the row sizes them. */
+  selectClassName?: string;
 }
 
 /**
@@ -56,11 +66,65 @@ export function EngineSelect({
   error = null,
   unavailableName,
   testId = 'engine-select',
+  variant = 'field',
+  labelSuffix = '',
+  selectClassName,
 }: EngineSelectProps) {
   const selected = engines.find((engine) => engine.definition.key === value);
   const provider = selectedEngineProvider(selected, selectedIntegrationIds);
   const servedModels = providerModels(provider);
   const orphaned = !selected && Boolean(value) && !loading && !error;
+
+  if (variant === 'inline') {
+    return (
+      <>
+        <select
+          className={selectClassName}
+          aria-label={`Engine${labelSuffix}`}
+          value={value}
+          onChange={(event) => onChange(event.target.value)}
+          disabled={loading}
+          data-testid={testId}
+        >
+          {engines.map((engine) => (
+            <option key={engine.definition.key} value={engine.definition.key}>
+              {engine.definition.displayName}
+            </option>
+          ))}
+        </select>
+        {selected && provider && selected.providers.length > 1 ? (
+          <select
+            className={selectClassName}
+            aria-label={`Account${labelSuffix}`}
+            value={provider.connection.id}
+            onChange={(event) => onProviderChange?.(event.target.value)}
+            data-testid={`${testId}-account`}
+          >
+            {selected.providers.map((candidate) => (
+              <option key={candidate.connection.id} value={candidate.connection.id}>
+                {describeProvider(candidate)}
+              </option>
+            ))}
+          </select>
+        ) : null}
+        {selected && provider && servedModels.length > 0 ? (
+          <select
+            className={selectClassName}
+            aria-label={`Model${labelSuffix}`}
+            value={launchModel(selected, provider, model)}
+            onChange={(event) => onModelChange?.(event.target.value)}
+            data-testid={`${testId}-model`}
+          >
+            {servedModels.map((served) => (
+              <option key={served} value={served}>
+                {served}
+              </option>
+            ))}
+          </select>
+        ) : null}
+      </>
+    );
+  }
 
   if (error) {
     return (

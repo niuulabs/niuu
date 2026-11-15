@@ -185,6 +185,15 @@ class NotificationResponse(BaseModel):
             "this notification and how soon; null when none. Forge never speaks it."
         ),
     )
+    copy_of: UUID | None = Field(
+        default=None,
+        description=(
+            "Set when this is your own copy of an item that asks someone to act (a gate, a "
+            "permission prompt, a question) and went to everyone who may answer it: the id of "
+            "the original, which is the session owner's. Null on an original. Resolving any "
+            "row of the item resolves them all."
+        ),
+    )
     resolved: bool = Field(
         default=False,
         description="The incident is over (LEX-1442): an alarm no surface should keep raising.",

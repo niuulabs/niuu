@@ -11,6 +11,7 @@ from cryptography.fernet import Fernet
 from volundr.adapters.outbound.file_credential_store import FileCredentialStore
 from volundr.adapters.outbound.session_file_secret_injection import (
     SessionFileSecretInjectionAdapter,
+    read_shell_exports,
     shell_export_line,
 )
 from volundr.domain.models import CredentialMapping, SecretType
@@ -152,3 +153,19 @@ async def test_malformed_store_values_are_ignored(tmp_path: Path) -> None:
             [CredentialMapping(credential_name="anthropic", env_mappings={"K": "api_key"})],
             session_id="s",
         )
+
+
+def test_an_env_file_reads_back_as_the_values_it_was_written_from() -> None:
+    values = {"A": "plain", "B": "it's\nmulti-line", "C": ""}
+    text = "\n".join(shell_export_line(name, value) for name, value in values.items()) + "\n"
+
+    assert read_shell_exports(text) == values
+
+
+@pytest.mark.parametrize(
+    ("text", "named"),
+    [("rm -rf /\n", "not export"), ("export A='unterminated\n", "unquoted")],
+)
+def test_an_env_file_with_anything_else_in_it_is_refused(text: str, named: str) -> None:
+    with pytest.raises(ValueError, match=named):
+        read_shell_exports(text)

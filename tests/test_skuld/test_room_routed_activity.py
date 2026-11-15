@@ -98,6 +98,7 @@ class TestRoomRoutedStartupLeavesProvisioning:
         [
             "skuld.transports.persistent_subprocess.PersistentSubprocessTransport",
             "skuld.transports.subprocess.SubprocessTransport",
+            "skuld.transports.sdk.SDKTransport",
         ],
     )
     async def test_claude_print_mode_transports_say_they_announce_on_first_turn(

@@ -13,5 +13,14 @@ class MimirUnavailableError(Exception):
     """
 
 
+class MimirWriteRefusedError(Exception):
+    """A write was refused because the mount it targets does not allow it.
+
+    The mount is read-only, or the page is outside the prefixes it may write. The
+    message names the mount, the operation and what the mount allows; the MCP tool
+    returns it to the model as a tool error, and the composite counts it.
+    """
+
+
 class MimirConfigurationError(Exception):
     """Raised when a Mímir client is configured in a way it cannot honour."""

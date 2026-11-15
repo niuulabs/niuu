@@ -42,8 +42,11 @@ spec:
             # trusted (see skuld.broker_api._enforce_room_role, which only
             # checks the header's SHAPE, not who set it). The room caller
             # session header is the same: only Forge stamps it, from a
-            # verified session credential.
+            # verified session credential. So is the display name that
+            # authors a message: a client-supplied one would put words in
+            # another person's mouth.
             remove:
+              - {{ .Values.envoy.headerNames.displayName | quote }}
               - {{ .Values.envoy.headerNames.roomRole | quote }}
               - {{ .Values.envoy.headerNames.roomCallerSession | quote }}
       backendRefs:

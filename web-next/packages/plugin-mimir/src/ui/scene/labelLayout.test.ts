@@ -78,3 +78,47 @@ describe('layoutLabels', () => {
     expect(layoutLabels([], BOX)).toEqual([]);
   });
 });
+
+describe('layoutLabels — tiers, own boxes, centring', () => {
+  it('places every higher-tier label before any lower one, whatever the priority', () => {
+    const placed = layoutLabels(
+      [
+        { id: 'relation', anchorX: 100, anchorY: 100, priority: 99, tier: 0 },
+        { id: 'name', anchorX: 100, anchorY: 100, priority: 1, tier: 1 },
+      ],
+      BOX,
+    );
+    const name = placed.find((p) => p.id === 'name')!;
+    // The name took the first-choice slot (above); the relation had to move.
+    expect(name).toEqual({ id: 'name', x: 80, y: 84, visible: true });
+    expect(placed.find((p) => p.id === 'relation')!.y).not.toBe(84);
+  });
+
+  it('centres a label on its anchor first when asked, in its own box', () => {
+    const [placed] = layoutLabels(
+      [
+        {
+          id: 'r',
+          anchorX: 100,
+          anchorY: 100,
+          priority: 0,
+          box: { width: 20, height: 6 },
+          centred: true,
+        },
+      ],
+      BOX,
+    );
+    expect(placed).toEqual({ id: 'r', x: 90, y: 97, visible: true });
+  });
+
+  it('drops a label with no free slot rather than overlap', () => {
+    const anchors = Array.from({ length: 6 }, (_, i) => ({
+      id: `l${i}`,
+      anchorX: 100,
+      anchorY: 100,
+      priority: 6 - i,
+    }));
+    const placed = layoutLabels(anchors, BOX);
+    expect(placed.filter((p) => p.visible).length).toBeLessThan(6);
+  });
+});

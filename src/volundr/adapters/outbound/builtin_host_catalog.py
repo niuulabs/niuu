@@ -75,6 +75,9 @@ class BuiltinHostCatalog(ExecutionCatalogPort):
     - ``platforms``: which host platforms join (``linux``, ``darwin``; both by default).
     - ``slot_cpu`` / ``slot_memory_mib`` / ``slot_pids``: what one Linux slot may use
       (``null`` for no limit); slot counts are suggested from them.
+    - ``darwin_shared_slots``: let a Mac run more than one session, each as its own
+      macOS user with nothing else between them: they share the Mac's network and its
+      CPUs and memory. Off, a Mac runs one session at a time.
     - ``default_service_account``, ``preview_router_auth``,
       ``ssh_user``, ``command_timeout_seconds``, ``guest_platform_port``: as the
       runtimes and the access document them.
@@ -99,6 +102,7 @@ class BuiltinHostCatalog(ExecutionCatalogPort):
         slot_memory_mib: int | None = 8192,
         slot_pids: int | None = 16384,
         slot_uid_base: int = 61000,
+        darwin_shared_slots: bool = False,
         nix: bool = True,
         rootless_containers: bool = True,
     ) -> None:
@@ -129,6 +133,7 @@ class BuiltinHostCatalog(ExecutionCatalogPort):
                 "memory_mib": slot_memory_mib,
                 "pids": slot_pids,
             },
+            "darwin_shared_slots": darwin_shared_slots,
             "nix": nix,
             "rootless_containers": rootless_containers,
         }
@@ -266,6 +271,7 @@ class BuiltinHostCatalog(ExecutionCatalogPort):
                     **common,
                     "guest_platform_port": s["guest_platform_port"],
                     "uid_base": s["slot_isolation"]["uid_base"],
+                    "shared_slots": s["darwin_shared_slots"],
                 },
             }
         return children

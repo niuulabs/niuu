@@ -7,8 +7,10 @@ hosts and networks as long as each node is reachable over HTTP.
 Architecture
 ------------
 - :class:`WebhookPublisher` — POSTs events as JSON to one or more URLs.
-  Retries up to ``max_attempts`` times with exponential back-off; after all
-  attempts fail the event is logged as a warning and dropped (fire-and-forget).
+  Retries a transient failure (connection error, timeout, HTTP 429 or 5xx) up to
+  ``max_attempts`` times with exponential back-off; a delivery that still fails,
+  or that a receiver refuses outright (any other 4xx), raises
+  :class:`WebhookDeliveryError` and is counted as a cap hit.
   A single :class:`httpx.AsyncClient` is shared across all publishes so that
   HTTP connections are pooled rather than opened per event.
 - :class:`WebhookSubscriber` — Exposes a FastAPI router with a
@@ -25,8 +27,9 @@ Attempt 2: sleep ``retry_base_delay`` seconds (default 1 s)
 Attempt 3: sleep ``retry_base_delay * 2`` seconds (default 2 s)
 ...up to ``max_attempts`` (default 3).
 
-After all attempts are exhausted the error is logged at WARNING level and
-the publisher moves on — downstream failures never block the caller.
+After all attempts are exhausted the publish raises :class:`WebhookDeliveryError`
+naming every URL that did not take the event, and the hit is counted on
+``cap_hits.sleipnir.webhook.max_attempts``. An event is never dropped quietly.
 
 Configuration example
 ---------------------
@@ -66,6 +69,7 @@ try:
 except ImportError:  # pragma: no cover
     _FASTAPI_AVAILABLE = False
 
+from niuu.cap_telemetry import record_cap_hit, record_retry
 from sleipnir.adapters._subscriber_support import (
     DEFAULT_RING_BUFFER_DEPTH,
     _BaseSubscription,
@@ -89,6 +93,14 @@ DEFAULT_RETRY_BASE_DELAY = 1.0  # seconds; doubles each attempt
 DEFAULT_HTTP_TIMEOUT = 10.0  # seconds per request attempt
 DEFAULT_HTTP_CONNECT_TIMEOUT = 5.0  # seconds for initial connection
 DEFAULT_ENDPOINT_PATH = "/sleipnir/events"
+#: The config path an operator changes when deliveries run out of attempts.
+MAX_ATTEMPTS_KNOB = "sleipnir.webhook.max_attempts"
+#: Statuses a retry can change: the receiver is overloaded or briefly failing.
+_TRANSIENT_STATUS_CODES = frozenset({429, 500, 502, 503, 504})
+
+
+class WebhookDeliveryError(RuntimeError):
+    """An event did not reach one or more webhook receivers."""
 
 
 # ---------------------------------------------------------------------------
@@ -136,8 +148,8 @@ class WebhookPublisher(SleipnirPublisher):
 
     On each :meth:`publish` call, POSTs the serialised event to every URL in
     *publish_urls*.  Each URL is attempted up to *max_attempts* times with
-    exponential back-off.  If all attempts fail the event is logged at WARNING
-    level and the caller is not blocked.
+    exponential back-off when the failure is transient. If any URL still has
+    not taken the event, :meth:`publish` raises :class:`WebhookDeliveryError`.
 
     A single :class:`httpx.AsyncClient` is created on :meth:`start` and shared
     for all requests so that HTTP connections are pooled.
@@ -159,7 +171,9 @@ class WebhookPublisher(SleipnirPublisher):
     ) -> None:
         _require_httpx()
         self._publish_urls: list[str] = list(publish_urls or DEFAULT_PUBLISH_URLS)
-        self._max_attempts = max(1, max_attempts)
+        if max_attempts < 1:
+            raise ValueError(f"{MAX_ATTEMPTS_KNOB} must be at least 1, got {max_attempts}")
+        self._max_attempts = max_attempts
         self._retry_base_delay = retry_base_delay
         self._http_timeout = http_timeout
         self._http_connect_timeout = http_connect_timeout
@@ -206,9 +220,21 @@ class WebhookPublisher(SleipnirPublisher):
         if self._client is None:
             raise RuntimeError("WebhookPublisher is not started. Call start() first.")
         body = _encode_event(event)
-        await asyncio.gather(
-            *(self._post_with_retry(url, body, event) for url in self._publish_urls)
+        results = await asyncio.gather(
+            *(self._post_with_retry(url, body, event) for url in self._publish_urls),
+            return_exceptions=True,
         )
+        failures = [
+            f"{url}: {result}"
+            for url, result in zip(self._publish_urls, results, strict=True)
+            if isinstance(result, BaseException)
+        ]
+        if failures:
+            raise WebhookDeliveryError(
+                f"event {event.event_id} ({event.event_type}) was not delivered to "
+                f"{len(failures)} of {len(self._publish_urls)} webhook receiver(s): "
+                + "; ".join(failures)
+            )
 
     async def publish_batch(self, events: list[SleipnirEvent]) -> None:
         """Publish all *events* in iteration order."""
@@ -221,16 +247,17 @@ class WebhookPublisher(SleipnirPublisher):
         body: bytes,
         event: SleipnirEvent,
     ) -> None:
-        """POST *body* to *url* with exponential back-off retry.
+        """POST *body* to *url*, retrying transient failures with exponential back-off.
 
-        Attempts ``max_attempts`` times.  Delays between attempts:
+        Attempts up to ``max_attempts`` times. Delays between attempts:
           - attempt 1 → no delay
           - attempt 2 → ``retry_base_delay`` seconds
-          - attempt 3 → ``retry_base_delay * 2`` seconds
           - attempt N → ``retry_base_delay * 2^(N-2)`` seconds
 
-        After all attempts are exhausted a WARNING is logged and the method
-        returns without raising.
+        Only a failure a retry can change is retried: a connection error, a
+        timeout, HTTP 429 or 5xx. Any other HTTP error is the receiver refusing
+        the event and raises at once. Running out of attempts is a cap hit on
+        ``sleipnir.webhook.max_attempts`` and raises.
         """
         assert self._client is not None  # guarded by publish()
         delay = self._retry_base_delay
@@ -242,6 +269,13 @@ class WebhookPublisher(SleipnirPublisher):
                     headers={"Content-Type": "application/json"},
                 )
                 response.raise_for_status()
+            except httpx.HTTPStatusError as exc:  # type: ignore[name-defined]
+                if exc.response.status_code not in _TRANSIENT_STATUS_CODES:
+                    raise
+                error: Exception = exc
+            except httpx.TransportError as exc:  # type: ignore[name-defined]
+                error = exc
+            else:
                 logger.debug(
                     "WebhookPublisher: delivered event %s to %s (attempt %d)",
                     event.event_id,
@@ -249,30 +283,21 @@ class WebhookPublisher(SleipnirPublisher):
                     attempt,
                 )
                 return
-            except Exception as exc:
-                if attempt == self._max_attempts:
-                    logger.warning(
-                        "WebhookPublisher: failed to deliver event %s (%s) to %s "
-                        "after %d attempts — dropping. Last error: %s",
-                        event.event_id,
-                        event.event_type,
-                        url,
-                        self._max_attempts,
-                        exc,
-                    )
-                    return
-                logger.debug(
-                    "WebhookPublisher: attempt %d/%d failed for event %s to %s: %s "
-                    "— retrying in %.1fs",
-                    attempt,
-                    self._max_attempts,
-                    event.event_id,
-                    url,
-                    exc,
-                    delay,
+            if attempt == self._max_attempts:
+                message = (
+                    f"event {event.event_id} ({event.event_type}) to {url} failed all "
+                    f"{self._max_attempts} attempts (last error: {error}); raise "
+                    f"{MAX_ATTEMPTS_KNOB} if the receiver needs longer to recover, or fix it"
                 )
-                await asyncio.sleep(delay)
-                delay *= 2
+                record_cap_hit(MAX_ATTEMPTS_KNOB, message)
+                raise WebhookDeliveryError(message) from error
+            record_retry(
+                "sleipnir.webhook.publish",
+                f"attempt {attempt}/{self._max_attempts} of event {event.event_id} to {url} "
+                f"failed ({error}); retrying in {delay:.1f}s",
+            )
+            await asyncio.sleep(delay)
+            delay *= 2
 
 
 # ---------------------------------------------------------------------------

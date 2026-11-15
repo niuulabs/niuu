@@ -1104,6 +1104,27 @@ describe('buildVolundrHttpAdapter', () => {
     expect(history.turns[0]?.visibility).toBe('internal');
   });
 
+  it('getConversationHistory keeps who sent a user turn and none for older turns', async () => {
+    const client = makeClient();
+    client.get.mockResolvedValue({
+      turns: [
+        { id: 'old', role: 'user', content: 'before authorship', created_at: '2026-11-01' },
+        {
+          id: 'new',
+          role: 'user',
+          content: 'hello',
+          created_at: '2026-11-10',
+          author: { user_id: 'u-alice', display_name: 'Alice Liddell' },
+        },
+      ],
+    });
+
+    const history = await buildVolundrHttpAdapter(client).getConversationHistory('sess-1');
+
+    expect(history.turns[0]).not.toHaveProperty('author');
+    expect(history.turns[1]?.author).toEqual({ user_id: 'u-alice', display_name: 'Alice Liddell' });
+  });
+
   it('getConversationTurn calls GET /sessions/:id/conversation/turns/:turnId', async () => {
     const client = makeClient();
     client.get.mockResolvedValue({
@@ -1185,13 +1206,17 @@ describe('buildVolundrHttpAdapter', () => {
         source: { type: 'local_mount', local_path: '/workspace' },
         status: 'running',
       })
+      .mockResolvedValueOnce(null)
       .mockResolvedValueOnce(null);
     const service = buildVolundrHttpAdapter(client);
 
     await service.getSession('shared-id', { instanceId: 'thor' });
     await expect(service.getSession('shared-id', { instanceId: 'missing' })).resolves.toBeNull();
 
-    expect(client.get).toHaveBeenLastCalledWith('/sessions/shared-id?instance_id=missing');
+    // Not found as a full session, it is looked for as a room view on the same host, and
+    // nowhere else.
+    expect(client.get).toHaveBeenCalledWith('/sessions/shared-id?instance_id=missing');
+    expect(client.get).toHaveBeenLastCalledWith('/sessions/shared-id/room?instance_id=missing');
     expect(client.get).not.toHaveBeenCalledWith('/sessions/shared-id');
   });
 
@@ -3035,6 +3060,104 @@ describe('Forge project grouping contract', () => {
     expect(client.patch).toHaveBeenLastCalledWith('/projects/lexi', { repo_url: '', revision: 4 });
   });
 
+  it('reaches project members on the host that owns the project', async () => {
+    const client = makeClient();
+    const service = buildVolundrHttpAdapter(client);
+    const project = { id: 'lexi', name: 'Lexi', slug: 'lexi', status: 'active' as const };
+    const remote = { ...project, instance_id: 'ymir' };
+    await service.getProjectMembers(project);
+    expect(client.get).toHaveBeenLastCalledWith('/projects/lexi/members');
+    await service.getProjectMemberCandidates(remote, 'ali');
+    expect(client.get).toHaveBeenLastCalledWith(
+      '/projects/lexi/member-candidates?q=ali&instance_id=ymir',
+    );
+    await service.addProjectMember(project, { userId: 'alice', role: 'approver' });
+    expect(client.post).toHaveBeenLastCalledWith('/projects/lexi/members', {
+      user_id: 'alice',
+      role: 'approver',
+    });
+    await service.addProjectMember(project, { userId: 'bram', role: 'viewer', expertise: 'Ting' });
+    expect(client.post).toHaveBeenLastCalledWith('/projects/lexi/members', {
+      user_id: 'bram',
+      role: 'viewer',
+      expertise: 'Ting',
+    });
+    await service.updateProjectMember(remote, 'a b', { role: 'owner' });
+    expect(client.patch).toHaveBeenLastCalledWith('/projects/lexi/members/a%20b?instance_id=ymir', {
+      role: 'owner',
+    });
+    await service.removeProjectMember(project, 'alice');
+    expect(client.delete).toHaveBeenLastCalledWith('/projects/lexi/members/alice');
+  });
+
+  it('reaches a project\u2019s team integrations on the host that owns the project', async () => {
+    const client = makeClient();
+    const service = buildVolundrHttpAdapter(client);
+    const project = { id: 'lexi', name: 'Lexi', slug: 'lexi', status: 'active' as const };
+    const remote = { ...project, instance_id: 'ymir' };
+    await service.getTeamIntegrationCatalog(project);
+    expect(client.get).toHaveBeenLastCalledWith('/projects/lexi/integrations/catalog');
+    await service.getTeamIntegrations(remote);
+    expect(client.get).toHaveBeenLastCalledWith('/projects/lexi/integrations?instance_id=ymir');
+    await service.getTeamRoutes(project);
+    expect(client.get).toHaveBeenLastCalledWith('/projects/lexi/integrations/routes');
+    await service.getTeamIntegrationUsage(project);
+    expect(client.get).toHaveBeenLastCalledWith('/projects/lexi/integrations/usage');
+    await service.getTeamIntegrationUsage(project, '2026-11-01T00:00:00Z');
+    expect(client.get).toHaveBeenLastCalledWith(
+      '/projects/lexi/integrations/usage?before=2026-11-01T00%3A00%3A00Z',
+    );
+    const connect = {
+      slug: 'jira',
+      credential: { client_id: 'id', client_secret: 'secret' },
+      config: { site_url: 'https://acme.atlassian.net', cloud_id: 'c1' },
+    };
+    await service.connectTeamServiceAccount(project, connect);
+    expect(client.post).toHaveBeenLastCalledWith('/projects/lexi/integrations', connect);
+    await service.startTeamOAuth(project, 'slack', { channel: '#eng' });
+    expect(client.post).toHaveBeenLastCalledWith('/integrations/oauth/authorize-team', {
+      slug: 'slack',
+      project_id: 'lexi',
+      config: { channel: '#eng' },
+    });
+    await service.updateTeamIntegration(project, 'c 1', { enabled: false });
+    expect(client.patch).toHaveBeenLastCalledWith('/projects/lexi/integrations/c%201', {
+      enabled: false,
+    });
+    await service.removeTeamIntegration(project, 'c1');
+    expect(client.delete).toHaveBeenLastCalledWith('/projects/lexi/integrations/c1');
+    const route = {
+      connection_id: 'c1',
+      deliver_to: 'channel' as const,
+      channel: '#eng',
+      enabled: true,
+    };
+    await service.setTeamRoute(project, 'errors', route);
+    expect(client.put).toHaveBeenLastCalledWith('/projects/lexi/integrations/routes/errors', route);
+    await service.removeTeamRoute(project, 'errors');
+    expect(client.delete).toHaveBeenLastCalledWith('/projects/lexi/integrations/routes/errors');
+  });
+
+  it('reaches the memories a project reads on the host that owns it', async () => {
+    const client = makeClient();
+    const service = buildVolundrHttpAdapter(client);
+    const project = { id: 'lexi', name: 'Lexi', slug: 'lexi', status: 'active' as const };
+    await service.getProjectMemoryMounts({ ...project, instance_id: 'ymir' });
+    expect(client.get).toHaveBeenLastCalledWith('/projects/lexi/memory?instance_id=ymir');
+    await service.addProjectMemoryMount(project, {
+      name: 'notes',
+      registryEntryId: 'reg-1',
+      access: 'read',
+    });
+    expect(client.post).toHaveBeenLastCalledWith('/projects/lexi/memory', {
+      name: 'notes',
+      registry_entry_id: 'reg-1',
+      access: 'read',
+    });
+    await service.removeProjectMemoryMount(project, 'a b');
+    expect(client.delete).toHaveBeenLastCalledWith('/projects/lexi/memory/a%20b');
+  });
+
   it('sends a description, a status and a checkout folder as the project’s own fields', async () => {
     const client = makeClient();
     client.patch.mockResolvedValue({ id: 'lexi' });
@@ -3131,13 +3254,15 @@ it('routes archived detail directly to its host and removes obsolete archive own
   await service.listArchivedSessions({ instanceId: 'thor' });
   client.get.mockResolvedValue(null);
   await service.getSession('old');
-  expect(client.get).toHaveBeenLastCalledWith('/sessions/old?instance_id=thor');
+  expect(client.get).toHaveBeenCalledWith('/sessions/old?instance_id=thor');
+  expect(client.get).toHaveBeenLastCalledWith('/sessions/old/room?instance_id=thor');
   client.get.mockResolvedValue([]);
   await service.listArchivedSessions({ instanceId: 'build' });
   await service.listArchivedSessions({ instanceId: 'thor' });
   client.get.mockResolvedValue(null);
   await service.getSession('old');
-  expect(client.get).toHaveBeenLastCalledWith('/sessions/old');
+  expect(client.get).toHaveBeenCalledWith('/sessions/old');
+  expect(client.get).toHaveBeenLastCalledWith('/sessions/old/room');
 });
 
 it('scopes metrics and resources, forwards cancellation, and rejects gateways that ignore the host', async () => {
@@ -3400,7 +3525,9 @@ describe('session read state', () => {
 
   it('keeps the caller-specific fields when a stream event omits them', async () => {
     const client = makeClient();
-    client.get.mockResolvedValue([{ ...row, worked_seconds_24h: 600, read_state: payload }]);
+    client.get.mockResolvedValue([
+      { ...row, worked_seconds_24h: 600, read_state: payload, people_count: 3 },
+    ]);
     let streamOptions: { onEvent?: (event: { event?: string; data: string }) => void } = {};
     const svc = buildVolundrHttpAdapter(
       client,
@@ -3422,6 +3549,7 @@ describe('session read state', () => {
       name: 'renamed',
       workedSeconds24h: 600,
       readState: { isUnread: true, revision: 3 },
+      peopleCount: 3,
     });
   });
 
@@ -3529,5 +3657,491 @@ describe('secret requests', () => {
     await expect(adapter.getSecretRequest('sess-1', 'r-1')).rejects.toThrow(
       'unknown secret keep choice: forever',
     );
+  });
+});
+
+describe('sessions shared through a room', () => {
+  const summary = {
+    kind: 'room_summary',
+    id: 'shared-1',
+    name: 'Shared work',
+    status: 'running',
+    owner_id: 'alice',
+    room: { role: 'approver', participant_status: 'active', expires_at: null },
+    coordination: { project_id: 'proj-1', role: 'worker' },
+    model: 'claude-sonnet-4-6',
+    chat_endpoint: 'ws://forge.test/s/shared-1/session',
+    last_active: '2026-11-10T10:00:00Z',
+    activity_state: 'awaiting_input',
+    needs_attention: true,
+    instance_id: 'thor',
+    instance_name: 'Thor',
+  };
+
+  it('reads a room summary without a workspace and never throws on it', () => {
+    const session = __testables.normalizeSession(summary as never);
+
+    expect(session.source).toBeNull();
+    expect(session.room).toEqual({
+      role: 'approver',
+      participantStatus: 'active',
+      expiresAt: null,
+    });
+    expect(session).toMatchObject({
+      id: 'shared-1',
+      ownerId: 'alice',
+      model: 'claude-sonnet-4-6',
+      chatEndpoint: 'ws://forge.test/s/shared-1/session',
+      activityState: 'awaiting_input',
+      needsAttention: true,
+      instanceId: 'thor',
+      coordination: { projectId: 'proj-1', role: 'worker', labels: [] },
+    });
+    expect(session.lastActive).toBe(Date.parse('2026-11-10T10:00:00Z'));
+    expect(session.codeEndpoint).toBeUndefined();
+    expect(session.podName).toBeUndefined();
+  });
+
+  it('keeps a full session free of a room', () => {
+    const session = __testables.normalizeSession({
+      id: 's1',
+      name: 'mine',
+      status: 'running',
+      model: 'm',
+      source: { type: 'git', repo: 'r', branch: 'b' },
+    } as never);
+
+    expect(session.room).toBeUndefined();
+    expect(session.source).toEqual({ type: 'git', repo: 'r', branch: 'b' });
+  });
+
+  it("lists shared sessions beside the caller's own", async () => {
+    const client = makeClient();
+    client.get.mockResolvedValue([
+      { id: 'own', name: 'own', status: 'running', model: 'm', source: { type: 'git', repo: 'r' } },
+      summary,
+    ]);
+
+    const sessions = await buildVolundrHttpAdapter(client).getSessions();
+
+    expect(sessions.map((s) => s.id)).toEqual(['own', 'shared-1']);
+    expect(sessions[1]?.room?.role).toBe('approver');
+  });
+
+  it('leaves out one unreadable entry loudly instead of failing the whole list', async () => {
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const client = makeClient();
+    client.get.mockResolvedValue([
+      null,
+      { id: 'own', name: 'own', status: 'running', model: 'm', source: { type: 'git', repo: 'r' } },
+      summary,
+    ]);
+
+    const sessions = await buildVolundrHttpAdapter(client).getSessions();
+
+    expect(sessions.map((s) => s.id)).toEqual(['own', 'shared-1']);
+    expect(errors).toHaveBeenCalledTimes(1);
+    expect(errors.mock.calls[0]?.[0]).toContain('could not be read');
+    errors.mockRestore();
+  });
+
+  it('reads a known shared session through its room view, not the refused full read', async () => {
+    const client = makeClient();
+    client.get.mockResolvedValueOnce([summary]);
+    const service = buildVolundrHttpAdapter(client);
+    await service.getSessions();
+    client.get.mockClear();
+    client.get.mockResolvedValue({ ...summary, name: 'Renamed' });
+
+    const session = await service.getSession('shared-1');
+
+    expect(client.get).toHaveBeenCalledTimes(1);
+    expect(client.get).toHaveBeenCalledWith('/sessions/shared-1/room?instance_id=thor');
+    expect(session?.name).toBe('Renamed');
+    expect(session?.room?.role).toBe('approver');
+  });
+
+  it('answers a refused full read with the room view', async () => {
+    const client = makeClient();
+    client.get
+      .mockRejectedValueOnce(new ApiClientError('Forbidden', 403))
+      .mockResolvedValueOnce(summary);
+
+    const session = await buildVolundrHttpAdapter(client).getSession('shared-1');
+
+    expect(client.get).toHaveBeenNthCalledWith(1, '/sessions/shared-1');
+    expect(client.get).toHaveBeenNthCalledWith(2, '/sessions/shared-1/room');
+    expect(session?.room?.role).toBe('approver');
+  });
+
+  it('does not hide any other failure of the full read behind the room view', async () => {
+    const client = makeClient();
+    client.get.mockRejectedValueOnce(new ApiClientError('Server error', 500));
+
+    await expect(buildVolundrHttpAdapter(client).getSession('shared-1')).rejects.toThrow(
+      'Server error',
+    );
+    expect(client.get).toHaveBeenCalledTimes(1);
+  });
+
+  it("reads the owner's room view as the owner's, not as a shared session", async () => {
+    const client = makeClient();
+    client.get.mockResolvedValueOnce([
+      { ...summary, room: { role: 'owner', participant_status: 'active' } },
+    ]);
+    const service = buildVolundrHttpAdapter(client);
+    const [listed] = await service.getSessions();
+    expect(listed?.room?.role).toBe('owner');
+    client.get.mockClear();
+    client.get.mockResolvedValue({ id: 'shared-1', name: 'full', status: 'running', model: 'm' });
+
+    await service.getSession('shared-1');
+
+    expect(client.get).toHaveBeenCalledWith('/sessions/shared-1?instance_id=thor');
+  });
+});
+
+describe('who is in a chat', () => {
+  const grant = {
+    user_id: 'ivan',
+    display_name: 'Ivan Invitee',
+    role: 'approver',
+    status: 'invited',
+    invited_by: 'owner',
+    expires_at: null,
+  };
+
+  function listed(client: ReturnType<typeof makeClient>) {
+    client.get.mockResolvedValueOnce([
+      {
+        kind: 'room_summary',
+        id: 's1',
+        name: 'Fix it',
+        status: 'running',
+        model: 'm',
+        owner_id: 'owner',
+        owner_name: 'Olivia Owner',
+        instance_id: 'thor',
+        room: { role: 'viewer', participant_status: 'invited', expires_at: null },
+      },
+    ]);
+    return buildVolundrHttpAdapter(client);
+  }
+
+  it('reads who shared a session by name', async () => {
+    const [session] = await listed(makeClient()).getSessions();
+
+    expect(session?.ownerName).toBe('Olivia Owner');
+    expect(session?.room?.participantStatus).toBe('invited');
+  });
+
+  it("lists the chat's participants on the session's host, leaving out removed ones", async () => {
+    const client = makeClient();
+    const service = listed(client);
+    await service.getSessions();
+    client.get.mockResolvedValueOnce([grant, { ...grant, user_id: 'gone', status: 'revoked' }]);
+
+    const people = await service.getSessionParticipants('s1');
+
+    expect(client.get).toHaveBeenLastCalledWith('/sessions/s1/participants?instance_id=thor', {
+      signal: undefined,
+    });
+    expect(people).toEqual([
+      {
+        userId: 'ivan',
+        displayName: 'Ivan Invitee',
+        role: 'approver',
+        status: 'invited',
+        invitedBy: 'owner',
+        expiresAt: null,
+      },
+    ]);
+  });
+
+  it('reads project people with the room role the project gives', async () => {
+    const client = makeClient();
+    client.get.mockResolvedValueOnce([
+      { user_id: 'a', display_name: 'Ann', role: 'owner' },
+      { user_id: 'b', role: 'contributor' },
+    ]);
+
+    const people = await buildVolundrHttpAdapter(client).getSessionProjectPeople('s1', {
+      instanceId: 'thor',
+    });
+
+    expect(client.get).toHaveBeenCalledWith('/sessions/s1/people?instance_id=thor', {
+      signal: undefined,
+    });
+    expect(people).toEqual([
+      { userId: 'a', displayName: 'Ann', projectRole: 'owner', roomRole: 'approver' },
+      { userId: 'b', displayName: '', projectRole: 'contributor', roomRole: 'viewer' },
+    ]);
+  });
+
+  it('says a session with no project has no project people, and passes other failures on', async () => {
+    const client = makeClient();
+    const service = buildVolundrHttpAdapter(client);
+    client.get.mockRejectedValueOnce(new ApiClientError('not in a project', 409));
+    await expect(service.getSessionProjectPeople('s1')).resolves.toBeNull();
+
+    client.get.mockRejectedValueOnce(new ApiClientError('nope', 403));
+    await expect(service.getSessionProjectPeople('s1')).rejects.toThrow('nope');
+  });
+
+  it('searches the org for people to invite', async () => {
+    const client = makeClient();
+    client.get.mockResolvedValueOnce([{ user_id: 'zed', display_name: 'Zed', email: 'z@x.test' }]);
+
+    const found = await buildVolundrHttpAdapter(client).getParticipantCandidates('s1', 'ze & co');
+
+    expect(client.get).toHaveBeenCalledWith('/sessions/s1/participant-candidates?q=ze+%26+co', {
+      signal: undefined,
+    });
+    expect(found).toEqual([{ userId: 'zed', displayName: 'Zed', email: 'z@x.test' }]);
+  });
+
+  it("invites, accepts and removes through the chat's own routes", async () => {
+    const client = makeClient();
+    const service = listed(client);
+    await service.getSessions();
+    client.post.mockResolvedValue(grant);
+
+    const invited = await service.inviteSessionParticipant('s1', {
+      userId: 'ivan',
+      role: 'approver',
+    });
+    await service.acceptSessionInvitation('s1');
+    await service.removeSessionParticipant('s1', 'ivan@x.test');
+
+    expect(invited.status).toBe('invited');
+    expect(client.post).toHaveBeenNthCalledWith(1, '/sessions/s1/participants?instance_id=thor', {
+      user_id: 'ivan',
+      role: 'approver',
+    });
+    expect(client.post).toHaveBeenNthCalledWith(
+      2,
+      '/sessions/s1/participants/accept?instance_id=thor',
+    );
+    expect(client.delete).toHaveBeenCalledWith(
+      '/sessions/s1/participants/ivan%40x.test?instance_id=thor',
+    );
+  });
+
+  it('reads a granted participant as in the chat', () => {
+    expect(
+      __testables.normalizeSession({
+        id: 's2',
+        name: 'n',
+        status: 'running',
+        model: 'm',
+        room: { role: 'viewer', participant_status: 'active' },
+      } as never).room?.participantStatus,
+    ).toBe('active');
+  });
+});
+
+describe('teams', () => {
+  const source = { type: 'git' as const, repo: 'github.com/niuulabs/niuu', branch: 'dev' };
+  const members = [
+    { model: 'claude-sonnet', definition: 'skuldClaude', personaName: 'coordinator', lead: true },
+    { model: 'gpt-codex', definition: 'skuldCodex', personaName: '', lead: false },
+  ];
+
+  it('starts a team through POST /teams with the task and who gets it', async () => {
+    const client = makeClient();
+    client.post.mockResolvedValue({
+      session: {
+        id: 'root',
+        name: 'niuu',
+        status: 'starting',
+        model: 'claude-sonnet',
+        team: { task_to: 'lead' },
+        people_count: 1,
+      },
+      members: [
+        {
+          id: 'm1',
+          name: 'niuu-coordinator',
+          status: 'starting',
+          model: 'claude-sonnet',
+          hosted_by: 'root',
+          team_member: { lead: true },
+        },
+      ],
+    });
+
+    const started = await buildVolundrHttpAdapter(client).startTeam({
+      name: 'niuu',
+      source,
+      task: '  Fix the refresh bug  ',
+      taskTo: 'lead',
+      members,
+      integrationIds: ['i1'],
+    });
+
+    expect(client.post).toHaveBeenCalledExactlyOnceWith('/teams', {
+      name: 'niuu',
+      source,
+      task: 'Fix the refresh bug',
+      task_to: 'lead',
+      members: [
+        {
+          model: 'claude-sonnet',
+          definition: 'skuldClaude',
+          persona_name: 'coordinator',
+          lead: true,
+        },
+        { model: 'gpt-codex', definition: 'skuldCodex', persona_name: '', lead: false },
+      ],
+      integration_ids: ['i1'],
+      terminal_restricted: false,
+      instance_id: null,
+    });
+    expect(started.session).toMatchObject({ id: 'root', team: { taskTo: 'lead' }, peopleCount: 1 });
+    expect(started.members[0]).toMatchObject({ hostedBy: 'root', teamMember: { lead: true } });
+  });
+
+  it('starts the team on the Forge asked for, as a session does', () => {
+    const body = __testables.buildStartTeamBody({
+      name: 'niuu',
+      source,
+      members,
+      instanceId: 'thor',
+      targetTags: ['gpu'],
+      targetMatch: 'any',
+    });
+    expect(body).toMatchObject({ instance_id: 'thor', target_tags: ['gpu'], target_match: 'any' });
+    expect(__testables.buildStartTeamBody({ name: 'niuu', source, members })).toMatchObject({
+      instance_id: null,
+    });
+    expect(
+      __testables.buildStartTeamBody({ name: 'niuu', source, members, targetTags: [] }),
+    ).not.toHaveProperty('target_tags');
+  });
+
+  it('searches the org for people to invite before the team exists, on its Forge', async () => {
+    const client = makeClient();
+    client.get.mockResolvedValueOnce([{ user_id: 'zed', display_name: 'Zed', email: 'z@x.test' }]);
+
+    const found = await buildVolundrHttpAdapter(client).getTeamInviteCandidates('ze & co', {
+      instanceId: 'thor',
+    });
+
+    expect(client.get).toHaveBeenCalledWith(
+      '/participant-candidates?q=ze+%26+co&instance_id=thor',
+      {
+        signal: undefined,
+      },
+    );
+    expect(found).toEqual([{ userId: 'zed', displayName: 'Zed', email: 'z@x.test' }]);
+
+    client.get.mockResolvedValueOnce([]);
+    await buildVolundrHttpAdapter(client).getTeamInviteCandidates('x');
+    expect(client.get).toHaveBeenLastCalledWith('/participant-candidates?q=x', {
+      signal: undefined,
+    });
+  });
+
+  it('sends an agent its voices only when it has some', () => {
+    const body = __testables.buildStartTeamBody({
+      name: 'niuu',
+      source,
+      members: [
+        { model: 'gpt-5', lead: true, voices: { 'grok-voice': 'ara', 'openai-realtime': 'cedar' } },
+        { model: 'gpt-5', lead: false, voices: {} },
+        { model: 'gpt-5', lead: false },
+      ],
+    });
+    const sent = body.members as Array<Record<string, unknown>>;
+    expect(sent[0]).toMatchObject({ voices: { 'grok-voice': 'ara', 'openai-realtime': 'cedar' } });
+    expect(sent[1]).not.toHaveProperty('voices');
+    expect(sent[2]).not.toHaveProperty('voices');
+  });
+
+  it('sends no task_to when the team starts without a task', () => {
+    const body = __testables.buildStartTeamBody({
+      name: 'niuu',
+      source,
+      task: '   ',
+      taskTo: 'everyone',
+      members,
+      invitees: ['u2'],
+    });
+    expect(body).not.toHaveProperty('task_to');
+    expect(body).toMatchObject({ task: '', invitees: ['u2'] });
+  });
+
+  it('reads who is in a session from its members route, on its own host', async () => {
+    const client = makeClient();
+    client.get.mockResolvedValueOnce({
+      agents: [
+        {
+          session_id: 'm1',
+          name: 'niuu-coder',
+          persona_name: null,
+          model: 'gpt-codex',
+          definition: null,
+          status: 'running',
+          lead: true,
+        },
+      ],
+      people: [
+        { user_id: 'u1', display_name: null, role: 'owner', status: 'active', online: true },
+        { user_id: 'u2', display_name: 'Sam K.', role: 'viewer', status: 'invited' },
+      ],
+    });
+
+    const members = await buildVolundrHttpAdapter(client).getSessionMembers('root', {
+      instanceId: 'thor',
+    });
+
+    expect(client.get).toHaveBeenCalledWith('/sessions/root/members?instance_id=thor', {
+      signal: undefined,
+    });
+    expect(members.agents).toEqual([
+      {
+        sessionId: 'm1',
+        name: 'niuu-coder',
+        personaName: '',
+        model: 'gpt-codex',
+        definition: null,
+        status: 'running',
+        lead: true,
+      },
+    ]);
+    expect(members.people).toEqual([
+      { userId: 'u1', displayName: '', role: 'owner', status: 'active', online: true },
+      { userId: 'u2', displayName: 'Sam K.', role: 'viewer', status: 'invited', online: null },
+    ]);
+  });
+
+  it('lets a members failure through', async () => {
+    const client = makeClient();
+    client.get.mockRejectedValueOnce(new ApiClientError('the room did not answer', 502));
+    await expect(buildVolundrHttpAdapter(client).getSessionMembers('root')).rejects.toThrow(
+      'the room did not answer',
+    );
+  });
+
+  it('reads a team root without a task and a session with no people count', () => {
+    const root = __testables.normalizeSession({
+      id: 'r',
+      name: 'r',
+      status: 'running',
+      model: 'm',
+      team: {},
+    } as never);
+    expect(root.team).toEqual({ taskTo: null });
+    expect(root.peopleCount).toBeUndefined();
+    expect(root.hostedBy).toBeUndefined();
+    expect(
+      __testables.normalizeSession({
+        id: 'm',
+        name: 'm',
+        status: 'running',
+        model: 'm',
+        team_member: {},
+      } as never).teamMember,
+    ).toEqual({ lead: false });
   });
 });

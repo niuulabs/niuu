@@ -17,7 +17,8 @@ export interface UseMemoryUrlReturn {
   setDepth: (depth: 1 | 2 | 3) => void;
   setMount: (mount: string | null) => void;
   setView: (view: '3d' | '2d') => void;
-  setColour: (colour: 'type' | 'proof' | 'age') => void;
+  /** The kind filter; null shows everything. */
+  setShow: (show: 'people' | 'decisions' | 'tickets' | null) => void;
   /**
    * Apply one Escape step (clears a traced path, then focus, then the
    * question, then exits replay). `tracedPath` is scene-local state, not
@@ -56,7 +57,7 @@ export function useMemoryUrl(): UseMemoryUrlReturn {
     setDepth: (depth) => patch({ depth }),
     setMount: (mount) => patch({ mount: mount ?? undefined }),
     setView: (view) => patch({ view }),
-    setColour: (colour) => patch({ colour }),
+    setShow: (show) => patch({ show: show ?? undefined }),
     handleEscape: (tracedPath, clearTracedPath) => {
       const step = escapeStep({
         path: tracedPath,

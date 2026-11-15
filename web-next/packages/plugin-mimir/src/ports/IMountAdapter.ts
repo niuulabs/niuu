@@ -5,10 +5,8 @@ import type {
   DeploymentStatus,
 } from '../domain/instances';
 import type { Mount } from '@niuulabs/domain';
-import type { WriteRoutingRule } from '../domain/routing';
 import type { RegistryMount } from '../domain/registry';
 import type { EvalReport, QueryStats } from '../domain/analytics';
-import type { DoctorReport } from '../domain/doctor';
 
 /**
  * A single entry in the recent-writes activity feed.
@@ -23,15 +21,14 @@ export interface RecentWrite {
   page: string;
   /** Ravn that performed the write. */
   ravn: string;
-  kind: 'write' | 'compile' | 'lint-fix';
+  kind: 'write' | 'compile';
   message: string;
 }
 
 /**
  * Port: IMountAdapter
  *
- * Provides access to the set of Mímir mounts registered in a deployment,
- * including write-routing rules.
+ * Provides access to the set of Mímir mounts registered in a deployment.
  */
 export interface IMountAdapter {
   inspectInstances?(mount?: string): Promise<InstanceInspection[]>;
@@ -59,18 +56,6 @@ export interface IMountAdapter {
   /** Delete a registry entry. */
   deleteRegistryMount?(id: string): Promise<void>;
 
-  /** List write-routing rules, ordered by ascending priority. */
-  listRoutingRules(): Promise<WriteRoutingRule[]>;
-
-  /**
-   * Create or update a write-routing rule.
-   * Returns the persisted rule (server may assign an id for new rules).
-   */
-  upsertRoutingRule(rule: WriteRoutingRule): Promise<WriteRoutingRule>;
-
-  /** Delete a routing rule by id. No-op if the id does not exist. */
-  deleteRoutingRule(id: string): Promise<void>;
-
   /**
    * Fetch the most recent write events across all mounts, newest first.
    * Used by the Overview screen's activity feed.
@@ -88,16 +73,4 @@ export interface IMountAdapter {
    * Returns null when the backend does not track query stats.
    */
   getQueryStats(): Promise<QueryStats | null>;
-
-  /**
-   * Run the instance health checklist.
-   * Returns null when the backend has no doctor subsystem.
-   */
-  getDoctor(mountName?: string): Promise<DoctorReport | null>;
-
-  /**
-   * Apply automatic remediations for all fixable doctor checks.
-   * Returns the refreshed report, or null when the backend cannot fix.
-   */
-  runDoctorFixes(mountName?: string): Promise<DoctorReport | null>;
 }

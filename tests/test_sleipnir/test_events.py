@@ -273,3 +273,40 @@ def test_validate_numeric_first_char():
 )
 def test_match_event_type(pattern: str, event_type: str, expected: bool):
     assert match_event_type(pattern, event_type) is expected
+
+
+class _StubObservability:
+    """Stands in for an enabled Observability: inject() returns the active span's carrier."""
+
+    def __init__(self, carrier: dict[str, str]) -> None:
+        self._carrier = carrier
+
+    def inject(self) -> dict[str, str]:
+        return dict(self._carrier)
+
+
+_TRACE = {"traceparent": "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01"}
+
+
+def test_new_event_carries_the_active_trace_context(monkeypatch) -> None:
+    """An event created inside a span carries that span's W3C context on the wire."""
+    from niuu import observability as obs_module
+
+    monkeypatch.setattr(obs_module, "_active", _StubObservability(_TRACE))
+    event = make_event()
+    assert event.trace_context == _TRACE
+    assert event.to_dict()["trace_context"] == _TRACE
+
+
+def test_event_read_back_keeps_its_publishers_trace_context(monkeypatch) -> None:
+    """from_dict keeps the trace the event was published with, not the reader's span."""
+    from niuu import observability as obs_module
+
+    monkeypatch.setattr(obs_module, "_active", _StubObservability(_TRACE))
+    wire = make_event().to_dict()
+    monkeypatch.setattr(
+        obs_module,
+        "_active",
+        _StubObservability({"traceparent": "00-" + "1" * 32 + "-" + "2" * 16 + "-01"}),
+    )
+    assert SleipnirEvent.from_dict(wire).trace_context == _TRACE

@@ -126,6 +126,21 @@ async def test_reserve_counts_all_unreleased_machines_and_a_full_pool_is_loud(se
     assert "state != 'released'" in conn.fetchval.call_args.args[0]
 
 
+async def test_reserve_on_a_pool_without_a_maximum_never_counts_machines(setup):
+    # Registered hosts: the pool is the hosts that joined; the provider refuses a claim
+    # none can serve, so there is no count to compare.
+    repo, _, conn = setup
+    lease = machine()
+    slot = binding(lease)
+    conn.fetchrow.return_value = None
+    conn.fetchval.side_effect = [None]
+
+    assert await repo.reserve(lease, None, slot) == (lease, slot)
+
+    assert not any("COUNT(*)" in call.args[0] for call in conn.fetchval.call_args_list)
+    assert "INSERT INTO compute_leases" in conn.execute.call_args_list[1].args[0]
+
+
 async def test_the_existing_claim_is_found_through_the_sessions_live_binding(setup):
     repo, _, conn = setup
     lease = machine()

@@ -170,6 +170,8 @@ export interface ForgeProject {
   brief?: string;
   repo_url?: string;
   revision?: number;
+  /** Page prefixes under which the project's agents write its memory without asking. */
+  memory_write_prefixes?: string[];
 }
 /**
  * What `PATCH /projects/{id}` accepts besides the revision. Connecting a checkout is a
@@ -182,7 +184,120 @@ export interface ForgeProjectChanges {
   status?: 'active' | 'archived';
   repo_url?: string;
   workspace_path?: string;
+  memory_write_prefixes?: string[];
 }
+/** A memory the project also reads: a Mímir registry entry its sessions mount. */
+export interface ProjectMemoryMount {
+  name: string;
+  registry_entry_id: string;
+  access: 'read' | 'read_write';
+  write_prefixes: string[];
+  added_by: string;
+  created_at: string;
+  updated_at: string;
+}
+/** A project role. Roles are a ladder: each one can do everything the ones before it can. */
+export type ProjectRole = 'viewer' | 'contributor' | 'approver' | 'owner';
+export const PROJECT_ROLES: readonly ProjectRole[] = ['viewer', 'contributor', 'approver', 'owner'];
+/** A skill in the A2A `AgentSkill` shape, so people and agents are described alike. */
+export interface MemberSkill {
+  id: string;
+  name: string;
+  description?: string;
+  tags?: string[];
+}
+/** A person of the project's org and what they may do on the project. */
+export interface ProjectMember {
+  project_id: string;
+  user_id: string;
+  role: ProjectRole;
+  expertise: string;
+  skills: MemberSkill[];
+  display_name: string;
+  email: string;
+  added_by?: string;
+}
+/** An active member of the project's org who is not on the project yet. */
+export interface ProjectMemberCandidate {
+  user_id: string;
+  display_name: string;
+  email: string;
+}
+export interface ProjectMemberChange {
+  role?: ProjectRole;
+  expertise?: string;
+  skills?: MemberSkill[];
+}
+/** How a project owner installs a catalog entry for the whole team. */
+export type TeamInstallMethod = 'oauth' | 'client_credentials';
+
+/** One field a catalog entry's config asks for. */
+export interface TeamConfigField {
+  label?: string;
+  type?: string;
+  description?: string;
+}
+
+/** A catalog entry as the project's owners see it (snake_case, as the API sends it). */
+export interface TeamCatalogEntry {
+  slug: string;
+  name: string;
+  description?: string;
+  icon: string;
+  integration_type: string;
+  config_schema: { required?: string[]; properties?: Record<string, TeamConfigField> };
+  team_install: TeamInstallMethod;
+}
+
+/** An integration the project owns: the team's bot, never a person. */
+export interface TeamIntegration {
+  id: string;
+  slug: string;
+  integration_type: string;
+  config: Record<string, unknown>;
+  enabled: boolean;
+  connected_by: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export type TeamRouteEvent = 'needs_decision' | 'person_question' | 'progress' | 'errors';
+export type TeamDeliverTo = 'channel' | 'recipient';
+
+/** What one kind of event does with the team's messaging connection. */
+export interface TeamRoute {
+  event: TeamRouteEvent;
+  connection_id: string;
+  deliver_to: TeamDeliverTo;
+  channel: string;
+  enabled: boolean;
+}
+
+export type TeamRouteChange = Omit<TeamRoute, 'event'>;
+
+/** One use of a team connection. */
+export interface TeamIntegrationUse {
+  connection_id: string;
+  action: string;
+  acting_for: string;
+  actor: string;
+  subject: string;
+  session_id: string;
+  occurred_at: string | null;
+}
+
+/** A page of uses, newest first; `next_before` is set while older ones remain. */
+export interface TeamIntegrationUsagePage {
+  items: TeamIntegrationUse[];
+  next_before: string | null;
+}
+
+export interface TeamServiceAccountConnect {
+  slug: string;
+  credential: { client_id: string; client_secret: string };
+  config: Record<string, string>;
+}
+
 export interface SessionProjectMembership {
   sessionId: string;
   revision: number;
@@ -221,6 +336,16 @@ export interface SessionStartup {
   progressError: string | null;
 }
 
+/** What a person may do in a room (`niuu.room_access`): chat, also answer gates, everything. */
+export type SessionRoomRole = 'viewer' | 'approver' | 'owner';
+
+/** The caller's own standing in a session's room, as Forge reports it for a shared session. */
+export interface SessionRoom {
+  role: SessionRoomRole;
+  participantStatus: string;
+  expiresAt: string | null;
+}
+
 export interface VolundrSession {
   sessionDefinition?: string;
   /** The Ting workflow run this session works for (the slug of its `workflow:` tag). */
@@ -228,7 +353,17 @@ export interface VolundrSession {
   coordination?: SessionCoordination;
   id: string;
   name: string;
-  source: SessionSource;
+  /**
+   * The workspace the session was launched from. `null` when Forge withheld it: a person
+   * who shares a session without owning it gets a room summary, which never carries the
+   * repository, branch or paths. Check `room` first; there is no stand-in source.
+   */
+  source: SessionSource | null;
+  /**
+   * The caller's standing in the session's room. Present when Forge answered with a room
+   * summary (a shared session, or the owner's own room view); absent on a full session.
+   */
+  room?: SessionRoom;
   status: SessionStatus;
   model: string;
   personaName?: string;
@@ -261,6 +396,16 @@ export interface VolundrSession {
   /** True when the session is blocked waiting on the user (awaiting_input). */
   needsAttention?: boolean;
   ownerId?: string;
+  /** Who owns the session, by name, on a session shared with the caller (when known). */
+  ownerName?: string;
+  /** The unit root this session runs in (a team's member, a workflow run's member). */
+  hostedBy?: string;
+  /** Set on a team's root: what the opening task was addressed to. */
+  team?: SessionTeam;
+  /** Set on a team's member: whether it is the one that leads. */
+  teamMember?: SessionTeamMember;
+  /** The owner plus everyone with an active grant on the session. */
+  peopleCount?: number;
   tenantId?: string;
   instanceId?: string;
   instanceName?: string;
@@ -273,6 +418,162 @@ export interface VolundrSession {
    * it, and only a host that records turn spans.
    */
   workedSeconds24h?: number;
+}
+
+/** Who the opening task of a team went to: the lead alone, or every agent. */
+export type SessionTeamTaskTo = 'lead' | 'everyone';
+export const SESSION_TEAM_TASK_TO: readonly SessionTeamTaskTo[] = ['lead', 'everyone'];
+
+/** A team's root: `taskTo` is null when the team started without a task. */
+export interface SessionTeam {
+  taskTo: SessionTeamTaskTo | null;
+}
+
+/** A team's member session. */
+export interface SessionTeamMember {
+  lead: boolean;
+}
+
+/** One agent of a team to start: its engine and persona; exactly one leads. */
+export interface StartTeamMember {
+  model: string;
+  definition?: string;
+  personaName?: string;
+  lead: boolean;
+  /**
+   * The agent's voice on a team call per persona voice key (`grok-voice`, `openai-realtime`),
+   * over its persona's own. Any voice id the provider accepts; no two agents, and no agent and
+   * the room's host, may share one. Refused by a Forge without voice.
+   */
+  voices?: Record<string, string>;
+}
+
+/**
+ * A team to start: one root session that hosts the room, a member session per agent, and
+ * the people granted into the room. `taskTo` is set exactly when `task` is.
+ */
+export interface StartTeamRequest {
+  name: string;
+  source: SessionSource;
+  task?: string;
+  taskTo?: SessionTeamTaskTo;
+  members: StartTeamMember[];
+  /** User ids granted the viewer role on the root. */
+  invitees?: string[];
+  launchSpec?: string;
+  credentialNames?: string[];
+  integrationIds?: string[];
+  resourceConfig?: Record<string, string | undefined>;
+  terminalRestricted?: boolean;
+  /** The Forge to start on; the aggregate resolves one from these as it does for a session. */
+  instanceId?: string | null;
+  targetTags?: string[];
+  targetMatch?: 'all' | 'any';
+}
+
+/** The started team: its root and a session per member. */
+export interface StartedTeam {
+  session: VolundrSession;
+  members: VolundrSession[];
+}
+
+/** An agent of a session's unit: a member session of a team, or the session itself. */
+export interface SessionMemberAgent {
+  sessionId: string;
+  name: string;
+  personaName: string;
+  model: string;
+  definition: string | null;
+  status: SessionStatus;
+  lead: boolean;
+}
+
+/** A person in a session's room: its owner, or someone with a grant. */
+export interface SessionMemberPerson {
+  userId: string;
+  displayName: string;
+  /** `owner` for the session's owner, otherwise the grant's role. */
+  role: string;
+  /** `active` for the owner, otherwise the grant's status. */
+  status: string;
+  /** Whether they are in the live room now; null when the session is not running. */
+  online: boolean | null;
+}
+
+/** Everyone in a session's room: its agents, then its people. */
+export interface SessionMembers {
+  agents: SessionMemberAgent[];
+  people: SessionMemberPerson[];
+}
+
+/**
+ * True when the caller reaches the session through a room grant (a project membership or a
+ * per-session invite) and does not own it. Such a session has no source, code endpoint,
+ * files or settings to show; it has its room: chat at `chatEndpoint`, and gates for approvers.
+ */
+export function isSharedSession(session: Pick<VolundrSession, 'room'>): boolean {
+  return session.room !== undefined && session.room.role !== 'owner';
+}
+
+/** An invitation to this chat the caller has not answered: they cannot read the session yet. */
+export function isInvitation(session: Pick<VolundrSession, 'room'>): boolean {
+  return session.room?.participantStatus === 'invited';
+}
+
+/** The role a per-session invitation offers, and the room role a project role gives. */
+export type ParticipantRole = 'viewer' | 'approver';
+export const PARTICIPANT_ROLES: readonly ParticipantRole[] = ['viewer', 'approver'];
+
+/** Where a person's grant on a chat stands. A removed grant is never listed. */
+export type ParticipantStatus = 'invited' | 'active';
+
+/** One person invited into a single chat, or already in it. */
+export interface SessionParticipant {
+  userId: string;
+  displayName: string;
+  role: ParticipantRole;
+  status: ParticipantStatus;
+  /** Who invited them (a user id). */
+  invitedBy: string;
+  expiresAt: string | null;
+}
+
+/** A member of the session's org who could be invited into the chat. */
+export interface ParticipantCandidate {
+  userId: string;
+  displayName: string;
+  email: string;
+}
+
+/**
+ * A member of the session's project, with the room role the project gives them on the
+ * project's sessions: approver and owner approve, viewer and contributor chat and steer.
+ */
+export interface SessionProjectPerson {
+  userId: string;
+  displayName: string;
+  projectRole: ProjectRole;
+  roomRole: ParticipantRole;
+}
+
+/** The room role a project role gives (`room_role_for_project_role`). */
+export function roomRoleOfProjectRole(role: ProjectRole): ParticipantRole {
+  return role === 'approver' || role === 'owner' ? 'approver' : 'viewer';
+}
+
+/** How a shared session reads in a list: "Shared · approver". */
+export function sharedSessionLabel(room: SessionRoom): string {
+  return `Shared · ${room.role}`;
+}
+
+/**
+ * Whether the caller may answer a session's gates and permission prompts: `approver` and up in
+ * its room, or anyone who reads the full session. The server enforces it; this decides only
+ * whether to offer the control.
+ */
+export function canAnswerGates(session: Pick<VolundrSession, 'room'>): boolean {
+  if (session.room === undefined) return true;
+  return session.room.role !== 'viewer' && session.room.participantStatus !== 'invited';
 }
 
 /**

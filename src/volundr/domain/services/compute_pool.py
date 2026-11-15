@@ -34,7 +34,7 @@ from volundr.domain.compute import (
 )
 from volundr.domain.execution_catalog import ExecutionPlanMismatchError, ResolvedExecutionPlan
 from volundr.domain.host_preparation import HostPreparation
-from volundr.domain.services.compute_leases import ComputeLeaseService
+from volundr.domain.services.compute_leases import ComputeLeaseService, require_machine_maximum
 from volundr.domain.services.execution_catalog import ExecutionPlanResolver
 from volundr.domain.vm_runtime import ProfileAwareVmRuntime, VmRuntime, VmRuntimeUnavailableError
 
@@ -160,6 +160,20 @@ class ComputePoolService:
         self._require_rootless_runtimes()
         self._require_slot_support(self.defaults)
         policy = await self.repository.policy(self.pool_id, self.defaults)
+        if self.provider.fixed_inventory and policy.max_machines is not None:
+            # Releases before this one stored a host maximum; registered hosts have none.
+            # Drop it once from the durable policy, so it cannot strand joined hosts.
+            logger.warning(
+                "Compute pool %s: dropping the stored max_machines=%d; registered hosts "
+                "are bounded by the hosts that joined",
+                self.pool_id,
+                policy.max_machines,
+            )
+            policy = policy.model_copy(update={"max_machines": None})
+            await self.repository.set_policy(self.pool_id, policy)
+        require_machine_maximum(
+            self.pool_id, policy.max_machines, fixed_inventory=self.provider.fixed_inventory
+        )
         if policy.reuse_policy == "reuse" and not self.runtime.supports_reuse:
             raise ValueError("Configured runtime does not support in-place VM reuse")
         self._require_slot_support(policy)
@@ -170,6 +184,9 @@ class ComputePoolService:
             profile.name for profile in await self.leases.validated_profiles()
         }:
             raise ValueError("Select a machine profile configured by the provider adapter")
+        require_machine_maximum(
+            self.pool_id, policy.max_machines, fixed_inventory=self.provider.fixed_inventory
+        )
         if policy.reuse_policy == "reuse" and not self.runtime.supports_reuse:
             raise ValueError("Configured runtime does not support in-place VM reuse")
         self._require_rootless_runtimes()
@@ -286,8 +303,11 @@ class ComputePoolService:
             for lease in leases
             if lease.state == LeaseState.IDLE and not _live(bindings.get(lease.id, []))
         ]
-        over_machines = sum(lease.state != LeaseState.RELEASED for lease in leases) - (
-            policy.max_machines
+        # Registered hosts have no maximum, so none of them is ever surplus for it.
+        over_machines = (
+            sum(lease.state != LeaseState.RELEASED for lease in leases) - policy.max_machines
+            if policy.max_machines is not None
+            else 0
         )
         for index, spare in enumerate(spares):
             usable = self._usable(spare, bindings, policy, default_plan, datetime.now(UTC))

@@ -81,7 +81,10 @@ def make_execution(**changes) -> HostExecution:
         "label": "Host · Nix + rootless Podman",
         "supports_slots": True,
         "requires_root_daemon": False,
-        "slot_limits": SlotLimits(uid_base=61000, cpu=4, memory_mib=16384, pids=4096),
+        "slot_limits": {
+            HostPlatform.LINUX: SlotLimits(uid_base=61000, cpu=4, memory_mib=16384, pids=4096),
+            HostPlatform.DARWIN: SlotLimits(uid_base=61000, cpu=None, memory_mib=None, pids=None),
+        },
         "forge_public_key": "ssh-ed25519 FORGEKEY forge",
         "ssh_user": "root",
         "platforms": frozenset({HostPlatform.LINUX}),

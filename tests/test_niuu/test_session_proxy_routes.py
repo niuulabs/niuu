@@ -749,3 +749,433 @@ class TestImmediateCloseHook:
 
         assert len(seen_during_bridge["tracked"].get(("sess", "alice"), ())) == 1
         assert reg._live_connections == {}  # untracked once the connection ended
+
+
+_VERIFIED_ALICE = {
+    "x-verified-user": "alice",
+    "x-verified-email": "alice@example.test",
+    "x-verified-tenant": "t1",
+    "x-verified-roles": "volundr:developer",
+}
+
+
+class TestDisplayNameHeader:
+    """x-auth-display-name is stamped from the proxy's own resolution, never the client's."""
+
+    @staticmethod
+    def _ws_headers(tmp_path, *, client_headers: dict, resolver=None, dev_identity=False) -> dict:
+        from starlette.websockets import WebSocketDisconnect
+
+        app, reg = _bare_app(tmp_path, dev_identity=dev_identity)
+        if not dev_identity:
+            app.state.identity = _verifying_identity()
+        if resolver is not None:
+            reg.set_display_name_resolver(resolver)
+        reg.register("sess", 9123)
+        captured: dict = {}
+        with patch("websockets.asyncio.client.connect", side_effect=_capture_ws_dial(captured)):
+            with pytest.raises(WebSocketDisconnect):
+                with TestClient(app).websocket_connect(
+                    "/s/sess/session", headers=client_headers
+                ) as ws:
+                    ws.receive_text()
+        return captured["headers"]
+
+    def test_ws_stamps_the_provisioned_name_and_ignores_a_client_supplied_copy(
+        self, tmp_path
+    ) -> None:
+        looked_up: list[str] = []
+
+        async def resolver(user_id: str) -> str | None:
+            looked_up.append(user_id)
+            return "Alice Liddell"
+
+        headers = self._ws_headers(
+            tmp_path,
+            client_headers={**_VERIFIED_ALICE, "x-auth-display-name": "Mallory"},
+            resolver=resolver,
+        )
+
+        assert headers["x-auth-display-name"] == "Alice%20Liddell"
+        assert looked_up == ["alice"]
+
+    def test_ws_stamps_the_email_when_the_user_has_no_display_name(self, tmp_path) -> None:
+        async def resolver(user_id: str) -> str | None:
+            return ""
+
+        headers = self._ws_headers(
+            tmp_path,
+            client_headers={**_VERIFIED_ALICE, "x-auth-display-name": "Mallory"},
+            resolver=resolver,
+        )
+
+        assert headers["x-auth-display-name"] == "alice%40example.test"
+
+    def test_ws_stamps_the_email_when_no_resolver_is_wired(self, tmp_path) -> None:
+        headers = self._ws_headers(tmp_path, client_headers=_VERIFIED_ALICE)
+
+        assert headers["x-auth-display-name"] == "alice%40example.test"
+
+    def test_ws_sends_no_name_when_there_is_neither_a_display_name_nor_an_email(
+        self, tmp_path
+    ) -> None:
+        without_email = {k: v for k, v in _VERIFIED_ALICE.items() if k != "x-verified-email"}
+
+        headers = self._ws_headers(
+            tmp_path, client_headers={**without_email, "x-auth-display-name": "Mallory"}
+        )
+
+        assert "x-auth-display-name" not in headers
+
+    def test_ws_percent_encodes_a_non_ascii_name(self, tmp_path) -> None:
+        async def resolver(user_id: str) -> str | None:
+            return "José Ñandú"
+
+        headers = self._ws_headers(tmp_path, client_headers=_VERIFIED_ALICE, resolver=resolver)
+
+        assert headers["x-auth-display-name"] == "Jos%C3%A9%20%C3%91and%C3%BA"
+
+    def test_http_stamps_the_provisioned_name_and_ignores_a_client_supplied_copy(
+        self, tmp_path
+    ) -> None:
+        app, reg = _bare_app(tmp_path)
+        app.state.identity = _verifying_identity()
+        reg.register("sess", 9123)
+
+        async def resolver(user_id: str) -> str | None:
+            return "Alice Liddell"
+
+        reg.set_display_name_resolver(resolver)
+
+        with patch("httpx.AsyncClient") as mock_client_cls:
+            mock_client = _mock_http_client(mock_client_cls)
+            resp = TestClient(app).get(
+                "/s/sess/api/conversation/history",
+                headers={**_VERIFIED_ALICE, "x-auth-display-name": "Mallory"},
+            )
+
+        assert resp.status_code == 200
+        headers = mock_client.request.await_args.kwargs["headers"]
+        assert headers["x-auth-display-name"] == "Alice%20Liddell"
+
+    def test_http_forwards_no_client_name_when_the_proxy_has_none(self, tmp_path) -> None:
+        app, reg = _bare_app(tmp_path)
+        app.state.identity = _verifying_identity()
+        reg.register("sess", 9123)
+        without_email = {k: v for k, v in _VERIFIED_ALICE.items() if k != "x-verified-email"}
+
+        with patch("httpx.AsyncClient") as mock_client_cls:
+            mock_client = _mock_http_client(mock_client_cls)
+            resp = TestClient(app).get(
+                "/s/sess/api/conversation/history",
+                headers={**without_email, "x-auth-display-name": "Mallory"},
+            )
+
+        assert resp.status_code == 200
+        headers = mock_client.request.await_args.kwargs["headers"]
+        assert "x-auth-display-name" not in headers
+
+    def test_dev_identity_forwards_the_asserted_name(self, tmp_path) -> None:
+        headers = self._ws_headers(
+            tmp_path,
+            client_headers={"x-auth-user-id": "dev-user", "x-auth-display-name": "Dev Person"},
+            dev_identity=True,
+        )
+
+        assert headers["x-auth-display-name"] == "Dev Person"
+
+
+def _with_role(reg: SkuldPortRegistry, role: str | None) -> None:
+    async def role_resolver(session_id, user_id, tenant_id, roles) -> str | None:
+        return role
+
+    reg.set_room_role_resolver(role_resolver)
+
+
+class TestVoiceChannelProxyRoutes:
+    """``/s/{id}/voice`` reaches the broker's voice channel, for the session's owner alone."""
+
+    def test_http_forwards_to_the_brokers_voice_api_with_the_owner_role(self, tmp_path) -> None:
+        app, reg = _bare_app(tmp_path)
+        reg.register("sess", 9123)
+        _with_role(reg, "owner")
+
+        with patch("httpx.AsyncClient") as mock_client_cls:
+            mock_client = _mock_http_client(mock_client_cls)
+            resp = TestClient(app).post("/s/sess/voice/api/calls/c1:end?x=1", content=b'{"a": 1}')
+
+        assert resp.status_code == 200
+        request = mock_client.request.await_args.kwargs
+        assert request["method"] == "POST"
+        assert request["url"] == "http://127.0.0.1:9123/voice/api/calls/c1%3Aend"
+        assert request["params"] == {"x": "1"}
+        assert request["content"] == b'{"a": 1}'
+        assert request["headers"]["x-niuu-room-role"] == "owner"
+
+    @pytest.mark.parametrize("method", ["GET", "POST", "PATCH", "DELETE"])
+    def test_http_methods_the_voice_api_speaks_are_proxied(self, tmp_path, method: str) -> None:
+        app, reg = _bare_app(tmp_path)
+        reg.register("sess", 9123)
+        _with_role(reg, "owner")
+
+        with patch("httpx.AsyncClient") as mock_client_cls:
+            mock_client = _mock_http_client(mock_client_cls)
+            resp = TestClient(app).request(method, "/s/sess/voice/api/agents")
+
+        assert resp.status_code == 200
+        assert mock_client.request.await_args.kwargs["method"] == method
+
+    def test_put_is_not_a_voice_api_method(self, tmp_path) -> None:
+        app, reg = _bare_app(tmp_path)
+        reg.register("sess", 9123)
+        _with_role(reg, "owner")
+
+        with patch("httpx.AsyncClient") as mock_client_cls:
+            mock_client = _mock_http_client(mock_client_cls)
+            resp = TestClient(app).put("/s/sess/voice/api/agents")
+
+        assert resp.status_code == 405
+        mock_client.request.assert_not_called()
+
+    @pytest.mark.parametrize("role", ["viewer", "approver", None])
+    @pytest.mark.parametrize("method", ["GET", "POST"])
+    def test_http_refuses_every_role_below_owner_even_for_read_routes(
+        self, tmp_path, role, method: str
+    ) -> None:
+        app, reg = _bare_app(tmp_path)
+        reg.register("sess", 9123)
+        _with_role(reg, role)
+
+        with patch("httpx.AsyncClient") as mock_client_cls:
+            mock_client = _mock_http_client(mock_client_cls)
+            resp = TestClient(app).request(method, "/s/sess/voice/api/conversation/history")
+
+        assert resp.status_code == 403
+        assert resp.json()["detail"] == "This route requires the owner room role"
+        mock_client.request.assert_not_called()
+
+    def test_the_broker_api_keeps_its_own_per_route_roles(self, tmp_path) -> None:
+        """Only the voice legs are owner-only: ``/api`` still asks each route's own role."""
+        app, reg = _bare_app(tmp_path)
+        reg.register("sess", 9123)
+        _with_role(reg, "viewer")
+
+        with patch("httpx.AsyncClient") as mock_client_cls:
+            mock_client = _mock_http_client(mock_client_cls)
+            read = TestClient(app).get("/s/sess/api/conversation/history")
+            write = TestClient(app).put("/s/sess/api/anything")
+
+        assert read.status_code == 200
+        assert mock_client.request.await_args.kwargs["url"] == (
+            "http://127.0.0.1:9123/api/conversation/history"
+        )
+        assert write.status_code == 403
+        assert write.json()["detail"] == "This route requires the owner room role"
+
+    def test_http_denies_a_caller_who_cannot_attach(self, tmp_path) -> None:
+        async def deny(session_id, user_id, tenant_id, roles) -> bool:
+            return False
+
+        app, reg = _bare_app(tmp_path, guard=deny)
+        reg.register("sess", 9123)
+        _with_role(reg, "owner")
+
+        with patch("httpx.AsyncClient") as mock_client_cls:
+            mock_client = _mock_http_client(mock_client_cls)
+            resp = TestClient(app).get("/s/sess/voice/api/agents")
+
+        assert resp.status_code == 403
+        assert resp.json()["detail"] == "Not authorized for this session"
+        mock_client.request.assert_not_called()
+
+    def test_http_refuses_to_attach_without_a_guard_outside_dev(self, tmp_path) -> None:
+        app, reg = _bare_app(tmp_path, guard=None)
+        reg.register("sess", 9123)
+
+        with patch("httpx.AsyncClient") as mock_client_cls:
+            with pytest.raises(SessionProxyGuardMissingError):
+                TestClient(app).get("/s/sess/voice/api/agents")
+            mock_client_cls.assert_not_called()
+
+    def test_http_unknown_session_is_not_found(self, tmp_path) -> None:
+        app, _reg = _bare_app(tmp_path)
+
+        resp = TestClient(app).get("/s/nonexistent/voice/api/agents")
+
+        assert resp.status_code == 404
+        assert resp.json()["detail"] == "Session not found"
+
+    @pytest.mark.parametrize(
+        "path",
+        ["agents//x", "agents/%5Cx", "agents/a%20b", "agents/a;b", "agents/%2e%2e/x", "agents/%2e"],
+    )
+    def test_http_refuses_paths_that_could_leave_the_voice_api(self, tmp_path, path) -> None:
+        app, reg = _bare_app(tmp_path)
+        reg.register("sess", 9123)
+        _with_role(reg, "owner")
+
+        with patch("httpx.AsyncClient") as mock_client_cls:
+            mock_client = _mock_http_client(mock_client_cls)
+            resp = TestClient(app).get(f"/s/sess/voice/api/{path}")
+
+        assert resp.status_code == 400
+        assert resp.json()["detail"] == "Invalid path"
+        mock_client.request.assert_not_called()
+
+    def test_http_reaches_an_external_target_at_the_voice_prefix(self, tmp_path) -> None:
+        app, reg = _bare_app(tmp_path)
+        target = _external_target()
+
+        async def _resolve(session_id: str) -> SessionProxyTarget | None:
+            return target if session_id == "sess-open" else None
+
+        reg.set_target_resolver(_resolve)
+        _with_role(reg, "owner")
+
+        with patch("httpx.AsyncClient") as mock_client_cls:
+            mock_client = _mock_http_client(mock_client_cls)
+            resp = TestClient(app).get("/s/sess-open/voice/api/agents")
+
+        assert resp.status_code == 200
+        request = mock_client.request.await_args.kwargs
+        assert (
+            request["url"] == "http://openshell.openshell.svc.cluster.local:8080/voice/api/agents"
+        )
+        assert request["headers"]["Host"] == "forge-123--skuld.openshell.localhost:8080"
+
+    def test_http_reports_a_broker_that_is_not_ready(self, tmp_path) -> None:
+        import httpx
+
+        app, reg = _bare_app(tmp_path)
+        reg.register("sess", 9123)
+        _with_role(reg, "owner")
+
+        with patch("httpx.AsyncClient") as mock_client_cls:
+            mock_client = _mock_http_client(mock_client_cls)
+            mock_client.request.side_effect = httpx.ConnectError("refused")
+            resp = TestClient(app).get("/s/sess/voice/api/agents")
+
+        assert resp.status_code == 502
+
+    def test_health_is_forwarded_to_the_voice_health_route_for_the_owner(self, tmp_path) -> None:
+        app, reg = _bare_app(tmp_path)
+        reg.register("sess", 9123)
+        _with_role(reg, "owner")
+
+        with patch("httpx.AsyncClient") as mock_client_cls:
+            mock_client = _mock_http_client(mock_client_cls)
+            resp = TestClient(app).get("/s/sess/voice/health")
+
+        assert resp.status_code == 200
+        assert mock_client.request.await_args.kwargs["url"] == (
+            "http://127.0.0.1:9123/voice/health"
+        )
+
+    def test_health_is_refused_below_owner(self, tmp_path) -> None:
+        app, reg = _bare_app(tmp_path)
+        reg.register("sess", 9123)
+        _with_role(reg, "approver")
+
+        with patch("httpx.AsyncClient") as mock_client_cls:
+            mock_client = _mock_http_client(mock_client_cls)
+            resp = TestClient(app).get("/s/sess/voice/health")
+
+        assert resp.status_code == 403
+        mock_client.request.assert_not_called()
+
+    @pytest.mark.parametrize("url", ["/s/sess/voice", "/s/sess/voice/"])
+    def test_ws_dials_the_brokers_voice_path_for_the_owner(self, tmp_path, url: str) -> None:
+        from starlette.websockets import WebSocketDisconnect
+
+        app, reg = _bare_app(tmp_path)
+        reg.register("sess", 9123)
+        _with_role(reg, "owner")
+        captured: dict = {}
+
+        with patch("websockets.asyncio.client.connect", side_effect=_capture_ws_dial(captured)):
+            with pytest.raises(WebSocketDisconnect) as exc:
+                with TestClient(app).websocket_connect(
+                    url, headers={"cookie": "session=secret", "x-niuu-room-role": "viewer"}
+                ) as ws:
+                    ws.receive_text()
+
+        assert exc.value.code == 4411
+        assert captured["url"] == "ws://127.0.0.1:9123/voice"
+        assert captured["headers"]["x-niuu-room-role"] == "owner"
+        assert "cookie" not in {key.lower() for key in captured["headers"]}
+
+    def test_ws_does_not_carry_chat_history_negotiation(self, tmp_path) -> None:
+        from starlette.websockets import WebSocketDisconnect
+
+        app, reg = _bare_app(tmp_path)
+        reg.register("sess", 9123)
+        _with_role(reg, "owner")
+        captured: dict = {}
+
+        with patch("websockets.asyncio.client.connect", side_effect=_capture_ws_dial(captured)):
+            with pytest.raises(WebSocketDisconnect):
+                with TestClient(app).websocket_connect("/s/sess/voice?history=recent") as ws:
+                    ws.receive_text()
+
+        assert captured["url"] == "ws://127.0.0.1:9123/voice"
+
+    @pytest.mark.parametrize("role", ["viewer", "approver", None])
+    def test_ws_refuses_every_role_below_owner_without_dialing_the_broker(
+        self, tmp_path, role
+    ) -> None:
+        from starlette.websockets import WebSocketDisconnect
+
+        app, reg = _bare_app(tmp_path)
+        reg.register("sess", 9123)
+        _with_role(reg, role)
+
+        with patch("websockets.asyncio.client.connect") as dial:
+            with pytest.raises(WebSocketDisconnect) as exc:
+                with TestClient(app).websocket_connect("/s/sess/voice") as ws:
+                    ws.receive_text()
+
+        assert exc.value.code == 1008
+        assert "owner room role" in exc.value.reason
+        dial.assert_not_called()
+
+    def test_the_chat_websocket_is_still_open_to_every_attached_role(self, tmp_path) -> None:
+        from starlette.websockets import WebSocketDisconnect
+
+        app, reg = _bare_app(tmp_path)
+        reg.register("sess", 9123)
+        _with_role(reg, "viewer")
+        captured: dict = {}
+
+        with patch("websockets.asyncio.client.connect", side_effect=_capture_ws_dial(captured)):
+            with pytest.raises(WebSocketDisconnect):
+                with TestClient(app).websocket_connect("/s/sess/session") as ws:
+                    ws.receive_text()
+
+        assert captured["url"] == "ws://127.0.0.1:9123/session"
+        assert captured["headers"]["x-niuu-room-role"] == "viewer"
+
+    def test_ws_dials_the_gateway_for_an_external_target_at_the_voice_path(self, tmp_path) -> None:
+        from starlette.websockets import WebSocketDisconnect
+
+        app, reg = _bare_app(tmp_path)
+        target = _external_target()
+
+        async def _resolve(session_id: str) -> SessionProxyTarget | None:
+            return target if session_id == "sess-open" else None
+
+        reg.set_target_resolver(_resolve)
+        _with_role(reg, "owner")
+        captured: dict = {}
+
+        def _connect(url, **kwargs):
+            captured["url"] = url
+            captured["kwargs"] = kwargs
+            raise OSError("gateway unreachable")
+
+        with patch("websockets.asyncio.client.connect", side_effect=_connect):
+            with pytest.raises(WebSocketDisconnect):
+                with TestClient(app).websocket_connect("/s/sess-open/voice") as ws:
+                    ws.receive_text()
+
+        assert captured["url"] == "ws://forge-123--skuld.openshell.localhost:8080/voice"
+        assert captured["kwargs"]["host"] == "openshell.openshell.svc.cluster.local"

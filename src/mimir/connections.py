@@ -5,7 +5,6 @@ from pathlib import Path
 from typing import Any
 
 from mimir.adapters.http import HttpMimirAdapter
-from mimir.adapters.markdown import MarkdownMimirAdapter
 from mimir.domain import MimirAuth
 from mimir.registry import MimirRegistryStore
 from niuu.ports.mimir import MimirPort
@@ -18,7 +17,6 @@ def resolve_mimir_connection(
     kwargs: dict[str, Any] | None = None,
     secret_kwargs_env: dict[str, str] | None = None,
     url: str = "",
-    path: str = "",
     auth: MimirAuth | None = None,
     environment_id: str = "",
 ) -> MimirPort:
@@ -38,9 +36,7 @@ def resolve_mimir_connection(
         return cls(**resolved)
     if url:
         return HttpMimirAdapter(base_url=url, auth=auth, environment_id=environment_id)
-    if path:
-        return MarkdownMimirAdapter(root=path)
-    raise ValueError("Memory well has no adapter, path or url; configure its connection")
+    raise ValueError("Memory well has no adapter or url; configure its connection")
 
 
 def normalize_mimir_workload_config(
@@ -62,7 +58,7 @@ def resolve_mimir_registry_refs(
     *,
     registry_path: str = "",
 ) -> dict[str, Any]:
-    """Hydrate registry-backed Mimir refs with concrete path/url metadata.
+    """Hydrate registry-backed Mimir refs with concrete adapter/url metadata.
 
     Workflow snapshots currently preserve registry IDs, mount names, and binding
     metadata. Before dispatching a flock, resolve those IDs against the local
@@ -70,22 +66,24 @@ def resolve_mimir_registry_refs(
     """
     normalized = copy.deepcopy(raw) if isinstance(raw, dict) else {}
     registry_refs = normalized.get("registry_refs")
-    if not isinstance(registry_refs, list) or not registry_refs or not registry_path.strip():
+    if not isinstance(registry_refs, list) or not registry_refs:
         return normalized
 
-    registry_file = Path(registry_path).expanduser()
-    store = MimirRegistryStore(registry_file)
-    entries = store.list_entries()
-    if not entries:
-        return normalized
-
+    entries = (
+        MimirRegistryStore(Path(registry_path).expanduser()).list_entries()
+        if registry_path.strip()
+        else []
+    )
     by_id = {entry.id: entry for entry in entries}
     by_name = {entry.name: entry for entry in entries}
 
     resolved_refs: list[dict[str, Any]] = []
-    for raw_ref in registry_refs:
+    for index, raw_ref in enumerate(registry_refs):
         if not isinstance(raw_ref, dict):
-            continue
+            raise ValueError(
+                f"registry_refs[{index}] must be an object naming a memory well, not "
+                f"{type(raw_ref).__name__}; fix or remove it"
+            )
         resolved = dict(raw_ref)
         lookup_key = str(
             raw_ref.get("registry_entry_id")
@@ -96,6 +94,16 @@ def resolve_mimir_registry_refs(
         ).strip()
         entry = by_id.get(lookup_key) or by_name.get(lookup_key)
         if entry is None:
+            if not (resolved.get("adapter") or resolved.get("url")):
+                where = (
+                    f"the Mimir registry at {registry_path}"
+                    if registry_path.strip()
+                    else "a Mimir registry (none is configured: set registry_path)"
+                )
+                raise ValueError(
+                    f"Memory well {lookup_key!r} has no adapter or url and is not in "
+                    f"{where}. Register it there, or give the ref its own connection"
+                )
             resolved_refs.append(resolved)
             continue
 
@@ -105,8 +113,6 @@ def resolve_mimir_registry_refs(
             resolved["secret_kwargs_env"] = dict(entry.secret_kwargs_env)
         if not entry.enabled:
             raise ValueError(f"Memory well {entry.name!r} is disabled")
-        if entry.path and not str(resolved.get("path") or "").strip():
-            resolved["path"] = entry.path
         if entry.url and not str(resolved.get("url") or "").strip():
             resolved["url"] = entry.url
         if entry.role and not str(resolved.get("role") or "").strip():
@@ -115,6 +121,8 @@ def resolve_mimir_registry_refs(
             resolved["categories"] = list(entry.categories)
         if entry.auth_ref and not str(resolved.get("auth_ref") or "").strip():
             resolved["auth_ref"] = entry.auth_ref
+        if entry.facts:
+            resolved.setdefault("facts", True)
         resolved.setdefault("default_read_priority", entry.default_read_priority)
         resolved.setdefault("enabled", entry.enabled)
         resolved_refs.append(resolved)
@@ -154,7 +162,6 @@ def resolve_mimir_workload(
                 kwargs=ref.get("kwargs"),
                 secret_kwargs_env=ref.get("secret_kwargs_env"),
                 url=str(ref.get("url") or "").strip(),
-                path=str(ref.get("path") or "").strip(),
                 auth=auth,
             )
 

@@ -2,27 +2,20 @@
  * MemoryPagePage — one page, read the way it was written.
  *
  * Left: what we believe (the Key Facts), what it links to, and the standing
- * assessment. Right: the neighbourhood and the evidence trail. The trail is
- * append-only — a revision adds a line, it never rewrites one — so the page
- * always shows how a belief got to where it is.
+ * assessment. Right: a way into the graph and the evidence trail. The trail is
+ * append-only, so the page always shows how a belief got to where it is.
  */
 
-import { useState } from 'react';
 import { Link, useNavigate, useSearch } from '@tanstack/react-router';
 import { ArrowLeft, MessageSquare } from 'lucide-react';
 import { Chip, ErrorState, LoadingState, relTime } from '@niuulabs/ui';
 import { getZoneByKind, type Page } from '../../domain/page';
-import { evidenceForFact } from '../../domain/evidence';
 import { resolveWikilink } from '../../domain/wikilink';
 import { encodeNodeId } from '../../domain/graphIndex';
 import { useMimirPage, useMimirPages, useMimirPageSources } from '../useMimirPages';
 import { MountChip } from '../components/MountChip';
 import { PageTypeGlyph } from '../components/PageTypeGlyph';
 import { WikilinkPill } from '../components/WikilinkPill';
-import { NeighbourhoodGraph } from './NeighbourhoodGraph';
-import { ProofPill } from './ProofPill';
-import { ReviseFact } from './ReviseFact';
-import { useEvidence, useRelated } from '../../application/useMemory';
 
 const SECTION =
   'niuu:flex niuu:flex-col niuu:gap-3 niuu:rounded-xl niuu:border niuu:border-border-subtle niuu:bg-bg-secondary niuu:px-5 niuu:py-4';
@@ -30,9 +23,6 @@ const SECTION_TITLE = 'niuu:text-sm niuu:font-medium niuu:text-text-primary';
 const SECTION_NOTE = 'niuu:text-[11px] niuu:text-text-muted';
 const BUTTON =
   'niuu:inline-flex niuu:items-center niuu:gap-1.5 niuu:rounded-md niuu:border niuu:border-border-subtle niuu:bg-bg-secondary niuu:px-2.5 niuu:py-1 niuu:text-xs niuu:text-text-primary';
-
-/** A timeline entry written by a belief revision. */
-const REVISION_PREFIX = 'belief revised';
 
 const CONFIDENCE_TONE = {
   high: 'default',
@@ -43,10 +33,6 @@ const CONFIDENCE_TONE = {
 interface ReadSearch {
   path?: string;
   mount?: string;
-}
-
-function isRevision(note: string): boolean {
-  return note.toLowerCase().startsWith(REVISION_PREFIX);
 }
 
 function breadcrumb(path: string, mount?: string): string[] {
@@ -70,11 +56,8 @@ export function MemoryPagePage() {
   const search = useSearch({ strict: false }) as ReadSearch;
   const path = search.path ?? null;
   const mount = search.mount;
-  const [revisionsOnly, setRevisionsOnly] = useState(false);
 
   const page = useMimirPage(path, mount);
-  const evidence = useEvidence(path);
-  const related = useRelated(path);
   const sources = useMimirPageSources(path);
   const allPages = useMimirPages(mount ? { mountName: mount } : undefined);
 
@@ -121,10 +104,6 @@ export function MemoryPagePage() {
   const timeline = [...(getZoneByKind(zones, 'timeline')?.items ?? [])].sort((left, right) =>
     right.date.localeCompare(left.date),
   );
-  const evidenceRows = evidence.data ?? [];
-  const shownTimeline = revisionsOnly
-    ? timeline.filter((entry) => isRevision(entry.note))
-    : timeline;
 
   function openPage(nextPath: string) {
     void navigate({ to: '/mimir/read', search: { path: nextPath, mount } });
@@ -189,34 +168,24 @@ export function MemoryPagePage() {
             <section className={SECTION} data-testid="memory-facts-zone">
               <div className="niuu:flex niuu:items-baseline niuu:gap-3">
                 <h2 className={SECTION_TITLE}>What we believe</h2>
-                <span className={SECTION_NOTE}>written by a resident, with its proof</span>
+                <span className={SECTION_NOTE}>written by a resident</span>
               </div>
-              {facts.map((fact, index) => {
-                const row = evidenceForFact(evidenceRows, fact);
-                return (
-                  <div
-                    key={fact}
-                    className="niuu:flex niuu:flex-col niuu:gap-1.5 niuu:border-b niuu:border-border-subtle niuu:py-2.5 niuu:last:border-b-0"
-                  >
-                    <div className="niuu:flex niuu:items-start niuu:gap-2.5">
-                      <span
-                        className="niuu:mt-1.5 niuu:size-1.5 niuu:shrink-0 niuu:rounded-full niuu:bg-brand-300"
-                        aria-hidden="true"
-                      />
-                      <span className="niuu:flex-1 niuu:text-xs niuu:leading-relaxed niuu:text-text-primary">
-                        {fact}
-                      </span>
-                      {row ? <ProofPill evidence={row} /> : null}
-                      <ReviseFact path={current.path} fact={fact} index={index} label="" />
-                    </div>
-                    {row?.latestSupport ? (
-                      <span className="niuu:pl-4 niuu:text-[11px] niuu:text-text-faint">
-                        newest proof {row.latestSupport} · {row.sourceProofCount} from raw sources
-                      </span>
-                    ) : null}
+              {facts.map((fact) => (
+                <div
+                  key={fact}
+                  className="niuu:flex niuu:flex-col niuu:gap-1.5 niuu:border-b niuu:border-border-subtle niuu:py-2.5 niuu:last:border-b-0"
+                >
+                  <div className="niuu:flex niuu:items-start niuu:gap-2.5">
+                    <span
+                      className="niuu:mt-1.5 niuu:size-1.5 niuu:shrink-0 niuu:rounded-full niuu:bg-brand-300"
+                      aria-hidden="true"
+                    />
+                    <span className="niuu:flex-1 niuu:text-xs niuu:leading-relaxed niuu:text-text-primary">
+                      {fact}
+                    </span>
                   </div>
-                );
-              })}
+                </div>
+              ))}
             </section>
           ) : null}
 
@@ -254,7 +223,7 @@ export function MemoryPagePage() {
         </div>
 
         <div className="niuu:flex niuu:flex-col niuu:gap-5">
-          <section className={SECTION} data-testid="memory-related">
+          <section className={SECTION} data-testid="memory-around">
             <div className="niuu:flex niuu:items-baseline niuu:gap-3">
               <h2 className={SECTION_TITLE}>Around this page</h2>
               <Link
@@ -265,15 +234,6 @@ export function MemoryPagePage() {
                 open the graph ›
               </Link>
             </div>
-            {(related.data ?? []).length === 0 ? (
-              <p className="niuu:text-xs niuu:text-text-faint">Nothing links here yet.</p>
-            ) : (
-              <NeighbourhoodGraph
-                title={current.title}
-                related={related.data ?? []}
-                onOpen={openPage}
-              />
-            )}
           </section>
 
           <section className={SECTION} data-testid="memory-evidence">
@@ -288,22 +248,16 @@ export function MemoryPagePage() {
               </p>
             ) : null}
 
-            {shownTimeline.map((entry) => (
+            {timeline.map((entry) => (
               <div
                 key={`${entry.date}-${entry.note}`}
-                className={[
-                  'niuu:flex niuu:items-start niuu:gap-3 niuu:border-b niuu:border-border-subtle niuu:py-2 niuu:last:border-b-0',
-                  isRevision(entry.note) ? 'niuu:bg-status-amber/5' : '',
-                ].join(' ')}
-                data-revision={isRevision(entry.note) ? 'true' : undefined}
+                className="niuu:flex niuu:items-start niuu:gap-3 niuu:border-b niuu:border-border-subtle niuu:py-2 niuu:last:border-b-0"
               >
                 <span className="niuu:w-[76px] niuu:shrink-0 niuu:font-mono niuu:text-[11px] niuu:text-text-muted">
                   {entry.date}
                 </span>
                 <span
-                  className={`niuu:mt-1.5 niuu:size-1.5 niuu:shrink-0 niuu:rounded-full ${
-                    isRevision(entry.note) ? 'niuu:bg-status-amber' : 'niuu:bg-brand-300'
-                  }`}
+                  className="niuu:mt-1.5 niuu:size-1.5 niuu:shrink-0 niuu:rounded-full niuu:bg-brand-300"
                   aria-hidden="true"
                 />
                 <div className="niuu:flex niuu:min-w-0 niuu:flex-1 niuu:flex-col">
@@ -316,18 +270,6 @@ export function MemoryPagePage() {
                 </div>
               </div>
             ))}
-
-            {timeline.some((entry) => isRevision(entry.note)) ? (
-              <button
-                type="button"
-                className="niuu:self-start niuu:text-[11px] niuu:text-brand-300"
-                onClick={() => setRevisionsOnly(!revisionsOnly)}
-                aria-pressed={revisionsOnly}
-                data-testid="memory-revisions-filter"
-              >
-                {revisionsOnly ? 'show the whole trail' : 'what we used to believe'}
-              </button>
-            ) : null}
 
             {(sources.data ?? []).length > 0 ? (
               <div className="niuu:flex niuu:flex-col niuu:gap-1 niuu:border-t niuu:border-border-subtle niuu:pt-3">

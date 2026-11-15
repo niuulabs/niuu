@@ -13,28 +13,52 @@ from __future__ import annotations
 import logging
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
+from typing import Protocol
 from uuid import UUID
 
 from volundr.domain.models import Principal, Session, SessionStatus
 from volundr.domain.ports import SessionParticipantRepository, UserRepository
+from volundr.domain.project_ports import ProjectMemberRepository
+from volundr.domain.projects import ProjectMember
 from volundr.domain.session_participants import (
     CrossTenantInviteError,
     InviteeNotFoundError,
     OwnerInviteError,
     ParticipantAlreadyActiveError,
+    ParticipantCandidate,
     ParticipantNotFoundError,
     ParticipantRole,
     ParticipantStateError,
     ParticipantStatus,
     RoomGrants,
     SelfInviteError,
+    SessionNotInProjectError,
     SessionParticipant,
-    compute_room_grants,
+    room_role_for_project_role,
 )
 
+from .room_grants import RoomGrantSource
 from .session import SessionAccessDeniedError, SessionService
 
 logger = logging.getLogger(__name__)
+
+
+class InvitationNotices(Protocol):
+    """Tells an invitee of the invitation, and closes the notice once it is answered.
+
+    Implemented by the notification feed; absent on a host that runs without one, which
+    is the operator's decision (the invitee still finds the invitation in their list).
+    """
+
+    async def invitation_sent(
+        self, session: Session, participant: SessionParticipant, *, invited_by_name: str
+    ) -> None:
+        """Tell *participant* they were invited into *session* by *invited_by_name*."""
+
+    async def invitation_settled(
+        self, session: Session, participant: SessionParticipant, *, resolution: str
+    ) -> None:
+        """Close the invitee's notice once the invitation is answered; *resolution* says how."""
 
 
 class SessionParticipantService:
@@ -45,10 +69,16 @@ class SessionParticipantService:
         repository: SessionParticipantRepository,
         session_service: SessionService,
         user_repository: UserRepository,
+        project_members: ProjectMemberRepository | None = None,
     ) -> None:
         self._repository = repository
         self._session_service = session_service
         self._user_repository = user_repository
+        # The members of a session's project hold a room role on it. ``None`` is the
+        # configured decision that this host runs without projects (``projects.enabled:
+        # false``): such a host has no session attached to a project either.
+        self._project_members = project_members
+        self._room_grants = RoomGrantSource(repository, project_members)
         # Optional async hook: notified with (session_id, user_id) right after
         # a revoke commits, so the composition root can close an
         # ALREADY-OPEN proxied socket immediately instead of relying solely
@@ -58,6 +88,11 @@ class SessionParticipantService:
         # composition root via set_revocation_notifier(); never required —
         # revoke() must succeed even where no live-socket layer is wired.
         self._revocation_notifier: Callable[[UUID, str], Awaitable[None]] | None = None
+        self._invitation_notices: InvitationNotices | None = None
+
+    def set_invitation_notices(self, notices: InvitationNotices) -> None:
+        """Tell invitees of invitations through ``notices`` (the notification feed)."""
+        self._invitation_notices = notices
 
     def set_revocation_notifier(self, notifier: Callable[[UUID, str], Awaitable[None]]) -> None:
         """Inject the immediate-close hook invoked after a successful revoke."""
@@ -107,8 +142,59 @@ class SessionParticipantService:
                 f"User {user_id} already has an active grant; revoke it first to change role"
             )
         invited_by = principal.user_id if principal is not None else "unauthenticated"
-        return await self._repository.invite(
+        if existing is not None and existing.status == ParticipantStatus.INVITED:
+            # Inviting again (another role, a new expiry) replaces the open invitation, so
+            # the invitee has one open notice, not a stale one beside the new one.
+            await self._settle_invitation(session, existing, "Replaced by a new invitation.")
+        participant = await self._repository.invite(
             session.id, user_id, session.tenant_id or "", role, invited_by, expires_at
+        )
+        if self._invitation_notices is not None:
+            # Not swallowed: the grant exists, so a failure here is the caller's to see and
+            # retry (inviting again is idempotent), not an invitee nobody told.
+            inviter = await self._user_repository.get(invited_by)
+            await self._invitation_notices.invitation_sent(
+                session,
+                participant,
+                invited_by_name=(inviter.display_name or inviter.email or invited_by)
+                if inviter is not None
+                else invited_by,
+            )
+        return participant
+
+    async def candidates(
+        self, session: Session, principal: Principal | None, query: str
+    ) -> list[ParticipantCandidate]:
+        """Active members of the session's org who could be invited into its chat.
+
+        For the people who may invite (the owner and admins): the org's members who
+        are not the owner and do not hold an invited or active grant already.
+
+        Raises:
+            PermissionError: Authorization is configured and no principal was given.
+            SessionAccessDeniedError: The caller is not the session's owner or an admin.
+        """
+        await self.check_room_access(session, principal, "admit")
+        return await self._repository.candidates(
+            session.id, session.tenant_id or "", session.owner_id or "", query.strip()
+        )
+
+    async def find_people(
+        self, principal: Principal | None, query: str
+    ) -> list[ParticipantCandidate]:
+        """Active members of the caller's org, other than the caller, matching *query*.
+
+        For choosing people to invite before a session exists (a team being set up), so
+        it needs no session and no grant: anyone who belongs to the org may search it,
+        since anyone who belongs to it may start a session of their own.
+
+        Raises:
+            PermissionError: No principal was given.
+        """
+        if principal is None:
+            raise PermissionError("An authenticated principal is required")
+        return await self._repository.tenant_people(
+            principal.tenant_id, principal.user_id, query.strip()
         )
 
     async def accept(self, session: Session, principal: Principal) -> SessionParticipant:
@@ -130,6 +216,7 @@ class SessionParticipantService:
             raise ParticipantNotFoundError(
                 f"No invited grant for user {principal.user_id} on session {session.id}"
             )
+        await self._settle_invitation(session, existing, "Accepted.")
         return accepted
 
     async def revoke(self, session: Session, principal: Principal | None, user_id: str) -> None:
@@ -143,9 +230,14 @@ class SessionParticipantService:
         self_leaving = principal is not None and principal.user_id == user_id
         if not self_leaving:
             await self.check_room_access(session, principal, "admit")
+        held = await self._repository.get(session.id, user_id)
         revoked = await self._repository.revoke(session.id, user_id)
         if revoked is None:
             raise ParticipantNotFoundError(f"No grant for user {user_id} on session {session.id}")
+        if held is not None and held.status == ParticipantStatus.INVITED:
+            await self._settle_invitation(
+                session, held, "Declined." if self_leaving else "Withdrawn by the owner."
+            )
         if self._revocation_notifier is not None:
             # Best-effort, immediate: the grant IS revoked in the database
             # regardless of this outcome, and the session proxy's interval
@@ -163,6 +255,65 @@ class SessionParticipantService:
                     user_id,
                     exc_info=True,
                 )
+
+    async def _settle_invitation(
+        self, session: Session, invitation: SessionParticipant, resolution: str
+    ) -> None:
+        if self._invitation_notices is None:
+            return
+        await self._invitation_notices.invitation_settled(
+            session, invitation, resolution=resolution
+        )
+
+    async def display_names(self, user_ids: set[str]) -> dict[str, str]:
+        """The name each of these people goes by (display name, else email), where known.
+
+        For the owner of a session shared with someone: the room summary names who shared
+        it. A person the directory does not know has no entry, never a made-up name.
+        """
+        names: dict[str, str] = {}
+        for user_id in sorted(user_ids):
+            user = await self._user_repository.get(user_id)
+            name = (user.display_name or user.email) if user is not None else ""
+            if name:
+                names[user_id] = name
+        return names
+
+    async def list_grants(self, session: Session) -> list[SessionParticipant]:
+        """The grants that count as people of *session*: active, or invited and still open.
+
+        A revoked grant and an expired one are not in the session. This is a lookup, not an
+        authorization: the caller has already decided who may see the answer.
+        """
+        return [
+            grant
+            for grant in await self._repository.list_for_session(session.id)
+            if grant.is_active or grant.is_pending
+        ]
+
+    async def people_counts(self, session_ids: list[UUID]) -> dict[UUID, int]:
+        """How many people each session has: its owner and its active, unexpired grants.
+
+        One query for the whole list, so listing sessions never asks once per session.
+        Every id is in the answer; a session nobody was invited to counts its owner alone.
+        """
+        if not session_ids:
+            return {}
+        granted = await self._repository.count_active_for_sessions(session_ids, datetime.now(UTC))
+        return {session_id: 1 + granted.get(session_id, 0) for session_id in session_ids}
+
+    async def participation(
+        self, session: Session, principal: Principal
+    ) -> tuple[str | None, SessionParticipant | None]:
+        """The caller's room role on *session* and their own pending or active grant.
+
+        ``(None, None)`` means the caller has no relation to the session at all. An
+        invitee who has not accepted has a grant but no room role yet.
+        """
+        grant = await self._repository.get(session.id, principal.user_id)
+        if grant is not None and grant.status == ParticipantStatus.REVOKED:
+            grant = None
+        return await self.effective_room_role(session, principal), grant
 
     async def list_participants(
         self, session: Session, principal: Principal | None
@@ -219,22 +370,44 @@ class SessionParticipantService:
         Batched: one query for every active grant this user holds, one
         query to fetch the sessions, one Cedar evaluation for all of them.
         """
-        grants = [
-            g
-            for g in await self._repository.list_active_for_user(principal.user_id)
-            if g.is_active and g.tenant_id == principal.tenant_id
+        held = [
+            *(
+                g
+                for g in await self._repository.list_active_for_user(principal.user_id)
+                if g.is_active
+            ),
+            # An invitation not yet answered: the invitee finds the session to accept or
+            # decline it. It gives no room access (the room sets above see active grants
+            # only) and the summary built from it carries no room content.
+            *(
+                g
+                for g in await self._repository.list_invited_for_user(principal.user_id)
+                if g.is_pending
+            ),
         ]
-        if not grants:
-            return []
-        sessions_by_id = await self._session_service.get_many_sessions(
-            [g.session_id for g in grants]
+        grants = [g for g in held if g.tenant_id == principal.tenant_id]
+        sessions_by_id = (
+            await self._session_service.get_many_sessions([g.session_id for g in grants])
+            if grants
+            else {}
         )
+        by_session: dict[UUID, tuple[Session, SessionParticipant]] = {
+            g.session_id: (sessions_by_id[g.session_id], g)
+            for g in grants
+            if g.session_id in sessions_by_id
+        }
+        for session, project_grant in await self._project_sessions(principal):
+            held = by_session.get(session.id)
+            # A project member's access is real; a pending invitation is only an offer.
+            if (
+                held is None
+                or held[1].status == ParticipantStatus.INVITED
+                or _room_rank(project_grant.role) > _room_rank(held[1].role)
+            ):
+                by_session[session.id] = (session, project_grant)
         candidates: list[tuple[Session, SessionParticipant]] = []
         resources = []
-        for grant in grants:
-            session = sessions_by_id.get(grant.session_id)
-            if session is None:
-                continue
+        for session, grant in by_session.values():
             if not include_archived and session.status == SessionStatus.ARCHIVED:
                 continue
             candidates.append((session, grant))
@@ -253,6 +426,8 @@ class SessionParticipantService:
                     else [],
                 )
             )
+        if not candidates:
+            return []
         allowed_ids = {
             r.id
             for r in await self._session_service.filter_authorized(
@@ -261,11 +436,68 @@ class SessionParticipantService:
         }
         return [(s, g) for s, g in candidates if str(s.id) in allowed_ids]
 
+    async def _project_sessions(
+        self, principal: Principal
+    ) -> list[tuple[Session, SessionParticipant]]:
+        """Sessions of the projects *principal* is a member of, each with the room
+        grant their project role gives (shaped as a participant grant so the room
+        summary renders it like an invited one)."""
+        if self._project_members is None:
+            return []
+        memberships = {
+            m.project_id: m
+            for m in await self._project_members.list_for_user(
+                principal.user_id, principal.tenant_id
+            )
+        }
+        if not memberships:
+            return []
+        sessions = await self._session_service.list_project_sessions(
+            list(memberships), principal.tenant_id
+        )
+        return [
+            (session, _project_grant(session, memberships[session.coordination.project_id]))
+            for session in sessions
+            if session.coordination is not None and session.coordination.project_id in memberships
+        ]
+
     # --- Room-scoped authorization (read_room / attach / speak / resolve_gate) --
 
-    async def active_grants(self, session_id: UUID) -> RoomGrants:
-        """Compute the Cedar-visible room grant sets from ACTIVE, unexpired rows."""
-        return compute_room_grants(await self._repository.list_active_for_session(session_id))
+    async def active_grants(self, session: Session) -> RoomGrants:
+        """Compute the Cedar-visible room grant sets for *session*.
+
+        Built from its ACTIVE, unexpired participant rows and from the members of the
+        project it is attached to; the more senior of the two applies to a user in both.
+        """
+        return await self._room_grants.for_session(session)
+
+    async def list_people(
+        self, session: Session, principal: Principal | None
+    ) -> list[ProjectMember]:
+        """The members of the project *session* is attached to, for anyone in its room.
+
+        Authorized by ``read_room`` like the room itself: the session's owner, its
+        participants, project members and tenant admins. Each member carries the role,
+        expertise and skills the project holds for them.
+
+        Raises:
+            PermissionError: Authorization is configured and no principal was given.
+            SessionAccessDeniedError: The policy denies ``read_room``.
+            SessionNotInProjectError: The session has no project (or this host runs
+                without projects), so there are no members to list.
+        """
+        await self.check_room_access(session, principal, "read_room")
+        if session.coordination is None:
+            raise SessionNotInProjectError(
+                f"Session {session.id} is not attached to a project, so it has no project "
+                "members. Attach it to a project (coordination.project_id) to list people."
+            )
+        if self._project_members is None:
+            raise SessionNotInProjectError(
+                f"Session {session.id} names a project, but this Forge runs without projects "
+                "(projects.enabled is false), so it cannot list the project's members."
+            )
+        return await self._room_grants.project_members(session)
 
     async def check_room_access(
         self, session: Session, principal: Principal | None, action: str
@@ -276,7 +508,7 @@ class SessionParticipantService:
             PermissionError: Authorization is configured and no principal was given.
             SessionAccessDeniedError: The policy denies *action*.
         """
-        grants = await self.active_grants(session.id)
+        grants = await self.active_grants(session)
         resource = SessionService.attributed_resource(
             str(session.id),
             owner_id=session.owner_id,
@@ -309,7 +541,7 @@ class SessionParticipantService:
         that a Kubernetes-backed session pod's ``RemoteAuthorizationAdapter``
         (``skuld.room_role_remote``) calls over HTTP.
         """
-        grants = await self.active_grants(session.id)
+        grants = await self.active_grants(session)
         resource = SessionService.attributed_resource(
             str(session.id),
             owner_id=session.owner_id,
@@ -324,3 +556,23 @@ class SessionParticipantService:
         if await self._session_service.authorizes(principal, "read_room", resource):
             return "viewer"
         return None
+
+
+_ROOM_ROLE_RANK = {ParticipantRole.VIEWER: 0, ParticipantRole.APPROVER: 1}
+
+
+def _room_rank(role: ParticipantRole) -> int:
+    return _ROOM_ROLE_RANK[role]
+
+
+def _project_grant(session: Session, member: ProjectMember) -> SessionParticipant:
+    return SessionParticipant(
+        session_id=session.id,
+        user_id=member.user_id,
+        tenant_id=member.tenant_id,
+        role=room_role_for_project_role(member.role),
+        status=ParticipantStatus.ACTIVE,
+        invited_by=member.added_by,
+        created_at=member.created_at,
+        updated_at=member.updated_at,
+    )

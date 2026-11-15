@@ -258,7 +258,10 @@ class TestFeed:
         sql, params = feed_sql(
             ADMIN, NotificationQuery(limit=2, after=3, unread=False), read_through_seq=7
         )
-        assert "(owner_id = $1 OR COALESCE(tenant_id, '') IN ('', $2))" in sql
+        assert (
+            "(owner_id = $1 OR (COALESCE(tenant_id, '') IN ('', $2) "
+            "AND metadata->>'copy_of' IS NULL))" in sql
+        )
         assert "seq <= $3" in sql and "seq > $5" in sql and "ORDER BY seq ASC" in sql
         assert params == ["a", "t", 7, "a", 3, 3]
 
@@ -287,13 +290,53 @@ class TestFeed:
         _fetch_by_sql(pool, [row])
         sid = uuid4()
         assert len(await repo.list_for_session(sid, after=0, limit=5)) == 1
-        assert pool.fetch.await_args_list[0].args[1:] == (sid, 0, 5)
+        assert pool.fetch.await_args_list[0].args[1:] == (sid, 0, 5, None)
         assert pool.fetch.await_args_list[1].args == (SELECT_IMAGE_STATES_SQL, [row["id"]])
         pool.fetchrow.return_value = {"head_seq": 9, "unread_count": 4}
         assert await repo.feed_counts(ADMIN, read_through_seq=5) == (9, 4)
         sql, *params = pool.fetchrow.await_args.args
         assert params == ["a", "t", 5, "a"] and "seq > $3" in sql
         assert "NOT EXISTS" in sql and "r.user_id = $4" in sql
+
+
+class TestRecipientCopies:
+    def test_a_member_sees_their_own_copy_and_an_admin_never_another_persons(self):
+        owner_sql, _ = feed_sql(OWNER, NotificationQuery(limit=1), read_through_seq=0)
+        admin_sql, _ = feed_sql(ADMIN, NotificationQuery(limit=1), read_through_seq=0)
+        assert "copy_of" not in owner_sql  # a plain reader's own rows are theirs, copy or not
+        assert "AND metadata->>'copy_of' IS NULL" in admin_sql
+
+    async def test_a_readers_session_feed_hides_other_peoples_copies(self):
+        pool, _ = _pool()
+        sid = uuid4()
+        await PostgresNotificationRepository(pool).list_for_session(
+            sid, after=2, limit=7, reader="bob"
+        )
+        sql, *params = pool.fetch.await_args_list[0].args
+        assert params == [sid, 2, 7, "bob"]
+        assert "n.metadata->>'copy_of' IS NULL OR n.owner_id = $4" in sql
+        assert "c.metadata->>'copy_of' = n.id::text" in sql and "c.owner_id = $4" in sql
+
+    async def test_copies_are_found_by_their_originals(self):
+        pool, _ = _pool()
+        repo = PostgresNotificationRepository(pool)
+        assert await repo.list_copies([]) == []
+        pool.fetch.assert_not_awaited()
+        original = uuid4()
+        row = _notification_row(_candidate("copy", metadata={"copy_of": str(original)}), 4)
+        _fetch_by_sql(pool, [row])
+        [copy] = await repo.list_copies([original])
+        sql, ids = pool.fetch.await_args_list[0].args
+        assert "metadata->>'copy_of' = ANY($1::text[])" in sql and ids == [str(original)]
+        assert copy.copy_of == original
+
+    async def test_copy_recipients_of_a_session(self):
+        pool, _ = _pool()
+        sid = uuid4()
+        pool.fetch.return_value = [{"owner_id": "bob"}, {"owner_id": "carol"}]
+        assert await PostgresNotificationRepository(pool).copy_recipients(sid) == ["bob", "carol"]
+        sql, *params = pool.fetch.await_args.args
+        assert params == [sid] and "metadata->>'copy_of' IS NOT NULL" in sql
 
 
 class TestWatermark:

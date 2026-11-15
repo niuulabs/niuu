@@ -131,6 +131,9 @@ def serve(config_path: Path):
     repo._sessions[session.id] = session
     pool = AsyncMock()
     pool.get_max_size = MagicMock(return_value=10)
+    # No provisioned users: the proxy finds no display name for the caller.
+    users = AsyncMock()
+    users.get.return_value = None
 
     @asynccontextmanager
     async def database(_settings):
@@ -185,6 +188,7 @@ def serve(config_path: Path):
         patch("volundr.main._bootstrap_startup_schema", new=AsyncMock()),
         patch("volundr.main.database_pool", database),
         patch("volundr.main.PostgresSessionRepository", return_value=repo),
+        patch("volundr.main.PostgresUserRepository", return_value=users),
         patch("volundr.main.seed_development_identity", new=AsyncMock()),
         patch(
             "volundr.adapters.outbound.bifrost_catalog_http.HttpBifrostCatalogAdapter.list_models",

@@ -541,6 +541,7 @@ the join and connector settings, and with guestMetadata the guest credential del
   "slot_cpu" $c.slot.cpu
   "slot_memory_mib" $c.slot.memoryMib
   "slot_pids" $c.slot.pids
+  "darwin_shared_slots" (($c.darwin).sharedSlots | default false)
 -}}
 {{- if $c.defaultServiceAccount -}}
 {{- $_ := set $catalog "default_service_account" $c.defaultServiceAccount -}}
@@ -550,7 +551,6 @@ the join and connector settings, and with guestMetadata the guest credential del
 {{- end -}}
 {{- $compute := dict
   "pool_id" $c.poolId
-  "max_machines" $c.maxHosts
   "reuse_policy" "reuse"
   "provider_binding" $c.poolId
   "provider" (dict "adapter" "volundr.adapters.outbound.registered_hosts.RegisteredHostMachineProvider" "kwargs" (dict "profiles" (dict $c.profile (dict "label" "Registered host"))))

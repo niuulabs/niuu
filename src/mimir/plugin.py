@@ -21,12 +21,12 @@ class MimirPlugin(ServicePlugin):
 
     @property
     def description(self) -> str:
-        return "Knowledge service — search, pages, ingest, lint"
+        return "Knowledge service — search, pages, ingest"
 
     def register_service(self) -> ServiceDefinition:
         return ServiceDefinition.hosted(
             name="mimir",
-            description="Knowledge service",
+            description="Memory: knowledge sources, pages and retrieval",
             default_enabled=True,
         )
 
@@ -45,7 +45,7 @@ class MimirPlugin(ServicePlugin):
                     "/mcp",
                     "/mimir",
                 ),
-                description="Mimir knowledge, ingest, lint, graph, and MCP routes.",
+                description="Mimir knowledge, ingest, graph, and MCP routes.",
             ),
         )
 

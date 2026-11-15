@@ -230,7 +230,7 @@ class ActivityReportingMixin:
 
         try:
             async with self._activity_report_lock:
-                client = await self._get_http_client()
+                client = await self._get_session_http_client()
                 resp = await client.post(
                     f"{FORGE_SESSIONS_PATH}/{self.session_id}/activity",
                     json=payload,

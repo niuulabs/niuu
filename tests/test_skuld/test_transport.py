@@ -249,7 +249,7 @@ class TestSubprocessTransport:
                 {
                     "name": "mimir-local",
                     "command": "python3",
-                    "args": ["-m", "mimir", "mcp", "--path", "/tmp/mimir"],
+                    "args": ["-m", "mimir", "mcp"],
                 }
             ],
         )
@@ -668,7 +668,7 @@ class TestSubprocessTransport:
                 {
                     "name": "mimir-local",
                     "command": "python3",
-                    "args": ["-m", "mimir", "mcp", "--path", "/tmp/mimir"],
+                    "args": ["-m", "mimir", "mcp"],
                 }
             ],
         )
@@ -1490,7 +1490,7 @@ class TestSdkWebSocketTransport:
                 {
                     "name": "mimir-local",
                     "command": "python3",
-                    "args": ["-m", "mimir", "mcp", "--path", "/tmp/mimir"],
+                    "args": ["-m", "mimir", "mcp"],
                 }
             ],
         )
@@ -1711,7 +1711,7 @@ class TestCodexSubprocessTransport:
                 {
                     "name": "mimir-local",
                     "command": "python3",
-                    "args": ["-m", "mimir", "mcp", "--path", "/tmp/mimir"],
+                    "args": ["-m", "mimir", "mcp"],
                 }
             ],
         )
@@ -2238,6 +2238,8 @@ def test_persistent_subprocess_routes_through_the_model_gateway():
         from skuld.transports.claude_env import claude_spawn_env
 
         env = claude_spawn_env(
+            claude_auth=transport._claude_auth,
+            claude_oauth_token_file=transport._claude_oauth_token_file,
             gateway_url=transport._model_gateway_url,
             gateway_token=transport._model_gateway_token,
         )

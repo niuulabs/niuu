@@ -28,7 +28,8 @@ from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
-from niuu.mesh.events import MeshEvent, MeshEventType
+from niuu.adapters.mesh._serialization import dict_to_event, event_to_dict
+from niuu.mesh.events import MeshEvent
 from niuu.ports.mesh import PeerNotFoundError
 
 if TYPE_CHECKING:
@@ -258,7 +259,20 @@ class WebhookMeshAdapter:
         msg_type = payload.get("type", "")
 
         if msg_type == "publish":
-            await self._handle_publish(payload)
+            try:
+                event = self._dict_to_event(payload)
+            except (KeyError, TypeError, ValueError) as exc:
+                # Refuse it, never deliver a guess. The reason is logged here, not
+                # echoed to the sender, so no exception detail leaves the process.
+                logger.error(
+                    "webhook_mesh: refused a malformed event on topic %r: %s",
+                    _sanitize_log(payload.get("topic", "")),
+                    _sanitize_log(f"{type(exc).__name__}: {exc}"),
+                )
+                return aiohttp_web.Response(
+                    status=400, text="Invalid event: unknown type or missing fields"
+                )
+            await self._handle_publish(payload.get("topic", ""), event)
             return aiohttp_web.Response(status=202, text="Accepted")
 
         if msg_type == "rpc":
@@ -271,14 +285,12 @@ class WebhookMeshAdapter:
 
         return aiohttp_web.Response(status=400, text="Unknown message type")
 
-    async def _handle_publish(self, payload: dict) -> None:
-        """Handle incoming publish event."""
-        topic = payload.get("topic", "")
+    async def _handle_publish(self, topic: str, event: MeshEvent) -> None:
+        """Deliver an incoming published event to this topic's handlers."""
         handlers = self._handlers.get(topic, [])
         if not handlers:
             return
 
-        event = self._dict_to_event(payload)
         for handler in handlers:
             try:
                 await handler(event)
@@ -417,55 +429,20 @@ class WebhookMeshAdapter:
     # ------------------------------------------------------------------
 
     def _event_to_dict(self, event: MeshEvent, topic: str, msg_type: str) -> dict:
-        """Convert MeshEvent to wire format."""
+        """Convert MeshEvent to wire format (the shared mesh encoding in an envelope)."""
         return {
             "type": msg_type,
             "topic": topic,
             "source_peer_id": self._own_peer_id,
-            "event": {
-                "type": str(event.type.value) if hasattr(event.type, "value") else str(event.type),
-                "source": event.source,
-                "payload": event.payload,
-                "timestamp": event.timestamp.isoformat() if event.timestamp else None,
-                "urgency": event.urgency,
-                "correlation_id": event.correlation_id,
-                "session_id": event.session_id,
-                "task_id": event.task_id,
-                "event_id": event.event_id,
-                "root_correlation_id": event.root_correlation_id,
-                "attestation": event.attestation,
-            },
+            "event": event_to_dict(event),
             "timestamp": datetime.now(UTC).isoformat(),
         }
 
     def _dict_to_event(self, payload: dict) -> MeshEvent:
-        """Convert wire format back to MeshEvent."""
-        event_data = payload.get("event", {})
+        """Convert wire format back to MeshEvent; a malformed event raises.
 
-        # Parse event type
-        type_str = event_data.get("type", "response")
-        try:
-            event_type = MeshEventType(type_str)
-        except ValueError:
-            event_type = MeshEventType.RESPONSE
-
-        # Parse timestamp
-        ts_str = event_data.get("timestamp")
-        if ts_str:
-            timestamp = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
-        else:
-            timestamp = datetime.now(UTC)
-
-        return MeshEvent(
-            type=event_type,
-            source=event_data.get("source", ""),
-            payload=event_data.get("payload", {}),
-            timestamp=timestamp,
-            urgency=event_data.get("urgency", 0.5),
-            correlation_id=event_data.get("correlation_id", ""),
-            session_id=event_data.get("session_id", ""),
-            task_id=event_data.get("task_id"),
-            root_correlation_id=event_data.get("root_correlation_id", ""),
-            **({"event_id": event_data["event_id"]} if event_data.get("event_id") else {}),
-            attestation=dict(event_data.get("attestation") or {}),
-        )
+        An unknown event type used to be read as ``response`` and missing fields as
+        empty strings, so a garbled or newer-version event was delivered as if it were
+        an ordinary reply.
+        """
+        return dict_to_event(payload["event"])

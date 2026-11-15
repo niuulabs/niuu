@@ -154,6 +154,7 @@ class SessionEventStream:
                 tenant_id=principal.tenant_id,
                 owner_id=event.data.get("owner_id"),
                 notification_tenant_id=event.data.get("tenant_id"),
+                recipient_copy=event.data.get("copy_of") is not None,
             )
         if "owner_id" not in event.data or "tenant_id" not in event.data:
             raise ValueError(

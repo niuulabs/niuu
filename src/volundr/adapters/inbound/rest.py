@@ -51,6 +51,11 @@ from niuu.domain.session_description import (
     SessionDescriptionPatch,
 )
 from niuu.domain.session_endpoint import public_session_endpoint
+from niuu.domain.session_voice import (
+    SESSION_VOICE_ENDPOINT_KIND,
+    SESSION_VOICE_PROTOCOL,
+    voice_endpoint_from_chat,
+)
 from niuu.domain.text_projection import projection_revision
 from niuu.forge_mcp.models import ForgeMcpGrant
 from niuu.room_access import ROOM_CALLER_SESSION_HEADER, ROOM_ROLE_HEADER
@@ -75,6 +80,10 @@ from volundr.adapters.inbound.conversation_voice import VOICE_DETAIL, voice_page
 from volundr.adapters.inbound.durable_transcripts import DurableTranscripts
 from volundr.adapters.inbound.forge_session_auth import require_bound_session
 from volundr.adapters.inbound.rest_guild import own_instance
+from volundr.adapters.inbound.rest_project_integrations import (
+    create_project_integrations_router,
+)
+from volundr.adapters.inbound.rest_project_memory import create_project_memory_router
 from volundr.adapters.inbound.rest_projects import (
     create_projects_router,
     create_session_projects_router,
@@ -129,6 +138,11 @@ from volundr.domain.ports import (
     PricingProvider,
 )
 from volundr.domain.presented_files import PresentedFileStore, is_presented_file_id
+from volundr.domain.project_memory import (
+    MemoryDirectoryUnavailableError,
+    MemoryMountClashError,
+    ProjectMemoryError,
+)
 from volundr.domain.projects import SessionCoordination
 from volundr.domain.push import (
     EnvironmentAssumed,
@@ -182,7 +196,8 @@ from volundr.domain.session_broker import (
     server_side_http_proxy_target,
     session_proxy_url,
 )
-from volundr.domain.session_participants import SessionParticipant
+from volundr.domain.session_launch_facts import LAUNCH_FACTS_KEY, voice_channel_launched
+from volundr.domain.session_participants import ParticipantStatus, SessionParticipant
 from volundr.domain.session_read_state import (
     SessionReadState,
     SessionReadStateChange,
@@ -190,6 +205,7 @@ from volundr.domain.session_read_state import (
 )
 from volundr.domain.session_runtimes import SessionRuntimeOffer
 from volundr.domain.session_startup import SessionStartup
+from volundr.domain.team import TEAM_KEY, TEAM_MEMBER_KEY
 from volundr.domain.workflow_session import (
     WORKFLOW_MEMBER_KEY,
     WORKFLOW_RUN_ID_KEY,
@@ -924,6 +940,16 @@ class SessionCreate(BaseModel):
             )
         return value
 
+    @field_validator("workload_config")
+    @classmethod
+    def _no_launch_facts_in_workload_config(cls, value: dict) -> dict:
+        if LAUNCH_FACTS_KEY in value:
+            raise ValueError(
+                f"{LAUNCH_FACTS_KEY} is recorded by the session's launch and cannot be "
+                "set in workload_config"
+            )
+        return value
+
     @field_validator("persona_definition")
     @classmethod
     def _persona_definition_matches_its_digest(cls, value: dict | None) -> dict | None:
@@ -1424,6 +1450,69 @@ class DeviceResponse(BaseModel):
         )
 
 
+class SessionTeam(BaseModel):
+    """What a team's root records about its team."""
+
+    task_to: Literal["lead", "everyone"] | None = Field(
+        default=None,
+        description="Who receives the opening task; null when the team started without one",
+    )
+
+
+class SessionTeamMember(BaseModel):
+    """What a team's member records about itself."""
+
+    lead: bool = Field(description="True for the one member that leads the team")
+
+
+class SessionVoiceEndpoint(BaseModel):
+    """Where a session's realtime voice channel is served, and the wire it speaks."""
+
+    kind: str = Field(
+        description=f"Always {SESSION_VOICE_ENDPOINT_KIND!r}: the endpoint's kind",
+    )
+    protocol: str = Field(
+        description=f"The wire the endpoint speaks ({SESSION_VOICE_PROTOCOL})",
+    )
+    url: str = Field(
+        description=(
+            "The channel's address, beside the session's chat endpoint (http or https, or "
+            "relative to the Forge); the app opens the WebSocket on it and calls REST under "
+            "its /api"
+        ),
+    )
+
+
+def _session_voice_endpoint(
+    session: Session, chat_endpoint: str | None
+) -> SessionVoiceEndpoint | None:
+    """The session's voice endpoint: only while it runs a launch that serves the channel."""
+    if session.status != SessionStatus.RUNNING:
+        return None
+    if not voice_channel_launched(session.workload_config):
+        return None
+    url = voice_endpoint_from_chat(chat_endpoint)
+    if url is None:
+        return None
+    return SessionVoiceEndpoint(
+        kind=SESSION_VOICE_ENDPOINT_KIND, protocol=SESSION_VOICE_PROTOCOL, url=url
+    )
+
+
+def _session_team(session: Session) -> SessionTeam | None:
+    marker = session.workload_config.get(TEAM_KEY)
+    if not isinstance(marker, dict):
+        return None
+    return SessionTeam(task_to=marker.get("task_to"))
+
+
+def _session_team_member(session: Session) -> SessionTeamMember | None:
+    marker = session.workload_config.get(TEAM_MEMBER_KEY)
+    if not isinstance(marker, dict):
+        return None
+    return SessionTeamMember(lead=marker.get("lead") is True)
+
+
 class SessionResponse(BaseModel):
     """Response model for a session."""
 
@@ -1447,6 +1536,22 @@ class SessionResponse(BaseModel):
         default=False,
         description="Whether the session hosts workflow steps (step API and close tool on)",
     )
+    hosted_by: UUID | None = Field(
+        default=None,
+        description="The unit root this session runs in (null for a session of its own)",
+    )
+    team: SessionTeam | None = Field(
+        default=None,
+        description="Set on a team's root: how its opening task is addressed",
+    )
+    team_member: SessionTeamMember | None = Field(
+        default=None,
+        description="Set on a team's member: whether it leads the team",
+    )
+    people_count: int = Field(
+        ge=1,
+        description="People in the session: its owner and its active participant grants",
+    )
     source: SessionSource = Field(description="Workspace source config")
     status: SessionStatus = Field(description="Current lifecycle status")
     chat_endpoint: str | None = Field(
@@ -1454,6 +1559,13 @@ class SessionResponse(BaseModel):
     )
     code_endpoint: str | None = Field(
         description="Editor IDE URL (null when not running)",
+    )
+    voice_endpoint: SessionVoiceEndpoint | None = Field(
+        default=None,
+        description=(
+            "The session's realtime voice channel (lexi-agent-service-v1); null when the "
+            "session is not running or does not run one"
+        ),
     )
     a2a_card_url: str | None = Field(
         default=None,
@@ -1661,9 +1773,20 @@ class SessionResponse(BaseModel):
         cls,
         session: Session,
         *,
+        people_count: int,
         public_host: str = "127.0.0.1",
     ) -> "SessionResponse":
-        """Create response from domain model."""
+        """Create response from domain model.
+
+        ``people_count`` is the owner plus the session's active participant grants, which
+        the domain model does not hold: the caller reads it from the grants, for a whole
+        listing in one query.
+        """
+        chat_endpoint = _public_session_endpoint(
+            session.chat_endpoint,
+            str(session.id),
+            public_host=public_host,
+        )
         return cls(
             read_state=session.read_state,
             id=session.id,
@@ -1674,14 +1797,15 @@ class SessionResponse(BaseModel):
             workflow_run_id=session.workload_config.get(WORKFLOW_RUN_ID_KEY),
             workflow_member=session.workload_config.get(WORKFLOW_MEMBER_KEY),
             workflow_step_host=session.workload_config.get(WORKFLOW_STEP_HOST_KEY) is True,
+            hosted_by=session.hosted_by,
+            team=_session_team(session),
+            team_member=_session_team_member(session),
+            people_count=people_count,
             source=session.source,
             status=session.status,
-            chat_endpoint=_public_session_endpoint(
-                session.chat_endpoint,
-                str(session.id),
-                public_host=public_host,
-            ),
+            chat_endpoint=chat_endpoint,
             code_endpoint=session.code_endpoint,
+            voice_endpoint=_session_voice_endpoint(session, chat_endpoint),
             a2a_card_url=_public_workload_url(
                 session,
                 "a2aCardUrl",
@@ -1848,21 +1972,38 @@ class SessionStatusResponse(BaseModel):
 class SessionRoomInfo(BaseModel):
     """The caller's own durable grant on a session they participate in."""
 
-    role: str = Field(description="observer/teacher/debugger/approver")
+    role: str = Field(description="viewer/approver")
     participant_status: str = Field(description="invited/active/revoked")
     expires_at: str | None = Field(default=None, description="ISO 8601 grant expiry, if any")
 
 
+class SessionRoomCoordination(BaseModel):
+    """The project a shared session belongs to: its id and the session's role only.
+
+    ``SessionCoordination`` also carries the parent reference, objective,
+    context revision and labels; a room participant gets none of them.
+    """
+
+    project_id: UUID = Field(description="Project the session belongs to")
+    role: str = Field(description="The session's role inside the project")
+
+
 class SessionRoomSummary(BaseModel):
     """Room-visibility shape for a session the caller participates in but does
-    not own. Deliberately excludes everything ``SessionResponse`` exposes
-    beyond identity/status: repo, branch, local_path, code_endpoint, pod_name,
-    error, activity_metadata, and external ids stay owner/admin-only — Cedar
-    authorizes this shape through ``read_room``, never ``read`` (see
-    ForgeService.list_participant_only_sessions). The web client uses
-    ``room.role`` to decide whether it can attach at all, and if so with what
-    proxied capability; the actual attach/message gating still runs
-    server-side (session proxy + Skuld broker), this is only for rendering.
+    not own. Carries what a participant needs to list the session under its
+    project, render it and attach to its room: identity, status, owner, the
+    project it belongs to (``coordination``: project id and role only), the
+    model, last activity, whether it needs a person, and ``chat_endpoint``.
+
+    ``chat_endpoint`` is the same proxied session URL the owner is given; the
+    session proxy and the Skuld broker enforce the caller's room role on it, so
+    holding the URL grants nothing. Deliberately excludes everything else
+    ``SessionResponse`` exposes: repo, branch, local_path, code_endpoint,
+    pod_name, error, activity_metadata, source, and external ids stay
+    owner/admin-only — Cedar authorizes this shape through ``read_room``, never
+    ``read`` (see ForgeService.list_participant_only_sessions). ``room.role``
+    only decides what the web client renders; the actual attach/message gating
+    still runs server-side (session proxy + Skuld broker).
     """
 
     kind: Literal["room_summary"] = "room_summary"
@@ -1870,7 +2011,35 @@ class SessionRoomSummary(BaseModel):
     name: str = Field(description="Human-readable session name")
     status: SessionStatus = Field(description="Current lifecycle status")
     owner_id: str | None = Field(default=None, description="User ID of the session owner")
+    owner_name: str | None = Field(
+        default=None,
+        description="Who shared the session: the owner's display name, when the directory has one",
+    )
     room: SessionRoomInfo
+    coordination: SessionRoomCoordination | None = Field(
+        default=None,
+        description="Project the session belongs to (project id and role); null when it has none",
+    )
+    model: str = Field(description="LLM model identifier")
+    chat_endpoint: str | None = Field(
+        default=None,
+        description=(
+            "Skuld chat proxy URL (null when not running); the room role is enforced "
+            "by the proxy, not by holding this URL"
+        ),
+    )
+    last_active: str = Field(description="ISO 8601 last activity timestamp")
+    activity_state: str | None = Field(
+        default=None,
+        description=(
+            "Current activity state "
+            "(provisioning/active/idle/tool_executing/awaiting_input/stopped/error)"
+        ),
+    )
+    needs_attention: bool = Field(
+        default=False,
+        description="True when the session is blocked waiting on a person (awaiting_input)",
+    )
 
 
 class SessionEndpoints(BaseModel):
@@ -2367,6 +2536,8 @@ def create_router(
     preview_edge_limit: int = PREVIEW_EDGE_LIMIT,
     durable_transcripts: DurableTranscripts | None = None,
     project_service=None,
+    project_integration_service=None,
+    project_memory_service=None,
     runtime_build: dict | None = None,
     session_status_host: str | None = None,
     runtime_health_timeout: float = 3.0,
@@ -2408,9 +2579,21 @@ def create_router(
         else {}
     )
 
-    def _session_response(session: Session) -> SessionResponse:
-        response = SessionResponse.from_session(session, public_host=server_public_host)
-        return response.model_copy(update=own_instance_fields) if own_instance_fields else response
+    async def _session_responses(sessions: list[Session]) -> list[SessionResponse]:
+        """The responses for *sessions*, their people counted in one query for the lot."""
+        counts = await session_participant_service.people_counts([s.id for s in sessions])
+        responses = [
+            SessionResponse.from_session(
+                s, people_count=counts[s.id], public_host=server_public_host
+            )
+            for s in sessions
+        ]
+        if not own_instance_fields:
+            return responses
+        return [response.model_copy(update=own_instance_fields) for response in responses]
+
+    async def _session_response(session: Session) -> SessionResponse:
+        return (await _session_responses([session]))[0]
 
     def _http_proxy_target(url: str) -> tuple[str, dict[str, str]]:
         return _server_side_http_proxy_target(
@@ -2538,6 +2721,42 @@ def create_router(
         """
         await session_participant_service.check_room_access(session, principal, action)
 
+    async def _authorize_transcript_read(request: Request, session_id: UUID) -> None:
+        """``_ensure_transcript_access`` by id, before any cached answer is served."""
+        principal = await _optional_principal(request)
+        try:
+            await forge.ensure_transcript_reader(session_id, principal)
+        except SessionNotFoundError:
+            raise HTTPException(
+                status.HTTP_404_NOT_FOUND, f"Session not found: {session_id}"
+            ) from None
+        except PermissionError as exc:
+            raise HTTPException(
+                status.HTTP_401_UNAUTHORIZED, "Authentication is required to read this session"
+            ) from exc
+        except SessionAccessDeniedError as exc:
+            raise HTTPException(
+                status.HTTP_403_FORBIDDEN, f"Access denied to session {session_id}"
+            ) from exc
+
+    async def _ensure_transcript_access(session: Session, principal: Principal | None) -> None:
+        """Authorize reading a session's conversation: "read", or "read_room".
+
+        See ``ForgeService.ensure_transcript_access``: the transcript, tool results,
+        attachments and presented files are open to the people in the session's room
+        as well as to whoever reads the whole session.
+        """
+        try:
+            await forge.ensure_transcript_access(session, principal)
+        except PermissionError as exc:
+            raise HTTPException(
+                status.HTTP_401_UNAUTHORIZED, "Authentication is required to read this session"
+            ) from exc
+        except SessionAccessDeniedError as exc:
+            raise HTTPException(
+                status.HTTP_403_FORBIDDEN, f"Access denied to session {session.id}"
+            ) from exc
+
     if project_service is not None:
 
         async def project_principal(request: Request):
@@ -2545,6 +2764,14 @@ def create_router(
 
         router.include_router(create_projects_router(project_service, project_principal))
         router.include_router(create_session_projects_router(project_service, project_principal))
+        if project_integration_service is not None:
+            router.include_router(
+                create_project_integrations_router(project_integration_service, project_principal)
+            )
+        if project_memory_service is not None:
+            router.include_router(
+                create_project_memory_router(project_memory_service, project_principal)
+            )
 
     @router.get("/session-runtimes", tags=["Sessions"], response_model=SessionRuntimesResponse)
     async def get_session_runtimes() -> SessionRuntimesResponse:
@@ -2673,17 +2900,47 @@ def create_router(
             ]
         return sessions
 
-    def _room_summary(session: Session, grant: SessionParticipant) -> SessionRoomSummary:
+    def _room_summary(
+        session: Session, room: SessionRoomInfo, owner_names: dict[str, str] | None = None
+    ) -> SessionRoomSummary:
+        # An invitation not yet accepted names the session, its owner and the offered role;
+        # the room's content (project, endpoint, activity) is for those who joined.
+        joined = room.participant_status != ParticipantStatus.INVITED.value
+        coordination = session.coordination
         return SessionRoomSummary(
             id=session.id,
             name=session.name,
             status=session.status,
             owner_id=session.owner_id,
-            room=SessionRoomInfo(
-                role=grant.role.value,
-                participant_status=grant.status.value,
-                expires_at=grant.expires_at.isoformat() if grant.expires_at else None,
+            owner_name=(owner_names or {}).get(session.owner_id or ""),
+            room=room,
+            coordination=(
+                SessionRoomCoordination(project_id=coordination.project_id, role=coordination.role)
+                if coordination is not None and joined
+                else None
             ),
+            model=session.effective_model,
+            chat_endpoint=(
+                _public_session_endpoint(
+                    session.chat_endpoint,
+                    str(session.id),
+                    public_host=server_public_host,
+                )
+                if joined
+                else None
+            ),
+            last_active=(session.last_active or session.created_at).isoformat(),
+            activity_state=(
+                session.activity_state.value if session.activity_state and joined else None
+            ),
+            needs_attention=session.needs_attention and joined,
+        )
+
+    def _grant_room(grant: SessionParticipant) -> SessionRoomInfo:
+        return SessionRoomInfo(
+            role=grant.role.value,
+            participant_status=grant.status.value,
+            expires_at=grant.expires_at.isoformat() if grant.expires_at else None,
         )
 
     @router.get(
@@ -2772,9 +3029,7 @@ def create_router(
         if changes is not None:
             sessions = [s for s in sessions if s.id in changes.ids]
         sessions = await forge.with_read_states(sessions, principal)
-        result: list[SessionResponse | SessionRoomSummary] = [
-            _session_response(s) for s in sessions
-        ]
+        result: list[SessionResponse | SessionRoomSummary] = [*await _session_responses(sessions)]
 
         room_pairs = await forge.list_participant_only_sessions(
             status=status_filter,
@@ -2790,7 +3045,14 @@ def create_router(
             parent_instance_id=parent_instance_id,
         )
         room_session_ids = {s.id for s in room_sessions}
-        result.extend(_room_summary(s, g) for s, g in room_pairs if s.id in room_session_ids)
+        owner_names = await session_participant_service.display_names(
+            {s.owner_id for s, _ in room_pairs if s.id in room_session_ids and s.owner_id}
+        )
+        result.extend(
+            _room_summary(s, _grant_room(g), owner_names)
+            for s, g in room_pairs
+            if s.id in room_session_ids
+        )
         if limit is not None or fields == "summary":
             result.sort(key=_session_activity_key, reverse=True)
         if limit is not None:
@@ -2889,6 +3151,7 @@ def create_router(
                 tenant_id=viewer.tenant_id,
                 owner_id=event.data.get("owner_id"),
                 notification_tenant_id=event.data.get("tenant_id"),
+                recipient_copy=event.data.get("copy_of") is not None,
             )
 
         async def event_generator():
@@ -3037,7 +3300,7 @@ def create_router(
             raise HTTPException(status_code=422, detail=str(e)) from e
         except HistoryImportError as e:
             raise HTTPException(status_code=503, detail=str(e)) from e
-        return _session_response(session)
+        return await _session_response(session)
 
     @router.post("/sessions/{session_id}/history/import", tags=["Sessions"])
     async def import_session_history(request: Request, session_id: UUID) -> dict:
@@ -3122,9 +3385,15 @@ def create_router(
                 status_code=status.HTTP_409_CONFLICT,
                 detail=str(e),
             )
+        except MemoryMountClashError as e:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
+        except MemoryDirectoryUnavailableError as e:
+            raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(e))
+        except ProjectMemoryError as e:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(e))
         except (ExecutionCatalogError, ExecutionSelectionError) as e:
             raise _execution_catalog_http_error(e) from e
-        return _session_response(started)
+        return await _session_response(started)
 
     @router.post(
         "/sessions/playability",
@@ -3191,7 +3460,7 @@ def create_router(
             )
 
         session = (await forge.with_read_states([session], principal))[0]
-        return _session_response(session)
+        return await _session_response(session)
 
     @router.get(
         "/sessions/{session_id}/status",
@@ -3253,17 +3522,17 @@ def create_router(
         if principal is not None:
             grant = await session_participant_service.get_own_grant(session_id, principal.user_id)
         if grant is not None and grant.is_active:
-            return _room_summary(session, grant)
+            return _room_summary(
+                session,
+                _grant_room(grant),
+                await session_participant_service.display_names(
+                    {session.owner_id} if session.owner_id else set()
+                ),
+            )
         # No active grant: read_room passed some other way (owner/admin),
         # which Cedar only ever grants that role without a room_* attribute
         # match.
-        return SessionRoomSummary(
-            id=session.id,
-            name=session.name,
-            status=session.status,
-            owner_id=session.owner_id,
-            room=SessionRoomInfo(role="owner", participant_status="active"),
-        )
+        return _room_summary(session, SessionRoomInfo(role="owner", participant_status="active"))
 
     @router.get("/sessions/{session_id}/runtime-version", tags=["Sessions"])
     async def get_runtime_version(request: Request, session_id: UUID) -> dict:
@@ -3411,7 +3680,7 @@ def create_router(
                 tracker_issue_id=data.tracker_issue_id,
                 principal=principal,
             )
-            return _session_response(session)
+            return await _session_response(session)
         except SessionAccessDeniedError:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
@@ -3455,7 +3724,7 @@ def create_router(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Session not found: {session_id}",
             )
-        return _session_response(session)
+        return await _session_response(session)
 
     def _forge_mcp_grants_response(session_id: UUID, view) -> ForgeMcpGrantsResponse:
         return ForgeMcpGrantsResponse(
@@ -3617,7 +3886,7 @@ def create_router(
                 principal=principal,
                 integration_ids=data.integration_ids if data else None,
             )
-            return _session_response(session)
+            return await _session_response(session)
         except ForgeMcpGrantEscalationError as e:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e))
         except SessionAccessDeniedError:
@@ -3645,6 +3914,12 @@ def create_router(
                 status_code=status.HTTP_409_CONFLICT,
                 detail=str(e),
             )
+        except MemoryMountClashError as e:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
+        except MemoryDirectoryUnavailableError as e:
+            raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(e))
+        except ProjectMemoryError as e:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(e))
         except (ExecutionCatalogError, ExecutionSelectionError) as e:
             raise _execution_catalog_http_error(e) from e
 
@@ -3665,7 +3940,7 @@ def create_router(
         principal = await _optional_principal(request)
         try:
             session = await forge.stop_session(session_id, principal=principal)
-            return _session_response(session)
+            return await _session_response(session)
         except SessionAccessDeniedError:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
@@ -3894,7 +4169,7 @@ def create_router(
                 session_id,
                 principal=principal,
             )
-            return _session_response(session)
+            return await _session_response(session)
         except SessionAccessDeniedError:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
@@ -3930,7 +4205,7 @@ def create_router(
                 session_id,
                 principal=principal,
             )
-            return _session_response(session)
+            return await _session_response(session)
         except SessionAccessDeniedError:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
@@ -4327,22 +4602,14 @@ def create_router(
         """Download a presented file (present-file command) by opaque id.
 
         Forge's durable copy (F2) is served first, so the file still opens after the
-        session stops; otherwise the owning broker's staged copy, while it runs.
+        session stops; otherwise the owning broker's staged copy, while it runs. Both
+        are authorized like the conversation ("read", or "read_room" for the people in
+        the session's room).
         """
+        await _authorize_transcript_read(request, session_id)
         if presented_file_store is not None and is_presented_file_id(file_id):
             stored = await presented_file_store.get(session_id, file_id)
             if stored is not None:
-                session = await forge.get_session(session_id)
-                if session is None:
-                    raise HTTPException(
-                        status_code=status.HTTP_404_NOT_FOUND,
-                        detail=f"Session not found: {session_id}",
-                    )
-                principal = await _optional_principal(request)
-                try:
-                    await forge.ensure_access(session, principal, "read")
-                except SessionAccessDeniedError as exc:
-                    raise HTTPException(403, f"Access denied to session {session_id}") from exc
                 # The store opens the bytes inside its own root; this route never
                 # touches a path.
                 record, chunks = stored
@@ -5193,10 +5460,7 @@ def create_router(
             )
 
         principal = await _optional_principal(request)
-        try:
-            await forge.ensure_access(session, principal, "read")
-        except SessionAccessDeniedError as exc:
-            raise HTTPException(403, f"Access denied to session {session_id}") from exc
+        await _ensure_transcript_access(session, principal)
 
         # The broker's answer when it holds no turns, kept while the durable rebuild is tried.
         empty_live: tuple[dict, float] | None = None
@@ -5459,11 +5723,7 @@ def create_router(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Session not found: {session_id}",
             )
-        principal = await _optional_principal(request)
-        try:
-            await forge.ensure_access(session, principal, "read")
-        except SessionAccessDeniedError as exc:
-            raise HTTPException(403, f"Access denied to session {session_id}") from exc
+        await _ensure_transcript_access(session, await _optional_principal(request))
         started = time.perf_counter()
         try:
             index = await forge.get_attachments(session_id)
@@ -5698,7 +5958,8 @@ def create_router(
         The lazy-load target for a shallow conversation: when a client expands an
         elided placeholder it fetches the full content here. Proxies the live
         session pod; falls back to scanning the durable transcript for
-        stopped/seed-only sessions. 404 when the result is absent.
+        stopped/seed-only sessions. 404 when the result is absent. Authorized like the
+        conversation ("read", or "read_room" for the people in the session's room).
         """
         session = await forge.get_session(session_id)
         if session is None:
@@ -5706,6 +5967,7 @@ def create_router(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Session not found: {session_id}",
             )
+        await _ensure_transcript_access(session, await _optional_principal(request))
         found, _ = await _fetch_full_tool_result(request, session, session_id, tool_use_id)
         if found is not None:
             return found
@@ -5741,7 +6003,8 @@ def create_router(
         ``?max_edge=`` asks for a larger or smaller preview; out of bounds is 422.
         ``X-Preview-Max-Edge`` names the bound served and ``X-Preview-Edge`` the
         JPEG's actual longest edge (smaller when the source image is). Each edge is
-        cached separately, with the same immutable caching and access as before.
+        cached separately. Every request, a cached one too, is authorized like the
+        conversation ("read", or "read_room" for the people in the session's room).
 
         Generated on FIRST request (full envelope resolved via the same
         live-pod → durable-fallback chain as ``get_tool_result``, then
@@ -5762,6 +6025,7 @@ def create_router(
                     f"{preview_cache.max_edge}"
                 ),
             )
+        await _authorize_transcript_read(request, session_id)
         sid = str(session_id)
         # Keep existing first-image cache keys compatible with native clients.
         cache_key = tool_use_id if image_index == 0 else f"{tool_use_id}:image:{image_index}"
@@ -6334,7 +6598,7 @@ def create_router(
                 status_code=status.HTTP_409_CONFLICT,
                 detail=str(e),
             ) from e
-        return _session_response(session)
+        return await _session_response(session)
 
     @router.get(
         "/chronicles/{chronicle_id}/chain",

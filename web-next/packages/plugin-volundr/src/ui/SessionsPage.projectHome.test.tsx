@@ -294,7 +294,7 @@ describe('SessionsPage project home', () => {
     await waitFor(() => expect(screen.queryByTestId('project-home')).not.toBeInTheDocument());
   });
 
-  it('names a project the host does not list by its id', async () => {
+  it('names a project the viewer cannot read as shared, never by its id', async () => {
     setup([
       makeSession({
         id: 'x',
@@ -304,10 +304,12 @@ describe('SessionsPage project home', () => {
         coordination: { projectId: 'ghost', role: 'worker' },
       }),
     ]);
-    const group = await screen.findByTestId('pod-group-ghost');
-    fireEvent.click(within(group).getByTitle('Open ghost'));
+    const group = await screen.findByTestId('pod-group-shared-with-you');
+    fireEvent.click(within(group).getByTitle('Open Shared with you'));
     const home = await screen.findByTestId('project-home');
-    expect(within(home).getByRole('heading', { level: 1, name: 'ghost' })).toBeInTheDocument();
+    expect(
+      within(home).getByRole('heading', { level: 1, name: 'Shared with you' }),
+    ).toBeInTheDocument();
     expect(within(home).getByRole('button', { name: 'Settings…' })).toBeDisabled();
   });
 });

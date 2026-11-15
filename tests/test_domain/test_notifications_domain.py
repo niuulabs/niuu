@@ -102,6 +102,34 @@ class TestVisibility:
             user_id="", roles=[], tenant_id="t", owner_id="", notification_tenant_id="t"
         )
 
+    @pytest.mark.parametrize(
+        ("user", "roles", "expected"),
+        [
+            ("bob", [], True),  # the recipient's own copy
+            ("owner", [], False),  # the original's owner does not see a member's copy
+            ("root", ["volundr:admin"], False),  # an admin sees the original, not each copy
+            ("carol", [], False),
+        ],
+    )
+    def test_a_recipient_copy_belongs_to_its_recipient_alone(self, user, roles, expected):
+        assert (
+            notification_visible_to(
+                user_id=user,
+                roles=roles,
+                tenant_id="t",
+                owner_id="bob",
+                notification_tenant_id="t",
+                recipient_copy=True,
+            )
+            is expected
+        )
+
+    def test_scope_allows_copies_the_same_way(self):
+        admin = NotificationScope(user_id="root", tenant_id="t", is_admin=True)
+        bob = NotificationScope(user_id="bob", tenant_id="t", is_admin=False)
+        assert admin.allows("bob", "t") and not admin.allows("bob", "t", recipient_copy=True)
+        assert bob.allows("bob", "t", recipient_copy=True)
+
     def test_scope_for_principal(self):
         admin = NotificationScope.for_principal(
             Principal(user_id="a", email="", tenant_id="t", roles=["volundr:admin"])

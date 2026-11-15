@@ -66,6 +66,22 @@ class TestConversationHistoryPersistence:
         expected = tmp_path / CONVERSATION_HISTORY_DIR / f"conversation_{sid}.json"
         assert test_broker._conversation_history_path() == expected
 
+    def test_save_failure_raises(self, test_broker, tmp_path):
+        """A history file that cannot be written raises, never a warning-and-continue."""
+        (tmp_path / CONVERSATION_HISTORY_DIR).write_text("not a directory", encoding="utf-8")
+        test_broker._conversation_turns = [ConversationTurn(id="1", role="user", content="Hi")]
+        with pytest.raises(OSError):
+            test_broker._save_conversation_history()
+
+    def test_append_turn_logs_durably_before_a_failing_save(self, test_broker, tmp_path):
+        """The turn reaches the durable event log even when the local file write raises."""
+        (tmp_path / CONVERSATION_HISTORY_DIR).write_text("not a directory", encoding="utf-8")
+        logged: list[dict] = []
+        test_broker._enqueue_event_log = lambda payload: logged.append(payload) or payload
+        with pytest.raises(OSError):
+            test_broker._append_turn(ConversationTurn(id="1", role="user", content="Hi"))
+        assert [entry["turn"]["id"] for entry in logged] == ["1"]
+
     def test_save_and_load_history(self, test_broker):
         turn1 = ConversationTurn(id="1", role="user", content="Hello")
         turn2 = ConversationTurn(

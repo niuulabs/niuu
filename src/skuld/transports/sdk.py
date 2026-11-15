@@ -40,6 +40,7 @@ from claude_agent_sdk.types import (
 
 from niuu.adapters.cli.runtime import filter_cli_event as _filter_event
 from niuu.ports.cli import CLITransport, TransportCapabilities
+from skuld.claude_auth import ClaudeAuthMode
 from skuld.claude_permission import (
     DEFAULT_CLAUDE_PERMISSION_MODE,
     resolve_claude_permission_mode,
@@ -325,8 +326,12 @@ class SDKTransport(CLITransport):
         mcp_startup_timeout_seconds: float = 30.0,
         mcp_status_poll_interval_seconds: float = 0.1,
         claude_tool_policy: ClaudeToolPolicy | None = None,
+        claude_auth: ClaudeAuthMode = "subscription",
+        claude_oauth_token_file: str | None = None,
     ) -> None:
         super().__init__()
+        self._claude_auth = claude_auth
+        self._claude_oauth_token_file = claude_oauth_token_file
         for value in (mcp_startup_timeout_seconds, mcp_status_poll_interval_seconds):
             if not math.isfinite(value) or value <= 0:
                 raise ValueError(
@@ -363,6 +368,9 @@ class SDKTransport(CLITransport):
         self._last_result: dict[str, Any] | None = None
         self._turn_active = False
         self._pending_steers: list[str] = []
+        # Display names of the people whose steers wait in _pending_steers, when the
+        # broker attributed them (their text already opens with "[<name>] ").
+        self._pending_steer_authors: list[str] = []
         self._steer_interrupt_requested = False
         # AskUserQuestion human-in-the-loop: request_id -> Future resolved when a
         # client answers (via send_control "ask_user_answer"). See
@@ -388,6 +396,9 @@ class SDKTransport(CLITransport):
             set_permission_mode=True,
             slash_commands=True,
             skills=True,
+            # The SDK's CLI sends ``system/init`` only once it runs its first query, so a
+            # session launched without a prompt would otherwise read as provisioning forever.
+            announces_ready=False,
             send_runs_turn=True,
         )
 
@@ -691,7 +702,7 @@ class SDKTransport(CLITransport):
             if not self._turn_active:
                 logger.info("Claude SDK transport: steer requested without an active turn")
                 return
-            self._pending_steers.append(content)
+            self._queue_steer(content, kwargs.get("author_name"))
             if self._steer_interrupt_requested:
                 return
             self._steer_interrupt_requested = True
@@ -705,7 +716,7 @@ class SDKTransport(CLITransport):
             if not self._turn_active:
                 await self.send_message(content)
                 return
-            self._pending_steers.append(content)
+            self._queue_steer(content, kwargs.get("author_name"))
             if self._steer_interrupt_requested:
                 return
             self._steer_interrupt_requested = True
@@ -722,8 +733,10 @@ class SDKTransport(CLITransport):
         return str(path) if path else {}
 
     def _spawn_env(self) -> dict[str, str]:
-        # Subscription auth by default (SKULD__CLAUDE_AUTH); the gateway when set.
+        # The claude_auth setting (subscription by default); the gateway when set.
         return claude_spawn_env(
+            claude_auth=self._claude_auth,
+            claude_oauth_token_file=self._claude_oauth_token_file,
             gateway_url=self._model_gateway_url,
             gateway_token=self._model_gateway_token,
         )
@@ -735,7 +748,6 @@ class SDKTransport(CLITransport):
         tools = self._session_tools
         _, shim_env = ensure_codex_tool_shims(
             self.workspace_dir,
-            mcp_servers=self._raw_mcp_servers,
             session_env=tools.env if tools else None,
         )
         if shim_env:
@@ -925,19 +937,38 @@ class SDKTransport(CLITransport):
         except Exception:
             logger.warning("Background slash-command send failed", exc_info=True)
 
+    def _queue_steer(self, content: str, author_name: object) -> None:
+        """Hold a steer until the interrupted turn continues, remembering who sent it."""
+        self._pending_steers.append(content)
+        if isinstance(author_name, str) and author_name:
+            self._pending_steer_authors.append(author_name)
+
     def _consume_pending_steers(self) -> str | None:
-        """Drain steering updates into the next continuation prompt."""
+        """Drain steering updates into the next continuation prompt.
+
+        Merged steers from an attributed session list each person's message under their
+        name (each line already opens with "[<name>] ") and say who sent them, instead of
+        presuming one "user".
+        """
         self._steer_interrupt_requested = False
         if not self._pending_steers:
             return None
 
+        authors = list(dict.fromkeys(self._pending_steer_authors))
+        self._pending_steer_authors.clear()
         if len(self._pending_steers) == 1:
             return self._pending_steers.pop(0)
 
         pending = list(self._pending_steers)
         self._pending_steers.clear()
+        if len(authors) > 1:
+            intro = "Several people sent steering updates while you were working."
+        elif authors:
+            intro = f"{authors[0]} sent multiple steering updates while you were working."
+        else:
+            intro = "The user sent multiple steering updates while you were working."
         lines = [
-            "The user sent multiple steering updates while you were working.",
+            intro,
             "Continue the same task and incorporate all of them in order:",
         ]
         lines.extend(f"- {item}" for item in pending)

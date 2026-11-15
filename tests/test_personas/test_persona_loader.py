@@ -338,7 +338,8 @@ class TestListBuiltinNames:
         assert "coder" in names
         assert "reviewer" in names
         assert "security-auditor" in names
-        assert "security-auditor" in names
+        assert "memory-compiler" in names
+        assert "lexi" in names
         assert "sidekick" not in names
 
 
@@ -385,9 +386,19 @@ class TestBuiltinPersonas:
             cfg = self._load(p.stem)
             assert cfg.system_prompt_template, f"{p.stem} has empty system_prompt_template"
 
+    #: Personas that deliberately declare no iteration budget. The memory compiler's work is
+    #: one pass per source it is handed and the number of sources is not bounded by anything
+    #: it controls, so any count would be a guessed cap that stops a compile part-way
+    #: (.claude/rules/no-hidden-limits.md). Lexi is the voice a call speaks with: a call is
+    #: bounded by the person hanging up, not by a count of turns.
+    _UNBUDGETED = frozenset({"memory-compiler", "lexi"})
+
     def test_all_builtins_have_positive_budgets(self) -> None:
         for p in _BUILTIN_PERSONAS_DIR.glob("*.yaml"):
             cfg = self._load(p.stem)
+            if p.stem in self._UNBUDGETED:
+                assert cfg.iteration_budget == 0, f"{p.stem} is meant to have no budget"
+                continue
             assert cfg.iteration_budget > 0, f"{p.stem} has non-positive iteration_budget"
 
     def test_specification_framer_leaves_publication_to_workflow_runtime(self) -> None:
@@ -400,6 +411,13 @@ class TestBuiltinPersonas:
     # ------------------------------------------------------------------
     # Specialist personas (NIU-586)
     # ------------------------------------------------------------------
+
+    def test_lexi_is_a_voice_persona(self) -> None:
+        cfg = self._load("lexi")
+        assert cfg.voice.enabled
+        assert cfg.voice.voices == {"grok-voice": "ara", "openai-realtime": "marin"}
+        assert cfg.voice.style.strip()
+        assert cfg.parsed_permission_mode is PermissionMode.READ_ONLY
 
     def test_reviewer_exists(self) -> None:
         cfg = _BUILTIN_PERSONAS["reviewer"]
@@ -535,7 +553,7 @@ def test_every_built_in_persona_says_what_it_does_and_when_to_talk_to_it() -> No
     adapter = FilesystemPersonaAdapter(persona_dirs=[], include_builtin=True)
     names = adapter.list_builtin_names()
 
-    assert len(names) == 3
+    assert len(names) == 5
     for name in names:
         persona = adapter.load(name)
         assert persona.description, f"built-in persona {name!r} has no description"

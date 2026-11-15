@@ -225,7 +225,16 @@ class ComputeConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
 
     pool_id: str = Field(min_length=1)
-    max_machines: int = Field(gt=0)
+    max_machines: int | None = Field(
+        default=None,
+        gt=0,
+        description=(
+            "Machines a VM pool may hold at once (standby, active, failed and deleting); a "
+            "claim beyond it fails naming this knob. Required with a provider that makes "
+            "machines, refused with registered hosts (compute.hosts), whose pool is the "
+            "hosts that joined"
+        ),
+    )
     provider: DynamicAdapterConfig
     auth: HttpAuthAdapterConfig | None = None
     runtime: DynamicAdapterConfig | None = None
@@ -304,3 +313,17 @@ class ComputeConfig(BaseModel):
     retry_max_seconds: float = Field(default=300, gt=0)
     maintenance_interval_seconds: float = Field(default=10, gt=0)
     poll_interval_seconds: float = Field(default=2, gt=0)
+
+    @model_validator(mode="after")
+    def machine_maximum(self):
+        if self.hosts is not None and self.max_machines is not None:
+            raise ValueError(
+                "compute.max_machines caps how many machines a pool makes, and registered "
+                "hosts (compute.hosts) are bounded by the hosts that joined; remove "
+                "compute.max_machines"
+            )
+        if self.hosts is None and self.max_machines is None:
+            raise ValueError(
+                "compute.max_machines is required: how many machines this pool may hold at once"
+            )
+        return self

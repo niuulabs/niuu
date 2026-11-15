@@ -186,6 +186,7 @@ def prepare_history_page(
                         "participant_id",
                         "participant_meta",
                         "thread_id",
+                        "author",
                     )
                     if k in original
                 },

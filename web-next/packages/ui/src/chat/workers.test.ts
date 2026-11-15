@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { ChatMessage, MeshEvent, RoomParticipant } from './types';
+import { SESSION_AGENT_PEER_ID } from './types';
 import { roomWorkers, verdictLabel, verdictTone, workerOutcomes, workerStages } from './workers';
 
 const at = (minute: number) => new Date(Date.UTC(2026, 10, 5, 5, minute));
@@ -172,6 +173,27 @@ describe('roomWorkers and workerStages', () => {
     ]);
     // Without knowing the host, a Skuld participant still leads, as before.
     expect(roomWorkers(runRoom, [], [])).toEqual([]);
+  });
+
+  it("never counts a plain session's own agent as a worker of its room", () => {
+    // A session without a mesh room: the chat names its agent with a stand-in peer, which
+    // is not the session id the page passes as the host.
+    const own = participant(SESSION_AGENT_PEER_ID, 'Skuld', [], [], {
+      participantType: 'skuld',
+      displayName: 'Skuld',
+    });
+    const plain = new Map([[own.peerId, own]]);
+    const reply: ChatMessage = {
+      id: 'a1',
+      role: 'assistant',
+      content: 'Hello.',
+      createdAt: at(1),
+      participant: own,
+    };
+
+    expect(roomWorkers(plain, [], [reply], 'session-1')).toEqual([]);
+    // Nor once it is no longer listed: its messages do not make it a departed worker.
+    expect(roomWorkers(new Map(), [], [reply], 'session-1')).toEqual([]);
   });
 
   it('keeps a worker that took part and left the room, marked as left', () => {

@@ -1,12 +1,10 @@
 import { usePluginCtx } from '@niuulabs/plugin-sdk';
 import { useNavigate, useRouterState } from '@tanstack/react-router';
 import { RegistryPage } from './RegistryPage';
-import { HealthPage } from './HealthPage';
 import { AnalyticsPage } from './AnalyticsPage';
 
 const views = [
   { title: 'Instances', path: '/mimir/registry', component: RegistryPage },
-  { title: 'Health', path: '/mimir/registry/health', component: HealthPage },
   { title: 'Analytics', path: '/mimir/registry/analytics', component: AnalyticsPage },
 ];
 export function RegistryWorkspace() {
@@ -16,11 +14,7 @@ export function RegistryWorkspace() {
   const view =
     views.find((item) => item.title === ctx.tweaks['mimir.registryView']) ??
     views.find((item) => item.path === path) ??
-    (/\/(health|lint|doctor)$/.test(path)
-      ? views[1]
-      : /\/analytics$/.test(path)
-        ? views[2]
-        : views[0])!;
+    (/\/analytics$/.test(path) ? views[1] : views[0])!;
   const Content = view.component;
   return (
     <div className="knowledge-workspace">

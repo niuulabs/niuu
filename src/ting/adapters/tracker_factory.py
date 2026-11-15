@@ -3,13 +3,23 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Awaitable, Callable
 from typing import Any
+from uuid import UUID
 
-from niuu.domain.models import IntegrationType
+from niuu.domain.models import (
+    IntegrationConnection,
+    IntegrationType,
+    credential_owner,
+    project_owner_id,
+)
 from niuu.ports.credentials import CredentialStorePort
-from niuu.ports.integrations import IntegrationRepository
+from niuu.ports.integrations import IntegrationRepository, IntegrationUsageLog
 from niuu.utils import import_class
 from ting.adapters.native import NativeTrackerAdapter
+from ting.adapters.team_tracker import TeamIssueReader, TeamTrackerRecorder
+from ting.domain.memory_imports import CONNECTOR_LINEAR, ImportConnectionError
+from ting.ports.memory_imports import ImportConnections, IssueUpdateReader
 from ting.ports.tracker import (
     TrackerPort,
     TrackerResolution,
@@ -33,14 +43,20 @@ def _resolve_tracker_adapter(adapter: str) -> str | None:
 def _normalize_tracker_credentials(adapter: str, credentials: dict[str, Any]) -> dict[str, Any]:
     """Bridge generic credential payloads to adapter-specific constructor kwargs."""
     normalized = dict(credentials)
-    if adapter.endswith("LinearTrackerAdapter") and "api_key" not in normalized:
+    if (
+        adapter.endswith("LinearTrackerAdapter")
+        and "api_key" not in normalized
+        and "access_token" not in normalized
+    ):
+        # A bare ``token`` is a personal API key; an ``access_token`` is an OAuth
+        # token (a team's Linear app) and stays one, it is sent as Bearer.
         token = normalized.get("token")
         if token:
             normalized["api_key"] = token
     return normalized
 
 
-class TrackerAdapterFactory:
+class TrackerAdapterFactory(ImportConnections):
     """Resolves tracker adapters for a specific owner from stored credentials.
 
     The pool is injected into every adapter so that adapters that need local
@@ -53,10 +69,90 @@ class TrackerAdapterFactory:
         integration_repo: IntegrationRepository,
         credential_store: CredentialStorePort,
         pool: Any | None = None,
+        *,
+        member_projects: Callable[[str], Awaitable[list[str]]] | None = None,
+        usage_log: IntegrationUsageLog | None = None,
     ) -> None:
         self._integration_repo = integration_repo
         self._credential_store = credential_store
         self._pool = pool
+        self._member_projects = member_projects
+        self._usage_log = usage_log
+
+    def _instantiate(
+        self, conn: IntegrationConnection, resolved_adapter: str, cred: dict[str, Any]
+    ) -> TrackerPort:
+        """Build the tracker adapter a connection names, bound to the connection."""
+        cls = import_class(resolved_adapter)
+        kwargs = {**_normalize_tracker_credentials(resolved_adapter, cred), **conn.config}
+        if self._pool is not None:
+            kwargs["pool"] = self._pool
+        tracker = cls(**kwargs)
+        tracker.bind_connection(
+            connection_id=str(conn.id),
+            provider=str(conn.slug),
+            name=str(conn.config.get("name") or conn.config.get("site_url") or conn.slug),
+        )
+        return tracker
+
+    async def reader(
+        self, project_id: UUID, connection_id: str, *, acting_for: str
+    ) -> IssueUpdateReader:
+        """A memory import's reader over one of the project's team tracker connections.
+
+        Keyed by the project, never by a person: the connection must be a team integration
+        the project owns (``project:<id>`` owner) and be enabled, and its credential is the
+        project's. Anything else raises ``ImportConnectionError`` naming what to fix; there
+        is no other connection to fall back to. Each read through the reader is recorded as
+        a use of the team connection for ``acting_for``.
+        """
+        conn = await self._integration_repo.get_connection(connection_id)
+        if conn is None:
+            raise ImportConnectionError(f"integration connection {connection_id} does not exist")
+        if str(conn.project_id or "") != str(project_id):
+            raise ImportConnectionError(
+                f"integration connection {connection_id} is not a team integration of project "
+                f"{project_id}; imports read only with the project's own team integrations"
+            )
+        if conn.integration_type != IntegrationType.ISSUE_TRACKER:
+            raise ImportConnectionError(
+                f"integration connection {connection_id} is a {conn.integration_type} "
+                "integration, not an issue tracker"
+            )
+        if not conn.enabled:
+            raise ImportConnectionError(
+                f"team integration {connection_id} is disabled; enable it or delete the import"
+            )
+        if self._usage_log is None:
+            raise ImportConnectionError(
+                f"team integration {connection_id} cannot be read: no integration usage log is "
+                "wired, and an unrecorded team use is not allowed"
+            )
+        resolved_adapter = _resolve_tracker_adapter(conn.adapter)
+        if resolved_adapter is None or not resolved_adapter.endswith("LinearTrackerAdapter"):
+            raise ImportConnectionError(
+                f"team integration {connection_id} uses {conn.adapter}, which is not a "
+                f"{CONNECTOR_LINEAR} connection"
+            )
+        cred = await self._credential_store.get_value(*credential_owner(conn), conn.credential_name)
+        if cred is None:
+            raise ImportConnectionError(
+                f"the credential {conn.credential_name!r} of team integration {connection_id} "
+                "is unavailable; reconnect the integration"
+            )
+        tracker = self._instantiate(conn, resolved_adapter, cred)
+        if not isinstance(tracker, IssueUpdateReader):
+            raise ImportConnectionError(
+                f"{resolved_adapter} cannot read tickets updated since a time, so team "
+                f"integration {connection_id} cannot feed a memory import"
+            )
+        return TeamIssueReader(
+            tracker,
+            usage_log=self._usage_log,
+            connection_id=str(conn.id),
+            project_id=str(project_id),
+            acting_for=acting_for,
+        )
 
     async def for_owner(self, owner_id: str) -> list[TrackerPort]:
         """Return all enabled TrackerPort adapters for the owner.
@@ -74,15 +170,90 @@ class TrackerAdapterFactory:
         Existing command paths consume :meth:`for_owner`.  Read surfaces that
         promise source coverage use this richer result so a broken configured
         connection cannot look like a complete, empty tracker catalog.
+
+        The owner's own connections come first, then those of every project the
+        owner is a member of (team trackers), when ``member_projects`` is set.
         """
-        connections = await self._integration_repo.list_connections(
+        adapters: list[TrackerPort] = []
+        failures: list[TrackerResolutionFailure] = []
+        seen: set[str] = set()
+        own = await self._integration_repo.list_connections(
             owner_id,
             integration_type=IntegrationType.ISSUE_TRACKER,
         )
-        adapters: list[TrackerPort] = []
-        failures: list[TrackerResolutionFailure] = []
+        await self._resolve_connections(own, owner_id, seen, adapters, failures)
+        for connections in await self._team_connections(owner_id, failures):
+            await self._resolve_connections(connections, owner_id, seen, adapters, failures)
+        if self._pool is not None:
+            if not adapters:
+                logger.info(
+                    "No external tracker integrations configured for owner %s; "
+                    "using the native tracker",
+                    owner_id,
+                )
+            native = NativeTrackerAdapter(pool=self._pool)
+            native.bind_connection(connection_id="native", provider="native", name="Niuu")
+            adapters.append(native)
+        return TrackerResolution(adapters=tuple(adapters), failures=tuple(failures))
+
+    async def _team_connections(
+        self, owner_id: str, failures: list[TrackerResolutionFailure]
+    ) -> list[list[IntegrationConnection]]:
+        """The tracker connections of each project the owner is a member of."""
+        if self._member_projects is None:
+            return []
+        try:
+            project_ids = await self._member_projects(owner_id)
+        except Exception:
+            failures.append(
+                TrackerResolutionFailure(
+                    connection_id="",
+                    code="teamTrackersUnavailable",
+                    message="The owner's project memberships could not be read, so the "
+                    "team trackers are unavailable.",
+                )
+            )
+            logger.error(
+                "Could not list the projects of owner %s; their team trackers are unavailable",
+                owner_id,
+                exc_info=True,
+            )
+            return []
+        return [
+            await self._integration_repo.list_connections(
+                project_owner_id(project_id),
+                integration_type=IntegrationType.ISSUE_TRACKER,
+            )
+            for project_id in project_ids
+        ]
+
+    async def _resolve_connections(
+        self,
+        connections: list[IntegrationConnection],
+        owner_id: str,
+        seen: set[str],
+        adapters: list[TrackerPort],
+        failures: list[TrackerResolutionFailure],
+    ) -> None:
+        """Build an adapter for each enabled connection; failures are reported, not hidden."""
         for conn in connections:
-            if not conn.enabled:
+            if not conn.enabled or conn.id in seen:
+                continue
+            seen.add(conn.id)
+            if conn.project_id and self._usage_log is None:
+                failures.append(
+                    TrackerResolutionFailure(
+                        connection_id=str(conn.id),
+                        code="teamUsageUnrecorded",
+                        message="A team tracker cannot be used without a usage log.",
+                    )
+                )
+                logger.error(
+                    "Team tracker connection %s of project %s was refused: no integration "
+                    "usage log is wired, and an unrecorded team use is not allowed",
+                    conn.id,
+                    conn.project_id,
+                )
                 continue
             resolved_adapter = _resolve_tracker_adapter(conn.adapter)
             if resolved_adapter is None:
@@ -96,8 +267,7 @@ class TrackerAdapterFactory:
                 continue
             try:
                 cred = await self._credential_store.get_value(
-                    "user",
-                    owner_id,
+                    *credential_owner(conn),
                     conn.credential_name,
                 )
                 if cred is None:
@@ -110,16 +280,15 @@ class TrackerAdapterFactory:
                     )
                     continue
 
-                cls = import_class(resolved_adapter)
-                kwargs = {**_normalize_tracker_credentials(resolved_adapter, cred), **conn.config}
-                if self._pool is not None:
-                    kwargs["pool"] = self._pool
-                tracker = cls(**kwargs)
-                tracker.bind_connection(
-                    connection_id=str(conn.id),
-                    provider=str(conn.slug),
-                    name=str(conn.config.get("name") or conn.config.get("site_url") or conn.slug),
-                )
+                tracker = self._instantiate(conn, resolved_adapter, cred)
+                if conn.project_id and self._usage_log is not None:
+                    tracker = TeamTrackerRecorder(
+                        tracker,
+                        usage_log=self._usage_log,
+                        connection_id=str(conn.id),
+                        project_id=str(conn.project_id),
+                        acting_for=owner_id,
+                    )
                 adapters.append(tracker)
             except (ImportError, TypeError, ValueError, AttributeError) as exc:
                 failures.append(
@@ -147,14 +316,3 @@ class TrackerAdapterFactory:
                     conn.id,
                     exc_info=True,
                 )
-        if self._pool is not None:
-            if not adapters:
-                logger.info(
-                    "No external tracker integrations configured for owner %s; "
-                    "using the native tracker",
-                    owner_id,
-                )
-            native = NativeTrackerAdapter(pool=self._pool)
-            native.bind_connection(connection_id="native", provider="native", name="Niuu")
-            adapters.append(native)
-        return TrackerResolution(adapters=tuple(adapters), failures=tuple(failures))

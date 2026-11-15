@@ -10,7 +10,6 @@ const REGISTRY_MOUNT: WorkflowRegistryMount = {
   lifecycle: 'registered',
   role: 'shared',
   url: 'https://mimir.example',
-  path: '/shared',
   categories: ['decision', 'entity'],
   authRef: 'mimir-secret',
   defaultReadPriority: 5,

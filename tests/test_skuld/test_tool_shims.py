@@ -20,24 +20,30 @@ def test_ensure_codex_tool_shims_creates_tracker_bridge_without_mimir(tmp_path: 
     assert "Bearer" not in tracker_script
 
 
-def test_ensure_codex_tool_shims_adds_tracker_and_mimir_bridges(tmp_path: Path) -> None:
-    bin_dir, env = ensure_codex_tool_shims(
-        str(tmp_path),
-        mcp_servers=[
-            {
-                "name": "mimir-local",
-                "command": "python3",
-                "args": ["-m", "mimir", "mcp", "--path", "/tmp/mimir", "--name", "tmp-mimir"],
-            }
-        ],
-    )
+_MIMIR_RAVN_CONFIG = """
+mimir:
+  registry_refs:
+    - mount_name: mimir-yggdrasil
+      url: https://mimir.example.test/api/v1
+"""
+
+
+def test_ensure_codex_tool_shims_adds_tracker_and_mimir_bridges(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    config_path = tmp_path / "ravn.yaml"
+    config_path.write_text(_MIMIR_RAVN_CONFIG, encoding="utf-8")
+    monkeypatch.setenv("RAVN_CONFIG", str(config_path))
+
+    bin_dir, env = ensure_codex_tool_shims(str(tmp_path / "workspace"))
 
     assert bin_dir is not None
     assert (bin_dir / "tracker_issue").exists()
     assert (bin_dir / "mimir_publish_artifact").exists()
     assert (bin_dir / "mimir_publish_files").exists()
-    assert env["RAVN_MIMIR_PATH"] == "/tmp/mimir"
-    assert env["RAVN_MIMIR_NAME"] == "tmp-mimir"
+    assert "RAVN_MIMIR_PATH" not in env
+    assert "RAVN_MIMIR_NAME" not in env
     mimir_script = (bin_dir / "mimir_publish_files").read_text(encoding="utf-8")
     assert "PYTHONPATH=" in mimir_script
     assert "UV_CACHE_DIR=" in mimir_script
@@ -46,39 +52,29 @@ def test_ensure_codex_tool_shims_adds_tracker_and_mimir_bridges(tmp_path: Path) 
     assert "-m mimir.bridge publish-artifact" in artifact_script
 
 
-def test_ensure_codex_tool_shims_adds_mimir_related_bridge(tmp_path: Path) -> None:
-    bin_dir, env = ensure_codex_tool_shims(
-        str(tmp_path),
-        mcp_servers=[
-            {
-                "name": "mimir-local",
-                "command": "python3",
-                "args": ["-m", "mimir", "mcp", "--path", "/tmp/mimir", "--name", "tmp-mimir"],
-            }
-        ],
-    )
+def test_ensure_codex_tool_shims_has_no_mimir_related_bridge(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    config_path = tmp_path / "ravn.yaml"
+    config_path.write_text(_MIMIR_RAVN_CONFIG, encoding="utf-8")
+    monkeypatch.setenv("RAVN_CONFIG", str(config_path))
+
+    bin_dir, _ = ensure_codex_tool_shims(str(tmp_path / "workspace"))
 
     assert bin_dir is not None
-    related_shim = bin_dir / "mimir_related"
-    assert related_shim.exists()
-    script = related_shim.read_text(encoding="utf-8")
-    assert "-m mimir.bridge related" in script
-    assert "# mimir_related:" in script
-    assert "wikilink graph" in script
-    assert env["RAVN_MIMIR_PATH"] == "/tmp/mimir"
+    assert not (bin_dir / "mimir_related").exists()
 
 
-def test_ensure_codex_tool_shims_describe_each_mimir_command(tmp_path: Path) -> None:
-    bin_dir, _ = ensure_codex_tool_shims(
-        str(tmp_path),
-        mcp_servers=[
-            {
-                "name": "mimir-local",
-                "command": "python3",
-                "args": ["-m", "mimir", "mcp", "--path", "/tmp/mimir"],
-            }
-        ],
-    )
+def test_ensure_codex_tool_shims_describe_each_mimir_command(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    config_path = tmp_path / "ravn.yaml"
+    config_path.write_text(_MIMIR_RAVN_CONFIG, encoding="utf-8")
+    monkeypatch.setenv("RAVN_CONFIG", str(config_path))
+
+    bin_dir, _ = ensure_codex_tool_shims(str(tmp_path / "workspace"))
 
     assert bin_dir is not None
     for name in (
@@ -90,10 +86,21 @@ def test_ensure_codex_tool_shims_describe_each_mimir_command(tmp_path: Path) -> 
         "mimir_publish_artifact",
         "mimir_publish_files",
         "mimir_list",
-        "mimir_related",
     ):
         script = (bin_dir / name).read_text(encoding="utf-8")
         assert f"# {name}:" in script
+
+
+def test_ensure_codex_tool_shims_skips_mimir_bridges_without_mimir_config(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.delenv("RAVN_CONFIG", raising=False)
+
+    bin_dir, _ = ensure_codex_tool_shims(str(tmp_path / "workspace"))
+
+    assert bin_dir is not None
+    assert not (bin_dir / "mimir_search").exists()
 
 
 def test_ensure_codex_tool_shims_bakes_ravn_config_when_available(
@@ -130,16 +137,7 @@ mimir:
     )
     monkeypatch.setenv("RAVN_CONFIG", str(config_path))
 
-    bin_dir, env = ensure_codex_tool_shims(
-        str(tmp_path / "workspace"),
-        mcp_servers=[
-            {
-                "name": "mimir-yggdrasil",
-                "type": "http",
-                "url": "https://mimir.example.test/api/v1",
-            }
-        ],
-    )
+    bin_dir, env = ensure_codex_tool_shims(str(tmp_path / "workspace"))
 
     assert bin_dir is not None
     assert (bin_dir / "mimir_write").exists()
@@ -149,11 +147,10 @@ mimir:
 
 
 def test_shims_run_installed_modules_without_uv(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.delenv("RAVN_CONFIG", raising=False)
-    bin_dir, env = ensure_codex_tool_shims(
-        str(tmp_path),
-        mcp_servers=[{"args": ["-m", "mimir", "mcp", "--path", "/tmp/mimir"]}],
-    )
+    config_path = tmp_path / "ravn.yaml"
+    config_path.write_text(_MIMIR_RAVN_CONFIG, encoding="utf-8")
+    monkeypatch.setenv("RAVN_CONFIG", str(config_path))
+    bin_dir, env = ensure_codex_tool_shims(str(tmp_path / "workspace"))
     assert bin_dir is not None
     for name in ("tracker_issue", "mimir_search"):
         result = subprocess.run(

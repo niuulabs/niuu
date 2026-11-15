@@ -342,11 +342,18 @@ TENANT_VIEWER = Principal(
     roles=["volundr:viewer"],
 )
 
-READ_ROUTES = ["", "/runtime-version", "/conversation"]
+# The conversation is also readable on the room right: a caller denied "read" is then
+# asked for "read_room" (a participant of the session's room), and denied only when both
+# are refused.
+READ_ROUTES = [
+    ("", ["read"]),
+    ("/runtime-version", ["read"]),
+    ("/conversation", ["read", "read_room"]),
+]
 
 
-@pytest.mark.parametrize("suffix", READ_ROUTES)
-def test_session_read_routes_authorize_read_action(session_repo, suffix):
+@pytest.mark.parametrize(("suffix", "actions"), READ_ROUTES)
+def test_session_read_routes_authorize_read_action(session_repo, suffix, actions):
     session = _make_session()
     _seed_session(session_repo, session)
     authz = RecordingDenyAuthorizationAdapter()
@@ -356,7 +363,7 @@ def test_session_read_routes_authorize_read_action(session_repo, suffix):
         resp = client.get(f"/api/v1/forge/sessions/{session.id}{suffix}")
 
     assert resp.status_code == 403
-    assert authz.actions == ["read"]
+    assert authz.actions == actions
 
 
 class TestSessionReadUnderCedar:
@@ -400,7 +407,7 @@ class TestSessionReadUnderCedar:
         assert resp.status_code == 200
 
     @pytest.mark.parametrize("principal", [FOREIGN_TENANT_PRINCIPAL, FOREIGN_TENANT_ADMIN])
-    @pytest.mark.parametrize("suffix", READ_ROUTES)
+    @pytest.mark.parametrize("suffix", [suffix for suffix, _ in READ_ROUTES])
     def test_other_tenant_is_denied(self, session_repo, cedar_authz, principal, suffix):
         session = _make_session()
         _seed_session(session_repo, session)

@@ -129,6 +129,9 @@ class TelegramIngressService:
         )
         grouped: dict[str, dict[str, set[str]]] = {}
         for connection in connections:
+            # Telegram ingress routes a chat to one person; a project's connection has none.
+            if connection.project_id:
+                continue
             try:
                 values = await self._credential_store.get_value(
                     "user",

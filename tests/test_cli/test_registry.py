@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
-from cli.registry import PluginRegistry
+import pytest
+
+from cli.registry import PluginLoadError, PluginRegistry
 from tests.test_cli.conftest import FakePlugin, StubService
 
 
@@ -81,7 +83,26 @@ class TestPluginRegistry:
 
         assert "fake" in registry.plugins
 
-    def test_discover_entry_points_handles_error(self, registry: PluginRegistry) -> None:
+    def test_discover_entry_points_raises_on_a_broken_plugin(
+        self, registry: PluginRegistry
+    ) -> None:
+        mock_ep = MagicMock()
+        mock_ep.name = "broken"
+        mock_ep.value = "broken.plugin:BrokenPlugin"
+        mock_ep.load.side_effect = ImportError("nope")
+
+        mock_eps = MagicMock()
+        mock_eps.select.return_value = [mock_ep]
+
+        with (
+            patch("cli.registry.importlib.metadata.entry_points", return_value=mock_eps),
+            pytest.raises(PluginLoadError, match=r"plugins\.enabled\.broken: false"),
+        ):
+            registry.discover_entry_points()
+
+    def test_discover_entry_points_skips_a_disabled_plugin_unloaded(
+        self, registry: PluginRegistry
+    ) -> None:
         mock_ep = MagicMock()
         mock_ep.name = "broken"
         mock_ep.load.side_effect = ImportError("nope")
@@ -90,9 +111,10 @@ class TestPluginRegistry:
         mock_eps.select.return_value = [mock_ep]
 
         with patch("cli.registry.importlib.metadata.entry_points", return_value=mock_eps):
-            registry.discover_entry_points()
+            registry.discover_entry_points(disabled=frozenset({"broken"}))
 
-        assert len(registry.plugins) == 0
+        mock_ep.load.assert_not_called()
+        assert registry.all_plugins == {}
 
     def test_discover_config(self, registry: PluginRegistry) -> None:
         config = [
@@ -101,15 +123,15 @@ class TestPluginRegistry:
         registry.discover_config(config)
         assert "configured" in registry.plugins
 
-    def test_discover_config_missing_adapter(self, registry: PluginRegistry) -> None:
+    def test_discover_config_missing_adapter_raises(self, registry: PluginRegistry) -> None:
         config = [{"name": "no_adapter"}]
-        registry.discover_config(config)
-        assert len(registry.plugins) == 0
+        with pytest.raises(PluginLoadError, match="no 'adapter' key"):
+            registry.discover_config(config)
 
-    def test_discover_config_bad_class(self, registry: PluginRegistry) -> None:
+    def test_discover_config_bad_class_raises(self, registry: PluginRegistry) -> None:
         config = [{"adapter": "nonexistent.module.Class"}]
-        registry.discover_config(config)
-        assert len(registry.plugins) == 0
+        with pytest.raises(PluginLoadError, match="nonexistent.module.Class"):
+            registry.discover_config(config)
 
     def test_enable_idempotent(self, registry: PluginRegistry) -> None:
         registry.register(FakePlugin(name="a"))

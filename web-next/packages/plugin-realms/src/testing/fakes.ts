@@ -141,7 +141,6 @@ export function fakeMimir(
   const mountAppears = options.mountAppears ?? true;
   const targets = options.targets ?? ['ymir'];
   const mounts: string[] = [];
-  const rules = new Set<string>();
   // Reads the realm pages never touch come from the Mímir mock; writes are logged here.
   const base = createMimirMockAdapter();
   const mimir = {
@@ -173,17 +172,6 @@ export function fakeMimir(
         // Mímir lists a deployed instance under its bare deployment name.
         if (mountAppears) mounts.push(request.name);
         return {};
-      },
-      async upsertRoutingRule(rule: { id: string; prefix: string; mountName: string }) {
-        log.calls.push(`upsertRoutingRule:${rule.id}->${rule.mountName}`);
-        rules.add(rule.id);
-        return rule;
-      },
-      async deleteRoutingRule(id: string) {
-        log.calls.push(`deleteRoutingRule:${id}`);
-        if (!rules.delete(id)) {
-          throw Object.assign(new Error(`Routing rule not found: ${id}`), { status: 404 });
-        }
       },
     },
     pages: {

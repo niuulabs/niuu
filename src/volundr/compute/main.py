@@ -159,8 +159,11 @@ def build_registered_hosts(
             runtime=kind,
             label=_runtime_label(runtime, str(plan.execution)),
             supports_slots=runtime.supports_slots,
+            slot_platforms=runtime.slot_platforms,
             requires_root_daemon=runtime.requires_root_daemon,
-            slot_limits=runtime.slot_limits,
+            slot_limits={
+                platform: runtime.slot_limits_for(platform) for platform in runtime.host_platforms
+            },
             forge_public_key=access.public_key,
             ssh_user=access.principal,
             platforms=runtime.host_platforms,
@@ -182,7 +185,7 @@ def build_registered_hosts(
 
     def uid_base_for(host):
         # The uid the host's own platform runs its slots at (a Mac's runtime may differ).
-        limits = offered(runtimes, host).for_platform(host.platform).slot_limits
+        limits = offered(runtimes, host).slot_limits_for(host.platform)
         return limits.uid_base if limits is not None else None
 
     def runtime_for(host):
@@ -221,17 +224,21 @@ def _runtime_label(runtime, execution: str) -> str:
     kind = runtime.session_runtime
     if kind is None:
         return execution
+    shared = HostPlatform.DARWIN in runtime.slot_platforms
     if kind is SessionRuntimeKind.HOST and runtime.host_platforms == {HostPlatform.DARWIN}:
-        return _MAC_HOST_LABEL
+        return _MAC_SHARED_LABEL if shared else _MAC_HOST_LABEL
     if kind is SessionRuntimeKind.HOST and len(runtime.host_platforms) > 1:
-        return _ANY_HOST_LABEL
+        return _ANY_SHARED_LABEL if shared else _ANY_HOST_LABEL
     return _RUNTIME_LABELS.get(kind, type(runtime).__name__)
 
 
 #: A Mac runs one session at a time, as a fresh macOS user.
 _MAC_HOST_LABEL = "Host · macOS (one session, its own user)"
+#: With shared slots a Mac runs several, each as its own user on the Mac's network.
+_MAC_SHARED_LABEL = "Host · macOS (sessions as their own users, sharing the network)"
 #: One execution for Linux machines and Macs alike (``PlatformHostRuntime``).
 _ANY_HOST_LABEL = "Host · Linux (Nix + rootless Podman) or macOS (one session)"
+_ANY_SHARED_LABEL = "Host · Linux (Nix + rootless Podman) or macOS (shared slots)"
 #: What the Add host form calls each runtime a host can run.
 _RUNTIME_LABELS = {
     SessionRuntimeKind.HOST: "Host · Nix + rootless Podman",

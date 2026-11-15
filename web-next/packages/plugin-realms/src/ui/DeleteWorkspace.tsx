@@ -17,9 +17,8 @@ export function DeleteWorkspace({ slug, realmName }: { slug: string; realmName: 
     <SectionCard title="Delete the workspace" description="Gone from the list, for good.">
       <div className="niuu:flex niuu:flex-col niuu:gap-2" data-testid="realm-teardown">
         <span className="niuu:text-xs niuu:text-text-muted">
-          Deleting the workspace removes its memory routing rule, trust and capabilities. The memory
-          instance stays (the platform cannot remove one yet); its pages are still under Memory ›
-          Library.
+          Deleting the workspace removes its trust and capabilities. The memory instance stays (the
+          platform cannot remove one yet); its pages are still under Memory › Library.
         </span>
         <div className="niuu:flex niuu:flex-wrap niuu:gap-2">
           {armed ? (

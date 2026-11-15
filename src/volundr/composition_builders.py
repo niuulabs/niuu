@@ -25,6 +25,7 @@ from niuu.mesh.platform_events import SigningBus
 from niuu.mesh.platform_identity import start_platform_signer
 from niuu.ports.credentials import CredentialRefreshLockPort
 from niuu.ports.http_auth import HttpAuthPort
+from niuu.ports.workload_identity import WorkloadTokenIssuer
 from niuu.utils import import_class, resolve_secret_kwargs
 from volundr.adapters.inbound.host_join_listener import (
     HostJoinListenerError,
@@ -55,6 +56,12 @@ from volundr.domain.ports import (
     SessionContributor,
 )
 from volundr.domain.presented_files import PresentedFileStore
+from volundr.domain.project_memory import (
+    MemoryMountDirectory,
+    ProjectMemoryRepository,
+    ProjectMemoryResolver,
+)
+from volundr.domain.services.client_credentials import ClientCredentialsMinter
 from volundr.domain.services.integration_registry import IntegrationRegistry
 from volundr.domain.services.mesh_identity import ForgeMeshCertificateSource
 from volundr.domain.services.oauth_clients import (
@@ -62,10 +69,18 @@ from volundr.domain.services.oauth_clients import (
     OAuthClient,
     OAuthClientRegistry,
 )
-from volundr.domain.services.oauth_token_refresh import OAuthTokenRefreshService
+from volundr.domain.services.oauth_token_refresh import (
+    DEFAULT_REQUEST_TIMEOUT_SECONDS,
+    OAuthTokenRefreshService,
+)
+from volundr.domain.services.session_voice import (
+    SessionVoiceCredentialService,
+    VoiceProviderBinding,
+)
 from volundr.domain.services.workflow_execution_credentials import (
     WorkflowExecutionCredentialService,
 )
+from volundr.ports.realtime_voice import RealtimeCredentialMinterPort
 from volundr.ports.workflow_execution_credentials import ExecutionCredentialProjectionPort
 
 logger = logging.getLogger(__name__)
@@ -78,6 +93,10 @@ class ForgeSessionCredentialsUnavailableError(RuntimeError):
     """Forge session credentials are enabled but no signing key is usable."""
 
 
+class SessionVoiceUnavailableError(RuntimeError):
+    """Session voice is enabled but Forge cannot mint credentials for it."""
+
+
 class MeshIdentityUnavailableError(RuntimeError):
     """Mesh identities are enabled but the session-credential signer cannot sign them."""
 
@@ -88,6 +107,33 @@ class HostPairingSignerUnavailableError(RuntimeError):
 
 #: Issuer and kid of pairing codes signed with ``compute.hosts.pairing_signing_key_file``.
 HOST_PAIRING_ISSUER = "niuu-forge-host-pairing"
+
+
+def create_project_memory(
+    settings: Settings, pool: Any, token_issuer: WorkloadTokenIssuer | None = None
+) -> tuple[ProjectMemoryRepository | None, ProjectMemoryResolver | None]:
+    """The store of the Mimir mounts projects own and the resolver launches use.
+
+    ``(None, None)`` when projects are off. An adapter that is not of its port's type, or a
+    directory that cannot be built, is fatal here, at startup, rather than at a launch.
+    """
+    if not settings.projects.enabled:
+        return None, None
+    config = settings.projects.memory
+    repository = import_class(config.repository_adapter)(pool=pool, **config.repository_kwargs)
+    if not isinstance(repository, ProjectMemoryRepository):
+        raise TypeError("projects.memory.repository_adapter must implement ProjectMemoryRepository")
+    directory_class = import_class(config.directory_adapter)
+    kwargs = dict(config.directory_kwargs)
+    if "token_issuer" in inspect.signature(directory_class).parameters:
+        # The directory asks the hosted Mimir with a workload token Forge mints.
+        kwargs["token_issuer"] = token_issuer
+    directory = directory_class(**kwargs)
+    if not isinstance(directory, MemoryMountDirectory):
+        raise TypeError("projects.memory.directory_adapter must implement MemoryMountDirectory")
+    return repository, ProjectMemoryResolver(
+        repository, directory, gateway_holds_limits=bool(settings.memory.gateway_url)
+    )
 
 
 def _create_forge_session_tokens(
@@ -138,6 +184,47 @@ def _create_forge_session_tokens(
         ttl_seconds=cfg.ttl_seconds,
         key_source=KEY_SOURCE_KEY_FILE,
     )
+
+
+def create_session_voice_service(
+    settings: Settings,
+    credential_store: CredentialStorePort,
+) -> SessionVoiceCredentialService | None:
+    """The minter of session voice credentials, or ``None`` when voice is disabled.
+
+    Disabled (``voice.enabled: false``) is the operator's decision to run without voice.
+    Enabled, every configured provider must build: the broker mints through Forge with
+    its session credential, so session credentials must be on, and each provider's
+    ``adapter`` must be a :class:`RealtimeCredentialMinterPort`. Anything else is fatal
+    at startup rather than a voice channel that fails on the first call.
+    """
+    cfg = settings.voice
+    if not cfg.enabled:
+        logger.info("Session voice: disabled (voice.enabled)")
+        return None
+    if not settings.forge_mcp.session_tokens.enabled:
+        raise SessionVoiceUnavailableError(
+            "voice.enabled is true but forge_mcp.session_tokens.enabled is false: the "
+            "session's broker mints its voice credentials through Forge with its session "
+            "credential. Enable forge_mcp.session_tokens, or set voice.enabled: false."
+        )
+    providers: dict[str, VoiceProviderBinding] = {}
+    for name, provider in cfg.providers.items():
+        minter = import_class(provider.adapter)(**provider.kwargs)
+        if not isinstance(minter, RealtimeCredentialMinterPort):
+            raise TypeError(
+                f"voice.providers.{name}.adapter {provider.adapter!r} is not a "
+                "RealtimeCredentialMinterPort; use "
+                "volundr.adapters.outbound.realtime_voice.OpenAIRealtimeMinter or "
+                "XaiRealtimeMinter, or a class implementing the port"
+            )
+        providers[name] = VoiceProviderBinding(
+            minter=minter,
+            credential_name=provider.credential_name,
+            credential_key=provider.credential_key,
+        )
+    logger.info("Session voice: minting credentials for %s", ", ".join(sorted(providers)))
+    return SessionVoiceCredentialService(credential_store, providers)
 
 
 def _create_mesh_certificate_issuer(
@@ -360,6 +447,46 @@ def require_presented_file_uploads(
     )
 
 
+def require_memory_credentials(settings: Settings, *, delivers_session_credential: bool) -> None:
+    """Refuse a memory gateway that no session broker could authenticate to.
+
+    A session's memory server calls the gateway with the session's own Forge credential
+    (scope ``forge:memory``), which the gateway checks with Forge. Sessions that hold no
+    credential would start a memory server that every call of fails, so the combination is
+    refused at startup. So is a Forge that verifies its callers but cannot tell which one is
+    the gateway (``memory.gateway_service_subject``): the retention sweep would be refused.
+    """
+    if not settings.memory.gateway_url:
+        return
+    if (
+        settings.identity.adapter not in ALLOW_ALL_IDENTITY_ADAPTERS
+        and not settings.memory.gateway_service_subject
+    ):
+        raise RuntimeError(
+            "memory.gateway_url is set, but memory.gateway_service_subject is empty: only "
+            "the memory gateway's own service credential may tell Forge when run and session "
+            "layers ended (POST /api/v1/forge/memory/ended), and Forge cannot tell which "
+            "caller that is. Set it to the gateway's workload subject (for example "
+            "system:serviceaccount:niuu:mimir), or clear memory.gateway_url to run sessions "
+            "without a memory server"
+        )
+    if not settings.forge_mcp.session_tokens.enabled:
+        raise RuntimeError(
+            "memory.gateway_url is set, but forge_mcp.session_tokens.enabled is false: the "
+            "memory server authenticates to the gateway with the session's Forge credential. "
+            "Enable forge_mcp.session_tokens, or clear memory.gateway_url to run sessions "
+            "without a memory server"
+        )
+    if delivers_session_credential:
+        return
+    raise RuntimeError(
+        "memory.gateway_url is set, but this pod manager does not hand session brokers "
+        "their Forge credential. For pod managers that do not deliver it themselves (Flux, "
+        "Kubernetes) set forge_mcp.session_tokens.projection_adapter, or clear "
+        "memory.gateway_url to run sessions without a memory server"
+    )
+
+
 def _create_workflow_execution_credential_service(
     settings: Settings,
     *,
@@ -500,6 +627,9 @@ def create_oauth_token_refresh_service(
         integration_registry=integration_registry,
         credential_store=credential_store,
         clients=oauth_clients,
+        client_credentials_minter=ClientCredentialsMinter(
+            request_timeout=DEFAULT_REQUEST_TIMEOUT_SECONDS
+        ),
     )
 
 
@@ -947,6 +1077,33 @@ def _create_contributors(
         )
         logger.info("Session contributor: model_gateway (auto-wired)")
 
+    # Every session runs Skuld's memory server when Forge is given the memory gateway.
+    if not _has_contributor("memory_server") and settings.memory.gateway_url:
+        from volundr.adapters.outbound.contributors.memory_server import (
+            MemoryServerContributor,
+        )
+
+        contributors.append(MemoryServerContributor(gateway_url=settings.memory.gateway_url))
+        logger.info("Session contributor: memory_server (auto-wired)")
+
+    # Every session runs Skuld's voice channel when the operator turns voice on. A missing
+    # default persona or persona catalog is fatal here, never a session without voice.
+    if not _has_contributor("session_voice") and settings.voice.enabled:
+        from volundr.adapters.outbound.contributors.session_voice import (
+            SessionVoiceContributor,
+        )
+
+        contributors.append(
+            SessionVoiceContributor(
+                default_persona=settings.voice.default_persona,
+                persona_provider=ports.get("persona_provider"),
+            )
+        )
+        logger.info(
+            "Session contributor: session_voice (auto-wired, default persona %s)",
+            settings.voice.default_persona,
+        )
+
     # Auto-wire LocalMountContributor from local_mounts config
     lm = settings.local_mounts
     local_mount_contributor = LocalMountContributor(
@@ -978,12 +1135,32 @@ def _create_contributors(
         contributors.append(WorkflowStepHostContributor())
         logger.info("Session contributor: workflow_step_host (auto-wired)")
 
+    configured_room = next((c for c in contributors if c.name == "team_room"), None)
+    if (
+        configured_room is not None
+        and settings.voice.enabled
+        and not getattr(configured_room, "voice_enabled", False)
+    ):
+        raise RuntimeError(
+            "voice.enabled is true but the configured team_room contributor was built "
+            "without voice_enabled: true, so a team's room host would not know its agents' "
+            "voices. Add voice_enabled: true to its kwargs, or remove it from "
+            "session_contributors to have it wired automatically"
+        )
+    if not _has_contributor("team_room"):
+        from volundr.adapters.outbound.contributors.team_room import TeamRoomContributor
+
+        contributors.append(TeamRoomContributor(voice_enabled=settings.voice.enabled))
+        logger.info("Session contributor: team_room (auto-wired)")
+
     contributors.append(PromptContributor())
 
     from volundr.adapters.outbound.contributors.session_mcp import SessionMCPContributor
 
     if not _has_contributor("session_mcp"):
-        contributors.append(SessionMCPContributor(**ports))
+        contributors.append(
+            SessionMCPContributor(memory_gateway_url=settings.memory.gateway_url, **ports)
+        )
         logger.info("Session contributor: session_mcp (auto-wired)")
 
     return contributors

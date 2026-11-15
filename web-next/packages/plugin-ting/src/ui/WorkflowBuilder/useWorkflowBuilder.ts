@@ -257,7 +257,6 @@ function makeResourceNodeFromMount(
     registryEntryId: mount.id,
     seedFromRegistryId: null,
     categories: [...(mount.categories ?? [])],
-    path: mount.path || null,
     url: mount.url || null,
     role: mount.role,
     adapter: mount.adapter ?? '',

@@ -34,12 +34,14 @@ const SECONDS_PER_MINUTE = 60;
 
 export interface HostSession {
   slot: number;
-  sessionId: string;
+  /** Null when the reader may not manage hosts: other people's session ids stay out. */
+  sessionId: string | null;
   state: HostSessionState;
 }
 
 export interface HostConnection {
   kind: string;
+  /** The host's address; empty when the reader may not manage hosts. */
   target: string;
   connected: boolean;
   since: string | null;
@@ -83,9 +85,11 @@ export interface ComputeHost {
   facts: HostFacts;
   suggestedSlots: SuggestedSlots | null;
   findings: string[];
-  hostKeyFingerprint: string;
+  /** Null when the reader may not manage hosts. */
+  hostKeyFingerprint: string | null;
   registeredAt: string;
-  registeredBy: string;
+  /** Null when the reader may not manage hosts. */
+  registeredBy: string | null;
   lastCheckedAt: string | null;
 }
 
@@ -141,6 +145,11 @@ export interface PairingCode {
 
 export interface ComputeHostsOverview {
   poolId: string;
+  /**
+   * Whether the reader may change hosts. When false the page is read-only and Forge has
+   * left the connectors, runtimes and pairing codes out of the answer.
+   */
+  canManage: boolean;
   hosts: ComputeHost[];
   summary: ComputeSummary;
   connectors: ComputeConnector[];
@@ -464,7 +473,15 @@ export function needsCapacity(host: Pick<ComputeHost, 'health' | 'slots'>): bool
 // ---------------------------------------------------------------------------
 
 export type HostAction =
-  'open' | 'check' | 'drain' | 'drain_remove' | 'cancel_drain' | 'resume' | 'reprepare' | 'remove';
+  | 'open'
+  | 'check'
+  | 'edit_slots'
+  | 'drain'
+  | 'drain_remove'
+  | 'cancel_drain'
+  | 'resume'
+  | 'reprepare'
+  | 'remove';
 
 /**
  * What an operator may do to a host in its state. Remove and Re-prepare are only offered on
@@ -478,17 +495,21 @@ export function hostActions(
     host.sessions.length === 0 ? ['drain', 'remove'] : ['drain', 'drain_remove'];
   const follow: HostAction[] = needsCapacity(host) || host.state === 'pending' ? ['open'] : [];
   const reprepare: HostAction[] = host.sessions.length === 0 ? ['reprepare'] : [];
+  // Forge changes a host's slots only while no allocation holds it: a host that is out of
+  // service (a drain has emptied it) or one prepared but not yet claimed. An in-service host
+  // is drained first.
+  const resize: HostAction[] = host.slots !== null ? ['edit_slots'] : [];
   switch (host.state) {
     case 'pending':
       return [...follow, 'remove'];
     case 'ready':
-      return [...follow, 'check', ...reprepare, ...leave];
+      return [...follow, 'check', ...resize, ...reprepare, ...leave];
     case 'in_service':
       return ['check', ...reprepare, 'drain', 'drain_remove'];
     case 'draining':
       return host.removeWhenEmpty ? ['check'] : ['check', 'cancel_drain', 'drain_remove'];
     case 'out_of_service':
-      return ['check', ...reprepare, 'resume', 'remove'];
+      return ['check', ...resize, ...reprepare, 'resume', 'remove'];
     case 'quarantined':
       return ['check', ...reprepare, ...leave];
     case 'unreachable':

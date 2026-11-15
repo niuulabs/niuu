@@ -181,12 +181,14 @@ def _build(
     event_log: InMemorySessionEventLog,
     *,
     max_entries: int = 2000,
+    authorization=None,
 ) -> tuple[TestClient, InMemorySessionRepository, PreviewCache, FastAPI]:
     repository = InMemorySessionRepository()
     session_service = SessionService(
         repository=repository,
         pod_manager=_RUNNING_POD_MANAGER,
         validate_repos=False,
+        authorization=authorization,
     )
     archive_service = SessionArchiveService(
         session_service,
@@ -868,3 +870,19 @@ def test_tool_result_preview_config_bounds() -> None:
         ToolResultPreviewConfig(default_edge=200)
     with pytest.raises(ValueError):
         ToolResultPreviewConfig(min_edge=0)
+
+
+def test_a_cached_preview_is_authorized_before_it_is_served(tmp_path) -> None:
+    """The cache used to answer before any session lookup, so anyone with a session id
+    and a tool_use_id got the image. It is authorized like the conversation now."""
+    deny = MagicMock()
+    deny.is_allowed = AsyncMock(return_value=False)
+    client, repository, cache, _ = _build(tmp_path, InMemorySessionEventLog(), authorization=deny)
+    session = asyncio.run(_stopped_session(repository))
+    jpeg = generate_preview_jpeg(base64.b64decode(_png_b64(64, 64)))
+    cache.put(str(session.id), "toolu_cached", jpeg)
+
+    response = client.get(f"/api/v1/forge/sessions/{session.id}/tool-result/toolu_cached/preview")
+
+    assert response.status_code == 401, response.text
+    assert response.content != jpeg

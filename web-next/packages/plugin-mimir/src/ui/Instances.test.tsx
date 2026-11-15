@@ -34,7 +34,7 @@ it('switches instance dashboards and scopes graph requests', async () => {
       { id: 'a', category: 'research' },
       { id: 'b', category: 'notes' },
     ],
-    edges: [{ source: 'a', target: 'b', type: 'wikilink' }],
+    edges: [{ source: 'a', target: 'b', relation: 'wikilink' }],
   });
   renderWithMimir(<InstanceInspection />, service);
   await screen.findByRole('button', { name: /second/ });

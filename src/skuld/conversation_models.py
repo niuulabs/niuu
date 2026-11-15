@@ -21,6 +21,11 @@ class ConversationTurn:
     participant_meta: dict | None = None
     thread_id: str | None = None
     visibility: str = "public"
+    # Who said a human turn: {"user_id", "display_name"}, stamped from the verified
+    # connection (see niuu.domain.message_author). None for assistant turns, for
+    # senders that are not a verified person, and for turns recorded before
+    # authorship existed.
+    author: dict | None = None
 
 
 CHRONICLE_SUMMARY_PROMPT = """\

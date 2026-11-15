@@ -234,6 +234,20 @@ class _AskArgs(_SendMessageArgs):
     deadline_s: float | None = Field(default=None, gt=0, allow_inf_nan=False)
 
 
+class _AskPersonArgs(_Args):
+    user_id: str = Field(min_length=1, max_length=200)
+    question: str = Field(min_length=1, max_length=MAX_BODY_CHARS)
+    request_id: str | None = Field(default=None, pattern=_REQUEST_ID_PATTERN)
+    deadline_s: float | None = Field(default=None, gt=0, allow_inf_nan=False)
+
+    @field_validator("question")
+    @classmethod
+    def _not_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("question must not be blank")
+        return value
+
+
 class _ReplyArgs(_Args):
     message_id: str = Field(min_length=1, max_length=200)
     content: str = Field(min_length=1)
@@ -268,7 +282,8 @@ class _RoomPostArgs(_Args):
 class _MeshSendArgs(_Args):
     peer: str = Field(min_length=1, max_length=200)
     content: str = Field(min_length=1)
-    expect_reply: bool = False
+    #: Unset takes the session's default (``ForgeMcpToolbox(mesh_replies_by_default=...)``).
+    expect_reply: bool | None = None
     request_id: str | None = Field(default=None, pattern=_REQUEST_ID_PATTERN)
 
     @field_validator("content")
@@ -388,6 +403,10 @@ class _DescribeSessionArgs(_Args):
             for name in DESCRIPTION_FIELDS
             if name in self.model_fields_set
         }
+
+
+class _FindPeopleArgs(_Args):
+    topic: str | None = Field(default=None, min_length=1)
 
 
 # --------------------------------------------------------------------------- schemas
@@ -756,6 +775,76 @@ _FEED_NOTIFY_DESCRIPTION += (
 )
 
 
+_FIND_PEOPLE_DESCRIPTION = (
+    "List the people on this session's project: each member's user_id, display name, role, "
+    "expertise (free text) and skills, and whether their role lets them answer gates "
+    "(`can_answer_gates`). Use it to judge who knows most about a topic. Niuu does not rank "
+    "them and the list is not filtered: the order is the order they joined, and you decide "
+    "who fits. `topic` is optional and only echoed back in the result so your own context "
+    "keeps what you were looking for; it does not filter or rank anything. To ask one of "
+    "them a question and wait for the answer, use `ask_person` with their `user_id`. A "
+    "session that is not attached to a project has no members and the call returns an error "
+    "saying so, which is not the same as nobody knowing."
+)
+
+_FIND_PEOPLE_SCHEMA = _object(
+    {
+        "topic": {
+            "type": ["string", "null"],
+            "minLength": 1,
+            "description": "What you want a person for. Echoed back only; never filters.",
+        }
+    }
+)
+
+
+_ASK_PERSON_DESCRIPTION = (
+    "Ask ONE named member of this session's project a question and wait for their answer. "
+    "Get the `user_id` from `find_people`, which lists the members with their role, expertise "
+    "and skills; you judge who knows most. The question is shown in this session's room "
+    "addressed to that person, so everyone in the room sees it, and they are notified. Use it "
+    "only when you cannot go on without that person's answer. The person asked may answer, and "
+    "so may anyone with the approver room role or above, in case they are away: the answer "
+    "says who gave it (`from`, `author`). The answer is the result of this call and is "
+    "consumed by it, so it is not also delivered to you as a message later. A person who is "
+    "not on the session's project is refused, and so is a session with no project. If the "
+    "wait ends first the result names it in `outcome` (`deadline`) with isError set, never an "
+    "empty answer; the question stays open, and an answer that comes later is delivered to you "
+    "at your next turn boundary. To keep waiting, call ask_person again with the SAME "
+    "request_id (it is returned in every result): the question is not posted or notified "
+    "twice. `deadline_s` is how long to wait; it defaults to, and may not exceed, "
+    "ask.wait_max_s (the longest an MCP tool call may run here), and a larger one is refused "
+    "with that named."
+)
+
+_ASK_PERSON_SCHEMA = _object(
+    {
+        "user_id": {
+            "type": "string",
+            "minLength": 1,
+            "description": "The member's `user_id` from find_people.",
+        },
+        "question": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": MAX_BODY_CHARS,
+            "description": "What you need to know, self-contained: the person may not have "
+            "followed the session.",
+        },
+        "request_id": {
+            **_REQUEST_ID_SCHEMA,
+            "description": "Reuse it to keep waiting for the same question.",
+        },
+        "deadline_s": {
+            "type": "number",
+            "exclusiveMinimum": 0,
+            "description": "Seconds to wait for the answer (default and ceiling: ask.wait_max_s).",
+        },
+    },
+    required=("user_id", "question"),
+)
+
+
 @dataclass(frozen=True)
 class ToolSpec:
     """One tool: its MCP metadata, argument model and required grant."""
@@ -995,6 +1084,18 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
         description=_DESCRIBE_SESSION_DESCRIPTION,
         input_schema=_DESCRIBE_SESSION_SCHEMA,
         args_model=_DescribeSessionArgs,
+    ),
+    ToolSpec(
+        name="find_people",
+        description=_FIND_PEOPLE_DESCRIPTION,
+        input_schema=_FIND_PEOPLE_SCHEMA,
+        args_model=_FindPeopleArgs,
+    ),
+    ToolSpec(
+        name="ask_person",
+        description=_ASK_PERSON_DESCRIPTION,
+        input_schema=_ASK_PERSON_SCHEMA,
+        args_model=_AskPersonArgs,
     ),
     ToolSpec(
         name="list_notifications",
@@ -1550,6 +1651,7 @@ TRANSCRIPT_ONLY_TOOLS = frozenset(
         "report_artifact",
         "request_secret",
         "ask",
+        "ask_person",
         WORKFLOW_STEP_CLOSE_TOOL,
         REPLY_TOOL,
         "room_post",
@@ -1701,6 +1803,12 @@ def _notification_summary(raw: dict[str, Any], *, max_body_chars: int) -> dict[s
     return summary
 
 
+def _person_summary(raw: dict[str, Any]) -> dict[str, Any]:
+    """One project member as the agent sees them: Forge's fields, unranked and unfiltered."""
+    keys = ("user_id", "display_name", "role", "expertise", "skills", "can_answer_gates")
+    return {key: raw.get(key) for key in keys}
+
+
 def _forge_error_text(tool: str, exc: ForgeApiError) -> str:
     if exc.status is None:
         return f"{tool} failed: Forge is unreachable ({exc.detail}). Try again later."
@@ -1754,6 +1862,22 @@ def _validation_text(tool: str, exc: ValidationError) -> str:
 # --------------------------------------------------------------------------- dispatch
 
 
+def _answerable_mesh_send(spec: ToolSpec) -> ToolSpec:
+    """``mesh_send`` as a session whose peers answer by default lists it."""
+    properties = dict(spec.input_schema["properties"])
+    properties["expect_reply"] = {
+        "type": "boolean",
+        "default": True,
+        "description": "Whether the peer may answer you. On by default: your peers talk back.",
+    }
+    return replace(
+        spec,
+        description=spec.description
+        + " Here a peer you message may answer you unless you set `expect_reply` to false.",
+        input_schema={**spec.input_schema, "properties": properties},
+    )
+
+
 class ForgeMcpToolbox:
     """Lists and runs the Forge MCP tools against a :class:`ForgeClient` and a host."""
 
@@ -1765,18 +1889,35 @@ class ForgeMcpToolbox:
         grants: Iterable[ForgeMcpGrant | str],
         limits: ForgeMcpLimits,
         notify_mode: ForgeMcpNotifyMode = ForgeMcpNotifyMode.TRANSCRIPT,
+        mesh_replies_by_default: bool = False,
+        team_room_id: str = "",
     ) -> None:
+        """``mesh_replies_by_default``: a message to a peer can be answered unless the agent
+        says otherwise, as between a team's agents, who talk to each other.
+
+        ``team_room_id``: the room of this session's team. What it says to a teammate (a
+        ``mesh_send`` and a ``reply`` over the mesh) is also said there, addressed to the
+        teammate, so the people in the room follow the team's conversation as it happens."""
         self._client = client
         self._host = host
         self._grants = frozenset(ForgeMcpGrant(grant) for grant in grants)
         self._limits = limits
-        self._tool_specs = _specs_for(notify_mode)
+        self._mesh_replies_by_default = mesh_replies_by_default
+        self._team_room_id = team_room_id
+        self._tool_specs = [
+            _answerable_mesh_send(spec)
+            if mesh_replies_by_default and spec.name == "mesh_send"
+            else spec
+            for spec in _specs_for(notify_mode)
+        ]
         self._specs = {spec.name: spec for spec in self._tool_specs}
         notify = self._notify if notify_mode is ForgeMcpNotifyMode.TRANSCRIPT else self._feed_notify
         self._handlers: dict[str, Callable[[Any], Awaitable[ToolResult]]] = {
             "environment": self._environment,
             "notify": notify,
             "describe_session": self._describe_session,
+            "find_people": self._find_people,
+            "ask_person": self._ask_person,
             "report_artifact": self._report_artifact,
             "request_secret": self._request_secret,
             WORKFLOW_STEP_CLOSE_TOOL: self._workflow_step_close,
@@ -1941,6 +2082,23 @@ class ForgeMcpToolbox:
                 },
             }
         )
+
+    async def _find_people(self, args: _FindPeopleArgs) -> ToolResult:
+        session_id = self._host.session_id
+        if not session_id:
+            return ToolResult.error(
+                "find_people lists the people on your own Forge session's project, and this "
+                "agent is not running in a Forge session."
+            )
+        people = await self._client.list_session_people(session_id)
+        payload: dict[str, Any] = {
+            "session_id": session_id,
+            "people": [_person_summary(person) for person in people if isinstance(person, dict)],
+            "ranked": False,
+        }
+        if args.topic is not None:
+            payload["topic"] = args.topic
+        return self._ok(payload)
 
     # -- reads
 
@@ -2196,8 +2354,13 @@ class ForgeMcpToolbox:
                     return ToolResult.error(
                         f"reply: message {args.message_id} names a room route but no room"
                     )
-                answer = await self._client.post_room_message(
-                    route.target, room_id=original.room_id, content=args.content
+                # Said in the room as room_post says it: straight to the host over the mesh
+                # when the mesh verifies senders, through Forge otherwise.
+                answer = await self._host.post_room_message(
+                    original.room_id,
+                    args.content,
+                    host_session_id=route.target,
+                    request_id=request_id,
                 )
             case ReplyKind.MESH:
                 try:
@@ -2214,6 +2377,14 @@ class ForgeMcpToolbox:
                     if unconfirmed is None:
                         raise
                     return unconfirmed
+                shown = await self._say_in_team_room(
+                    "reply",
+                    original.sender.name or original.sender.label(),
+                    args.content,
+                    request_id,
+                )
+                if shown is not None:
+                    return shown
         return self._ok(
             {
                 "message_id": args.message_id,
@@ -2240,7 +2411,11 @@ class ForgeMcpToolbox:
             answer = await self._host.send_mesh_message(
                 args.peer,
                 args.content,
-                expect_reply=args.expect_reply,
+                expect_reply=(
+                    self._mesh_replies_by_default
+                    if args.expect_reply is None
+                    else args.expect_reply
+                ),
                 request_id=request_id,
                 in_reply_to="",
             )
@@ -2249,7 +2424,42 @@ class ForgeMcpToolbox:
             if unconfirmed is None:
                 raise
             return unconfirmed
+        shown = await self._say_in_team_room(
+            "mesh_send", await self._peer_name(args.peer), args.content, request_id
+        )
+        if shown is not None:
+            return shown
         return self._ok({"peer": args.peer, "request_id": request_id, **answer})
+
+    async def _peer_name(self, peer_id: str) -> str:
+        """What a mesh peer is called, as it announced itself."""
+        if not self._team_room_id:
+            return peer_id
+        peers = await self._host.mesh_peers(role="", capability="", consumes="", produces="")
+        for peer in peers.get("peers", []):
+            if peer.get("peer_id") == peer_id:
+                return str(peer.get("name") or peer_id)
+        return peer_id
+
+    async def _say_in_team_room(
+        self, tool: str, recipient: str, content: str, request_id: str
+    ) -> ToolResult | None:
+        """Say what was just sent to a teammate in the team's room too, addressed to them.
+
+        The message itself was delivered; a room that cannot show it is said so to the agent
+        (an error naming both), never left out silently. None when there is no team room."""
+        if not self._team_room_id:
+            return None
+        try:
+            await self._host.post_room_message(
+                self._team_room_id, f"@{recipient} {content}", request_id=f"{request_id}-room"
+            )
+        except ForgeApiError as exc:
+            return ToolResult.error(
+                f"{tool}: delivered to {recipient}, but it could not be shown in the team's "
+                f"room {self._team_room_id}: {exc}. Do not send it again."
+            )
+        return None
 
     async def _mesh_ask(self, args: _MeshAskArgs) -> ToolResult:
         ceiling_s = self._host.ask_wait_max_s()
@@ -2264,6 +2474,25 @@ class ForgeMcpToolbox:
             record_cap_hit("ask.wait_max_s", message)
             return ToolResult.error(message)
         request_id = args.request_id or f"{_MCP_REQUEST_ID_PREFIX}{uuid.uuid4().hex}"
+        if self._team_room_id:
+            # Said in the room before it is asked, so the answers follow the question there.
+            if args.peers:
+                asked = " ".join([f"@{await self._peer_name(peer)}" for peer in args.peers])
+            elif args.producers_of.strip():
+                asked = f"@whoever produces {args.producers_of.strip()}"
+            else:
+                asked = "@everyone"
+            try:
+                await self._host.post_room_message(
+                    self._team_room_id,
+                    f"{asked} {args.content}",
+                    request_id=f"{request_id}-room",
+                )
+            except ForgeApiError as exc:
+                return ToolResult.error(
+                    f"mesh_ask: the question could not be shown in the team's room "
+                    f"{self._team_room_id}: {exc}. Nothing was asked."
+                )
         answer = await self._host.mesh_ask(
             args.content,
             producers_of=args.producers_of.strip(),
@@ -2307,20 +2536,31 @@ class ForgeMcpToolbox:
         )
         return self._ok({"request_id": request_id, **answer})
 
-    async def _ask(self, args: _AskArgs) -> ToolResult:
+    def _wait_deadline_s(self, tool: str, requested: float | None) -> float | ToolResult:
+        """How long a waiting tool may wait: the caller's ``deadline_s``, else the ceiling.
+
+        The ceiling is ``ask.wait_max_s``, the longest one MCP tool call may run; a request
+        above it is refused (and counted) before anything is sent, naming the knob.
+        """
         ceiling_s = self._host.ask_wait_max_s()
-        deadline_s = ceiling_s if args.deadline_s is None else args.deadline_s
-        if deadline_s > ceiling_s:
-            message = (
-                f"ask: deadline_s={deadline_s:g} is above ask.wait_max_s={ceiling_s:g}, "
-                "the longest one MCP tool call may run here (it must stay shorter than the "
-                "engine's tool timeout, or the engine would end the call before it could answer). "
-                "Nothing was "
-                f"sent. Pass deadline_s of at most {ceiling_s:g}; to keep waiting for a slow "
-                "recipient, call ask again with the same request_id."
-            )
-            record_cap_hit("ask.wait_max_s", message)
-            return ToolResult.error(message)
+        deadline_s = ceiling_s if requested is None else requested
+        if deadline_s <= ceiling_s:
+            return deadline_s
+        message = (
+            f"{tool}: deadline_s={deadline_s:g} is above ask.wait_max_s={ceiling_s:g}, "
+            "the longest one MCP tool call may run here (it must stay shorter than the "
+            "engine's tool timeout, or the engine would end the call before it could answer). "
+            "Nothing was "
+            f"sent. Pass deadline_s of at most {ceiling_s:g}; to keep waiting for a slow "
+            f"recipient, call {tool} again with the same request_id."
+        )
+        record_cap_hit("ask.wait_max_s", message)
+        return ToolResult.error(message)
+
+    async def _ask(self, args: _AskArgs) -> ToolResult:
+        deadline_s = self._wait_deadline_s("ask", args.deadline_s)
+        if isinstance(deadline_s, ToolResult):
+            return deadline_s
         peer = await self._mesh_peer(args)
         if peer is not None:
             return await self._ask_over_mesh(args, peer, deadline_s)
@@ -2364,6 +2604,51 @@ class ForgeMcpToolbox:
                 "session_id": session_id,
                 "request_id": request_id,
                 "message_id": message_id,
+                **ended,
+            }
+        )
+
+    async def _ask_person(self, args: _AskPersonArgs) -> ToolResult:
+        session_id = self._host.session_id
+        if not session_id:
+            return ToolResult.error(
+                "ask_person asks a member of your own Forge session's project, and this agent "
+                "is not running in a Forge session."
+            )
+        deadline_s = self._wait_deadline_s("ask_person", args.deadline_s)
+        if isinstance(deadline_s, ToolResult):
+            return deadline_s
+        request_id = args.request_id or f"{_MCP_REQUEST_ID_PREFIX}{uuid.uuid4().hex}"
+        try:
+            registered = await self._client.create_person_question(
+                session_id, user_id=args.user_id, question=args.question, request_id=request_id
+            )
+        except ForgeApiError as exc:
+            unconfirmed = _unconfirmed_send("ask_person", request_id, exc)
+            if unconfirmed is None:
+                raise
+            return unconfirmed
+        question_id = registered.get("question_id")
+        addressee = registered.get("addressee")
+        if not isinstance(question_id, str) or not isinstance(addressee, dict):
+            raise ForgeApiError("Forge's person question answer has no question_id/addressee")
+        ended = await self._host.ask_person_answer(
+            addressee=addressee,
+            question=args.question,
+            question_id=question_id,
+            request_id=request_id,
+            deadline_s=deadline_s,
+        )
+        return self._ask_result(
+            {
+                "session_id": session_id,
+                "request_id": request_id,
+                "question_id": question_id,
+                "asked": {
+                    "user_id": addressee.get("user_id"),
+                    "display_name": addressee.get("display_name"),
+                    "role": addressee.get("role"),
+                },
                 **ended,
             }
         )

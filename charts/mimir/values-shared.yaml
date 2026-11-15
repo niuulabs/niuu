@@ -1,7 +1,11 @@
 # values-shared.yaml — ODIN-wide shared Mímir instance.
 #
 # Install:
-#   helm install mimir-shared charts/mimir -f charts/mimir/values-shared.yaml -n valhalla
+#   helm install mimir-shared charts/mimir -f charts/mimir/values-shared.yaml -n valhalla \
+#     --set config.backend.mcpUrl=<gbrain /mcp url> \
+#     --set config.backend.apiTokenSecret.name=<secret holding the gbrain token>
+#
+# Mímir has no default store: the chart refuses to render without both values.
 
 config:
   name: "shared"

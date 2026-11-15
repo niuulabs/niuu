@@ -1287,7 +1287,6 @@ function ResourceInspector({
       bindingMode: 'registry',
       registryEntryId: mount.id,
       categories: [...(mount.categories ?? [])],
-      path: mount.path || null,
       url: mount.url || null,
       role: mount.role,
       adapter: mount.adapter ?? '',
@@ -1426,9 +1425,9 @@ function ResourceInspector({
                   {(selectedMount.categories ?? []).join(', ')}
                 </div>
               )}
-              {(selectedMount.path || selectedMount.url) && (
+              {selectedMount.url && (
                 <div className="niuu:text-[10px] niuu:font-mono niuu:text-text-faint">
-                  {selectedMount.path || selectedMount.url}
+                  {selectedMount.url}
                 </div>
               )}
             </div>

@@ -60,7 +60,11 @@ class CodexProjector:
         policy = PersonaPolicy.from_definition(persona.id, persona.definition)
         gaps: list[ProjectionGap] = []
         kwargs: dict[str, Any] = {
-            "system_prompt": compose_instructions(persona.definition, context.request_prompt)
+            "system_prompt": compose_instructions(
+                persona.definition,
+                context.request_prompt,
+                outcome_contract=context.outcome_contract,
+            )
         }
         self._permissions(policy, context, kwargs, gaps)
         return build_projection(self.engine, persona, context, kwargs, gaps)

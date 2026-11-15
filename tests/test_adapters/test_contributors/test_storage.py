@@ -1,10 +1,14 @@
 """Tests for StorageContributor."""
 
 from unittest.mock import AsyncMock
+from uuid import uuid4
 
 import pytest
 
-from volundr.adapters.outbound.contributors.storage import StorageContributor
+from volundr.adapters.outbound.contributors.storage import (
+    StorageContributor,
+    UnitWorkspaceMissingError,
+)
 from volundr.domain.models import GitSource, PVCRef, Session, Workspace, WorkspaceStatus
 from volundr.domain.ports import SessionContext
 
@@ -181,3 +185,52 @@ class TestStorageContributor:
 
         assert "affinity" not in result.values
         assert "podLabels" not in result.values
+
+
+class TestAUnitMemberWorksInItsUnitsWorkspace:
+    """A member is a container of its unit's pod, whose one workspace is the root's."""
+
+    @pytest.fixture
+    def member(self, session):
+        return session.model_copy(update={"hosted_by": uuid4(), "hosted_port": 8001})
+
+    async def test_a_member_mounts_its_units_workspace_and_its_own_home(self, member):
+        storage = AsyncMock()
+        storage.get_workspace_by_session.return_value = Workspace(
+            id=member.hosted_by,
+            session_id=member.hosted_by,
+            user_id="user-1",
+            tenant_id="tenant-1",
+            pvc_name="unit-ws",
+            status=WorkspaceStatus.ACTIVE,
+        )
+        storage.provision_user_storage.return_value = PVCRef(name="home-pvc")
+
+        result = await StorageContributor(storage=storage).contribute(
+            member, SessionContext(runtime_backend="kubernetes")
+        )
+
+        assert result.values["persistence"]["existingClaim"] == "unit-ws"
+        assert result.values["homeVolume"]["existingClaim"] == "home-pvc"
+        storage.get_workspace_by_session.assert_awaited_once_with(str(member.hosted_by))
+        storage.create_session_workspace.assert_not_awaited()
+
+    async def test_a_member_of_a_unit_with_no_workspace_is_refused(self, member):
+        storage = AsyncMock()
+        storage.get_workspace_by_session.return_value = None
+
+        with pytest.raises(UnitWorkspaceMissingError, match="start it again"):
+            await StorageContributor(storage=storage).contribute(
+                member, SessionContext(runtime_backend="kubernetes")
+            )
+
+        storage.create_session_workspace.assert_not_awaited()
+
+    async def test_stopping_a_member_leaves_its_units_workspace_alone(self, member):
+        storage = AsyncMock()
+
+        await StorageContributor(storage=storage).cleanup(
+            member, SessionContext(runtime_backend="kubernetes")
+        )
+
+        storage.archive_session_workspace.assert_not_awaited()

@@ -48,6 +48,23 @@ class ReadyProvider(Provider):
         return machine
 
 
+class FixedInventoryProvider(ReadyProvider):
+    """Claims from ``hosts`` registered machines, none of which can be made on demand."""
+
+    def __init__(self, hosts: int):
+        super().__init__()
+        self.hosts = hosts
+        self.claimable_calls = []
+
+    @property
+    def fixed_inventory(self):
+        return True
+
+    async def claimable(self, profile, selector):
+        self.claimable_calls.append((profile, selector))
+        return max(self.hosts - len(self.machines), 0)
+
+
 @pytest.fixture
 def setup():
     repository, provider, store = Repository(), ReadyProvider(), MemoryCredentialStore()
@@ -74,6 +91,33 @@ def setup():
     )
     session = Session(id=uuid4(), name="VM session", owner_id="owner", tenant_id="tenant")
     return manager, service, repository, provider, runtime, store, session
+
+
+async def test_a_pool_of_registered_hosts_has_room_for_every_host_that_can_be_claimed():
+    repository, provider = Repository(), FixedInventoryProvider(12)
+    service = ComputeLeaseService(
+        repository, provider, pool_id="pool", max_machines=None, bootstrap=MachineBootstrap()
+    )
+    manager = VmPodManager(profile="small", pool_id="pool")
+    manager.configure_compute(
+        service, repository, AsyncMock(), MachineBootstrap(), pool_id="pool", max_machines=None
+    )
+
+    capacity = await manager.capacity()
+    assert (capacity.limit, capacity.available) == (12, 12)
+    assert provider.claimable_calls[-1][0] == "small"
+
+    provider.hosts = 0
+    capacity = await manager.capacity()
+    assert capacity.available == 0
+    assert capacity.remedy == "register or resume a host"
+
+
+def test_a_vm_pod_manager_refuses_a_machine_maximum_below_one():
+    with pytest.raises(ValueError, match="positive max_machines"):
+        VmPodManager(profile="small", pool_id="pool", max_machines=0)
+    with pytest.raises(ValueError, match="profile and pool_id"):
+        VmPodManager(profile="", pool_id="pool")
 
 
 async def test_start_proxy_stop_preserves_before_disposal_and_resumes(setup):
@@ -2085,6 +2129,43 @@ async def test_a_cold_start_without_a_selector_reserves_with_the_empty_one(setup
     await manager.start(session, SPEC)
 
     assert _ledger(repository)[1].host_selector == HostSelector()
+
+
+@pytest.mark.parametrize(
+    ("mesh", "expected"),
+    [
+        # nng with no discovery: a lone session could find no peer, so it gets no mesh.
+        ({"enabled": True}, {}),
+        (
+            {"enabled": True, "attestation": {"required": False}},
+            {"SKULD__MESH__ATTESTATION__REQUIRED": "false"},
+        ),
+        # Discovery the operator configured, or a transport with its own, is kept.
+        (
+            {"enabled": True, "discovery_adapters": [{"adapter": "static", "peers": []}]},
+            {
+                "SKULD__MESH__ENABLED": "true",
+                "SKULD__MESH__DISCOVERY_ADAPTERS": '[{"adapter": "static", "peers": []}]',
+            },
+        ),
+        (
+            {"enabled": True, "transport": "nats"},
+            {"SKULD__MESH__ENABLED": "true", "SKULD__MESH__TRANSPORT": "nats"},
+        ),
+    ],
+)
+async def test_a_session_alone_in_its_machine_joins_no_nng_mesh_without_discovery(
+    mesh, expected
+) -> None:
+    manager = VmPodManager(profile="p", pool_id="pool", max_machines=1, mesh=mesh)
+    spec = SessionSpec(values={"env": {}}, pod_spec=PodSpecAdditions())
+
+    with pytest.raises(RuntimeError):
+        await manager.start(
+            Session(id=uuid4(), name="s", model="m", owner_id="o", tenant_id="t"), spec
+        )
+
+    assert spec.values["env"] == expected
 
 
 async def test_the_mesh_setting_is_put_in_every_sessions_env_before_a_runtime_sees_it() -> None:

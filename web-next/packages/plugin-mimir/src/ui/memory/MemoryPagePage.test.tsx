@@ -98,23 +98,9 @@ describe('MemoryPagePage', () => {
     );
   });
 
-  it('lists what we believe with the proof behind each fact', async () => {
+  it('lists what we believe', async () => {
     renderWithMimir(<MemoryPagePage />);
     const zone = await screen.findByTestId('memory-facts-zone');
-    expect(zone).toHaveTextContent('Hexagonal architecture with ports and adapters');
-    await waitFor(() => expect(within(zone).getAllByTestId('proof-pill')).toHaveLength(3));
-    expect(zone).toHaveTextContent('newest proof 2026-04-18');
-  });
-
-  it('leaves the pill off a fact with no evidence row', async () => {
-    const svc = createMimirMockAdapter();
-    const service: IMimirService = {
-      ...svc,
-      pages: { ...svc.pages, getEvidence: async () => [] },
-    };
-    renderWithMimir(<MemoryPagePage />, service);
-    const zone = await screen.findByTestId('memory-facts-zone');
-    await waitFor(() => expect(within(zone).queryAllByTestId('proof-pill')).toHaveLength(0));
     expect(zone).toHaveTextContent('Hexagonal architecture with ports and adapters');
   });
 
@@ -145,13 +131,9 @@ describe('MemoryPagePage', () => {
     );
   });
 
-  it('draws the neighbourhood and links to the full graph', async () => {
+  it('links to the full graph focused on this page', async () => {
     renderWithMimir(<MemoryPagePage />);
-    const around = await screen.findByTestId('memory-related');
-    await waitFor(() =>
-      expect(within(around).getByRole('group', { name: /pages around/ })).toBeInTheDocument(),
-    );
-    expect(within(around).getByRole('button', { name: 'open overview' })).toBeInTheDocument();
+    const around = await screen.findByTestId('memory-around');
     const graphLink = within(around).getByRole('link', { name: /open the graph/ });
     expect(graphLink).toHaveAttribute('href', '/mimir');
     expect(graphLink).toHaveAttribute(
@@ -160,43 +142,12 @@ describe('MemoryPagePage', () => {
     );
   });
 
-  it('opens a page from the neighbourhood ring', async () => {
-    renderWithMimir(<MemoryPagePage />);
-    const around = await screen.findByTestId('memory-related');
-    const node = await within(around).findByRole('button', { name: 'open overview' });
-    fireEvent.click(node);
-    expect(mockNavigate).toHaveBeenCalledWith({
-      to: '/mimir/read',
-      search: { path: '/api/overview', mount: 'shared' },
-    });
-  });
-
-  it('says nothing links here when the graph is empty', async () => {
-    const svc = createMimirMockAdapter();
-    const service: IMimirService = {
-      ...svc,
-      pages: { ...svc.pages, getRelated: async () => [] },
-    };
-    renderWithMimir(<MemoryPagePage />, service);
-    expect(await screen.findByText('Nothing links here yet.')).toBeInTheDocument();
-  });
-
   it('shows the evidence trail newest first, marked append-only', async () => {
     renderWithMimir(<MemoryPagePage />);
     const evidence = await screen.findByTestId('memory-evidence');
     expect(evidence).toHaveTextContent('append-only · never edited');
     expect(evidence).toHaveTextContent('2026-04-18');
     expect(evidence).toHaveTextContent('Source: src-001');
-  });
-
-  it('filters the trail down to what we used to believe', async () => {
-    renderWithMimir(<MemoryPagePage />);
-    const evidence = await screen.findByTestId('memory-evidence');
-    fireEvent.click(within(evidence).getByTestId('memory-revisions-filter'));
-    expect(evidence).toHaveTextContent('belief revised');
-    expect(evidence).not.toHaveTextContent('Confirmed by the hexagonal ADR');
-    fireEvent.click(within(evidence).getByTestId('memory-revisions-filter'));
-    expect(evidence).toHaveTextContent('Confirmed by the hexagonal ADR');
   });
 
   it('lists the sources the page was compiled from', async () => {
@@ -242,7 +193,6 @@ describe('MemoryPagePage', () => {
     expect(screen.getByTestId('memory-evidence')).toHaveTextContent(
       'No evidence has been recorded for this page yet.',
     );
-    expect(screen.queryByTestId('memory-revisions-filter')).not.toBeInTheDocument();
   });
 
   it('drops the mount from the breadcrumb when the link carries none', async () => {
@@ -260,19 +210,5 @@ describe('MemoryPagePage', () => {
     renderWithMimir(<MemoryPagePage />, service);
     const evidence = await screen.findByTestId('memory-evidence');
     await waitFor(() => expect(evidence).not.toHaveTextContent('compiled from'));
-  });
-
-  it('revises a fact from the page', async () => {
-    renderWithMimir(<MemoryPagePage />);
-    const zone = await screen.findByTestId('memory-facts-zone');
-    fireEvent.click(within(zone).getByTestId('memory-revise-1'));
-    fireEvent.change(
-      screen.getByLabelText(
-        'Revise: Six cognitive regions (Sköll, Hati, Sága, Móði, Váli, Víðarr)',
-      ),
-      { target: { value: 'Six regions, one of them meta-cognitive' } },
-    );
-    fireEvent.click(screen.getByRole('button', { name: 'Save revision' }));
-    await waitFor(() => expect(zone).toHaveTextContent('Six regions, one of them meta-cognitive'));
   });
 });

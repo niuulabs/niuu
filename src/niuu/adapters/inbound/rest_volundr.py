@@ -181,6 +181,42 @@ _WS_FORBIDDEN = 4403
 _WS_REASON_CHARS = 120
 
 
+#: Read-only collections under a project's team integrations.
+_TEAM_INTEGRATION_LISTS = frozenset({"catalog", "routes", "usage"})
+
+
+def _team_integration_operation(method: str, pieces: list[str]) -> bool:
+    """Whether ``method`` on ``/projects/{id}/<pieces>`` is a team-integrations route."""
+    if not pieces or pieces[0] != "integrations":
+        return False
+    match pieces[1:]:
+        case []:
+            return method in ("GET", "POST")
+        case [name] if name in _TEAM_INTEGRATION_LISTS:
+            return method == "GET"
+        case [connection_id] if connection_id:
+            return method in ("PATCH", "DELETE")
+        case ["routes", event] if event:
+            return method in ("PUT", "DELETE")
+    return False
+
+
+def _project_memory_operation(method: str, pieces: list[str]) -> bool:
+    """Whether ``method`` on ``/projects/{id}/<pieces>`` is a project memory route: the
+    memories it attaches (``memory``, ``memory/<name>``) and the notice that one of its
+    memory proposals was decided (``memory/proposals/<id>/decided``)."""
+    if not pieces or pieces[0] != "memory":
+        return False
+    match pieces[1:]:
+        case []:
+            return method in ("GET", "POST")
+        case ["proposals", proposal_id, "decided"] if proposal_id:
+            return method == "POST"
+        case [name] if name:
+            return method in ("PATCH", "DELETE")
+    return False
+
+
 def _is_session_principal(principal: Principal) -> bool:
     return principal.token_use == FORGE_SESSION_TOKEN_USE
 
@@ -390,6 +426,28 @@ def _ensure_remote_success(response: httpx.Response) -> None:
     raise HTTPException(status_code=response.status_code, detail=_upstream_detail(response)[:1000])
 
 
+def _merge_layer_ends(answers: list[dict[str, Any]]) -> dict[str, Any]:
+    """One answer from what each Forge node said about a session or a workflow run.
+
+    A node that has none of it says ``gone``; the run's sessions may sit on several nodes. It
+    is ``active`` if any node has it active, else ``ended`` at the latest end any node
+    reports, else ``gone``: the memory gateway deletes a layer on ``gone`` and on an end past
+    its retention, so a node that does not know something must never outvote one that does.
+    """
+    if any(answer.get("state") == "active" for answer in answers):
+        return {"state": "active", "ended_at": None}
+    ended = [answer for answer in answers if answer.get("state") == "ended"]
+    if not ended:
+        return {"state": "gone", "ended_at": None}
+    return {
+        "state": "ended",
+        "ended_at": max(
+            (answer["ended_at"] for answer in ended),
+            key=lambda value: datetime.fromisoformat(value),
+        ),
+    }
+
+
 def _ensure_history_success(response: httpx.Response) -> None:
     """Preserve machine-readable history recovery through the aggregate facade."""
     if response.status_code < 400:
@@ -421,6 +479,7 @@ def _event_visible(name: str, data: Any, principal: Principal) -> bool:
         tenant_id=principal.tenant_id,
         owner_id=data.get("owner_id"),
         notification_tenant_id=data.get("tenant_id"),
+        recipient_copy=data.get("copy_of") is not None,
     )
 
 
@@ -907,7 +966,18 @@ async def _find_runtime_owner(
     local_scope: bool = False,
     extra_headers: dict[str, str] | None = None,
     candidates: list[RegisteredInstance] | None = None,
+    refusal_locates: bool = False,
 ) -> tuple[RegisteredInstance, dict[str, Any]]:
+    """The node that holds the resource at *path*, and its answer.
+
+    Only the node that holds a resource can refuse the caller it (403); every other
+    node has no such resource (404). A refusal is therefore never "not here": with no
+    node serving the resource, the caller gets that node's 403, not a 404. With
+    *refusal_locates*, the refusing node is returned instead (with an empty payload),
+    for a route the node authorizes more widely than *path*: the session's people
+    read its conversation on "read_room" although the node refuses them the session.
+    """
+
     async def probe(
         instance: RegisteredInstance,
     ) -> tuple[RegisteredInstance, httpx.Response | httpx.RequestError | HTTPException]:
@@ -965,6 +1035,8 @@ async def _find_runtime_owner(
                     )
                 },
             )
+        if refusal_locates and response.status_code == status.HTTP_403_FORBIDDEN:
+            return instance, {}
         if response.status_code != status.HTTP_404_NOT_FOUND:
             _ensure_remote_success(response)
             payload = response.json()
@@ -975,6 +1047,7 @@ async def _find_runtime_owner(
         instances = [instance for instance in instances if instance is not local[0]]
     tasks = [asyncio.create_task(probe(instance)) for instance in instances]
     refused: HTTPException | None = None
+    holder_refused: tuple[RegisteredInstance, httpx.Response] | None = None
     unanswered: list[SourceFailure] = []
     try:
         # Ownership is unknown until a visible instance returns the resource.
@@ -985,11 +1058,14 @@ async def _find_runtime_owner(
             except HTTPException as exc:
                 refused = exc  # a policy refusal (a session credential stays on its node)
                 continue
-            if isinstance(response, httpx.Response) and response.status_code in {
-                status.HTTP_403_FORBIDDEN,
-                status.HTTP_404_NOT_FOUND,
-            }:
-                continue
+            if isinstance(response, httpx.Response):
+                if response.status_code == status.HTTP_403_FORBIDDEN:
+                    # It holds the resource and refused it. A node that serves it still
+                    # wins, so this is only the answer once no node has.
+                    holder_refused = holder_refused or (instance, response)
+                    continue
+                if response.status_code == status.HTTP_404_NOT_FOUND:
+                    continue
             if not isinstance(response, httpx.Response) or response.is_error:
                 unanswered.append(_unanswered(instance, response))
                 continue
@@ -998,8 +1074,13 @@ async def _find_runtime_owner(
                 return instance, _with_instance(
                     payload, instance, rebase_chat_endpoint=rebase_chat_endpoint
                 )
+        if holder_refused is not None and refusal_locates:
+            return holder_refused[0], {}
         if refused is not None:
             raise refused
+        if holder_refused is not None:
+            # The node that holds it said no; a 404 would tell the caller it is gone.
+            _ensure_remote_success(holder_refused[1])
         if unanswered:
             # A partial search cannot establish that the resource is absent: a client may
             # read 404 as "gone", and a sleeping node must never make a live session
@@ -1026,7 +1107,15 @@ async def _find_session_owner(
     embedded_app: ASGIApp | None = None,
     extra_headers: dict[str, str] | None = None,
     candidates: list[RegisteredInstance] | None = None,
+    transcript: bool = False,
 ) -> tuple[RegisteredInstance, dict[str, Any]]:
+    """The node that holds a session, found through the session read ("read").
+
+    *transcript*: the route is one the node also opens to the people in the session's
+    room ("read_room": its conversation, tool results, attachments and read state), so
+    a node that refuses the caller the session itself is still where it goes; that
+    node decides. The payload is then empty.
+    """
     return await _find_runtime_owner(
         service,
         principal,
@@ -1037,6 +1126,7 @@ async def _find_session_owner(
         local_scope=_local_session_scope(request),
         extra_headers=extra_headers,
         candidates=candidates,
+        refusal_locates=transcript,
     )
 
 
@@ -2057,6 +2147,9 @@ def create_volundr_router(
     @router.patch("/projects/{project_id}")
     @router.get("/projects/{project_id}/{operation:path}")
     @router.post("/projects/{project_id}/{operation:path}")
+    @router.put("/projects/{project_id}/{operation:path}")
+    @router.patch("/projects/{project_id}/{operation:path}")
+    @router.delete("/projects/{project_id}/{operation:path}")
     async def project_operation(
         request: Request,
         project_id: UUID,
@@ -2070,6 +2163,10 @@ def create_volundr_router(
             ("GET", "receipts"),
             ("POST", "receipts"),
             ("POST", "export"),
+            ("GET", "members"),
+            ("POST", "members"),
+            ("GET", "member-candidates"),
+            ("GET", "role"),
         }
         pieces = operation.split("/")
         is_ack = len(pieces) == 3 and pieces[0] == "receipts" and pieces[2] == "ack"
@@ -2078,7 +2175,16 @@ def create_volundr_router(
                 UUID(pieces[1])
             except ValueError as exc:
                 raise HTTPException(422, "Invalid receipt ID") from exc
-        if (request.method, operation) not in allowed and not (request.method == "POST" and is_ack):
+        # One member: change their role or profile, or remove them.
+        is_member = len(pieces) == 2 and pieces[0] == "members" and bool(pieces[1])
+        known = (
+            (request.method, operation) in allowed
+            or (request.method == "POST" and is_ack)
+            or (request.method in ("PATCH", "DELETE") and is_member)
+            or _team_integration_operation(request.method, pieces)
+            or _project_memory_operation(request.method, pieces)
+        )
+        if not known:
             raise HTTPException(404, "Unknown project operation")
         instance = await _resolve_target_instance(
             service,
@@ -2102,6 +2208,8 @@ def create_volundr_router(
             embedded_app=embedded_forge_app,
         )
         _ensure_remote_success(response)
+        if response.status_code == status.HTTP_204_NO_CONTENT:
+            return Response(status_code=status.HTTP_204_NO_CONTENT)
         payload = response.json()
         return _with_instance(payload, instance) if not operation else payload
 
@@ -2394,12 +2502,39 @@ def create_volundr_router(
         )
         return payload
 
-    @router.post("/sessions", status_code=status.HTTP_201_CREATED)
-    async def create_session(
+    @router.get("/sessions/{session_id}/room")
+    async def get_session_room(
         request: Request,
-        body: dict[str, Any] = Body(default_factory=dict),
+        session_id: str = Path(description="Volundr session identifier"),
         principal: Principal = Depends(extract_principal),
     ) -> dict[str, Any]:
+        """The room view of a session, for a person who shares it without owning it.
+
+        A project member or invitee is refused ``GET /sessions/{id}`` by the node that
+        holds the session, so the owner lookup behind it never finds the node. This
+        looks for the session through its room view, which the node grants to every
+        participant (and to the owner), and names the node that answers.
+        """
+        _, payload = await _find_runtime_owner(
+            service,
+            principal,
+            request,
+            f"/sessions/{session_id}/room",
+            f"Session not found: {session_id}",
+            embedded_app=embedded_forge_app,
+            local_scope=_local_session_scope(request),
+        )
+        return payload
+
+    async def _place_launch(
+        request: Request, principal: Principal, body: dict[str, Any]
+    ) -> tuple[RegisteredInstance, dict[str, Any]]:
+        """The Forge a launch request targets, and the body with its host selector applied.
+
+        The target comes from ``instance_id`` or ``target_tags``/``target_match`` in the
+        body, as for a session; tags that the Forge's own tags do not satisfy become the
+        ``workload_config.host_selector`` the Forge must still satisfy with a host.
+        """
         requested_instance_id = body.get("instance_id") or body.get("instanceId")
         target_tags = body.get("target_tags") or body.get("targetTags")
         target_match = body.get("target_match") or body.get("targetMatch") or "all"
@@ -2418,6 +2553,15 @@ def create_volundr_router(
         host_selector = _host_selector_for(instance, tags, str(target_match))
         if host_selector is not None:
             body = _with_host_selector(body, host_selector)
+        return instance, body
+
+    @router.post("/sessions", status_code=status.HTTP_201_CREATED)
+    async def create_session(
+        request: Request,
+        body: dict[str, Any] = Body(default_factory=dict),
+        principal: Principal = Depends(extract_principal),
+    ) -> dict[str, Any]:
+        instance, body = await _place_launch(request, principal, body)
         await _sync_persona_to_instance(
             instance,
             request,
@@ -2466,6 +2610,84 @@ def create_volundr_router(
                 detail="Unexpected response from target Volundr instance",
             )
         return _with_instance(payload, instance)
+
+    @router.post("/teams", status_code=status.HTTP_201_CREATED)
+    async def create_team(
+        request: Request,
+        body: dict[str, Any] = Body(default_factory=dict),
+        principal: Principal = Depends(extract_principal),
+    ) -> dict[str, Any]:
+        """Start a team on the Forge the request targets (``instance_id`` or ``target_tags``).
+
+        A team is one unit on one Forge, so the root and every member are created there:
+        each member's persona is materialised on the target first, and the root and every
+        member come back marked with the instance that holds them.
+        """
+        instance, body = await _place_launch(request, principal, body)
+        members = body.get("members")
+        for member in members if isinstance(members, list) else []:
+            if not isinstance(member, dict):
+                continue
+            await _sync_persona_to_instance(
+                instance,
+                request,
+                principal,
+                member.get("persona_name") or member.get("personaName"),
+                embedded_app=embedded_forge_app,
+            )
+        response = await _request_remote(
+            instance,
+            request,
+            method="POST",
+            path="/teams",
+            json_body=_strip_instance_hints(body),
+            embedded_app=embedded_forge_app,
+        )
+        _ensure_remote_success(response)
+        payload = _remote_json(response)
+        root = payload.get("session") if isinstance(payload, dict) else None
+        started = payload.get("members") if isinstance(payload, dict) else None
+        if (
+            not isinstance(root, dict)
+            or not isinstance(started, list)
+            or not all(isinstance(member, dict) for member in started)
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail="Unexpected team response from target Volundr instance",
+            )
+        return {
+            **payload,
+            "session": _with_instance(root, instance),
+            "members": [_with_instance(member, instance) for member in started],
+        }
+
+    @router.get("/participant-candidates")
+    async def participant_candidates(
+        request: Request,
+        q: str = Query(""),
+        instance_id: str | None = Query(default=None),
+        principal: Principal = Depends(extract_principal),
+    ) -> list[Any]:
+        """People of the caller's org who could be invited, before any session exists.
+
+        Answered by the targeted Forge (the default one without ``instance_id``): it holds
+        the org's people, so a team can invite them before it is started.
+        """
+        instance = await _resolve_target_instance(service, principal, instance_id)
+        response = await _request_remote(
+            instance,
+            request,
+            method="GET",
+            path="/participant-candidates",
+            params=[("q", q)],
+            embedded_app=embedded_forge_app,
+        )
+        _ensure_remote_success(response)
+        payload = _remote_json(response)
+        if not isinstance(payload, list):
+            raise HTTPException(502, "Unexpected Forge response from /participant-candidates")
+        return payload
 
     @router.post("/repos/prs", status_code=status.HTTP_201_CREATED)
     async def create_pull_request(
@@ -2844,6 +3066,63 @@ def create_volundr_router(
         _ensure_remote_success(response)
         return response.json()
 
+    async def _team_oauth_on_this_node(
+        request: Request, method: str, path: str, headers: dict[str, str]
+    ) -> Response:
+        """Forward a team app install to this node's own Forge, where its state lives.
+
+        The install starts and returns on the same Forge (the browser's callback carries
+        no identity to route by), so a node without an embedded Forge refuses it.
+        """
+        if embedded_forge_app is None:
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=(
+                    "Team installs run on the Forge that holds the project; this node has "
+                    "no Forge of its own, so install from the project's home node"
+                ),
+            )
+        transport = httpx.ASGITransport(app=embedded_forge_app)
+        # A fixed in-process address; the browser's scheme and Host travel along so Forge
+        # builds the provider's redirect back to the browser's origin, not to this hop.
+        base = (
+            "https://embedded.local" if request.url.scheme == "https" else "http://embedded.local"
+        )
+        async with httpx.AsyncClient(transport=transport, base_url=base) as c:
+            upstream = await c.request(
+                method,
+                f"/api/v1/forge{path}",
+                params=_query_params(request),
+                content=await request.body(),
+                headers={
+                    **headers,
+                    "host": request.headers.get("host", "embedded.local"),
+                    "content-type": request.headers.get("content-type", ""),
+                },
+            )
+        return Response(
+            content=upstream.content,
+            status_code=upstream.status_code,
+            media_type=upstream.headers.get("content-type"),
+        )
+
+    @router.post("/integrations/oauth/authorize-team")
+    async def authorize_team_install(
+        request: Request, principal: Principal = Depends(extract_principal)
+    ) -> Response:
+        """Start a project team's app install (project owners only, checked by Forge).
+
+        The integration travels in the body, so the forwarded path is a constant.
+        """
+        return await _team_oauth_on_this_node(
+            request, "POST", "/integrations/oauth/authorize-team", _forward_local_headers(request)
+        )
+
+    @router.get("/integrations/oauth/callback")
+    async def team_install_callback(request: Request) -> Response:
+        """The provider's redirect back from a team install; Forge checks the state."""
+        return await _team_oauth_on_this_node(request, "GET", "/integrations/oauth/callback", {})
+
     @router.get("/session-runtimes")
     async def get_session_runtimes(
         request: Request,
@@ -2870,10 +3149,12 @@ def create_volundr_router(
         method: str,
         path: str,
     ) -> Response:
-        """Pass one compute-host admin call to one Forge, answer and status untouched.
+        """Pass one compute-host call to one Forge, answer and status untouched.
 
-        The Forge owns the authorization (``volundr:admin``) and the answers, 4xx bodies
-        included, so the console shows the Forge's own reason.
+        Which Forge the caller may address is the node's visibility
+        (``_resolve_target_instance``); what they may do there is the Forge's own: the
+        list is open to anyone who reaches it, every change needs ``volundr:admin``, and
+        4xx bodies pass through so the console shows the Forge's own reason.
         """
         instance = await _resolve_target_instance(service, principal, instance_id)
         body = await request.body()
@@ -2905,7 +3186,11 @@ def create_volundr_router(
         instance_id: str | None = Query(default=None),
         principal: Principal = Depends(extract_principal),
     ) -> Response:
-        """The Forge's registered hosts, pool summary, connectors, runtimes and pairing codes."""
+        """The Forge's registered hosts and pool summary, for anyone who can see the node.
+
+        A caller who may manage hosts also gets the connectors, runtimes and pairing codes;
+        ``can_manage`` says which view this is.
+        """
         return await _proxy_compute_hosts(
             request, principal, instance_id, method="GET", path="/compute/hosts"
         )
@@ -4146,6 +4431,209 @@ def create_volundr_router(
             raise HTTPException(502, "Unexpected Forge status response")
         return {**payload, "host": instance.id}
 
+    async def _session_member_call(
+        request: Request,
+        session_id: UUID,
+        principal: Principal,
+        *,
+        method: str,
+        suffix: str,
+        body: dict[str, Any] | None = None,
+        params: list[tuple[str, str]] | None = None,
+        expect_list: bool = False,
+    ) -> Response:
+        """A call about a session's people, on the node that holds the session.
+
+        The node is found through the caller's own standing in the session
+        (``/participants/me``), which answers an owner, an admin, a participant and an
+        invitee who has not accepted yet: none of the last three can read the session
+        itself, so the ordinary owner lookup would never find it for them. Forge's answer
+        comes back as it is, with its status (201 for an invitation, 204 for a removal).
+        """
+        instance, _ = await _find_runtime_owner(
+            service,
+            principal,
+            request,
+            f"/sessions/{session_id}/participants/me",
+            f"Session not found: {session_id}",
+            embedded_app=embedded_forge_app,
+            local_scope=_local_session_scope(request),
+        )
+        response = await _request_remote(
+            instance,
+            request,
+            method=method,
+            path=f"/sessions/{session_id}{suffix}",
+            json_body=body,
+            params=params,
+            embedded_app=embedded_forge_app,
+        )
+        _ensure_remote_success(response)
+        if response.status_code == status.HTTP_204_NO_CONTENT:
+            return Response(status_code=status.HTTP_204_NO_CONTENT)
+        payload = _remote_json(response)
+        if expect_list and not isinstance(payload, list):
+            raise HTTPException(502, f"Unexpected Forge response from {suffix}")
+        return JSONResponse(content=payload, status_code=response.status_code)
+
+    @router.get("/sessions/{session_id}/people")
+    async def list_session_people(
+        request: Request,
+        session_id: UUID,
+        principal: Principal = Depends(extract_principal),
+    ) -> Response:
+        """The people on the session's project, from the node that holds the session.
+
+        A session with no project is the owner's 409, passed through with its reason."""
+        return await _session_member_call(
+            request, session_id, principal, method="GET", suffix="/people", expect_list=True
+        )
+
+    @router.get("/sessions/{session_id}/members")
+    async def list_session_members(
+        request: Request,
+        session_id: UUID,
+        principal: Principal = Depends(extract_principal),
+    ) -> Response:
+        """The agents and people of a session or team, from the node that holds it."""
+        return await _session_member_call(
+            request, session_id, principal, method="GET", suffix="/members"
+        )
+
+    @router.get("/sessions/{session_id}/participants")
+    async def list_session_participants(
+        request: Request,
+        session_id: UUID,
+        principal: Principal = Depends(extract_principal),
+    ) -> Response:
+        """Everyone with a grant in this chat (the owner, admins and participants)."""
+        return await _session_member_call(
+            request,
+            session_id,
+            principal,
+            method="GET",
+            suffix="/participants",
+            expect_list=True,
+        )
+
+    @router.get("/sessions/{session_id}/participants/me")
+    async def my_session_participation(
+        request: Request,
+        session_id: UUID,
+        principal: Principal = Depends(extract_principal),
+    ) -> Response:
+        """The caller's own standing in the chat: room role and grant."""
+        return await _session_member_call(
+            request, session_id, principal, method="GET", suffix="/participants/me"
+        )
+
+    @router.post("/sessions/{session_id}/participants", status_code=status.HTTP_201_CREATED)
+    async def invite_session_participant(
+        request: Request,
+        session_id: UUID,
+        body: dict[str, Any] = Body(default_factory=dict),
+        principal: Principal = Depends(extract_principal),
+    ) -> Response:
+        """Invite a person of the org into this chat (the owner or an admin)."""
+        return await _session_member_call(
+            request, session_id, principal, method="POST", suffix="/participants", body=body
+        )
+
+    @router.post("/sessions/{session_id}/participants/accept")
+    async def accept_session_invitation(
+        request: Request,
+        session_id: UUID,
+        principal: Principal = Depends(extract_principal),
+    ) -> Response:
+        """The invitee joins the chat."""
+        return await _session_member_call(
+            request, session_id, principal, method="POST", suffix="/participants/accept"
+        )
+
+    @router.delete(
+        "/sessions/{session_id}/participants/{user_id}", status_code=status.HTTP_204_NO_CONTENT
+    )
+    async def remove_session_participant(
+        request: Request,
+        session_id: UUID,
+        user_id: str,
+        principal: Principal = Depends(extract_principal),
+    ) -> Response:
+        """Remove someone from the chat; an invitee declines and a participant leaves."""
+        return await _session_member_call(
+            request,
+            session_id,
+            principal,
+            method="DELETE",
+            suffix=f"/participants/{quote(user_id, safe='')}",
+        )
+
+    @router.get("/sessions/{session_id}/participant-candidates")
+    async def session_participant_candidates(
+        request: Request,
+        session_id: UUID,
+        q: str = Query(""),
+        principal: Principal = Depends(extract_principal),
+    ) -> Response:
+        """People of the org who could be invited into this chat (the owner or an admin)."""
+        return await _session_member_call(
+            request,
+            session_id,
+            principal,
+            method="GET",
+            suffix="/participant-candidates",
+            params=[("q", q)],
+            expect_list=True,
+        )
+
+    @router.post("/sessions/{session_id}/person-questions")
+    async def ask_session_person(
+        request: Request,
+        session_id: UUID,
+        body: dict[str, Any] = Body(default_factory=dict),
+        principal: Principal = Depends(extract_principal),
+    ) -> Response:
+        """A question to one person of the session's project, on the session's owning node.
+
+        Forge's answer comes back as is: 201 or 200, 409 for a session with no project and
+        422 for a person who is not on it."""
+        instance, _ = await _find_session_owner(
+            service, principal, request, str(session_id), embedded_app=embedded_forge_app
+        )
+        response = await _request_remote(
+            instance,
+            request,
+            method="POST",
+            path=f"/sessions/{session_id}/person-questions",
+            json_body=body,
+            embedded_app=embedded_forge_app,
+        )
+        _ensure_remote_success(response)
+        return JSONResponse(content=_remote_json(response), status_code=response.status_code)
+
+    @router.post("/sessions/{session_id}/person-questions/{question_id}/answer")
+    async def answer_session_person_question(
+        request: Request,
+        session_id: UUID,
+        question_id: str = Path(pattern=r"^[0-9a-f-]{36}$"),
+        body: dict[str, Any] = Body(default_factory=dict),
+        principal: Principal = Depends(extract_principal),
+    ) -> Response:
+        """Who answered a question put to a person, on the session's owning node."""
+        instance, _ = await _find_session_owner(
+            service, principal, request, str(session_id), embedded_app=embedded_forge_app
+        )
+        response = await _request_remote(
+            instance,
+            request,
+            method="POST",
+            path=f"/sessions/{session_id}/person-questions/{question_id}/answer",
+            json_body=body,
+            embedded_app=embedded_forge_app,
+        )
+        _ensure_remote_success(response)
+        return JSONResponse(content=_remote_json(response), status_code=response.status_code)
+
     @router.get("/sessions/{session_id}/runtime-version")
     async def get_session_runtime_version(
         request: Request,
@@ -4172,7 +4660,12 @@ def create_volundr_router(
         principal: Principal = Depends(extract_principal),
     ) -> dict[str, Any]:
         instance, _ = await _find_session_owner(
-            service, principal, request, session_id, embedded_app=embedded_forge_app
+            service,
+            principal,
+            request,
+            session_id,
+            embedded_app=embedded_forge_app,
+            transcript=True,
         )
         response = await _request_remote(
             instance,
@@ -4192,7 +4685,12 @@ def create_volundr_router(
         principal: Principal = Depends(extract_principal),
     ) -> dict[str, Any]:
         instance, _ = await _find_session_owner(
-            service, principal, request, session_id, embedded_app=embedded_forge_app
+            service,
+            principal,
+            request,
+            session_id,
+            embedded_app=embedded_forge_app,
+            transcript=True,
         )
         response = await _request_remote(
             instance,
@@ -4472,6 +4970,7 @@ def create_volundr_router(
             request,
             session_id,
             embedded_app=embedded_forge_app,
+            transcript=True,
         )
         t_owner = time.perf_counter()
         response = await _request_remote(
@@ -4518,6 +5017,7 @@ def create_volundr_router(
             request,
             session_id,
             embedded_app=embedded_forge_app,
+            transcript=True,
         )
         response = await _request_remote(
             instance,
@@ -4544,6 +5044,7 @@ def create_volundr_router(
             request,
             session_id,
             embedded_app=embedded_forge_app,
+            transcript=True,
         )
         response = await _request_remote(
             instance,
@@ -4569,6 +5070,7 @@ def create_volundr_router(
             request,
             session_id,
             embedded_app=embedded_forge_app,
+            transcript=True,
         )
         response = await _request_remote(
             instance,
@@ -4600,6 +5102,7 @@ def create_volundr_router(
             request,
             session_id,
             embedded_app=embedded_forge_app,
+            transcript=True,
         )
         response = await _request_remote(
             instance,
@@ -5397,6 +5900,204 @@ def create_volundr_router(
             status_code=upstream.status_code,
             media_type=upstream.headers.get("content-type"),
             headers=headers,
+        )
+
+    @router.post(
+        "/sessions/{session_id}/voice/client-secrets",
+        operation_id="mint_session_voice_client_secret",
+    )
+    async def voice_client_secret(
+        request: Request,
+        session_id: str,
+        principal: Principal = Depends(extract_principal),
+    ) -> Response:
+        """A session's realtime voice credential, minted by the Forge node that owns the session.
+
+        The session's Skuld broker asks with its own Forge session credential for one voice call
+        (``skuld.voice``). The body goes through as bytes, and so do Forge's status (409 no key,
+        422 no minter, 502 the provider refused) and its ``Cache-Control: no-store``: the secret
+        is for one call and is never cached.
+        """
+        instance, _ = await _find_session_owner(
+            service, principal, request, session_id, embedded_app=embedded_forge_app
+        )
+        upstream = await _request_remote(
+            instance,
+            request,
+            method="POST",
+            path=f"/sessions/{session_id}/voice/client-secrets",
+            content_body=await request.body(),
+            params=None,
+            extra_headers={"content-type": "application/json"},
+            embedded_app=embedded_forge_app,
+        )
+        headers: dict[str, str] = {}
+        if cache := upstream.headers.get("cache-control"):
+            headers["cache-control"] = cache
+        return Response(
+            content=upstream.content,
+            status_code=upstream.status_code,
+            media_type=upstream.headers.get("content-type"),
+            headers=headers,
+        )
+
+    @router.get("/sessions/{session_id}/memory-context", operation_id="get_session_memory_context")
+    async def memory_context(
+        request: Request,
+        session_id: str,
+        principal: Principal = Depends(extract_principal),
+    ) -> Response:
+        """A session's memory layers, from the Forge node that owns the session.
+
+        Asked by the memory gateway with the session's own Forge credential. Forge's status
+        and its ``Cache-Control: no-store`` go through unchanged.
+        """
+        instance, _ = await _find_session_owner(
+            service, principal, request, session_id, embedded_app=embedded_forge_app
+        )
+        upstream = await _request_remote(
+            instance,
+            request,
+            method="GET",
+            path=f"/sessions/{session_id}/memory-context",
+            params=None,
+            embedded_app=embedded_forge_app,
+        )
+        headers: dict[str, str] = {}
+        if cache := upstream.headers.get("cache-control"):
+            headers["cache-control"] = cache
+        return Response(
+            content=upstream.content,
+            status_code=upstream.status_code,
+            media_type=upstream.headers.get("content-type"),
+            headers=headers,
+        )
+
+    @router.post(
+        "/sessions/{session_id}/memory/proposals", operation_id="post_session_memory_proposal"
+    )
+    async def memory_proposal_waiting(
+        request: Request,
+        session_id: str,
+        principal: Principal = Depends(extract_principal),
+    ) -> Response:
+        """Tell the deciders of a session's project that its proposal waits, on the Forge
+        node that owns the session. The memory gateway calls it with the session's own
+        credential; Forge's answer goes through unchanged."""
+        instance, _ = await _find_session_owner(
+            service, principal, request, session_id, embedded_app=embedded_forge_app
+        )
+        upstream = await _request_remote(
+            instance,
+            request,
+            method="POST",
+            path=f"/sessions/{session_id}/memory/proposals",
+            json_body=await request.json(),
+            params=None,
+            embedded_app=embedded_forge_app,
+        )
+        return Response(
+            content=upstream.content,
+            status_code=upstream.status_code,
+            media_type=upstream.headers.get("content-type"),
+        )
+
+    @router.get("/memory/runs/{run_id}", operation_id="get_memory_run_owner")
+    async def memory_run_owner(
+        request: Request,
+        run_id: str,
+        principal: Principal = Depends(extract_principal),
+    ) -> Response:
+        """Who owns a workflow run, asked of every Forge node that may hold its sessions.
+
+        The memory gateway asks with the person's own login. A node that has no session of
+        the run (or none the caller owns) answers 404; any other refusal or failure is
+        passed on, never read as "not there". Nodes that know the run give one answer: the
+        owner and the union of the session ids.
+        """
+        instances = await _visible_instances(service, principal)
+        results = await asyncio.gather(
+            *[
+                _request_remote(
+                    instance,
+                    request,
+                    method="GET",
+                    path=f"/memory/runs/{run_id}",
+                    params=None,
+                    embedded_app=embedded_forge_app,
+                )
+                for instance in instances
+            ]
+        )
+        found: list[dict[str, Any]] = []
+        for upstream in results:
+            if upstream.status_code == status.HTTP_404_NOT_FOUND:
+                continue
+            _ensure_remote_success(upstream)
+            found.append(upstream.json())
+        if not found:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, f"Run not found: {run_id}")
+        return JSONResponse(
+            {
+                **found[0],
+                "session_ids": sorted({sid for item in found for sid in item["session_ids"]}),
+            },
+            headers={"cache-control": "no-store"},
+        )
+
+    @router.post("/memory/ended", operation_id="get_memory_layers_ended")
+    async def memory_layers_ended(
+        request: Request,
+        principal: Principal = Depends(extract_principal),
+    ) -> Response:
+        """When sessions and runs ended, asked of every Forge node.
+
+        Only the memory gateway's service credential is admitted, by each node. The gateway
+        deletes a layer once Forge says it is ``gone`` or ended long enough, so the answer is
+        complete or there is none: every visible node must answer, and one that cannot fails
+        the call rather than leaving its sessions to read as ``gone``.
+        """
+        body = await request.body()
+        try:
+            document = json.loads(body) if body else {}
+        except ValueError as exc:
+            raise HTTPException(422, "The request must be valid JSON") from exc
+        if not isinstance(document, dict):
+            raise HTTPException(422, "The request must be a JSON object")
+        instances = await _visible_instances(service, principal)
+        if not instances:
+            raise HTTPException(
+                status.HTTP_503_SERVICE_UNAVAILABLE,
+                "No Forge node is visible to this caller, so nothing can be said about "
+                "sessions or runs",
+            )
+        results = await asyncio.gather(
+            *[
+                _request_remote(
+                    instance,
+                    request,
+                    method="POST",
+                    path="/memory/ended",
+                    json_body=document,
+                    params=None,
+                    embedded_app=embedded_forge_app,
+                )
+                for instance in instances
+            ]
+        )
+        answers: list[dict[str, Any]] = []
+        for upstream in results:
+            _ensure_remote_success(upstream)
+            answers.append(upstream.json())
+        return JSONResponse(
+            {
+                kind: {
+                    key: _merge_layer_ends([answer[kind][key] for answer in answers])
+                    for key in answers[0][kind]
+                }
+                for kind in ("sessions", "runs")
+            },
+            headers={"cache-control": "no-store"},
         )
 
     @router.get("/sessions/{session_id}/logs")

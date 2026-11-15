@@ -391,14 +391,16 @@ class SecretInjectionContributor(SessionContributor):
     def _unit_shares_injection(self, context: SessionContext) -> bool:
         """Whether a unit's pod carries one injection that covers its root and its members.
 
-        True for an injector that works on the pod (``injects_per_pod``), unless the unit
-        runs on a VM, where each member's agent is explicit containers of its own.
+        True for an injector that works on the pod (``injects_per_pod``), and on a VM for an
+        injector that runs as guest agents: the unit is one machine (or slot) whose layout is
+        the root's, and every member's container mounts the root's rendered secrets, so the
+        root's agent renders what the members need too.
         """
-        if self._secret_injection is None or not self._secret_injection.injects_per_pod:
+        if self._secret_injection is None:
             return False
-        return not (
-            context.runtime_backend == "vm" and self._secret_injection.supports_guest_agents
-        )
+        if context.runtime_backend == "vm" and self._secret_injection.supports_guest_agents:
+            return True
+        return self._secret_injection.injects_per_pod
 
     async def _with_unit_members(
         self,

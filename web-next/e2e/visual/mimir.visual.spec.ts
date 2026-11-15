@@ -72,14 +72,6 @@ test('mimir entities matches web2', async ({ page }) => {
   await expect(page).toHaveScreenshot('mimir-entities.png');
 });
 
-// ── Lint ──────────────────────────────────────────────────────────────────────
-
-test('mimir lint matches web2', async ({ page }) => {
-  await page.goto('/mimir/lint');
-  await page.waitForLoadState('networkidle');
-  await expect(page).toHaveScreenshot('mimir-lint.png');
-});
-
 // ── Ingest ───────────────────────────────────────────────────────────────────
 
 test('mimir ingest matches web2', async ({ page }) => {

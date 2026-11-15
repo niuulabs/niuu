@@ -29,6 +29,7 @@ export function LaunchWizard(props: LaunchWizardProps & { initialStandard?: Forg
           initialStandard={props.initialStandard}
           onAdvanced={() => setAdvanced(true)}
           onCreated={() => close(false)}
+          onStartTeam={() => close(false)}
         />
       </DialogContent>
     </Dialog>

@@ -49,3 +49,12 @@ def test_bootstrap_sql_is_defined_for_split_services() -> None:
     shared_sql = "\n".join(bootstrap_sql_for_service("niuu-shared"))
     for table in ("realms", "trust_grants", "capabilities"):
         assert f"CREATE TABLE IF NOT EXISTS {table}" in shared_sql
+
+
+def test_the_shared_database_carries_team_integrations() -> None:
+    """Migration 000121 in mini mode's shared database too: the integrations service there
+    writes project_id and connected_by, and refused to start without them."""
+    shared_sql = "\n".join(bootstrap_sql_for_service("niuu-shared"))
+    assert "ADD COLUMN IF NOT EXISTS project_id UUID" in shared_sql
+    assert "ADD COLUMN IF NOT EXISTS connected_by" in shared_sql
+    assert "CREATE TABLE IF NOT EXISTS integration_usage" in shared_sql

@@ -39,7 +39,26 @@ import type {
   ProjectRepoMapping,
   ForgeProject,
   ForgeProjectChanges,
+  ProjectMember,
+  ProjectMemberCandidate,
+  ProjectMemberChange,
+  ProjectRole,
+  ParticipantCandidate,
+  ParticipantRole,
+  SessionMembers,
+  StartedTeam,
+  StartTeamRequest,
+  SessionParticipant,
+  SessionProjectPerson,
   SessionProjectMembership,
+  TeamCatalogEntry,
+  TeamIntegration,
+  TeamIntegrationUsagePage,
+  ProjectMemoryMount,
+  TeamRoute,
+  TeamRouteChange,
+  TeamRouteEvent,
+  TeamServiceAccountConnect,
   VolundrIdentity,
   VolundrUser,
   VolundrTenant,
@@ -84,6 +103,8 @@ export interface VolundrConversationTurn {
   participant_meta?: Record<string, unknown>;
   thread_id?: string;
   visibility?: 'visible' | 'internal';
+  /** Who sent a user turn; absent on turns recorded before authorship existed. */
+  author?: { user_id?: string; display_name?: string } | null;
 }
 
 export interface VolundrConversationHistory {
@@ -245,6 +266,115 @@ export interface IVolundrService {
    * goes to the host that owns the project. Setting `workspace_path` connects a checkout.
    */
   updateProject(project: ForgeProject, changes: ForgeProjectChanges): Promise<ForgeProject>;
+  /** Everyone on the project, with their role, expertise and skills. */
+  getProjectMembers(project: ForgeProject): Promise<ProjectMember[]>;
+  /** People of the project's org who are not on it yet, for its owners. */
+  getProjectMemberCandidates(
+    project: ForgeProject,
+    query: string,
+  ): Promise<ProjectMemberCandidate[]>;
+  addProjectMember(
+    project: ForgeProject,
+    member: { userId: string; role: ProjectRole; expertise?: string },
+  ): Promise<ProjectMember>;
+  updateProjectMember(
+    project: ForgeProject,
+    userId: string,
+    change: ProjectMemberChange,
+  ): Promise<ProjectMember>;
+  removeProjectMember(project: ForgeProject, userId: string): Promise<void>;
+  /** What the project's owners can install for the team. */
+  getTeamIntegrationCatalog(project: ForgeProject): Promise<TeamCatalogEntry[]>;
+  /** The integrations the project owns, readable by every member. */
+  getTeamIntegrations(project: ForgeProject): Promise<TeamIntegration[]>;
+  /** Connect a provider service account (client credentials) for the team. Owners only. */
+  connectTeamServiceAccount(
+    project: ForgeProject,
+    connect: TeamServiceAccountConnect,
+  ): Promise<TeamIntegration>;
+  /** Start a provider app install for the team; the person approves at the returned url. */
+  startTeamOAuth(
+    project: ForgeProject,
+    slug: string,
+    config: Record<string, string>,
+  ): Promise<{ url: string }>;
+  updateTeamIntegration(
+    project: ForgeProject,
+    connectionId: string,
+    change: { config?: Record<string, unknown>; enabled?: boolean },
+  ): Promise<TeamIntegration>;
+  removeTeamIntegration(project: ForgeProject, connectionId: string): Promise<void>;
+  /** Where each kind of event goes. An event with no route goes nowhere. */
+  getTeamRoutes(project: ForgeProject): Promise<TeamRoute[]>;
+  setTeamRoute(
+    project: ForgeProject,
+    event: TeamRouteEvent,
+    route: TeamRouteChange,
+  ): Promise<TeamRoute>;
+  removeTeamRoute(project: ForgeProject, event: TeamRouteEvent): Promise<void>;
+  /** The memories the project also reads (its mounts); every member may list them. */
+  getProjectMemoryMounts(project: ForgeProject): Promise<ProjectMemoryMount[]>;
+  /** Owners attach a registered memory to the project. */
+  addProjectMemoryMount(
+    project: ForgeProject,
+    mount: { name: string; registryEntryId: string; access: 'read' | 'read_write' },
+  ): Promise<ProjectMemoryMount>;
+  removeProjectMemoryMount(project: ForgeProject, name: string): Promise<void>;
+  /** Uses of the team's connections, newest first; `before` pages to older ones. */
+  getTeamIntegrationUsage(
+    project: ForgeProject,
+    before?: string,
+  ): Promise<TeamIntegrationUsagePage>;
+  /**
+   * Everyone with a grant in one chat (invited or joined), for its owner, admins and the
+   * people already in it. A removed grant is not listed.
+   */
+  getSessionParticipants(
+    sessionId: string,
+    options?: SessionReadOptions,
+  ): Promise<SessionParticipant[]>;
+  /**
+   * The members of the session's project with the room role the project gives them, or
+   * null when the session is not attached to a project.
+   */
+  getSessionProjectPeople(
+    sessionId: string,
+    options?: SessionReadOptions,
+  ): Promise<SessionProjectPerson[] | null>;
+  /** People of the session's org who could be invited into the chat, for its owner and admins. */
+  getParticipantCandidates(
+    sessionId: string,
+    query: string,
+    options?: SessionReadOptions,
+  ): Promise<ParticipantCandidate[]>;
+  /**
+   * People of the org to invite into a team that does not exist yet: active members other
+   * than the caller, matching what was typed, on the Forge the team will start on.
+   */
+  getTeamInviteCandidates(
+    query: string,
+    options?: SessionReadOptions,
+  ): Promise<ParticipantCandidate[]>;
+  /** Invite a person of the org into this chat only (not the whole project). */
+  inviteSessionParticipant(
+    sessionId: string,
+    invitation: { userId: string; role: ParticipantRole },
+    options?: SessionReadOptions,
+  ): Promise<SessionParticipant>;
+  /** The invitee joins the chat. */
+  acceptSessionInvitation(
+    sessionId: string,
+    options?: SessionReadOptions,
+  ): Promise<SessionParticipant>;
+  /**
+   * Remove someone from the chat: the owner removes anyone, an invitee declines and a
+   * participant leaves by removing themselves.
+   */
+  removeSessionParticipant(
+    sessionId: string,
+    userId: string,
+    options?: SessionReadOptions,
+  ): Promise<void>;
   getSessionProject(
     sessionId: string,
     options?: SessionReadOptions,
@@ -305,6 +435,13 @@ export interface IVolundrService {
     /** Forge MCP grants for the session; the node's defaults and role grants apply on top. */
     forgeMcp?: ForgeMcpSessionOptions;
   }): Promise<VolundrSession>;
+  /**
+   * Starts a team: a root session that hosts one room and a member session per agent, all
+   * launched together. Forge creates all of it or none of it.
+   */
+  startTeam(request: StartTeamRequest): Promise<StartedTeam>;
+  /** The agents and people in a session's room, for anyone who may read the session. */
+  getSessionMembers(sessionId: string, options?: SessionReadOptions): Promise<SessionMembers>;
   evaluatePermissionAutoApproval(
     sessionId: string,
     request: PermissionAutoApprovalRequest,

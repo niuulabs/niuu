@@ -82,6 +82,26 @@ class TestEnqueue:
         assert [e["seq"] for e in survivors] == [3, 4, 5]
         assert gap["payload"]["first_seq"] == 1
 
+    def test_overflow_is_a_counted_cap_hit(self, tmp_path):
+        """Dropping frames is counted on the health surface, not only logged."""
+        from niuu.cap_telemetry import cap_hit_counts, health_counts
+        from skuld.event_log import EVENT_LOG_MAX_BUFFER_KNOB
+
+        b = _broker(tmp_path, event_log_max_buffer=3)
+        before = cap_hit_counts().get(EVENT_LOG_MAX_BUFFER_KNOB, 0)
+        for i in range(5):
+            b._enqueue_event_log({"type": "content_block_delta", "i": i})
+        assert cap_hit_counts()[EVENT_LOG_MAX_BUFFER_KNOB] == before + 2
+        assert health_counts()[f"cap_hits.{EVENT_LOG_MAX_BUFFER_KNOB}"] == before + 2
+
+    def test_overflow_returns_the_enqueued_frame(self, tmp_path):
+        """The frame handed back is the one just enqueued, not a dropped one."""
+        b = _broker(tmp_path, event_log_max_buffer=1)
+        b._enqueue_event_log({"type": "content_block_delta", "i": 0})
+        entry = b._enqueue_event_log({"type": "content_block_delta", "i": 1})
+        assert entry is not None
+        assert entry["payload"]["i"] == 1
+
     def test_sustained_overflow_sentinel_reports_true_hole_size(self, tmp_path):
         # M-4: under SUSTAINED overflow a prior sentinel is itself re-dropped. If it were
         # counted as one frame the reported `dropped` would under-report the true hole — only

@@ -77,7 +77,7 @@ home:
         doc: operations/kubernetes-deployment/
       - id: models
         name: Models
-        line: Route by cost, latency or failover, with budgets and rules.
+        line: Route by cost or latency, with budgets and rules.
         uses: Anthropic, OpenAI, any OpenAI-compatible endpoint, Ollama
         products: AI models
         doc: concepts/model-routing/
@@ -267,7 +267,7 @@ home:
             width: 2000
             height: 1220
             caption: A resident keeps a responsibility, with no prompt needed. A schedule, an event, a ticket, a message or a reading from a machine can set it off.
-            alt: The Resident console, with a roster of residents and Sigrun's report, reading Simpler now, 2 duplicate tools retired
+            alt: The Resident console, with a roster of residents and a resident's report, reading Simpler now, 2 duplicate tools retired
       - id: scale
         step: Scale
         label: Runtimes · Security & governance · Observability
@@ -341,15 +341,15 @@ home:
       - id: source
         name: From source
         title: From source
-        needs: You need Git, a C toolchain, uv, Node.js and pnpm.
+        needs: You need Git, a C toolchain, uv, Node.js, pnpm and Bun.
         code: |-
           git clone https://github.com/niuulabs/niuu.git
           cd niuu
           uv sync --python 3.12 --extra dev
-          make build-postgres build-web
+          make build-postgres build-gbrain build-web
           uv run niuu platform init
           uv run niuu platform up
-        note: The build compiles PostgreSQL and the web UI, so give it a while. At the init prompt, press Enter for mini mode. This mode has no login of its own, so keep NIUU on 127.0.0.1, its default.
+        note: The build compiles PostgreSQL, gbrain (local memory) and the web UI, so give it a while. At the init prompt, press Enter for mini mode. This mode has no login of its own, so keep NIUU on 127.0.0.1, its default.
     actions:
       - label: Follow the quick start
         arrow: →

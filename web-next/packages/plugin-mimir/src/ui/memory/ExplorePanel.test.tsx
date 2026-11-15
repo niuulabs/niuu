@@ -37,7 +37,7 @@ describe('ExplorePanel', () => {
     setup({
       graph: {
         nodes: [first!, { ...second!, mount: first!.mount }],
-        edges: [{ source: first!.id, target: second!.id, type: 'depends_on' }],
+        edges: [{ source: first!.id, target: second!.id, relation: 'depends_on' }],
       },
     });
     expect(screen.getByText(/2 pages · 1 link · 1 instance$/)).toBeInTheDocument();
