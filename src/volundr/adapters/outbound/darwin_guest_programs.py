@@ -349,24 +349,6 @@ if loaded(label):
         sys.exit(0)
     # A new launch replaced the Forge session credential the running broker read.
     bootout(label, d['stop_timeout'], d['poll'])
-stage[0] = 'workspace'
-root = pathlib.Path(s['data_root'])
-g, git = p.get('git'), None
-try:
-    if g and p['repo']:
-        # Forge placed the token's rendered file and the session's view of it on the Mac.
-        git = integration_git(g, p['repo'], pathlib.Path(g['token_source']), g['token_file'])
-    workspace, home = prepare_storage(root, s['marker'], uid, p['repo'], p['branch'], (), git)
-except subprocess.CalledProcessError as exc:
-    if exc.cmd[0] != 'git':
-        step = 'giving the slot its storage (' + exc.cmd[0] + ')'
-    elif 'clone' in exc.cmd:
-        step = "git clone of the session's repository"
-    else:
-        step = "configuring the cloned repository's Git credential"
-    fail('host-workspace', step + ' exited ' + str(exc.returncode))
-except (RuntimeError, OSError) as exc:
-    fail('host-workspace', str(exc))
 stage[0] = 'mounts'
 for item in p.get('directories', []):
     # Written by root and the Forge's agents, read by the session (its group); a volume the
@@ -435,6 +417,26 @@ for c in p.get('sidecars', []):
         'StandardErrorPath': str(logs / (c['name'] + '.log')),
     })
     subprocess.run(['launchctl', 'bootstrap', 'system', plist], check=True)
+# After the agents, as on Linux: the init containers render the session's secrets,
+# the integration's Git token among them, which the clone reads.
+stage[0] = 'workspace'
+root = pathlib.Path(s['data_root'])
+g, git = p.get('git'), None
+try:
+    if g and p['repo']:
+        # Forge placed the token's rendered file and the session's view of it on the Mac.
+        git = integration_git(g, p['repo'], pathlib.Path(g['token_source']), g['token_file'])
+    workspace, home = prepare_storage(root, s['marker'], uid, p['repo'], p['branch'], (), git)
+except subprocess.CalledProcessError as exc:
+    if exc.cmd[0] != 'git':
+        step = 'giving the slot its storage (' + exc.cmd[0] + ')'
+    elif 'clone' in exc.cmd:
+        step = "git clone of the session's repository"
+    else:
+        step = "configuring the cloned repository's Git credential"
+    fail('host-workspace', step + ' exited ' + str(exc.returncode))
+except (RuntimeError, OSError) as exc:
+    fail('host-workspace', str(exc))
 stage[0] = 'launch'
 spec = state / 'session.json'
 fd = os.open(str(spec), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)

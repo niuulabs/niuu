@@ -97,7 +97,16 @@ def _start(tmp_path: Path, *, rendered: bool) -> subprocess.CompletedProcess:
     )
     payload = {
         "slot": {"uid": 61000, "data_root": str(tmp_path), "marker": "m"},
-        "darwin": {"label": "world.niuu.slot.0"},
+        "darwin": {
+            "label": "world.niuu.slot.0",
+            "nix": False,
+            "links": [],
+            "state_root": str(tmp_path / "state"),
+            "log_root": str(tmp_path / "logs"),
+            "native_path": "/usr/bin:/bin",
+            "agent_home": str(tmp_path / "agent-home"),
+            "agent_tmp": str(tmp_path / "agent-tmp"),
+        },
         "repo": REPO,
         "branch": "main",
         "git": {**GIT, "token_source": str(token), "token_file": "/mac/secrets/token"},
@@ -148,3 +157,10 @@ def test_a_long_detail_is_one_printable_line_that_says_it_was_cut():
     assert len(error.diagnostic) == DIAGNOSTIC_LIMIT
     encoded = completed.stderr.decode().split(DETAIL_PREFIX)[1].strip()
     assert base64.b64decode(encoded).decode() == error.diagnostic
+
+
+def test_the_mac_clones_after_its_agents_rendered_the_secrets():
+    # The init containers render the integration's token; the clone reads it.
+    start = programs.START
+    assert start.index("for c in p.get('init_containers'") < start.index("stage[0] = 'workspace'")
+    assert start.index("stage[0] = 'workspace'") < start.index("stage[0] = 'launch'")
