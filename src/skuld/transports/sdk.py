@@ -396,6 +396,9 @@ class SDKTransport(CLITransport):
             set_permission_mode=True,
             slash_commands=True,
             skills=True,
+            # The SDK's CLI sends ``system/init`` only once it runs its first query, so a
+            # session launched without a prompt would otherwise read as provisioning forever.
+            announces_ready=False,
             send_runs_turn=True,
         )
 
