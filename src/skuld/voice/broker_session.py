@@ -131,7 +131,7 @@ class BrokerVoiceSession(VoiceSessionPort):
         if self._broker._enqueue_event_log(frame) is None:
             raise VoiceRecordError(
                 "the session's durable event log is off, so a voice call cannot be recorded; "
-                "voice.enabled needs event_log_enabled and volundr_api_url"
+                "voice_channel.enabled needs event_log_enabled and volundr_api_url"
             )
 
 
@@ -153,7 +153,7 @@ def _binding(broker: Any, session: BrokerVoiceSession, tools: SessionVoiceTools)
     A broker that hosts a routed room runs no agent (a team's root, a workflow run's root):
     its call speaks to the room's agents. Every other broker runs the session's agent.
     """
-    config = broker._settings.voice
+    config = broker._settings.voice_channel
     if broker._settings.room.enabled and broker._settings.room.routed:
         from skuld.voice.broker_room import BrokerVoiceRoom
         from skuld.voice.room_binding import RoomVoiceBinding
@@ -179,7 +179,7 @@ def _binding(broker: Any, session: BrokerVoiceSession, tools: SessionVoiceTools)
 def build_voice_channel(broker: Any) -> SessionVoiceChannel:
     """Compose the session's voice channel; raises with the remedy when it cannot serve."""
     settings = broker._settings
-    config = settings.voice
+    config = settings.voice_channel
     persona = resolve_voice_persona(
         settings.session.persona, config.default_persona, display_name=config.display_name
     )

@@ -84,8 +84,8 @@ async def test_without_a_principal_the_persona_is_the_session_owners() -> None:
 
 
 def test_the_skuld_settings_are_named_as_skuld_reads_them() -> None:
-    assert VOICE_ENABLED_ENV == "SKULD__VOICE__ENABLED"
-    assert VOICE_DEFAULT_PERSONA_ENV == "SKULD__VOICE__DEFAULT_PERSONA"
+    assert VOICE_ENABLED_ENV == "SKULD__VOICE_CHANNEL__ENABLED"
+    assert VOICE_DEFAULT_PERSONA_ENV == "SKULD__VOICE_CHANNEL__DEFAULT_PERSONA"
 
 
 def test_the_contributor_is_named_for_the_channel() -> None:

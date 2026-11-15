@@ -31,7 +31,7 @@ class FakeRoomBroker:
         self._settings = SimpleNamespace(
             session=SimpleNamespace(name="Release crew"),
             room=SimpleNamespace(environment_id="env-7", untargeted_delivery=untargeted_delivery),
-            voice=SimpleNamespace(members={}),
+            voice_channel=SimpleNamespace(members={}),
         )
         self.participants: dict[str, Any] = {}
         self._room_bridge: Any = SimpleNamespace(participants=self.participants)
@@ -98,7 +98,7 @@ def _agent_turn(**fields: Any) -> ConversationTurn:
 
 class TestStatus:
     def test_a_configured_member_not_seated_is_not_here(self, broker):
-        broker._settings.voice.members = {
+        broker._settings.voice_channel.members = {
             "Reviewer": VoiceMemberConfig(
                 persona="code-reviewer", lead=True, voices={"grok-voice": "rex"}
             )
@@ -112,7 +112,7 @@ class TestStatus:
         assert member.voices == {"grok-voice": "rex"}
 
     def test_a_configured_member_that_is_seated_is_here(self, broker):
-        broker._settings.voice.members = {"Reviewer": VoiceMemberConfig(voices={})}
+        broker._settings.voice_channel.members = {"Reviewer": VoiceMemberConfig(voices={})}
         broker.seat("peer-r", display_name="Reviewer", persona="code-reviewer")
 
         status = _room(broker).status()
@@ -123,7 +123,7 @@ class TestStatus:
         assert member.persona == ""
 
     def test_a_seated_agent_nobody_configured_is_added_as_present(self, broker):
-        broker._settings.voice.members = {"Reviewer": VoiceMemberConfig(voices={})}
+        broker._settings.voice_channel.members = {"Reviewer": VoiceMemberConfig(voices={})}
         broker.seat("peer-r", display_name="Reviewer")
         broker.seat("peer-x", display_name="Stranger", persona="scout")
 
@@ -155,7 +155,7 @@ class TestStatus:
 
     def test_a_broker_without_a_room_bridge_seats_nobody(self, broker):
         broker._room_bridge = None
-        broker._settings.voice.members = {"Reviewer": VoiceMemberConfig(voices={})}
+        broker._settings.voice_channel.members = {"Reviewer": VoiceMemberConfig(voices={})}
 
         status = _room(broker).status()
 

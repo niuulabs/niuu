@@ -67,7 +67,7 @@ class BrokerVoiceRoom(VoiceRoomPort):
                 present=name in seated,
                 voices=dict(config.voices),
             )
-            for name, config in settings.voice.members.items()
+            for name, config in settings.voice_channel.members.items()
         ]
         known = {member.name for member in members}
         members += [
@@ -214,7 +214,7 @@ class BrokerVoiceRoom(VoiceRoomPort):
         if self._broker._enqueue_event_log(frame) is None:
             raise VoiceRecordError(
                 "the room host's durable event log is off, so a voice call cannot be "
-                "recorded; voice.enabled needs event_log_enabled and volundr_api_url"
+                "recorded; voice_channel.enabled needs event_log_enabled and volundr_api_url"
             )
 
 

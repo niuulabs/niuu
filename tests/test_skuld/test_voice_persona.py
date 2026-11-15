@@ -60,7 +60,7 @@ class TestResolveVoicePersona:
             resolve_voice_persona(None, persona_document("plain", with_voice=False))
 
     def test_neither_persona_with_a_voice_is_an_error_naming_the_remedy(self):
-        with pytest.raises(VoicePersonaError, match="SKULD__VOICE__ENABLED=false"):
+        with pytest.raises(VoicePersonaError, match="SKULD__VOICE_CHANNEL__ENABLED=false"):
             resolve_voice_persona(persona_document("coder", with_voice=False), None)
 
     def test_no_persona_at_all_is_an_error(self):

@@ -346,7 +346,7 @@ forgeMcp:
 
 # The session voice channel (skuld.voice): a realtime voice call with the session's owner,
 # served at /voice beside the chat WebSocket. Forge turns it on per launch when its own
-# voice.enabled is set (env SKULD__VOICE__ENABLED and SKULD__VOICE__DEFAULT_PERSONA); these
+# voice.enabled is set (env SKULD__VOICE_CHANNEL__ENABLED and SKULD__VOICE_CHANNEL__DEFAULT_PERSONA); these
 # values only tune it. Null keeps the broker default. See docs/operator/session-voice.md.
 voice:
   # -- Name the voice introduces itself by (voice.display_name). Null: the persona's name.

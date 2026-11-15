@@ -235,7 +235,7 @@ class TestTheVoicesOfATeamCall:
             _session(), _root_context(members=members)
         )
 
-        assert json.loads(_env(result)["SKULD__VOICE__MEMBERS"]) == {
+        assert json.loads(_env(result)["SKULD__VOICE_CHANNEL__MEMBERS"]) == {
             "Architect": {
                 "persona": "Architect-persona",
                 "voices": {"grok-voice": "rex", "openai-realtime": "marin"},

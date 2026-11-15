@@ -38,7 +38,7 @@ def _broker(tmp_path, *, routed: bool = False) -> Broker:
         },
         volundr_api_url="http://forge.test",
         forge_mcp={"token": "forge-session-token"},
-        voice={"enabled": routed, "default_persona": persona_document()},
+        voice_channel={"enabled": routed, "default_persona": persona_document()},
         room={"enabled": routed, "routed": routed, "untargeted_delivery": "everyone"},
         transport="subprocess",
         peer_inbox={"enabled": False},

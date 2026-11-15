@@ -56,7 +56,7 @@ class TeamRoomContributor(SessionContributor):
     """Turn a team's root and member markers into Skuld's mesh and room settings.
 
     ``voice_enabled`` is Forge's ``voice.enabled``: a team's root then runs Skuld's voice
-    channel, and is handed the voices of the team's agents (``SKULD__VOICE__MEMBERS``) so a
+    channel, and is handed the voices of the team's agents (``SKULD__VOICE_CHANNEL__MEMBERS``) so a
     call speaks each agent's lines in its own voice.
     """
 

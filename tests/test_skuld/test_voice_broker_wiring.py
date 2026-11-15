@@ -44,7 +44,7 @@ def _broker(tmp_path, *, voice: bool = True, **overrides) -> Broker:
         },
         volundr_api_url="http://forge.test",
         forge_mcp={"token": "forge-session-token"},
-        voice={"enabled": voice, "default_persona": persona_document()},
+        voice_channel={"enabled": voice, "default_persona": persona_document()},
         transport="subprocess",
         # Peer inbox (on by default) also needs the durable history; off, only voice asks for it.
         peer_inbox={"enabled": False},
@@ -89,7 +89,7 @@ class TestStartVoiceChannel:
 
     def test_enabled_without_a_voice_persona_is_fatal(self, tmp_path):
         broker = _broker(tmp_path)
-        broker._settings.voice.default_persona = None
+        broker._settings.voice_channel.default_persona = None
 
         with pytest.raises(ValueError, match="voice.default_persona"):
             broker._start_voice_channel()

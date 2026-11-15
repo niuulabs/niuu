@@ -351,7 +351,7 @@ class TestBuildVoiceChannelBinding:
             },
             volundr_api_url="http://forge.test",
             forge_mcp={"token": "forge-session-token"},
-            voice={
+            voice_channel={
                 "enabled": True,
                 "default_persona": persona_document(),
                 "members": {"Reviewer": {"persona": "code-reviewer", "voices": {}}},
@@ -378,7 +378,7 @@ class TestBuildVoiceChannelBinding:
 
     def test_the_binding_takes_its_bounds_from_the_voice_settings(self, tmp_path):
         broker = self._broker(tmp_path, room={"enabled": True, "routed": True})
-        voice = broker._settings.voice
+        voice = broker._settings.voice_channel
 
         binding = build_voice_channel(broker)._binding
 

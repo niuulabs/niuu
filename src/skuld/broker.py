@@ -4982,7 +4982,7 @@ class Broker(
                 and not self._settings.room.enabled
                 and not self._settings.workflow_steps.enabled
                 and not self._settings.peer_inbox.enabled
-                and not self._settings.voice.enabled
+                and not self._settings.voice_channel.enabled
             )
             or not self.volundr_api_url
             or not self._settings.event_log_enabled
@@ -5061,7 +5061,7 @@ class Broker(
 
     def _start_voice_channel(self) -> None:
         """Build the voice channel (fatal when enabled and it cannot serve)."""
-        if not self._settings.voice.enabled:
+        if not self._settings.voice_channel.enabled:
             return
         from skuld.voice.broker_session import build_voice_channel
 

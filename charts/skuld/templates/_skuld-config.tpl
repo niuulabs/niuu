@@ -181,8 +181,8 @@ unit (see skuld.memberValues). Every line is indented four spaces, to sit under 
 
     {{- if or (not (kindIs "invalid" .Values.voice.displayName)) (not (kindIs "invalid" .Values.voice.timeZone)) (not (kindIs "invalid" .Values.voice.models)) (not (kindIs "invalid" .Values.voice.mintTimeoutSeconds)) (not (kindIs "invalid" .Values.voice.sendConfirmSeconds)) (not (kindIs "invalid" .Values.voice.toolTimeoutSeconds)) (not (kindIs "invalid" .Values.voice.cardRecentTurns)) (not (kindIs "invalid" .Values.voice.cardTurnMaxChars)) (not (kindIs "invalid" .Values.voice.fullReadMaxChars)) }}
 
-    # Tuning of the session voice channel; Forge turns it on per launch (SKULD__VOICE__ENABLED).
-    voice:
+    # Tuning of the session voice channel; Forge turns it on per launch (SKULD__VOICE_CHANNEL__ENABLED).
+    voice_channel:
       {{- if not (kindIs "invalid" .Values.voice.displayName) }}
       display_name: {{ .Values.voice.displayName | toJson }}
       {{- end }}

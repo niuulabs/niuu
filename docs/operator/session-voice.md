@@ -108,14 +108,14 @@ run arbitrary code, so only Forge holds the key and only short-lived secrets lea
    In mini mode, set the same `voice:` section in Forge's config file.
 
 From then on, every session Forge launches runs the channel. Forge sets
-`SKULD__VOICE__ENABLED=true` and hands the default persona to Skuld as
-`SKULD__VOICE__DEFAULT_PERSONA`. Sessions that are already running get the channel at
+`SKULD__VOICE_CHANNEL__ENABLED=true` and hands the default persona to Skuld as
+`SKULD__VOICE_CHANNEL__DEFAULT_PERSONA`. Sessions that are already running get the channel at
 their next start. A launch fails, naming the persona, when `defaultPersona` is not in the
 owner's catalog or has no `voice:` section.
 
 The Skuld chart's `voice:` values tune the channel: display name, time zone, the realtime
 model per provider, and the waits and limits in the table below. Null keeps the broker
-defaults. A misspelt `SKULD__VOICE__…` setting stops the broker instead of being ignored.
+defaults. A misspelt `SKULD__VOICE_CHANNEL__…` setting stops the broker instead of being ignored.
 
 ## What the call can do
 
@@ -203,7 +203,7 @@ The call's instructions open with a **room card**:
 - the room's latest posts (`voice.card_recent_turns`; the card says how many it leaves out,
   and a long post is cut and counted, as on a session card).
 
-A team's roster is the team as Forge launched it (`SKULD__VOICE__MEMBERS`), joined with who
+A team's roster is the team as Forge launched it (`SKULD__VOICE_CHANNEL__MEMBERS`), joined with who
 is seated now. A run's room has no such list, so its roster is the agents seated in it.
 
 ### What the call can do in a room
@@ -330,5 +330,5 @@ steps and gates are notices, so they are context only. Two differences:
 - **No `say_to_everyone`.** The run's room refuses untargeted messages for its harness
   agents (`untargeted_delivery: refuse`), so the tool is not offered.
 - **Host voice only.** The run's agents' voices are not handed to the run's root today
-  (`SKULD__VOICE__MEMBERS` comes from a team launch), so their `speak` frames carry no
+  (`SKULD__VOICE_CHANNEL__MEMBERS` comes from a team launch), so their `speak` frames carry no
   voices, and the phone says their lines in the host voice, naming each agent first.
