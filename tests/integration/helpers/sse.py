@@ -18,6 +18,9 @@ import uvicorn
 # Timeout for SSE event collection (seconds)
 SSE_TIMEOUT = 5
 
+# How often ``wait_for_subscriber`` re-reads the broadcaster (seconds)
+SUBSCRIBER_POLL_INTERVAL = 0.01
+
 
 def parse_sse_events(raw: str) -> list[dict[str, str]]:
     """Parse raw SSE text into a list of field dicts.
@@ -42,6 +45,31 @@ def parse_sse_events(raw: str) -> list[dict[str, str]]:
         if fields:
             events.append(fields)
     return events
+
+
+async def wait_for_subscriber(broadcaster: object, count: int = 1) -> None:
+    """Wait until *broadcaster* has *count* live subscribers.
+
+    The server sends the SSE response headers before the stream handler
+    registers its subscription, so a client that has the headers cannot tell
+    whether it is subscribed yet. The broadcaster does not replay, so an event
+    published before the subscription is lost for good. Publishing must wait
+    for this, not for a guessed delay.
+
+    Raises ``TimeoutError`` after ``SSE_TIMEOUT`` seconds.
+    """
+
+    async def _poll() -> None:
+        while broadcaster.subscriber_count < count:  # type: ignore[attr-defined]
+            await asyncio.sleep(SUBSCRIBER_POLL_INTERVAL)
+
+    try:
+        await asyncio.wait_for(_poll(), timeout=SSE_TIMEOUT)
+    except TimeoutError as exc:
+        raise TimeoutError(
+            f"no SSE subscriber registered within {SSE_TIMEOUT}s: the stream handler "
+            "never subscribed to the broadcaster after the response started"
+        ) from exc
 
 
 def free_port() -> int:

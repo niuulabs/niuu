@@ -16,7 +16,12 @@ import json
 import httpx
 import pytest
 
-from tests.integration.helpers.sse import SSE_TIMEOUT, collect_sse, start_server
+from tests.integration.helpers.sse import (
+    SSE_TIMEOUT,
+    collect_sse,
+    start_server,
+    wait_for_subscriber,
+)
 from volundr.domain.models import EventType, RealtimeEvent
 
 pytestmark = [
@@ -46,7 +51,7 @@ async def test_sse_stream_connects(volundr_app: object, auth_headers: object) ->
     try:
 
         async def _publish_heartbeat() -> None:
-            await asyncio.sleep(0.3)
+            await wait_for_subscriber(broadcaster)
             await broadcaster.publish_heartbeat()
 
         publish_task = asyncio.create_task(_publish_heartbeat())
@@ -70,12 +75,13 @@ async def test_sse_receives_session_created_event(
 ) -> None:
     """Connect SSE, create a session via POST, verify SESSION_CREATED event."""
     headers = auth_headers("sse-user", "sse@test.com", "default", ["volundr:admin"])  # type: ignore[operator]
+    broadcaster = volundr_app.state.broadcaster  # type: ignore[union-attr]
     server, base_url = await start_server(volundr_app)
 
     try:
 
         async def _create_session() -> None:
-            await asyncio.sleep(0.3)
+            await wait_for_subscriber(broadcaster)
             payload = {
                 "name": "sse-test-session",
                 "model": "claude-sonnet-4-6",
@@ -149,7 +155,7 @@ async def test_sse_receives_stats_update(
         )
 
         async def _publish_stats() -> None:
-            await asyncio.sleep(0.3)
+            await wait_for_subscriber(broadcaster)
             await broadcaster.publish(stats_event)
 
         publish_task = asyncio.create_task(_publish_stats())
@@ -208,7 +214,7 @@ async def test_sse_hides_another_users_session_from_a_non_owner(
     try:
 
         async def _create_then_heartbeat() -> None:
-            await asyncio.sleep(0.3)
+            await wait_for_subscriber(broadcaster)
             async with httpx.AsyncClient() as client:
                 resp = await client.post(
                     f"{base_url}{API}/sessions",
