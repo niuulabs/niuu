@@ -13,13 +13,6 @@ import typer
 
 from niuu.cli_output import print_json, print_success, print_table
 from niuu.ports.plugin import APIRouteDomain, ServiceDefinition, ServicePlugin, TUIPageSpec
-from volundr.tui.admin import AdminPage
-from volundr.tui.chat import ChatPage
-from volundr.tui.chronicles import ChroniclesPage
-from volundr.tui.diffs import DiffsPage
-from volundr.tui.sessions import SessionsPage
-from volundr.tui.settings import SettingsPage
-from volundr.tui.terminal import TerminalPage
 
 
 class VolundrPlugin(ServicePlugin):
@@ -92,6 +85,14 @@ class VolundrPlugin(ServicePlugin):
         return self.cli_client("Volundr")
 
     def tui_pages(self) -> Sequence[TUIPageSpec]:
+        from volundr.tui.admin import AdminPage
+        from volundr.tui.chat import ChatPage
+        from volundr.tui.chronicles import ChroniclesPage
+        from volundr.tui.diffs import DiffsPage
+        from volundr.tui.sessions import SessionsPage
+        from volundr.tui.settings import SettingsPage
+        from volundr.tui.terminal import TerminalPage
+
         return [
             TUIPageSpec(name="Sessions", icon="◉", widget_class=SessionsPage),
             TUIPageSpec(name="Chat", icon="◈", widget_class=ChatPage),

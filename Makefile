@@ -4,15 +4,13 @@
 #   make build-web      — build web-next SPA, copy into src/cli/web/dist/
 #   make build-postgres — compile PostgreSQL + pgvector from source
 #   make build-gbrain   — compile the pinned gbrain for mini mode's memory
-#   make build-cli      — Nuitka --onefile compilation → dist/niuu
+#   make build-cli      — cached PyApp single executable → dist/niuu
 #   make build          — all of the above
 #
-# Parameters (for future binary targets):
+# Binary output parameters:
 #   BINARY_NAME  — output binary name       (default: niuu)
-#   ENTRY_POINT  — Python entry point file   (default: src/cli/__main__.py)
 
 BINARY_NAME  ?= niuu
-ENTRY_POINT  ?= src/cli/__main__.py
 OUTPUT_DIR   ?= dist
 WEB_DIR      := web-next
 WEB_APP_DIST := $(WEB_DIR)/apps/niuu/dist
@@ -29,7 +27,7 @@ PGINSTALL_DIR    := build/pginstall
        test-e2e test-e2e-ui test-all test-ravn
 
 # --------------------------------------------------------------------------
-# Full build: web assets → migrations → PostgreSQL → Nuitka binary
+# Full build: web assets → PostgreSQL → gbrain → PyApp binary
 # --------------------------------------------------------------------------
 build: build-web build-postgres build-gbrain build-cli
 
@@ -58,16 +56,15 @@ build-gbrain:
 	scripts/build_gbrain.sh
 
 # --------------------------------------------------------------------------
-# Nuitka single-binary compilation
+# Self-contained single executable (niuu and its subcommands)
 # --------------------------------------------------------------------------
 build-cli: build-web build-cli-bin
 
-# Compile only — CI calls this after downloading the prebuilt web-assets
+# Package only — CI calls this after downloading the prebuilt web-assets
 # artifact into web-next/apps/niuu/dist; the binary runners have no pnpm.
 build-cli-bin:
-	uv run --extra cli python -m cli.build \
+	uv run --frozen --no-dev --extra cli python scripts/build_pyapp.py \
 		--name $(BINARY_NAME) \
-		--entry $(ENTRY_POINT) \
 		--output-dir $(OUTPUT_DIR)
 
 # --------------------------------------------------------------------------

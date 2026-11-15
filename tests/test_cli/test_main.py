@@ -98,7 +98,7 @@ class TestNiuuMainModule:
 
         captured_env: dict[str, str] = {}
 
-        def capture_app() -> None:
+        def capture_app(**kwargs) -> None:
             captured_env["NIUU_CONFIG"] = os.environ.get("NIUU_CONFIG", "")
 
         mock_app = MagicMock(side_effect=capture_app)
@@ -112,12 +112,13 @@ class TestNiuuMainModule:
 
             main()
 
+        mock_app.assert_called_once_with(prog_name="niuu")
         assert captured_env["NIUU_CONFIG"] == str(config_file)
 
     def test_main_skips_default_when_config_does_not_exist(self, tmp_path: Path) -> None:
         captured_env: dict[str, str | None] = {}
 
-        def capture_app() -> None:
+        def capture_app(**kwargs) -> None:
             captured_env["NIUU_CONFIG"] = os.environ.get("NIUU_CONFIG")
 
         mock_app = MagicMock(side_effect=capture_app)
@@ -131,4 +132,5 @@ class TestNiuuMainModule:
 
             main()
 
+        mock_app.assert_called_once_with(prog_name="niuu")
         assert captured_env["NIUU_CONFIG"] is None

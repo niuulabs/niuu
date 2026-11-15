@@ -18,7 +18,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import StrEnum
 
-from fastapi import Request
+from starlette.requests import Request
 
 
 class AuthMode(StrEnum):

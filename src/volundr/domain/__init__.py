@@ -2,10 +2,9 @@
 
 from typing import TYPE_CHECKING
 
-from volundr.domain.models import Session, SessionStatus
-from volundr.domain.ports import PodManager, SessionRepository
-
 if TYPE_CHECKING:
+    from volundr.domain.models import Session, SessionStatus
+    from volundr.domain.ports import PodManager, SessionRepository
     from volundr.domain.services import SessionService
 
 __all__ = [
@@ -18,7 +17,15 @@ __all__ = [
 
 
 def __getattr__(name: str):
-    """Lazily import heavyweight service exports to avoid config import cycles."""
+    """Load public exports only when requested, keeping compute configuration lightweight."""
+    if name in {"Session", "SessionStatus"}:
+        from volundr.domain import models
+
+        return getattr(models, name)
+    if name in {"PodManager", "SessionRepository"}:
+        from volundr.domain import ports
+
+        return getattr(ports, name)
     if name == "SessionService":
         from volundr.domain.services import SessionService
 
