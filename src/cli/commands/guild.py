@@ -46,9 +46,13 @@ def create_guild_commands(settings: CLISettings) -> typer.Typer:
         import asyncio
 
         from cli.api.guild import GuildAPIError, mint_pairing_code
-        from cli.auth.credentials import CredentialStore
+        from cli.auth.credentials import CredentialReadError, CredentialStore
 
-        tokens = CredentialStore().load()
+        try:
+            tokens = CredentialStore().load()
+        except CredentialReadError as exc:
+            typer.echo(f"Error: {exc}")
+            raise typer.Exit(1) from None
         if tokens is None:
             typer.echo("Not authenticated. Run 'niuu login' first.")
             raise typer.Exit(1)

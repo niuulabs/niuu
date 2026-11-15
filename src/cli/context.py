@@ -10,7 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from cli.auth.credentials import CredentialStore, StoredTokens
+from cli.auth.credentials import CredentialReadError, CredentialStore, StoredTokens
 from cli.config import LOCAL_CONTEXT, CLISettings
 
 #: Bind addresses that mean "every interface"; a client connects to loopback instead.
@@ -77,7 +77,10 @@ def login_for(
     A context that names its issuer refuses a login from another issuer: sending that
     token would only earn a 401 that hides the cause.
     """
-    tokens = (store or CredentialStore()).load()
+    try:
+        tokens = (store or CredentialStore()).load()
+    except CredentialReadError as exc:
+        raise ContextError(str(exc)) from exc
     if tokens is None or not context.issuer:
         return tokens
     if tokens.issuer.rstrip("/") == context.issuer.rstrip("/"):

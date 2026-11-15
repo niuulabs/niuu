@@ -37,6 +37,16 @@ class TestGuildPair:
         assert result.exit_code == 1
         assert "not authenticated" in result.output.lower()
 
+    def test_an_unreadable_login_says_how_to_fix_it(self) -> None:
+        from cli.auth.credentials import CredentialReadError
+
+        app = _build_test_app()
+        unreadable = CredentialReadError("The login at x cannot be read; run `niuu login` again")
+        with patch("cli.auth.credentials.CredentialStore.load", side_effect=unreadable):
+            result = runner.invoke(app, ["guild", "pair", "https://guild.example.com"])
+        assert result.exit_code == 1
+        assert "run `niuu login` again" in result.output
+
     def test_mints_and_prints_the_code(self) -> None:
         app = _build_test_app()
         tokens = StoredTokens(access_token="operator-token")

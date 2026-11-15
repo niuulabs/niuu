@@ -118,6 +118,14 @@ class TestIdentityCommands:
         assert result.exit_code == 1
         assert "not authenticated" in result.output.lower()
 
+    def test_whoami_with_an_unreadable_login_says_how_to_fix_it(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("NIUU_HOME", str(tmp_path))
+        (tmp_path / "login").write_bytes(b"garbage")
+        app, _, _ = _build_test_app()
+        result = runner.invoke(app, ["whoami"])
+        assert result.exit_code == 1
+        assert "run `niuu login` again" in result.output
+
 
 class TestPluginWorkflowCommands:
     def test_plugin_commands_registered_at_top_level(self) -> None:

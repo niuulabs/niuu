@@ -123,6 +123,16 @@ class TestLoginFor:
         with pytest.raises(ContextError, match="logged in to an unknown issuer"):
             login_for(find(settings, "ymir"), self._store(tokens))
 
+    def test_an_unreadable_login_is_a_context_error(self) -> None:
+        from cli.auth.credentials import CredentialReadError
+
+        def unreadable(_self):
+            raise CredentialReadError("cannot be read; run `niuu login` again")
+
+        store = type("Store", (), {"load": unreadable})()
+        with pytest.raises(ContextError, match="run `niuu login` again"):
+            login_for(find(CLISettings(), "local"), store)
+
     def test_refresher_needs_issuer_and_client(self) -> None:
         store = self._store(None)
         assert refresher(None, store) is None

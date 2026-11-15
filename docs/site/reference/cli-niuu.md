@@ -345,7 +345,7 @@ niuu login [OPTIONS]
 | Option | Type | Default | Description |
 | --- | --- | --- | --- |
 | `--issuer`, `-i` | STR |  | OIDC issuer URL (default: the active context's issuer). Env: `NIUU_OIDC_ISSUER` |
-| `--client-id` | STR | `niuu-cli` | OIDC client ID. Env: `NIUU_OIDC_CLIENT_ID` |
+| `--client-id` | STR | `volundr-cli` | OIDC client ID (the charts' authDiscovery.cliClientId). Env: `NIUU_OIDC_CLIENT_ID` |
 
 #### `niuu logout`
 

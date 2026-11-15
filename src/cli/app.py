@@ -239,9 +239,9 @@ def build_app(
             envvar="NIUU_OIDC_ISSUER",
         ),
         client_id: str = typer.Option(
-            "niuu-cli",
+            "volundr-cli",
             "--client-id",
-            help="OIDC client ID.",
+            help="OIDC client ID (the charts' authDiscovery.cliClientId).",
             envvar="NIUU_OIDC_CLIENT_ID",
         ),
     ) -> None:
@@ -424,10 +424,15 @@ def build_app(
     @app.command()
     def whoami() -> None:
         """Show the currently authenticated user."""
+        from cli.auth.credentials import CredentialReadError
         from cli.auth.oidc import OIDCClient
 
         oidc = OIDCClient(issuer="", client_id="")
-        claims = oidc.whoami()
+        try:
+            claims = oidc.whoami()
+        except CredentialReadError as exc:
+            typer.echo(f"Error: {exc}")
+            raise typer.Exit(1) from None
         if not claims:
             typer.echo("Not authenticated. Run 'niuu login' first.")
             raise typer.Exit(1)
