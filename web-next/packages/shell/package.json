@@ -44,7 +44,7 @@
     "postcss": "^8.5.32",
     "postcss-import": "^17.0.1",
     "react": "^19.3.1",
-    "tailwindcss": "^4.3.4",
+    "tailwindcss": "^4.3.5",
     "tsup": "^9.0.0",
     "typescript": "^6.0.3",
     "react-dom": "^19.3.1",
