@@ -1058,6 +1058,21 @@ Only an empty machine is ever disposed for being surplus or idle, and only while
 the free slots left stay at `warm_min`; a machine with a session is never touched.
 Idle expiry (`idle_timeout_seconds`) applies to empty machines above that count.
 
+**An idle machine is asked before it gets a session.** The pool checks a machine's
+guest once, when it warms it; the machine can then sit idle for days. Before a
+session is bound to an empty idle machine, Forge reaches its guest again the way the
+session's start would. A machine that does not answer is failed with the reason
+(`Idle VM stopped answering: VM SSH connection unavailable; …: ssh: connect to host …
+port 22: Connection timed out`), logged at error, counted on
+`volundr.compute.warm.unreachable`, and disposed of by the next maintenance pass;
+the session takes another machine or boots one. A rising count means warm guests
+are dying while idle: look at the guest's console and network, or set
+**Machine lifetime (seconds)** so spares are replaced.
+
+When ssh itself fails (exit 255), the guest stage and the session error carry the
+OpenSSH client's own reason (a timeout, a refused key, a changed host key). Nothing
+else from the guest command's stderr is shown, since it may carry credentials.
+
 **Draining.** Under **Replace VM**, a machine takes new sessions until it has served
 **Sessions before replacement** (`max_sessions_per_machine`; unset means one per
 slot) or reached **Machine lifetime (seconds)** (`max_machine_age_seconds`; unset
@@ -1101,7 +1116,8 @@ With the existing Niuu observability exporter enabled, monitor
 `warm_min` is compared with), `volundr.compute.assignments` by
 warm/cold source, `volundr.compute.warm.duration`,
 `volundr.compute.warm.capacity_hits` (the pool is at its maximum and short of free
-warm slots), `volundr.compute.reconcile.duration` and
+warm slots), `volundr.compute.warm.unreachable` (an idle machine failed its check
+before a session was bound to it), `volundr.compute.reconcile.duration` and
 `volundr.compute.reconcile.errors`.
 A growing failed/draining/quarantined count explains unavailable capacity.
 Admin operations require the existing `volundr:admin` role. Runtime session

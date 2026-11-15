@@ -1784,6 +1784,56 @@ async def test_a_machine_busy_past_the_placement_wait_is_skipped_and_counted(
     assert "placement_lock_wait_seconds" in caplog.text
 
 
+async def test_an_idle_warm_machine_is_asked_before_a_session_is_bound_to_it(setup):
+    pool, manager, repository, session = _warm_pool(setup)
+    await pool.maintain()
+    await pool.maintain()
+    runtime = setup[4]
+    runtime.prepare.reset_mock()
+
+    bound = await manager._claim_warm(session, SPEC)
+
+    assert bound is not None
+    runtime.prepare.assert_awaited_once()
+    assert runtime.prepare.await_args.args[0].id == bound.id
+
+
+async def test_an_idle_warm_machine_that_stopped_answering_is_failed_loudly_and_not_bound(
+    setup, monkeypatch, caplog
+):
+    pool, manager, repository, session = _warm_pool(setup)
+    await pool.maintain()
+    await pool.maintain()
+    spare = next(iter(repository.leases.values()))
+    assert spare.state == LeaseState.IDLE
+    runtime = setup[4]
+    reason = (
+        "VM SSH connection unavailable; check readiness and pinned identity: "
+        "ssh: connect to host 192.0.2.10 port 22: Connection timed out"
+    )
+    runtime.prepare.side_effect = VmRuntimeUnavailableError(reason)
+    counted = []
+
+    class Observability:
+        def count(self, name, *args, **kwargs):
+            counted.append(name)
+
+    monkeypatch.setattr(vm_pod_manager, "get_observability", Observability)
+
+    with caplog.at_level("ERROR"):
+        assert await manager._claim_warm(session, SPEC) is None
+
+    failed = repository.leases[spare.id]
+    assert failed.state == LeaseState.FAILED
+    assert failed.error == f"Idle VM stopped answering: {reason}"
+    assert not await repository.slots(spare.id)
+    assert counted == ["volundr.compute.warm.unreachable"]
+    assert "Connection timed out" in caplog.text
+    # The pool disposes of the failed machine on its next pass.
+    await pool.maintain()
+    assert repository.leases[spare.id].state != LeaseState.FAILED
+
+
 async def test_placement_waits_for_a_machine_its_neighbours_hold_for_a_moment(setup):
     pool, manager, repository, session = _warm_pool(setup)
     await pool.maintain()

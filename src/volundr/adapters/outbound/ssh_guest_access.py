@@ -110,6 +110,44 @@ _TRUST_DELIVERY = {
 }
 
 
+#: What the OpenSSH client itself prints when it exits 255: the reason the connection,
+#: the key exchange or authentication failed. Only these lines leave the process; the
+#: rest of stderr belongs to the guest command and may carry anything.
+_SSH_CLIENT_DIAGNOSTICS = tuple(
+    re.compile(pattern)
+    for pattern in (
+        r"ssh: .+",
+        r"Host key verification failed\.",
+        r"Host key for \S+ has changed and you have requested strict checking\.",
+        r"No \S+ host key is known for \S+ and you have requested strict checking\.",
+        r"@+\s+WARNING: .+\s+@+",
+        r"\S+@\S+: Permission denied \([a-z,-]+\)\.",
+        r"Connection (?:closed|reset) by \S+(?: port \d+)?",
+        r"Connection timed out during banner exchange",
+        r"Connection to \S+ port \d+ timed out",
+        r"kex_exchange_identification: .+",
+        r"banner exchange: .+",
+        r"Received disconnect from .+",
+        r"Timeout, server \S+ not responding\.",
+        r"client_loop: .+",
+        r"Load key .+",
+        r"Bad owner or permissions on .+",
+    )
+)
+
+
+def ssh_client_diagnostic(stderr: bytes) -> str:
+    """The OpenSSH client's own failure lines in ``stderr``, joined; empty when it printed none."""
+    lines = stderr.decode(errors="replace").splitlines() if stderr else []
+    found: list[str] = []
+    for line in (raw.strip() for raw in lines):
+        if not re.fullmatch(r"[\x20-\x7e]+", line) or line in found:
+            continue
+        if any(pattern.fullmatch(line) for pattern in _SSH_CLIENT_DIAGNOSTICS):
+            found.append(line)
+    return "; ".join(found)
+
+
 def _replace_file(path: Path, content: str) -> None:
     temporary = path.with_name(f".{path.name}.tmp")
     temporary.unlink(missing_ok=True)
@@ -497,8 +535,14 @@ class SshGuestAccess(GuestAccess):
         safe_detail_prefix: str | None,
     ) -> None:
         if returncode == 255:
+            # ssh exits 255 for its own failures; say which one, or the operator is left
+            # guessing between a dead guest, a refused key and a changed host key.
+            reason = ssh_client_diagnostic(stderr) or (
+                "ssh exited 255 without a client diagnostic, so the guest command itself "
+                "may have exited 255"
+            )
             raise VmRuntimeUnavailableError(
-                "VM SSH connection unavailable; check readiness and pinned identity"
+                f"VM SSH connection unavailable; check readiness and pinned identity: {reason}"
             )
         detail = None
         diagnostic = ""

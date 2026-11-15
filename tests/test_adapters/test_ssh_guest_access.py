@@ -19,6 +19,7 @@ from volundr.adapters.outbound.ssh_guest_access import (
     HOST_KEY_CONFIG_PATH,
     HOST_KEY_PATH,
     SshGuestAccess,
+    ssh_client_diagnostic,
 )
 from volundr.domain.compute import (
     BootstrapFile,
@@ -325,7 +326,7 @@ def test_without_a_proxy_command_the_machine_is_dialled_directly(registered):
 # -- delivering the bootstrap -------------------------------------------------------------------
 
 
-def _fake_ssh(monkeypatch, returncode=0):
+def _fake_ssh(monkeypatch, returncode=0, stderr=b""):
     calls = []
 
     async def spawn(*argv, **kwargs):
@@ -334,7 +335,7 @@ def _fake_ssh(monkeypatch, returncode=0):
 
         async def communicate(data=None):
             calls.append((list(argv), data))
-            return None, b""
+            return None, stderr
 
         process.communicate = communicate
         return process
@@ -388,6 +389,54 @@ async def test_ensure_in_registered_mode_fails_loudly_when_the_host_is_unreachab
         await registered.ensure(lease, MachineBootstrap())
 
     assert not registered.bootstrap_verified_marker(lease).exists()
+
+
+async def test_an_ssh_failure_names_the_clients_own_reason(registered, monkeypatch):
+    _fake_ssh(
+        monkeypatch,
+        returncode=255,
+        stderr=b"ssh: connect to host 192.0.2.10 port 22: Connection timed out\r\n",
+    )
+
+    with pytest.raises(VmRuntimeUnavailableError) as raised:
+        await registered.ensure(_lease(), MachineBootstrap())
+
+    assert str(raised.value) == (
+        "VM SSH connection unavailable; check readiness and pinned identity: "
+        "ssh: connect to host 192.0.2.10 port 22: Connection timed out"
+    )
+
+
+async def test_an_exit_255_never_carries_the_guest_commands_own_output(registered, monkeypatch):
+    _fake_ssh(monkeypatch, returncode=255, stderr=b"token=s3cr3t\nTraceback: boom\n")
+
+    with pytest.raises(VmRuntimeUnavailableError) as raised:
+        await registered.ensure(_lease(), MachineBootstrap())
+
+    assert "s3cr3t" not in str(raised.value)
+    assert "Traceback" not in str(raised.value)
+    assert "without a client diagnostic" in str(raised.value)
+
+
+def test_the_ssh_client_diagnostic_keeps_only_client_lines_once_each():
+    stderr = (
+        b"Warning: Permanently added 'x' (ED25519) to the list of known hosts.\n"
+        b"@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@\n"
+        b"@    WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED!     @\n"
+        b"Host key for niuu-abc has changed and you have requested strict checking.\n"
+        b"Host key verification failed.\n"
+        b"Host key verification failed.\n"
+        b"cat: /etc/shadow: Permission denied\n"
+        b"ubuntu@192.0.2.10: Permission denied (publickey).\n"
+    )
+
+    assert ssh_client_diagnostic(stderr) == (
+        "@    WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED!     @; "
+        "Host key for niuu-abc has changed and you have requested strict checking.; "
+        "Host key verification failed.; "
+        "ubuntu@192.0.2.10: Permission denied (publickey)."
+    )
+    assert ssh_client_diagnostic(b"") == ""
 
 
 async def test_ensure_in_provider_mode_still_waits_for_cloud_init(tmp_path, keys, monkeypatch):

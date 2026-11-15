@@ -1133,17 +1133,17 @@ class VmPodManager(PodManager):
             try:
                 async with repository.operation(candidate.id):
                     lease = await repository.get(candidate.id)
+                    if lease is None:
+                        return None
+                    slots = await repository.slots(lease.id)
                     # Re-check under the allocation lock: a concurrent start may have taken it.
-                    if (
-                        lease is None
-                        or usable_slots(
-                            lease, await repository.slots(lease.id), policy, datetime.now(UTC)
-                        )
-                        < 1
-                        or not await service.compatible(lease)
-                    ):
+                    if usable_slots(
+                        lease, slots, policy, datetime.now(UTC)
+                    ) < 1 or not await service.compatible(lease):
                         return None
                     machine_bootstrap = await service.machine_bootstrap_for(lease)
+                    if not await self._idle_guest_answers(lease, slots, runtime, machine_bootstrap):
+                        return None
                     if isinstance(runtime, ProfileAwareVmRuntime):
                         bootstrap = runtime.session_bootstrap_for(
                             profile, session, spec, machine_bootstrap
@@ -1181,6 +1181,50 @@ class VmPodManager(PodManager):
                     )
                     return None
                 await asyncio.sleep(self._poll)
+
+    async def _idle_guest_answers(
+        self,
+        lease: ComputeLease,
+        slots: list[ComputeSlot],
+        runtime: VmRuntime,
+        machine_bootstrap: MachineBootstrap,
+    ) -> bool:
+        """Prove an idle warm machine still answers before a session is bound to it.
+
+        The pool verifies a machine once, when it warms it; the machine can then sit idle
+        for days and through many Forge restarts. A session bound to one that no longer
+        answers waits out the whole provisioning timeout on it, so an idle machine is asked
+        first. One that does not answer is failed, loudly, for the pool to replace, and
+        placement moves on. Called under the machine's allocation lock.
+        """
+        if lease.state is not LeaseState.IDLE or any(
+            slot.state is not SlotState.RELEASED for slot in slots
+        ):
+            return True
+        try:
+            await runtime.prepare(lease, machine_bootstrap)
+        except VmRuntimeUnavailableError as exc:
+            get_observability().count(
+                "volundr.compute.warm.unreachable", attributes={"pool": self._pool_id}
+            )
+            logger.error(
+                "Compute pool %s: idle machine %s did not answer before a session was bound "
+                "to it; failing it for the pool to replace: %s",
+                self._pool_id,
+                lease.id,
+                exc,
+            )
+            _, repository, _ = self._configured()
+            await repository.save(
+                lease.model_copy(
+                    update={
+                        "state": LeaseState.FAILED,
+                        "error": f"Idle VM stopped answering: {exc}",
+                    }
+                )
+            )
+            return False
+        return True
 
     async def _requested_profile(self, session: Session) -> str:
         """Resolve an operator-approved compute profile for this session.
