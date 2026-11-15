@@ -4,35 +4,38 @@ COPY containers/python-security/ /security/
 RUN apt-get update && apt-get install -y --no-install-recommends patch \
     && python /security/build.py /patched-stdlib
 
-# Compose v5.7.0 already requires the patched containerd v2.4.2 and golang.org/x/net
+# Compose v5.7.1 already requires the patched containerd v2.4.2 and golang.org/x/net
 # v0.60.0 (GO-2026-6603/6611/6612) but still pins klauspost/compress v1.20.0
-# (GO-2026-6865, fixed in v1.20.2), and its published binary is built with Go 1.26.10.
-# Build the release with Go 1.27.3 and klauspost/compress v1.20.3 (the version gh
-# v2.103.3 ships) until upstream moves past v1.20.0.
-FROM --platform=$BUILDPLATFORM golang:1.27.3-alpine3.23@sha256:754d5200fc3edae76d3b6598a9a3fac7e74981ee6a5413ab955025f185753ef2 AS compose-build
+# (GO-2026-6865, fixed in v1.20.2) and go.opentelemetry.io/otel v1.46.0
+# (GHSA-q7gw-24fr-5p69, fixed in v1.47.0), and its published binary is built with
+# Go 1.26.10 (GO-2026-6859, fixed in 1.26.11 and 1.27.4). Build the release with
+# Go 1.27.4, klauspost/compress v1.20.4 and otel v1.47.0 (the versions gh v2.104.0
+# ships) until upstream moves past them.
+FROM --platform=$BUILDPLATFORM golang:1.27.4-alpine3.23@sha256:146e3b9c7c1e2ec3d3f5348c8a686151a75e1976e50efac9fc022ebe446a9a82 AS compose-build
 ARG TARGETARCH
 WORKDIR /src
-RUN wget -q https://github.com/docker/compose/archive/refs/tags/v5.7.0.tar.gz -O /tmp/compose.tar.gz \
-    && echo "98f5b7dd4a66d8a2d9289e918fa0f63e5ff9821623950e53e633571a78b30d63  /tmp/compose.tar.gz" | sha256sum -c - \
+RUN wget -q https://github.com/docker/compose/archive/refs/tags/v5.7.1.tar.gz -O /tmp/compose.tar.gz \
+    && echo "bd108789759d3e17ae5532dd6eee67b427dade4c85089daa2f85d6c8f3e3ccb6  /tmp/compose.tar.gz" | sha256sum -c - \
     && tar -xzf /tmp/compose.tar.gz --strip-components=1 \
-    && go get github.com/klauspost/compress@v1.20.3 \
+    && go get github.com/klauspost/compress@v1.20.4 go.opentelemetry.io/otel@v1.47.0 \
+        go.opentelemetry.io/otel/sdk@v1.47.0 go.opentelemetry.io/otel/trace@v1.47.0 \
     && CGO_ENABLED=0 GOOS=linux GOARCH=$TARGETARCH go build -trimpath -tags e2e \
-        -ldflags '-w -X github.com/docker/compose/v5/internal.Version=v5.7.0-niuu.1' \
+        -ldflags '-w -X github.com/docker/compose/v5/internal.Version=v5.7.1-niuu.1' \
         -o /out/docker-compose ./cmd
 
-# gh v2.103.3 requires klauspost/compress v1.20.3 in its go.mod
-# (GO-2026-6865, fixed in v1.20.2) and golang.org/x/net v0.60.0 (GO-2026-6603/6604/
-# 6611/6612), so no module override is needed. Build it from the checksum-verified
-# source with Go 1.27.3, which satisfies its `toolchain go1.27.3`, to keep the
-# version pinned and the toolchain current.
-FROM --platform=$BUILDPLATFORM golang:1.27.3-alpine3.23@sha256:754d5200fc3edae76d3b6598a9a3fac7e74981ee6a5413ab955025f185753ef2 AS gh-build
+# gh v2.104.0 requires klauspost/compress v1.20.4 (GO-2026-6865, fixed in v1.20.2),
+# go.opentelemetry.io/otel v1.47.0 (GHSA-q7gw-24fr-5p69) and golang.org/x/net
+# v0.60.0 or later, so no module override is needed. Build it from the
+# checksum-verified source with Go 1.27.4, which satisfies its `toolchain go1.27.4`
+# (GO-2026-6859), to keep the version pinned and the toolchain current.
+FROM --platform=$BUILDPLATFORM golang:1.27.4-alpine3.23@sha256:146e3b9c7c1e2ec3d3f5348c8a686151a75e1976e50efac9fc022ebe446a9a82 AS gh-build
 ARG TARGETARCH
 WORKDIR /src
-RUN wget -q https://github.com/cli/cli/archive/refs/tags/v2.103.3.tar.gz -O /tmp/gh.tar.gz \
-    && echo "bb148138a3a2fe023e57c78042fe3b42fc09171c0e8fff4cf983b227b7a2eade  /tmp/gh.tar.gz" | sha256sum -c - \
+RUN wget -q https://github.com/cli/cli/archive/refs/tags/v2.104.0.tar.gz -O /tmp/gh.tar.gz \
+    && echo "779060cbdc5a354fa2fc8afb56e9277f64a29ac599daefd941558356509081e4  /tmp/gh.tar.gz" | sha256sum -c - \
     && tar -xzf /tmp/gh.tar.gz --strip-components=1 \
     && CGO_ENABLED=0 GOOS=linux GOARCH=$TARGETARCH go build -trimpath \
-        -ldflags '-s -w -X github.com/cli/cli/v2/internal/build.Version=2.103.3-niuu.1 -X github.com/cli/cli/v2/internal/build.Date=2026-10-26' \
+        -ldflags '-s -w -X github.com/cli/cli/v2/internal/build.Version=2.104.0-niuu.1 -X github.com/cli/cli/v2/internal/build.Date=2026-11-12' \
         -o /out/gh ./cmd/gh
 
 # BuildKit keeps the native wheel in its existing per-platform CI cache.
