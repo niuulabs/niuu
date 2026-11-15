@@ -10,6 +10,21 @@ from uuid import UUID
 
 from niuu.observability import get_observability
 from niuu.ports.session_proxy import SessionProxyTarget
+from volundr.adapters.outbound.mesh_settings import (
+    add_mesh_env_to_spec,
+    mesh_is_nng,
+    mesh_with_defaults,
+    parse_mesh_settings,
+    require_unit_mesh,
+)
+from volundr.adapters.outbound.vm_hosted_unit import (
+    HOSTED_MEMBERS_KEY,
+    UNIT_MESH_REGISTRY,
+    HostedMemberLaunch,
+    HostedUnitError,
+    HostedUnitVmRuntime,
+    member_entry,
+)
 from volundr.domain.compute import (
     ComputeLease,
     ComputeLeaseBusyError,
@@ -33,10 +48,17 @@ from volundr.domain.execution_catalog import (
     ResolvedExecutionPlan,
 )
 from volundr.domain.host_preparation import HostPreparation
+from volundr.domain.models import HOSTED_MEMBERS_KEY as UNIT_MEMBERS_KEY
 from volundr.domain.models import Session, SessionSpec, SessionStatus
-from volundr.domain.ports import PodManager, PodStartResult, SessionCapacity
+from volundr.domain.ports import (
+    HostedMemberSource,
+    PodManager,
+    PodStartResult,
+    SessionCapacity,
+)
 from volundr.domain.services.compute_leases import ComputeLeaseService
 from volundr.domain.services.execution_catalog import ExecutionPlanResolver
+from volundr.domain.services.forge_session_launch import launch_id_of
 from volundr.domain.session_runtimes import (
     ReadinessState,
     RuntimeReadiness,
@@ -62,12 +84,15 @@ class VmPodManager(PodManager):
     def runtime_backend(self) -> str:
         return "vm"
 
+    #: Takes Skuld's ``mesh`` settings and hands them to every session (``mesh_settings``).
+    carries_mesh_setting = True
+
     def __init__(
         self,
         *,
         profile: str,
         pool_id: str,
-        max_machines: int,
+        max_machines: int | None = None,
         server_host: str = "127.0.0.1",
         server_public_host: str = "127.0.0.1",
         server_port: int = 8080,
@@ -78,10 +103,13 @@ class VmPodManager(PodManager):
         runtime_wait_log_every: int = 10,
         runtime_wait_surface_after: int = 3,
         placement_lock_wait_seconds: float = 15,
+        mesh: dict | str | None = None,
         **_extra,
     ):
-        if not profile or not pool_id or max_machines < 1:
-            raise ValueError("VM sessions require a profile, pool_id and positive max_machines")
+        if not profile or not pool_id:
+            raise ValueError("VM sessions require a profile and pool_id")
+        if max_machines is not None and max_machines < 1:
+            raise ValueError("VM sessions require a positive max_machines")
         if (
             min(
                 provisioning_timeout_seconds,
@@ -95,6 +123,7 @@ class VmPodManager(PodManager):
         if min(runtime_wait_log_every, runtime_wait_surface_after) < 1:
             raise ValueError("VM runtime wait reporting counts must be positive")
         self._profile, self._pool_id, self._limit = profile, pool_id, max_machines
+        self._mesh = parse_mesh_settings(mesh)
         self._origin = (public_origin or f"http://{server_public_host}:{server_port}").rstrip("/")
         self._provisioning_timeout = provisioning_timeout_seconds
         self._cleanup_timeout = cleanup_timeout_seconds
@@ -126,6 +155,10 @@ class VmPodManager(PodManager):
         self._recoveries: dict[tuple[UUID, UUID], asyncio.Task] = {}
         # Session id -> the stages of its current start, as this controller drove them.
         self._progress: dict[UUID, SessionStartup] = {}
+        self._hosted_members: HostedMemberSource | None = None
+        # Member id -> the launch its Skuld was started under in its unit, so a new launch
+        # the unit did not start (a member started again by itself) is restarted in place.
+        self._member_launches: dict[UUID, str] = {}
 
     def _runtimes(self) -> tuple[VmRuntime, ...]:
         return (
@@ -150,7 +183,7 @@ class VmPodManager(PodManager):
         bootstrap: MachineBootstrap,
         *,
         pool_id: str,
-        max_machines: int,
+        max_machines: int | None,
         owns_runtime: bool = True,
     ):
         if (pool_id, max_machines) != (self._pool_id, self._limit):
@@ -438,7 +471,7 @@ class VmPodManager(PodManager):
 
     async def capacity(self) -> SessionCapacity:
         """Session slots, not machines: a machine counts as many as it has slots."""
-        _, repository, _ = self._configured()
+        service, repository, _ = self._configured()
         machines = await repository.list(self._pool_id, include_released=False)
         bindings = await repository.machine_slots(self._pool_id)
         policy = await self._pool_service.policy() if self._pool_service else None
@@ -457,14 +490,20 @@ class VmPodManager(PodManager):
             occupied = sum(b.state is not SlotState.RELEASED for b in bindings.get(machine.id, []))
             return max(0, machine.slots - occupied)
 
+        if service.fixed_inventory:
+            # Registered hosts: the pool grows by the hosts that can be claimed now.
+            new_machines = await service.claimable(policy.profile if policy else self._profile)
+            remedy = "register or resume a host"
+        else:
+            new_machines = max_machines - len(machines)
+            remedy = "increase pool capacity or drain unused machines in admin settings"
         return SessionCapacity(
             limit=max(
                 0,
-                sum(machine.slots for machine in machines)
-                + (max_machines - len(machines)) * slots_per_machine,
+                sum(machine.slots for machine in machines) + new_machines * slots_per_machine,
             ),
             active=sum(machine.slots - free(machine) for machine in machines),
-            remedy="increase pool capacity or drain unused machines in admin settings",
+            remedy=remedy,
         )
 
     async def capacity_for(self, session: Session) -> SessionCapacity:
@@ -612,10 +651,103 @@ class VmPodManager(PodManager):
     def _runtime_step(self, session_id: UUID, key: str, label: str) -> None:
         self._set_stage(session_id, key, label, StartupStageState.ACTIVE)
 
+    @staticmethod
+    def _unit_member_ids(session: Session) -> list[UUID]:
+        """The members a unit root was started with; empty for any other session."""
+        members = session.workload_config.get(UNIT_MEMBERS_KEY) or []
+        return [UUID(member["id"]) for member in members]
+
+    def _unit_mesh(self, unit_id: UUID) -> dict:
+        """The mesh settings of a unit: its Skulds find each other in the unit's directory."""
+        require_unit_mesh(self._mesh, unit_id=unit_id, where="this VM pod manager's mesh")
+        return mesh_with_defaults(
+            self._mesh,
+            {"discovery_adapters": [{"adapter": "registry", "path": UNIT_MESH_REGISTRY}]},
+        )
+
+    def _single_mesh(self) -> dict:
+        """The mesh settings of a session that is not a workflow run's unit.
+
+        Only a unit's Skulds can find each other over nng here: they share a machine and its
+        registry file. A session alone in its machine or slot has no peer it could discover
+        (slots do not share a network), and Skuld refuses an nng mesh without discovery
+        rather than run alone, so such a session gets the operator's other mesh settings
+        without ``enabled``. A mesh on a transport with its own discovery, or one the
+        operator gave discovery, is passed as configured.
+        """
+        mesh = self._mesh
+        if not mesh_is_nng(mesh) or mesh.get("discovery_adapters") or mesh.get("adapters"):
+            return mesh
+        return {key: value for key, value in mesh.items() if key != "enabled"}
+
+    async def _runtime_for_start(self, session: Session) -> VmRuntime:
+        """The runtime that will run ``session``, before its machine is claimed."""
+        _, repository, legacy_runtime = self._configured()
+        lease = await repository.active_for_session(self._pool_id, session.id)
+        if lease is not None:
+            return await self._runtime_for_lease(lease)
+        if "_compute_execution" in session.workload_config:
+            plan = await self.execution_for(session)
+            return self._execution_runtimes[plan.plan_digest]
+        return legacy_runtime
+
+    @staticmethod
+    def _hosting(runtime: VmRuntime) -> HostedUnitVmRuntime:
+        if not isinstance(runtime, HostedUnitVmRuntime):
+            raise HostedUnitError(
+                f"{type(runtime).__name__} cannot host a workflow run's members in one machine "
+                "or slot; run the unit's compute pool on the container or host VM runtime"
+            )
+        return runtime
+
+    async def _prepare_unit(self, session: Session, spec: SessionSpec) -> None:
+        """Put the unit's members into ``spec`` for the runtime, and hold their credentials.
+
+        The members come from the source composed at startup; each carries the spec its own
+        contributor pipeline made, with the credential minted for its launch. Nothing of
+        a credential goes into the spec: the runtime holds it in memory like the root's.
+        """
+        if self._hosted_members is None:
+            raise HostedUnitError(
+                f"Session {session.id} is a unit that hosts {len(self._unit_member_ids(session))} "
+                "member session(s), but this VM pod manager has no member source; compose it "
+                "with configure_hosted_members"
+            )
+        self._hosting(await self._runtime_for_start(session))
+        members = list(await self._hosted_members(session.id, None))
+        if sorted(m.session.id for m in members) != sorted(self._unit_member_ids(session)):
+            raise HostedUnitError(
+                f"The members resolved for unit {session.id} differ from the members it was "
+                "started with: a run's members are fixed when its unit starts"
+            )
+        mesh = self._unit_mesh(session.id)
+        entries = []
+        for member in members:
+            add_mesh_env_to_spec(member.spec, mesh)
+            self._stage_member_credential(member)
+            entries.append(member_entry(member))
+        spec.values[HOSTED_MEMBERS_KEY] = entries
+
+    def _stage_member_credential(self, member: HostedMemberLaunch) -> None:
+        credential = member.spec.forge_session
+        launch = launch_id_of(member.session.workload_config)
+        if launch is not None:
+            self._member_launches[member.session.id] = launch
+        if credential is None:
+            return
+        for runtime in self._runtimes():
+            if isinstance(runtime, ForgeSessionVmRuntime):
+                runtime.stage_forge_session(member.session.id, credential)
+
     async def start(self, session: Session, spec: SessionSpec) -> PodStartResult:
+        # Every runtime builds the session's environment from the spec's `env`.
+        unit = bool(self._unit_member_ids(session))
+        add_mesh_env_to_spec(spec, self._unit_mesh(session.id) if unit else self._single_mesh())
         service, repository, legacy_runtime = self._configured()
         async with self._locks.setdefault(session.id, asyncio.Lock()):
             self._begin_progress(session.id)
+            if unit:
+                await self._prepare_unit(session, spec)
             if spec.forge_session is not None:
                 # Held per launch, never in the lease bootstrap: the next start
                 # mints a new credential and revokes this one.
@@ -1189,7 +1321,8 @@ class VmPodManager(PodManager):
 
     async def session_proxy_target(self, session: Session) -> SessionProxyTarget | None:
         service, repository, _ = self._configured()
-        lease = await repository.active_for_session(self._pool_id, session.id)
+        # A member of a run's unit is reached through its unit's machine, on its own port.
+        lease = await repository.active_for_session(self._pool_id, session.hosted_by or session.id)
         if lease is None or lease.binding.state not in {SlotState.STARTING, SlotState.BUSY}:
             return None
         if lease.allocation.state not in {LeaseState.READY, LeaseState.IDLE}:
@@ -1197,7 +1330,10 @@ class VmPodManager(PodManager):
         if not lease.machine or not lease.machine.addresses:
             return None
         runtime = await self._runtime_for_lease(lease)
-        return await runtime.target(lease, await service.bootstrap_for(lease))
+        bootstrap = await service.bootstrap_for(lease)
+        if session.hosted_by is not None:
+            return await self._hosting(runtime).member_target(lease, bootstrap, session.id)
+        return await runtime.target(lease, bootstrap)
 
     async def broker_target(self, session: Session) -> SessionProxyTarget:
         """The guest broker, as the session proxy reaches it.
@@ -1214,21 +1350,27 @@ class VmPodManager(PodManager):
         return target
 
     async def status(self, session: Session) -> SessionStatus:
+        if session.hosted_by is not None:
+            return await self._member_status(session)
+        return await self._status_of(session.id, session.status)
+
+    async def _status_of(self, session_id: UUID, stored: SessionStatus) -> SessionStatus:
+        """The status of the machine or slot ``session_id`` is bound to; ``stored`` is its row's."""
         service, repository, _ = self._configured()
-        view = await repository.active_for_session(self._pool_id, session.id)
+        view = await repository.active_for_session(self._pool_id, session_id)
         if view is None:
             # Session creation persists STARTING before its background task
             # reserves the durable compute lease.  A concurrent liveness sweep
             # must not interpret that normal admission window as a dead VM and
             # terminally reap the session.
-            if session.status in {SessionStatus.STARTING, SessionStatus.PROVISIONING}:
+            if stored in {SessionStatus.STARTING, SessionStatus.PROVISIONING}:
                 return SessionStatus.PROVISIONING
             return SessionStatus.STOPPED
         try:
             machine = await service.reconcile(view.id)
         except ComputeLeaseBusyError:
             # A runtime start/stop owns the claim; do not overwrite its session state.
-            return session.status
+            return stored
         binding = await repository.get_slot(view.binding.id)
         if binding is None or binding.state in {SlotState.RETIRED, SlotState.RELEASED}:
             return SessionStatus.STOPPED
@@ -1259,7 +1401,7 @@ class VmPodManager(PodManager):
             return SessionStatus.PROVISIONING
         if not await runtime.ready(lease, bootstrap):
             return SessionStatus.PROVISIONING
-        self._set_stage(session.id, "broker", "Waiting for the broker", StartupStageState.DONE)
+        self._set_stage(session_id, "broker", "Waiting for the broker", StartupStageState.DONE)
         if binding.state is not SlotState.BUSY:
             try:
                 await service.mark_busy(machine.id, binding.id)
@@ -1268,6 +1410,72 @@ class VmPodManager(PodManager):
                 # so a read must not fail; the next status check records BUSY.
                 pass
         return SessionStatus.RUNNING
+
+    async def _member_status(self, member: Session) -> SessionStatus:
+        """A member's status: its unit's until the unit runs, then its own Skuld's.
+
+        A member has no machine of its own. While its unit starts, stops or fails the member
+        is as the unit is; once the unit runs, the member runs when its Skuld is up and its
+        broker answers, and a Skuld that is gone from a running unit is a failed member.
+        A member whose launch the unit did not start (it was started again by itself) gets
+        its Skuld started again here, in place, under that launch.
+        """
+        unit = await self._status_of(member.hosted_by, member.status)
+        if unit is not SessionStatus.RUNNING:
+            return unit
+        service, repository, _ = self._configured()
+        view = await repository.active_for_session(self._pool_id, member.hosted_by)
+        if view is None:
+            return SessionStatus.STOPPED
+        runtime = self._hosting(await self._runtime_for_lease(view))
+        bootstrap = await service.bootstrap_for(view)
+        async with self._locks.setdefault(member.id, asyncio.Lock()):
+            launch = launch_id_of(member.workload_config)
+            if launch is not None and self._member_launches.get(member.id) != launch:
+                await self._stage_new_launch(member, runtime, view, bootstrap)
+                return SessionStatus.PROVISIONING
+            if not await runtime.member_running(view, bootstrap, member.id):
+                return SessionStatus.FAILED
+            if not await runtime.member_ready(view, bootstrap, member.id):
+                return SessionStatus.PROVISIONING
+        return SessionStatus.RUNNING
+
+    async def restart_hosted_member(self, member: Session) -> None:
+        """Start a member's Skuld again, in place, in its unit's machine or slot."""
+        service, repository, _ = self._configured()
+        view = await repository.active_for_session(self._pool_id, member.hosted_by)
+        if view is None:
+            raise HostedUnitError(
+                f"Unit {member.hosted_by} of member session {member.id} holds no machine or slot "
+                "in this pool, so the member cannot be started again; start the run again"
+            )
+        runtime = self._hosting(await self._runtime_for_lease(view))
+        bootstrap = await service.bootstrap_for(view)
+        async with self._locks.setdefault(member.id, asyncio.Lock()):
+            await self._stage_new_launch(member, runtime, view, bootstrap)
+
+    async def _stage_new_launch(
+        self,
+        member: Session,
+        runtime: HostedUnitVmRuntime,
+        view: SlotLease,
+        bootstrap: MachineBootstrap,
+    ) -> None:
+        """Start a member's Skuld again under its new launch, in its running unit."""
+        if self._hosted_members is None:
+            raise HostedUnitError(
+                f"Member session {member.id} was started again in unit {member.hosted_by}, but "
+                "this VM pod manager has no member source; compose it with "
+                "configure_hosted_members"
+            )
+        launches = list(await self._hosted_members(member.hosted_by, member.id))
+        if [launched.session.id for launched in launches] != [member.id]:
+            raise HostedUnitError(
+                f"The member source answered {[str(m.session.id) for m in launches]} for "
+                f"member {member.id}"
+            )
+        self._stage_member_credential(launches[0])
+        await runtime.restart_member(view, bootstrap, member.id)
 
     async def status_detail(self, session: Session) -> str | None:
         """Expose a provider-safe wait reason without treating it as failure."""
@@ -1301,13 +1509,37 @@ class VmPodManager(PodManager):
             or binding.state in {SlotState.RETIRED, SlotState.RELEASED}
         )
 
+    async def _stop_member(self, member: Session) -> bool:
+        """Stop one member's Skuld and harness; its unit and the other members keep running."""
+        service, repository, _ = self._configured()
+        self._member_launches.pop(member.id, None)
+        for runtime in self._runtimes():
+            if isinstance(runtime, ForgeSessionVmRuntime):
+                runtime.discard_forge_session(member.id)
+        view = await repository.active_for_session(self._pool_id, member.hosted_by)
+        if view is None or view.binding.state not in {SlotState.STARTING, SlotState.BUSY}:
+            # The unit is gone or ending: stopping it stopped every member.
+            return True
+        if view.allocation.state not in {LeaseState.READY, LeaseState.IDLE}:
+            return True
+        runtime = self._hosting(await self._runtime_for_lease(view))
+        async with self._locks.setdefault(member.id, asyncio.Lock()):
+            await runtime.stop_member(view, await service.bootstrap_for(view), member.id)
+        return True
+
     async def stop(self, session: Session) -> bool:
+        if session.hosted_by is not None:
+            return await self._stop_member(session)
         service, repository, _ = self._configured()
         self._wait_reasons.pop(session.id, None)
         self._progress.pop(session.id, None)
         for runtime in self._runtimes():
             if isinstance(runtime, ForgeSessionVmRuntime):
                 runtime.discard_forge_session(session.id)
+                for member_id in self._unit_member_ids(session):
+                    runtime.discard_forge_session(member_id)
+        for member_id in self._unit_member_ids(session):
+            self._member_launches.pop(member_id, None)
         async with self._locks.setdefault(session.id, asyncio.Lock()):
             view = await repository.active_for_session(self._pool_id, session.id)
             if view is None:

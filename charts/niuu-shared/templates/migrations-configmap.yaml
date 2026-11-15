@@ -680,4 +680,51 @@ data:
 
     CREATE INDEX IF NOT EXISTS idx_ravn_budget_ledger_tenant_day
         ON ravn_budget_ledger (tenant_id, day);
+  000117_strip_persona_tool_restrictions.up.sql: |
+    -- Restricting a persona's tools per harness is not available yet: allowed_tools and
+    -- forbidden_tools are gone from the persona model, and the registry refuses a stored or
+    -- submitted document that still carries either. Every stored registry row (written by the
+    -- API, including rows forked from built-in personas) holds both keys in config_json, and
+    -- runtime_config_json holds them when the persona listed a tool, so the keys are removed
+    -- from both before the new code reads them.
+    UPDATE ravn_personas
+    SET config_json = config_json - 'allowed_tools' - 'forbidden_tools',
+        runtime_config_json = runtime_config_json - 'allowed_tools' - 'forbidden_tools'
+    WHERE config_json ?| array['allowed_tools', 'forbidden_tools']
+       OR runtime_config_json ?| array['allowed_tools', 'forbidden_tools'];
+  000117_strip_persona_tool_restrictions.down.sql: |
+    -- The up migration removed the `allowed_tools` and `forbidden_tools` keys from stored
+    -- persona documents. The tool lists are not recorded anywhere else, so they cannot be
+    -- restored, and the persona model no longer has the fields to read them back. This
+    -- migration is deliberately a no-op.
+    SELECT 1;
 {{- end }}
+  000121_project_integrations.up.sql: |
+    -- Team integrations: a connection a Forge project owns instead of one person.
+    -- A project connection's owner_id is `project:<project id>` and its credential is
+    -- stored under the credential owner type `project`, so no per-person lookup ever
+    -- finds it. `connected_by` is the owner who installed it.
+    ALTER TABLE integration_connections ADD COLUMN IF NOT EXISTS project_id UUID;
+    ALTER TABLE integration_connections ADD COLUMN IF NOT EXISTS connected_by TEXT NOT NULL DEFAULT '';
+    CREATE INDEX IF NOT EXISTS idx_integration_connections_project
+        ON integration_connections(project_id) WHERE project_id IS NOT NULL;
+
+    -- Who used a team connection, for whom, and for what.
+    CREATE TABLE IF NOT EXISTS integration_usage (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        connection_id UUID NOT NULL,
+        project_id UUID NOT NULL,
+        acting_for TEXT NOT NULL DEFAULT '',
+        actor TEXT NOT NULL DEFAULT '',
+        action TEXT NOT NULL,
+        subject TEXT NOT NULL DEFAULT '',
+        session_id TEXT NOT NULL DEFAULT '',
+        occurred_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS idx_integration_usage_project
+        ON integration_usage(project_id, occurred_at DESC);
+  000121_project_integrations.down.sql: |
+    DROP TABLE IF EXISTS integration_usage;
+    DROP INDEX IF EXISTS idx_integration_connections_project;
+    ALTER TABLE integration_connections DROP COLUMN IF EXISTS connected_by;
+    ALTER TABLE integration_connections DROP COLUMN IF EXISTS project_id;

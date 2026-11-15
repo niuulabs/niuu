@@ -1564,6 +1564,37 @@ describe('SessionChat', () => {
 
   /* ── Thread groups ── */
 
+  it("never folds a room host's notices, each stands as said", () => {
+    localStorage.setItem('niuu.compactUx.conversationFold', 'compact');
+    const notice = (id: string, content: string): ChatMessage => ({
+      ...roomAssistantMessage,
+      id,
+      content,
+      participant,
+      threadId: undefined,
+      metadata: { messageType: 'notice' },
+    });
+    render(
+      <SessionChat
+        {...defaultProps}
+        connected
+        participants={new Map([[participant.peerId, participant]])}
+        messages={[
+          notice('n1', 'coder started Implement the change.'),
+          notice('n2', 'coder closed Implement the change: pass.'),
+          notice('n3', 'reviewer started Review it.'),
+        ]}
+      />,
+    );
+    for (const text of [
+      'coder started Implement the change.',
+      'coder closed Implement the change: pass.',
+      'reviewer started Review it.',
+    ])
+      expect(screen.getByText(text)).toBeInTheDocument();
+    expect(screen.queryByTestId('worked-toggle')).not.toBeInTheDocument();
+  });
+
   it('folds room work per speaker and thread without hiding other answers', () => {
     localStorage.setItem('niuu.compactUx.conversationFold', 'compact');
     const message = (
@@ -1657,6 +1688,119 @@ describe('SessionChat', () => {
     // The avatar's initial is drawn, so the speaker reads as the model's name alone.
     expect(within(turn).getAllByTestId('model-speaker')[0]).toHaveTextContent(/^Claude Opus 5\.5$/);
     expect(screen.getByText('Shipped.')).toBeInTheDocument();
+  });
+
+  it('lets a click close a turn the tool-calls eye opened', () => {
+    localStorage.clear();
+    const asked = new Date('2026-11-05T12:00:00Z');
+    render(
+      <SessionChat
+        {...defaultProps}
+        messages={[
+          { id: 'q', role: 'user', content: 'Ship it', createdAt: asked, status: 'done' },
+          {
+            id: 'w',
+            role: 'assistant',
+            content: 'Checking the tree.',
+            createdAt: new Date(asked.getTime() + 10_000),
+            status: 'done',
+            parts: [{ type: 'tool_use', id: 't1', name: 'Bash', input: { command: 'ls' } }],
+          },
+          {
+            id: 'a',
+            role: 'assistant',
+            content: 'Shipped.',
+            createdAt: new Date(asked.getTime() + 20_000),
+            status: 'done',
+          },
+        ]}
+      />,
+    );
+    fireEvent.click(screen.getByTestId('internal-toggle'));
+    const worked = screen.getByTestId('worked-toggle');
+    expect(worked).toHaveAttribute('aria-expanded', 'true');
+
+    fireEvent.click(worked);
+
+    expect(worked).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.queryByTestId('worked-steps')).not.toBeInTheDocument();
+  });
+
+  it("folds a coordinator room's work by default, even with the tool-calls eye on", () => {
+    localStorage.setItem('niuu.compactUx.conversationFold', 'compact');
+    render(
+      <SessionChat
+        {...defaultProps}
+        connected
+        participants={
+          new Map([
+            [participant.peerId, participant],
+            [participant2.peerId, participant2],
+          ])
+        }
+        messages={[
+          userMessage,
+          { ...roomAssistantMessage, id: 'a1', content: 'Reviewer work' },
+          { ...roomAssistantMessage, id: 'a2', content: 'Reviewer answer' },
+        ]}
+      />,
+    );
+    fireEvent.click(screen.getByTestId('internal-toggle'));
+    const worked = screen.getByRole('button', { name: /^Reviewer: Worked/ });
+    expect(worked).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.queryByText('Reviewer work')).not.toBeInTheDocument();
+
+    fireEvent.click(worked);
+
+    expect(screen.getByText('Reviewer work')).toBeInTheDocument();
+  });
+
+  it("keeps a speaker's notification card out of its folded work in a room", () => {
+    localStorage.setItem('niuu.compactUx.conversationFold', 'compact');
+    render(
+      <SessionChat
+        {...defaultProps}
+        connected
+        participants={
+          new Map([
+            [participant.peerId, participant],
+            [participant2.peerId, participant2],
+          ])
+        }
+        messages={[
+          userMessage,
+          {
+            ...roomAssistantMessage,
+            id: 'n1',
+            content: 'Migration applied',
+            parts: [
+              {
+                type: 'tool_use',
+                id: 'nt_1',
+                name: 'forge_notification',
+                input: {
+                  notification_id: 'n-1',
+                  kind: 'milestone',
+                  severity: 'success',
+                  title: 'Migration applied',
+                  body: 'All tables exist.',
+                  links: [],
+                },
+              },
+            ],
+          },
+          { ...roomAssistantMessage, id: 'a1', content: 'Reviewer work' },
+          { ...roomAssistantMessage, id: 'a2', content: 'Reviewer answer' },
+        ]}
+      />,
+    );
+
+    expect(screen.getByTestId('notification-card')).toHaveTextContent('Migration applied');
+    expect(screen.getByRole('button', { name: /^Reviewer: Worked/ })).toHaveAttribute(
+      'aria-expanded',
+      'false',
+    );
+    expect(screen.queryByText('Reviewer work')).not.toBeInTheDocument();
   });
 
   it('keeps failed room work visible in compact view', () => {
@@ -1892,6 +2036,11 @@ describe('SessionChat', () => {
     fireEvent.change(screen.getByLabelText('Copy button'), { target: { value: 'hover' } });
     expect(localStorage.getItem('niuu.compactUx.copyMode')).toBe('hover');
     expect(screen.getByRole('button', { name: 'Copy message' })).toBeInTheDocument();
+    // Without the action bar, copy sits on the footer's line with the time, not a line above.
+    fireEvent.change(screen.getByLabelText('Copy button'), { target: { value: 'inline' } });
+    fireEvent.click(screen.getByLabelText('Message actions'));
+    const copy = screen.getByRole('button', { name: 'Copy message' });
+    expect(copy.closest('.niuu-chat-assistant-footer')).not.toBeNull();
   });
   it('leaves the display controls to a host that places them in its own toolbar', () => {
     render(
@@ -1930,5 +2079,76 @@ describe('SessionChat', () => {
     expect(screen.getByText('Display')).toBeInTheDocument();
     fireEvent.click(screen.getByTestId('conversation-view-toggle'));
     expect(localStorage.getItem('niuu.compactUx.conversationFold')).toBe('expanded');
+  });
+});
+
+describe("SessionChat — a workflow run's room", () => {
+  it("names the run's other sessions as the host session's workers", () => {
+    const onWorkersChange = vi.fn();
+    const participants = new Map<string, RoomParticipant>([
+      ['coder-session', { peerId: 'coder-session', persona: 'Skuld', participantType: 'skuld' }],
+      [
+        'reviewer-session',
+        {
+          peerId: 'reviewer-session',
+          persona: '',
+          displayName: 'wf-run-1-reviewer',
+          participantType: 'skuld',
+        },
+      ],
+    ]);
+
+    render(
+      <SessionChat
+        {...defaultProps}
+        participants={participants}
+        hostPeerId="coder-session"
+        onWorkersChange={onWorkersChange}
+      />,
+    );
+
+    expect(onWorkersChange).toHaveBeenCalledTimes(1);
+    expect(onWorkersChange.mock.calls[0]![0].map((w: { name: string }) => w.name)).toEqual([
+      'wf-run-1-reviewer',
+    ]);
+  });
+
+  describe('message authors', () => {
+    const alice = { userId: 'u-alice', displayName: 'Alice Liddell' };
+    const bob = { userId: 'u-bob', displayName: 'Bob Stone' };
+    const said = (id: string, author?: typeof alice): ChatMessage => ({
+      ...userMessage,
+      id,
+      content: `message ${id}`,
+      ...(author ? { author } : {}),
+    });
+
+    it('keeps the plain look when only the viewer has spoken', () => {
+      render(
+        <SessionChat
+          {...defaultProps}
+          viewerId="u-alice"
+          messages={[said('1', alice), said('2', alice)]}
+        />,
+      );
+      expect(screen.queryByTestId('user-author')).not.toBeInTheDocument();
+    });
+
+    it('names someone else who spoke in a session the viewer is in', () => {
+      render(<SessionChat {...defaultProps} viewerId="u-alice" messages={[said('1', bob)]} />);
+      expect(screen.getByTestId('user-author')).toHaveTextContent('Bob Stone');
+    });
+
+    it('names every author, the viewer too, once two people have spoken', () => {
+      render(
+        <SessionChat
+          {...defaultProps}
+          viewerId="u-alice"
+          messages={[said('1', alice), said('2', bob), said('3')]}
+        />,
+      );
+      const names = screen.getAllByTestId('user-author').map((node) => node.textContent);
+      expect(names).toEqual(['Alice Liddell', 'Bob Stone']);
+    });
   });
 });

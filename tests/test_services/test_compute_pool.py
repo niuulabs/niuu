@@ -770,32 +770,16 @@ async def test_a_standby_target_already_met_is_not_a_shortfall(setup):
 
 
 def _fixed_inventory_provider(hosts):
-    from tests.test_adapters.test_vm_pod_manager import ReadyProvider
+    from tests.test_adapters.test_vm_pod_manager import FixedInventoryProvider
 
-    class FixedInventoryProvider(ReadyProvider):
-        """Claims from ``hosts`` registered machines, none of which can be made on demand."""
-
-        def __init__(self):
-            super().__init__()
-            self.hosts = hosts
-            self.claimable_calls = []
-
-        @property
-        def fixed_inventory(self):
-            return True
-
-        async def claimable(self, profile, selector):
-            self.claimable_calls.append((profile, selector))
-            return max(self.hosts - len(self.machines), 0)
-
-    return FixedInventoryProvider()
+    return FixedInventoryProvider(hosts)
 
 
 def _fixed_pool(hosts, **policy):
     from tests.compute_fakes import pool_setup
 
     pool, leases, repo, provider, runtime, store = pool_setup(
-        max_machines=8, provider=_fixed_inventory_provider(hosts)
+        max_machines=None, provider=_fixed_inventory_provider(hosts)
     )
     runtime.requires_root_daemon = False
     runtime.supports_slots = True
@@ -865,6 +849,76 @@ async def test_registered_hosts_with_a_rootless_runtime_are_accepted():
 
     assert (await pool.policy()).profile == "small"
     await pool.validate_policy(await pool.policy())
+
+
+async def test_every_joined_host_is_claimed_with_no_machine_maximum():
+    # Twenty hosts joined: all twenty take sessions; no maximum leaves any ready but unused.
+    pool, leases, _, provider, _ = _fixed_pool(20)
+
+    for _ in range(20):
+        await leases.acquire(session_id=uuid4(), owner_id="o", tenant_id="t", profile="small")
+
+    assert len(provider.created) == 20
+    assert (await pool.policy()).max_machines is None
+
+
+async def test_a_host_maximum_an_earlier_release_stored_is_dropped_once(caplog):
+    pool, _, repo, _, _ = _fixed_pool(9)
+    repo.policies["pool"] = pool.defaults.model_copy(update={"max_machines": 8})
+
+    with caplog.at_level("WARNING", logger="volundr.domain.services.compute_pool"):
+        assert (await pool.policy()).max_machines is None
+
+    assert repo.policies["pool"].max_machines is None
+    assert "dropping the stored max_machines=8" in caplog.text
+    caplog.clear()
+    await pool.policy()
+    assert "dropping" not in caplog.text
+
+
+async def test_an_admin_policy_with_a_machine_maximum_is_refused_on_registered_hosts():
+    pool, _, repo, _, _ = _fixed_pool(1)
+    policy = await pool.policy()
+
+    with pytest.raises(ValueError, match="remove compute.max_machines"):
+        await pool.configure(policy.model_copy(update={"max_machines": 8}))
+    assert repo.policies["pool"].max_machines is None
+
+
+async def test_a_pool_that_makes_machines_refuses_a_policy_without_a_maximum():
+    pool, _, repo, _, _ = _plain_pool()
+    policy = await pool.policy()
+
+    with pytest.raises(ValueError, match="needs compute.max_machines"):
+        await pool.configure(policy.model_copy(update={"max_machines": None}))
+    assert repo.policies["pool"].max_machines == 8
+
+
+def test_the_lease_service_holds_the_machine_maximum_to_its_provider():
+    from tests.compute_fakes import LeaseRepository
+    from tests.test_adapters.test_vm_pod_manager import ReadyProvider
+
+    for provider, max_machines, match in (
+        (_fixed_inventory_provider(1), 8, "remove compute.max_machines"),
+        (ReadyProvider(), None, "needs compute.max_machines"),
+        (ReadyProvider(), 0, "positive max_machines"),
+    ):
+        with pytest.raises(ValueError, match=match):
+            ComputeLeaseService(
+                LeaseRepository(),
+                provider,
+                pool_id="pool",
+                max_machines=max_machines,
+                bootstrap=MachineBootstrap(),
+            )
+    with pytest.raises(ValueError, match="pool_id is required"):
+        ComputeLeaseService(
+            LeaseRepository(),
+            _fixed_inventory_provider(1),
+            pool_id="",
+            max_machines=None,
+            bootstrap=MachineBootstrap(),
+        )
 
 
 async def test_registered_hosts_accept_the_linux_and_mac_host_runtimes(tmp_path):

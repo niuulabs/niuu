@@ -72,6 +72,7 @@ _PLATFORM_REQUEST_HEADERS = (
     "x-forwarded-proto",
     "x-forwarded-port",
     "x-niuu-room-role",
+    "x-niuu-room-caller-session",
 )
 _PLATFORM_REQUEST_PREFIXES = ("x-auth-", "x-envoy-")
 

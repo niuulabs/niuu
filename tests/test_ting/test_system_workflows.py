@@ -6,6 +6,7 @@ from uuid import uuid4
 
 import pytest
 
+from tests.support.full_catalogue import load_full_catalogue
 from ting.domain.exceptions import WorkflowDocumentError
 from ting.domain.models import WorkflowDefinition, WorkflowScope
 from ting.domain.workflow_document import workflow_document_revision
@@ -82,8 +83,16 @@ class _InMemoryWorkflowRepository(WorkflowRepository):
         return self._workflows.pop(workflow_id, None) is not None
 
 
-def test_load_system_workflows_only_keeps_supported_catalog() -> None:
-    workflows = load_system_workflows()
+def test_the_shipped_catalogue_is_code_review_and_merge_and_memory_compile() -> None:
+    assert {workflow.name for workflow in load_system_workflows()} == {
+        "Code, Review and Merge",
+        "Memory compile",
+    }
+
+
+def test_the_full_archived_catalogue_still_loads_with_its_graph_shapes() -> None:
+    """The archived documents stay valid fixtures: they load with the archived personas."""
+    workflows = load_full_catalogue()
 
     names = {workflow.name for workflow in workflows}
     assert names == {
@@ -100,6 +109,8 @@ def test_load_system_workflows_only_keeps_supported_catalog() -> None:
         "Ticket Work Flow",
         "Code & Review Flow",
         "Infra Change Flow",
+        "Code, Review and Merge",
+        "Memory compile",
         "Tool & Skill Builder",
         "Developer Delivery",
         "Developer Planning",
@@ -230,112 +241,6 @@ def test_load_system_workflows_only_keeps_supported_catalog() -> None:
     )
     assert specification_resources["Specification Memory"]["authRef"] == "workload:mimir"
 
-    delivery_flow = next(
-        workflow for workflow in workflows if workflow.name == "Tracker Delivery Flow"
-    )
-    delivery_stage_labels = [
-        node["label"] for node in delivery_flow.graph["nodes"] if node.get("kind") == "stage"
-    ]
-    assert delivery_stage_labels == [
-        "Implement tracker ticket",
-        "Review implementation",
-        "Merge and close ticket",
-        "Publish delivery record",
-    ]
-    delivery_stage_personas = {
-        node["label"]: [member["personaId"] for member in node.get("stageMembers", [])]
-        for node in delivery_flow.graph["nodes"]
-        if node.get("kind") == "stage"
-    }
-    assert delivery_stage_personas["Implement tracker ticket"] == ["coder"]
-    assert delivery_stage_personas["Review implementation"] == ["reviewer"]
-    assert delivery_stage_personas["Merge and close ticket"] == ["closer"]
-    assert delivery_stage_personas["Publish delivery record"] == ["publisher"]
-    assert [
-        member["model"]
-        for node in delivery_flow.graph["nodes"]
-        if node.get("kind") == "stage"
-        for member in node["stageMembers"]
-    ] == ["gpt-5.6-terra"] * 4
-    delivery_edge_labels = {edge["label"] for edge in delivery_flow.graph["edges"]}
-    assert "code.blocked -> code.blocked" in delivery_edge_labels
-    assert "review.changes_requested -> review.changes_requested" in delivery_edge_labels
-    assert "review.passed -> review.passed" in delivery_edge_labels
-    delivery_gates = {
-        node["id"]: node for node in delivery_flow.graph["nodes"] if node.get("kind") == "gate"
-    }
-    assert delivery_gates["delivery-blocked"] == {
-        "id": "delivery-blocked",
-        "kind": "gate",
-        "label": "Delivery blocked",
-        "condition": (
-            "Review the coder's stated reason and correct the ticket, then send the delivery "
-            "back to the coder."
-        ),
-        "mode": "human_approval",
-        "pendingBehavior": "help_needed",
-        "approvalEvent": "review.changes_requested",
-        "changesRequestedEvent": "review.changes_requested",
-        "instructions": (
-            "The requested change could not be completed as written. Review the implementation "
-            "outcome and update the ticket, then answer to send the delivery back to the coder "
-            "for another attempt."
-        ),
-        "position": {"x": 704, "y": 480},
-    }
-    delivery_resources = {
-        node["label"]: node
-        for node in delivery_flow.graph["nodes"]
-        if node.get("kind") == "resource"
-    }
-    assert delivery_resources["Delivery Memory"]["url"] == (
-        "https://mimir.yggdrasil.niuu.world/api/v1"
-    )
-    assert delivery_resources["Delivery Memory"]["authRef"] == "workload:mimir"
-
-    code_review_flow = next(
-        workflow for workflow in workflows if workflow.name == "Code & Review Flow"
-    )
-    code_review_stage_labels = [
-        node["label"] for node in code_review_flow.graph["nodes"] if node.get("kind") == "stage"
-    ]
-    assert code_review_stage_labels == [
-        "Implement tracker ticket",
-        "Review implementation",
-        "Merge and close ticket",
-    ]
-    code_review_stage_members = {
-        node["label"]: node.get("stageMembers", [])
-        for node in code_review_flow.graph["nodes"]
-        if node.get("kind") == "stage"
-    }
-    assert [
-        member["personaId"] for member in code_review_stage_members["Implement tracker ticket"]
-    ] == ["coder"]
-    assert [
-        member["personaId"] for member in code_review_stage_members["Review implementation"]
-    ] == ["reviewer"]
-    assert [
-        member["personaId"] for member in code_review_stage_members["Merge and close ticket"]
-    ] == ["closer"]
-    assert all(
-        member.get("model") == "gpt-5.6-terra"
-        for members in code_review_stage_members.values()
-        for member in members
-    )
-    code_review_edge_labels = {edge["label"] for edge in code_review_flow.graph["edges"]}
-    assert "review.passed -> review.passed" in code_review_edge_labels
-    assert "delivery.merged -> delivery.merged" in code_review_edge_labels
-    code_review_resources = {
-        node["label"]: node
-        for node in code_review_flow.graph["nodes"]
-        if node.get("kind") == "resource"
-    }
-    assert code_review_resources["Delivery Memory"]["url"] == (
-        "https://mimir.yggdrasil.niuu.world/api/v1"
-    )
-    assert code_review_resources["Delivery Memory"]["authRef"] == "workload:mimir"
-
     builder_flow = next(
         workflow for workflow in workflows if workflow.name == "Tool & Skill Builder"
     )
@@ -452,26 +357,7 @@ async def test_seed_system_workflows_preserves_authored_and_obsolete_entries() -
 
     saved = await seed_system_workflows(repo)
     names = {workflow.name for workflow in saved}
-    assert names == {
-        "Research Campaign",
-        "Research Thread",
-        "Research Thread — Breadth",
-        "Research Thread — Depth",
-        "Research Thread — Contrarian",
-        "Saga Planning",
-        "Specification Stack",
-        "Tracker Delivery Flow",
-        "Reviewed Delivery Flow",
-        "Ticket Planning Flow",
-        "Ticket Work Flow",
-        "Code & Review Flow",
-        "Infra Change Flow",
-        "Tool & Skill Builder",
-        "Developer Delivery",
-        "Developer Planning",
-        "Developer Workstream",
-        "Developer Integration",
-    }
+    assert names == {"Code, Review and Merge", "Memory compile"}
 
     current_catalog = await repo.list_workflows(owner_id="", scope=WorkflowScope.SYSTEM)
     assert {workflow.name for workflow in current_catalog} == names | {obsolete.name}
@@ -603,7 +489,7 @@ async def test_seed_reclassified_legacy_row_matching_package_is_replaced_not_com
 async def test_seed_reclassified_legacy_research_campaign_reseeds_current_version(
     monkeypatch,
 ) -> None:
-    """The real Research Campaign case: a legacy 1.0.0 row, package now 2.1.1.
+    """The real Research Campaign case: a legacy 1.0.0 row, package now 2.1.2.
 
     A version mismatch already took the reseed branch before this fix (it
     never reached the strict content-hash comparison), so this locks in that
@@ -611,9 +497,9 @@ async def test_seed_reclassified_legacy_research_campaign_reseeds_current_versio
     the current packaged definition, and that a second pass is a no-op.
     """
     seed = next(
-        workflow for workflow in load_system_workflows() if workflow.name == "Research Campaign"
+        workflow for workflow in load_full_catalogue() if workflow.name == "Research Campaign"
     )
-    assert seed.version == "2.1.1"
+    assert seed.version == "2.1.2"
     legacy = replace(
         seed,
         version="1.0.0",
@@ -635,7 +521,7 @@ async def test_seed_reclassified_legacy_research_campaign_reseeds_current_versio
 
     assert repo.save_calls == saved
     assert saved[0].id == seed.id
-    assert saved[0].version == "2.1.1"
+    assert saved[0].version == "2.1.2"
     assert saved[0].graph == seed.graph
     assert saved[0].origin == "bundled"
 
@@ -644,7 +530,7 @@ async def test_seed_reclassified_legacy_research_campaign_reseeds_current_versio
     rerun = await seed_system_workflows(repo)
 
     assert repo.save_calls == []
-    assert rerun[0].version == "2.1.1"
+    assert rerun[0].version == "2.1.2"
 
 
 @pytest.mark.asyncio
@@ -691,7 +577,7 @@ async def test_seed_reclassifies_orphaned_never_versioned_row_as_authored(
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "workflow",
-    [workflow for workflow in load_system_workflows() if "mimir" in str(workflow.graph)],
+    [workflow for workflow in load_full_catalogue() if "mimir" in str(workflow.graph)],
     ids=lambda workflow: workflow.name,
 )
 async def test_bundled_memory_wells_provision_without_a_stored_integration(workflow) -> None:
@@ -721,29 +607,10 @@ async def test_bundled_memory_wells_provision_without_a_stored_integration(workf
     store.get.assert_not_called()
 
 
-def test_infra_change_flow_merges_only_after_the_resident_approves() -> None:
-    """Merging an infra change deploys it, so nothing reaches the closer unapproved."""
-    workflow = next(w for w in load_system_workflows() if w.name == "Infra Change Flow")
-    nodes = {node["id"]: node for node in workflow.graph["nodes"]}
-    gate = nodes["infra-change-merge-gate"]
-    edges = {(edge["source"], edge["target"]): edge["label"] for edge in workflow.graph["edges"]}
-
-    assert gate["kind"] == "gate"
-    assert gate["mode"] == "human_approval"
-    assert "autoForwardAfter" not in gate
-    assert edges[("infra-change-review", "infra-change-merge-gate")].startswith("review.passed")
-    assert edges[("infra-change-merge-gate", "infra-change-close")].startswith("merge.approved")
-    assert ("infra-change-review", "infra-change-close") not in edges
-    closer = nodes["infra-change-close"]["stageMembers"][0]
-    assert closer["consumesEventTypes"] == ["merge.approved"]
-
-
-def test_infra_change_flow_works_on_an_isolated_branch() -> None:
+def test_an_isolated_working_branch_is_recognised() -> None:
     from ting.domain.workflow_snapshot import workflow_uses_isolated_branch
 
-    workflow = next(w for w in load_system_workflows() if w.name == "Infra Change Flow")
-
-    assert workflow_uses_isolated_branch({"graph": workflow.graph}) is True
+    assert workflow_uses_isolated_branch({"graph": {"workingBranch": "isolated"}}) is True
 
 
 def test_an_unknown_working_branch_mode_is_rejected() -> None:

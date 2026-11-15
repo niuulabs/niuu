@@ -15,6 +15,7 @@ export const CONDITION_LABEL: Record<WorkCondition, string> = {
   waiting: 'Waiting',
   completed: 'Completed',
   failed: 'Failed',
+  canceled: 'Canceled',
   unknown: 'Unknown',
 };
 
@@ -40,6 +41,8 @@ const WORK_COLUMNS: { id: string; title: string; conditions: WorkCondition[] }[]
   { id: 'waiting', title: 'Waiting', conditions: ['waiting'] },
   { id: 'completed', title: 'Completed', conditions: ['completed'] },
   { id: 'failed', title: 'Failed', conditions: ['failed'] },
+  // An aborted run is its own ending: it neither completed nor failed.
+  { id: 'canceled', title: 'Canceled', conditions: ['canceled'] },
 ];
 
 export function groupWorkByCondition(items: WorkSummary[]): BoardColumn<WorkSummary>[] {

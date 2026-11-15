@@ -167,6 +167,8 @@ def render_stage_state(
     elif status == WorkflowCampaignStatus.FAILED:
         current_status = "failed"
         reason = failure_reason or reason
+    elif status == WorkflowCampaignStatus.CANCELED:
+        current_status = "canceled"
     derived[current] = replace(
         row,
         status=current_status,

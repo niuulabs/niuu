@@ -7,8 +7,6 @@ import {
   isValidSlug,
   mountNameFor,
   requiredDraftError,
-  routingPrefixFor,
-  routingRuleIdFor,
   slugify,
   trustSettingForLevel,
   type RealmDraft,
@@ -18,8 +16,6 @@ describe('realm naming conventions', () => {
   it('derives every part of a realm from its slug', () => {
     expect(deploymentNameFor('lexi-api')).toBe('realm-lexi-api');
     expect(mountNameFor('lexi-api')).toBe('realm-lexi-api');
-    expect(routingRuleIdFor('lexi-api')).toBe('realm-lexi-api');
-    expect(routingPrefixFor('lexi-api')).toBe('realms/lexi-api/');
     expect(charterPagePathFor('lexi-api')).toBe('realms/lexi-api/charter.md');
   });
 

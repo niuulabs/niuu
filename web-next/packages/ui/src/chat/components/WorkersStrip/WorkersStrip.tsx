@@ -14,6 +14,7 @@ export const WORKER_STATUS_LABELS: Record<WorkerStatus, string> = {
   idle: 'Idle',
   error: 'Error',
   left: 'Left',
+  stopped: 'Stopped',
 };
 
 /** The one letter a worker's avatar shows. */

@@ -60,8 +60,7 @@ import type { DispatcherState } from '../domain/dispatcher';
 import type { SessionInfo } from '../domain/session';
 import type { TrackerProject, TrackerMilestone, TrackerIssue } from '../domain/tracker';
 import type { Workflow } from '../domain/workflow';
-import { layoutWorkflow } from '../domain/workflowLayout';
-import { estimateWorkflowNodeSize } from '../domain/workflowGeometry';
+import { placeWorkflowGraph } from '../domain/workflowCanvas';
 
 // ---------------------------------------------------------------------------
 // Raw server types (snake_case)
@@ -734,38 +733,7 @@ function toCommitRequestBody(req: CommitSagaRequest): Record<string, unknown> {
 }
 
 function toWorkflow(raw: RawWorkflow): Workflow {
-  const nodeSizes = new Map(
-    raw.nodes.map((node) => [node.id, estimateWorkflowNodeSize(node, { edges: raw.edges })]),
-  );
-  const initialLayout = layoutWorkflow(
-    raw.nodes.map((node) => node.id),
-    raw.edges,
-    // The canvas routes feedback below cards; reserve no empty lanes above them.
-    { originX: 96, originY: 64, nodeSizes, columnGap: 72, rowGap: 36, feedbackLaneSpacing: 0 },
-  );
-  const nodes = raw.nodes.map((node, index) => ({
-    ...node,
-    position: node.position ??
-      initialLayout.positions.get(node.id) ?? { x: 96, y: 144 + index * 160 },
-  }));
-
-  const positions = new Map(nodes.map((node) => [node.id, node.position]));
-  const edges = raw.edges.map((edge) => {
-    if (edge.cp1 && edge.cp2) {
-      return edge;
-    }
-
-    const source = positions.get(edge.source);
-    const target = positions.get(edge.target);
-    const isMostlyHorizontal =
-      source && target ? Math.abs(target.x - source.x) >= Math.abs(target.y - source.y) : true;
-
-    return {
-      ...edge,
-      cp1: edge.cp1 ?? (isMostlyHorizontal ? { x: 92, y: 0 } : { x: 0, y: 92 }),
-      cp2: edge.cp2 ?? (isMostlyHorizontal ? { x: -92, y: 0 } : { x: 0, y: -92 }),
-    };
-  });
+  const { nodes, edges } = placeWorkflowGraph(raw.nodes, raw.edges);
 
   return {
     schemaVersion: raw.schema_version,

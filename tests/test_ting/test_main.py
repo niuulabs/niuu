@@ -4,6 +4,15 @@ from __future__ import annotations
 
 import pytest
 
+# Delivery must name its producers and Forge policies: no delivery workflow ships.
+DELIVERY_WIRING = {
+    "enabled": True,
+    "review_producers": {"code": "code-reviewer"},
+    "integration_review_producer": "integration-verifier",
+    "evidence_policy_id": "delivery-evidence",
+    "integration_policy_id": "delivery-integration",
+}
+
 
 async def test_shared_integrations_database_closes_separate_pool(monkeypatch):
     from contextlib import asynccontextmanager
@@ -68,6 +77,34 @@ async def test_shared_integrations_forwards_configured_auth_and_closes(monkeypat
     repository.close.assert_awaited_once()
 
 
+async def test_postgres_integrations_record_team_uses_in_the_same_database():
+    from niuu.adapters.postgres_integration_usage import PostgresIntegrationUsageLog
+    from ting import main
+    from ting.config import Settings
+
+    pool = object()
+    async with main._integration_repository(Settings(), pool) as stores:
+        assert isinstance(stores.usage_log, PostgresIntegrationUsageLog)
+        assert stores.usage_log._pool is pool
+
+
+async def test_http_integrations_have_no_usage_log(monkeypatch):
+    from unittest.mock import AsyncMock, MagicMock
+
+    from ting import main
+    from ting.config import Settings
+
+    repository = AsyncMock()
+    monkeypatch.setattr(main, "HTTPIntegrationRepository", MagicMock(return_value=repository))
+    settings = Settings(
+        auth={"allow_anonymous_dev": True},
+        shared_integrations={"base_url": "https://identity.test"},
+    )
+    async with main._integration_repository(settings, object()) as stores:
+        assert stores.repository is repository
+        assert stores.usage_log is None
+
+
 async def test_shared_integrations_rejects_ambiguous_store():
     from ting.config import Settings
     from ting.main import _integration_repository
@@ -119,7 +156,7 @@ class TestWorkflowExecutionRouterMounting:
         from ting.config import Settings
         from ting.main import create_app
 
-        settings = Settings(workflow_execution={"enabled": True, "delivery": {"enabled": True}})
+        settings = Settings(workflow_execution={"enabled": True, "delivery": DELIVERY_WIRING})
         app = create_app(settings)
         paths = _mounted_paths(app)
 
@@ -164,7 +201,7 @@ def test_delivery_enabled_without_review_authenticator_raises_with_remedy():
             kwargs={},
             seed_bundled=True,
         ),
-        workflow_execution={"enabled": True, "delivery": {"enabled": True}},
+        workflow_execution={"enabled": True, "delivery": DELIVERY_WIRING},
     )
     app = create_app(settings)
 
@@ -182,3 +219,25 @@ def test_delivery_enabled_without_review_authenticator_raises_with_remedy():
         with pytest.raises(RuntimeError, match="review_authenticator_adapter"):
             with TestClient(app):
                 pytest.fail("Missing delivery review authenticator was accepted")
+
+
+class TestPlatformSigner:
+    async def test_ting_signs_as_service_ting_with_or_without_a_bus(self, monkeypatch) -> None:
+        """Step offers go to a run's root over HTTP, so Ting signs even with no bus."""
+        from ting import main
+        from ting.config import Settings
+
+        seen: dict = {}
+        signer = object()
+
+        async def fake_start(name, mesh, *, workload_identity=None):
+            seen.update(name=name, mesh=mesh, workload_identity=workload_identity)
+            return signer
+
+        monkeypatch.setattr(main, "start_platform_signer", fake_start)
+        settings = Settings()
+
+        assert await main.start_ting_platform_signer(settings) is signer
+        assert seen["name"] == "ting"
+        assert seen["mesh"] is settings.mesh.attestation
+        assert seen["workload_identity"] is settings.workload_identity

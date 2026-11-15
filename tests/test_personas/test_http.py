@@ -13,7 +13,10 @@ import respx
 
 from personas.adapters.http import HttpPersonaAdapter
 from personas.domain.persona import PersonaConfig
-from personas.domain.persona_document import portable_persona_from_config
+from personas.domain.persona_document import (
+    PersonaDocumentError,
+    portable_persona_from_config,
+)
 
 # ---------------------------------------------------------------------------
 # Sample API payloads
@@ -22,8 +25,6 @@ from personas.domain.persona_document import portable_persona_from_config
 _DETAIL_CODER: dict = {
     "name": "coder",
     "permission_mode": "workspace-write",
-    "allowed_tools": ["file_read", "git"],
-    "forbidden_tools": [],
     "iteration_budget": 40,
     "is_builtin": True,
     "has_override": False,
@@ -40,8 +41,6 @@ _DETAIL_CODER: dict = {
 _DETAIL_REVIEWER: dict = {
     "name": "reviewer",
     "permission_mode": "read-only",
-    "allowed_tools": ["file_read"],
-    "forbidden_tools": [],
     "iteration_budget": 20,
     "is_builtin": False,
     "has_override": False,
@@ -59,7 +58,6 @@ _SUMMARIES: list[dict] = [
     {
         "name": "coder",
         "permission_mode": "workspace-write",
-        "allowed_tools": ["file_read"],
         "iteration_budget": 40,
         "is_builtin": True,
         "has_override": False,
@@ -69,7 +67,6 @@ _SUMMARIES: list[dict] = [
     {
         "name": "reviewer",
         "permission_mode": "read-only",
-        "allowed_tools": [],
         "iteration_budget": 20,
         "is_builtin": False,
         "has_override": False,
@@ -110,8 +107,17 @@ class TestLoad:
         assert isinstance(config, PersonaConfig)
         assert config.name == "coder"
         assert config.permission_mode == "workspace-write"
-        assert config.allowed_tools == ["file_read", "git"]
         assert config.iteration_budget == 40
+
+    @respx.mock
+    @pytest.mark.parametrize("key", ["allowed_tools", "forbidden_tools"])
+    def test_load_refuses_a_registry_answer_that_carries_a_tool_restriction(self, key: str) -> None:
+        respx.get(f"{_BASE}/api/v1/personas/coder").mock(
+            return_value=httpx.Response(200, json={**_DETAIL_CODER, key: ["file_read"]})
+        )
+
+        with pytest.raises(PersonaDocumentError, match=rf"persona coder: {key} is not supported"):
+            _adapter().load("coder")
 
     @respx.mock
     def test_load_translates_the_registry_permission_name(self) -> None:
@@ -270,6 +276,19 @@ class TestPortableSource:
 
         assert document is not None
         assert document.to_dict() == _PORTABLE_CODER
+
+    @respx.mock
+    def test_load_current_portable_refuses_a_document_with_a_tool_restriction(self) -> None:
+        document = {
+            **_PORTABLE_CODER,
+            "definition": {**_PORTABLE_CODER["definition"], "allowed_tools": ["file_read"]},
+        }
+        respx.get(f"{_BASE}/api/v1/personas/coder/portable").mock(
+            return_value=httpx.Response(200, json=document)
+        )
+
+        with pytest.raises(PersonaDocumentError, match="allowed_tools is not supported"):
+            _adapter().load_current_portable("coder")
 
     @respx.mock
     def test_load_current_portable_does_not_use_stale_fallback_on_server_error(self) -> None:

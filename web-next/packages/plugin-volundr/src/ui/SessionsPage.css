@@ -566,6 +566,14 @@
   flex: 0 1 auto;
   min-width: 0;
 }
+/* A run member's role, ahead of its long name so it is never what is cut off. */
+.forge-session-row__role {
+  flex-shrink: 0;
+  color: var(--color-text-primary);
+}
+.forge-session-row__role + .forge-session-row__title {
+  color: var(--color-text-muted);
+}
 .forge-session-unread-dot {
   flex-shrink: 0;
   width: 6px;
@@ -639,8 +647,6 @@
 /* A worker in the open session's room, listed under its coordinator. */
 .forge-room-worker__dot {
   flex-shrink: 0;
-  width: 8px;
-  height: 8px;
   border-radius: 50%;
   background: var(--forge-worker-color);
 }
@@ -668,7 +674,54 @@
   gap: 6px;
   min-height: 0;
   padding-block: 7px;
-  padding-left: 3px;
+}
+
+/* A run's member reads the same whether its run is open (a worker row of the run's room) or
+   not (a session row nested under the run): one indent clear of the fold chevron, one dot
+   size, the state as plain text. Selecting or leaving the run then moves nothing. */
+.forge-session-tree-children .forge-room-worker .forge-session-row__select,
+.forge-project-group
+  .forge-session-tree-children
+  .forge-session-tree-entry
+  > .forge-session-tree-row
+  .forge-session-row__select {
+  padding-left: 16px;
+}
+
+.forge-room-worker__dot,
+.forge-session-tree-children .forge-session-row__dot {
+  width: 7px;
+  height: 7px;
+}
+
+/* How many workers a lead has: a small number at the end of its first line, above its state,
+   so a narrow list that cuts the second line still shows it. */
+.forge-session-row__worker-count {
+  flex-shrink: 0;
+  min-width: 18px;
+  margin-left: auto;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--color-text-muted) 18%, transparent);
+  color: var(--color-text-secondary);
+  font-size: 10.5px;
+  font-weight: 600;
+  line-height: 16px;
+  text-align: center;
+}
+
+.forge-session-tree-children .forge-session-row__select--member {
+  min-height: 0;
+  padding-block: 7px;
+}
+
+.forge-session-row__select--member .forge-session-row__headline {
+  min-height: 0;
+}
+
+.forge-session-state.forge-session-row__member-state {
+  padding: 0;
+  background: none;
 }
 
 /* ── List head: title and actions, search, then the quick states (Lexi's code sidebar) ── */
@@ -995,10 +1048,19 @@
   background: var(--color-critical);
 }
 
-.forge-session-row__title {
+.forge-session-row__title,
+.forge-session-row__role {
   font-size: 13.5px;
   font-weight: 600;
   line-height: 1.45;
+}
+
+/* A run member's row is one line, as its worker row under the open run is: its state sits
+   at the end of the line, not on a second one. */
+.forge-session-row__member-state {
+  flex-shrink: 0;
+  margin-left: auto;
+  font-size: 11px;
 }
 
 .forge-session-row__metadata {
@@ -1157,4 +1219,19 @@
   font-weight: 600;
   white-space: nowrap;
   color: var(--color-brand);
+}
+
+/* A session shared with the person, not owned by them: who shared it and what they may do. */
+.forge-session-row__shared {
+  flex: none;
+  max-width: 55%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--color-brand-300);
+}
+
+/* Join or decline an invitation, under the row it belongs to. */
+.forge-session-row__invitation {
+  padding: 0 12px 8px 14px;
 }

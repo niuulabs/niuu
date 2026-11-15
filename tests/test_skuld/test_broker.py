@@ -6,7 +6,6 @@ import logging
 import os
 import time
 import uuid
-from types import SimpleNamespace
 from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import httpx
@@ -37,6 +36,7 @@ from skuld.transports import (
 from sleipnir.adapters.in_process import InProcessBus
 from sleipnir.domain import registry as event_registry
 from sleipnir.testing import EventCapture
+from tests.test_skuld.workflow_support import MEMBER_MESH, MEMBER_STEPS, PERSONA
 
 
 class TestBroker:
@@ -485,7 +485,14 @@ class TestBroker:
         broker = Broker(
             settings=SkuldSettings(
                 session={"id": "mesh-build-failed", "workspace_dir": str(tmp_path)},
-                mesh={"enabled": True, "transport": "nng", "peer_id": "skuld-wf"},
+                mesh={
+                    "enabled": True,
+                    "transport": "nng",
+                    "peer_id": "skuld-wf",
+                    "discovery_adapters": [
+                        {"adapter": "registry", "path": str(tmp_path / "peers.json")}
+                    ],
+                },
             )
         )
 
@@ -591,6 +598,18 @@ class TestBroker:
 
         await test_broker.shutdown()
         mock_transport.stop.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_a_second_shutdown_does_nothing(self, test_broker):
+        """A member stopped on Forge's request is shut down again when its process ends."""
+        mock_transport = AsyncMock()
+        test_broker._transport = mock_transport
+
+        await test_broker.shutdown()
+        await test_broker.shutdown()
+
+        mock_transport.stop.assert_called_once()
+        assert test_broker.startup_status()["startup_state"] == "stopping"
 
     @pytest.mark.asyncio
     async def test_shutdown_closes_channels(self, test_broker):
@@ -2242,6 +2261,15 @@ class TestFastAPIEndpoints:
         assert isinstance(data["dirty"], bool)
         assert data["build"]
 
+    def test_health_reports_cap_hits(self, client):
+        """The session's cap hits (event-log overflow, …) show on /health."""
+        from niuu.cap_telemetry import record_cap_hit
+
+        record_cap_hit("event_log_max_buffer", "raise event_log_max_buffer")
+        caps = client.get("/health").json()["caps"]
+        assert caps["cap_hits.event_log_max_buffer"] >= 1
+        assert caps["cap_hits_total"] >= 1
+
     def test_ready_endpoint_not_ready(self, client):
         broker._transport = None
         broker._startup_ready = False
@@ -3047,6 +3075,53 @@ class TestPublishMeshOutcome:
         assert "2 files" in payload["summary"]
 
     @pytest.mark.asyncio
+    async def test_a_workflow_step_host_publishes_no_turn_outcome(self, tmp_path):
+        """A run member's outcome is its step close; its turns announce nothing."""
+        settings = SkuldSettings(
+            session={
+                "id": "test-mesh-step-host",
+                "workspace_dir": str(tmp_path),
+                "persona": PERSONA,
+            },
+            volundr_api_url="http://forge.test",
+            transport="subprocess",
+            mesh=MEMBER_MESH,
+            workflow_steps=MEMBER_STEPS,
+        )
+        b = Broker(settings=settings)
+        mock_mesh = AsyncMock()
+        mock_adapter = MagicMock()
+        mock_adapter.peer_id = "peer-3"
+        mock_adapter._mesh = mock_mesh
+        b._mesh_adapter = mock_adapter
+
+        await b._on_result_publish_mesh()
+        await b._publish_mesh_outcome()
+
+        mock_mesh.publish.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_conversational_session_publishes_no_turn_outcome(self, tmp_path):
+        """A team's agent talks in its room; a finished turn is not an outcome to hand on."""
+        settings = SkuldSettings(
+            session={
+                "id": "test-mesh-team-agent",
+                "workspace_dir": str(tmp_path),
+                "conversational": True,
+            },
+        )
+        b = Broker(settings=settings)
+        mock_mesh = AsyncMock()
+        mock_adapter = MagicMock()
+        mock_adapter.peer_id = "peer-4"
+        mock_adapter._mesh = mock_mesh
+        b._mesh_adapter = mock_adapter
+
+        await b._publish_mesh_outcome()
+
+        mock_mesh.publish.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_no_mesh_adapter_returns_early(self, test_broker):
         test_broker._mesh_adapter = None
         # Should not raise
@@ -3364,6 +3439,11 @@ class TestShutdownEdgeCases:
         response.json.return_value = {"latest_seq": 41}
         client.get.return_value = response
         client.post.return_value = MagicMock(status_code=204)
+        # This test is about the durable head; with the peer inbox on, startup also
+        # restores history through client.stream, which this mock does not serve.
+        test_broker._settings.peer_inbox = test_broker._settings.peer_inbox.model_copy(
+            update={"enabled": False}
+        )
         with patch.object(test_broker, "_get_http_client", AsyncMock(return_value=client)):
             try:
                 await test_broker.startup()
@@ -3433,48 +3513,18 @@ class TestHandleWebSocket:
         assert "not initialized" in sent["content"]
 
     @pytest.mark.asyncio
-    async def test_handle_websocket_viewer_connection_does_not_overwrite_user_jwt(
-        self, test_broker
-    ):
-        """A viewer/approver connecting after the owner must not swap the
-        broker's single stored _user_jwt/_user_claims — those are read later
-        for actions taken "as the user" (e.g. the chronicle watcher's auth
-        headers), and must keep reflecting the actual owner."""
+    async def test_browser_login_never_becomes_the_brokers_forge_credential(self, test_broker):
+        """The owner's browser bearer is not kept for the broker's own Forge calls: it
+        belongs to whoever attached last and expires within minutes."""
         mock_transport = AsyncMock()
         mock_transport.is_alive = True
         mock_transport.capabilities = TransportCapabilities()
         test_broker._transport = mock_transport
-        test_broker._user_jwt = "owners-original-token"
-        # room_role_source="proxy": the process-backend topology, where a
-        # missing header means viewer. The Kubernetes "deployment" default
-        # (a missing header means owner, unconditionally) is covered by
-        # test_handle_websocket_owner_connection_updates_user_jwt's header
-        # case and by test_enforce_room_role_middleware.py.
-        test_broker._settings.ws_auth.room_role_source = "proxy"
-
-        mock_ws = AsyncMock()
-        # No x-niuu-room-role header, not loopback -> _resolve_room_role
-        # resolves "viewer" for this connection under room_role_source=proxy.
-        mock_ws.headers = {"authorization": "Bearer a-viewers-token"}
-        mock_ws.client = SimpleNamespace(host="203.0.113.9")
-        mock_ws.query_params = {}
-        mock_ws.receive_json = AsyncMock(side_effect=[WebSocketDisconnect()])
-
-        await test_broker.handle_websocket(mock_ws)
-
-        assert test_broker._user_jwt == "owners-original-token"
-
-    @pytest.mark.asyncio
-    async def test_handle_websocket_owner_connection_updates_user_jwt(self, test_broker):
-        mock_transport = AsyncMock()
-        mock_transport.is_alive = True
-        mock_transport.capabilities = TransportCapabilities()
-        test_broker._transport = mock_transport
-        test_broker._user_jwt = "stale-token"
+        test_broker._settings.workload_identity.token_file = "/nonexistent/niuu-workload/token"
 
         mock_ws = AsyncMock()
         mock_ws.headers = {
-            "authorization": "Bearer the-owners-fresh-token",
+            "authorization": "Bearer the-owners-browser-token",
             "x-niuu-room-role": "owner",
         }
         mock_ws.query_params = {}
@@ -3482,7 +3532,8 @@ class TestHandleWebSocket:
 
         await test_broker.handle_websocket(mock_ws)
 
-        assert test_broker._user_jwt == "the-owners-fresh-token"
+        assert not hasattr(test_broker, "_user_jwt")
+        assert test_broker._build_auth_headers() == {}
 
     @pytest.mark.asyncio
     async def test_handle_websocket_normal_flow(self, test_broker):
@@ -4738,7 +4789,6 @@ class TestBrokerRoomAdapter:
             participant_id="human:jozef",
             display_name="Jozef",
             environment_id="cluster-a",
-            role="owner",
             room_id="huddle-1",
         )
         heartbeat = await b.heartbeat_environment(
@@ -4751,8 +4801,6 @@ class TestBrokerRoomAdapter:
         await bus.flush()
 
         assert joined["participant_type"] == "human"
-        assert joined["authority_role"] == "owner"
-        assert "change_autonomy" in joined["capabilities"]
         assert heartbeat["status"] == "busy"
         assert "human:jozef" not in b._room_bridge.participants
         assert [event.event_type for event in captured.events] == [
@@ -4763,51 +4811,31 @@ class TestBrokerRoomAdapter:
         await captured.stop()
 
     @pytest.mark.asyncio
-    async def test_join_environment_binds_capabilities_to_environment_authorities(
-        self,
-        room_settings,
-    ):
-        b = Broker(settings=room_settings)
-
-        joined = await b.join_environment(
-            participant_id="human:approver",
-            display_name="Approver",
-            environment_id="cluster-a",
-            role="approver",
-            environment_action_authorities=["autonomous"],
-        )
-
-        assert "approve" not in joined["capabilities"]
-        assert "authorize_action" not in joined["capabilities"]
-        assert joined["capabilities"] == ("view", "reply")
-
-    @pytest.mark.asyncio
     async def test_human_room_message_preserves_participant_thread_metadata(self, room_settings):
         b = Broker(settings=room_settings)
         b._transport = AsyncMock()
         broadcast = AsyncMock()
         b._channels.broadcast = broadcast
         await b.join_environment(
-            participant_id="human:teacher",
-            display_name="Teacher",
+            participant_id="human:observer",
+            display_name="Observer",
             environment_id="cluster-a",
-            role="teacher",
         )
 
         msg_id = await b.handle_human_room_message(
             "This was the wrong tier.",
             source="browser",
-            participant_id="human:teacher",
+            participant_id="human:observer",
             metadata={"thread_id": "thread-1", "root_correlation_id": "root-1"},
             deliver_to_transport=False,
         )
 
         assert b._conversation_turns[-1].id == msg_id
-        assert b._conversation_turns[-1].participant_id == "human:teacher"
+        assert b._conversation_turns[-1].participant_id == "human:observer"
         assert b._conversation_turns[-1].thread_id == "thread-1"
         assert b._conversation_turns[-1].metadata["root_correlation_id"] == "root-1"
         event = broadcast.await_args.args[0]
-        assert event["participantId"] == "human:teacher"
+        assert event["participantId"] == "human:observer"
         assert event["threadId"] == "thread-1"
         assert event["metadata"]["root_correlation_id"] == "root-1"
 
@@ -4819,7 +4847,6 @@ class TestBrokerRoomAdapter:
             participant_id="human:approver",
             display_name="Approver",
             environment_id="cluster-a",
-            role="approver",
         )
         ws = MagicMock()
         ws.send_text = AsyncMock()
@@ -4845,19 +4872,6 @@ class TestBrokerRoomAdapter:
         assert b._conversation_turns[-1].participant_id == "human:approver"
         assert b._conversation_turns[-1].thread_id == "thread-approve"
 
-    @pytest.mark.asyncio
-    async def test_room_capability_check_rejects_unauthorized_control(self, room_settings):
-        b = Broker(settings=room_settings)
-        await b.join_environment(
-            participant_id="human:observer",
-            display_name="Observer",
-            environment_id="cluster-a",
-            role="observer",
-        )
-
-        with pytest.raises(PermissionError):
-            b.require_room_capability("human:observer", "authorize_action")
-
     # -----------------------------------------------------------------------
     # directed_message dispatch
     # -----------------------------------------------------------------------
@@ -4878,6 +4892,7 @@ class TestBrokerRoomAdapter:
             source="browser",
             request_id=None,
             metadata=None,
+            author=None,
         )
 
     @pytest.mark.asyncio
@@ -5352,8 +5367,51 @@ class TestBrokerRoomAdapter:
 
         response = await get_room_participants(environment_id="cluster-a")
 
-        assert response == {"participants": [{"peer_id": "cluster-peer"}]}
+        assert response == {"participants": [{"peer_id": "cluster-peer"}], "connected_people": []}
         get_participants.assert_called_once_with(environment_id="cluster-a")
+
+    @pytest.mark.asyncio
+    async def test_room_participants_api_lists_connected_people_apart_from_participants(
+        self, monkeypatch
+    ):
+        monkeypatch.setattr(broker, "get_room_participants", MagicMock(return_value=[]))
+        monkeypatch.setattr(
+            broker,
+            "connected_people",
+            MagicMock(return_value=[{"user_id": "u-1", "display_name": "Ada"}]),
+        )
+
+        response = await get_room_participants(environment_id=None)
+
+        assert response == {
+            "participants": [],
+            "connected_people": [{"user_id": "u-1", "display_name": "Ada"}],
+        }
+
+    @pytest.mark.asyncio
+    async def test_connected_people_are_the_verified_live_connections_once_each(
+        self, room_settings
+    ):
+        from niuu.domain.message_author import MessageAuthor
+        from skuld.channels import WebSocketChannel
+
+        b = Broker(settings=room_settings)
+        ada = MessageAuthor(user_id="u-ada", display_name="Ada")
+        first = WebSocketChannel(AsyncMock(), author=ada)
+        second = WebSocketChannel(AsyncMock(), author=ada)
+        bob = WebSocketChannel(AsyncMock(), author=MessageAuthor(user_id="u-bob"))
+        anonymous = WebSocketChannel(AsyncMock())
+        gone = WebSocketChannel(AsyncMock(), author=MessageAuthor(user_id="u-gone"))
+        gone._closed = True
+        for channel in (second, bob, anonymous, gone, first):
+            b._channels.add(channel)
+
+        assert b.connected_people() == [
+            {"user_id": "u-ada", "display_name": "Ada"},
+            {"user_id": "u-bob", "display_name": ""},
+        ]
+        # They are not seated: the room's roster, and what routes to it, is unchanged.
+        assert b.get_room_participants() == []
 
     def test_get_communication_routes_returns_channel_routes(self, room_settings):
         b = Broker(settings=room_settings)
@@ -5449,8 +5507,8 @@ class TestWorkloadTokenRefresh:
         captured: dict = {}
 
         class _FakeResponse:
-            def raise_for_status(self):
-                return None
+            status_code = 200
+            text = ""
 
             def json(self):
                 return {"token": "workload-jwt", "expires_at": time.time() + 300}
@@ -5485,8 +5543,8 @@ class TestWorkloadTokenRefresh:
         captured: dict = {}
 
         class _FakeResponse:
-            def raise_for_status(self):
-                return None
+            status_code = 200
+            text = ""
 
             def json(self):
                 return {"token": "workload-jwt", "expires_at": time.time() + 300}

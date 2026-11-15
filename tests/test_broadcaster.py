@@ -8,6 +8,7 @@ from uuid import uuid4
 
 import pytest
 
+from niuu.domain.guild_membership import GuildInstance
 from volundr.adapters.outbound.broadcaster import InMemoryEventBroadcaster
 from volundr.domain.models import (
     CommitSummary,
@@ -21,6 +22,7 @@ from volundr.domain.models import (
     TimelineEventType,
     TimelineResponse,
 )
+from volundr.domain.projects import SessionCoordination, SessionReference
 from volundr.domain.session_startup import SessionStartup, StartupStage, StartupStageState
 
 
@@ -309,6 +311,20 @@ class TestInMemoryEventBroadcaster:
         assert event.data["status"] == sample_session.status.value
 
     @pytest.mark.asyncio
+    async def test_session_event_names_the_guild_instance(self, sample_session: Session):
+        """A node joined to a Guild names itself on session events, as on its responses."""
+        joined = InMemoryEventBroadcaster(
+            guild_instance=GuildInstance(id="70b502d8", name="Noatun", slug="noatun")
+        )
+
+        event = joined.create_session_event(EventType.SESSION_UPDATED, sample_session)
+
+        assert event.data["instance_id"] == "70b502d8"
+        assert event.data["instance_name"] == "Noatun"
+        assert event.data["instance_slug"] == "noatun"
+        assert event.data["id"] == str(sample_session.id)
+
+    @pytest.mark.asyncio
     async def test_session_event_carries_the_launch_stages_as_json(
         self,
         broadcaster: InMemoryEventBroadcaster,
@@ -357,6 +373,63 @@ class TestInMemoryEventBroadcaster:
 
         assert "startup" in event.data
         assert event.data["startup"] is None
+
+    @pytest.mark.asyncio
+    async def test_session_event_carries_where_the_session_sits_in_its_project(
+        self,
+        broadcaster: InMemoryEventBroadcaster,
+        sample_session: Session,
+    ):
+        project_id, root_id = uuid4(), uuid4()
+        member = sample_session.model_copy(
+            update={
+                "coordination": SessionCoordination(
+                    project_id=project_id,
+                    role="reviewer",
+                    parent=SessionReference(instance_id="local", session_id=root_id),
+                    labels=["workflow-run:run-1"],
+                )
+            }
+        )
+
+        event = broadcaster.create_session_event(EventType.SESSION_UPDATED, member)
+        unplaced = broadcaster.create_session_event(EventType.SESSION_UPDATED, sample_session)
+
+        assert event.data["coordination"] == {
+            "project_id": str(project_id),
+            "role": "reviewer",
+            "parent": {"instance_id": "local", "session_id": str(root_id)},
+            "objective": "",
+            "context_revision": "",
+            "labels": ["workflow-run:run-1"],
+        }
+        assert "coordination" in unplaced.data
+        assert unplaced.data["coordination"] is None
+
+    @pytest.mark.asyncio
+    async def test_session_event_keeps_a_team_member_in_its_team(
+        self,
+        broadcaster: InMemoryEventBroadcaster,
+        sample_session: Session,
+    ):
+        root_id = uuid4()
+        member = sample_session.model_copy(
+            update={"hosted_by": root_id, "workload_config": {"team_member": {"lead": True}}}
+        )
+        root = sample_session.model_copy(update={"workload_config": {"team": {"task_to": None}}})
+
+        event = broadcaster.create_session_event(EventType.SESSION_UPDATED, member)
+        root_event = broadcaster.create_session_event(EventType.SESSION_UPDATED, root)
+        plain = broadcaster.create_session_event(EventType.SESSION_UPDATED, sample_session)
+
+        assert event.data["hosted_by"] == str(root_id)
+        assert event.data["team_member"] == {"lead": True}
+        assert root_event.data["team"] == {"task_to": None}
+        assert (plain.data["hosted_by"], plain.data["team"], plain.data["team_member"]) == (
+            None,
+            None,
+            None,
+        )
 
     @pytest.mark.asyncio
     async def test_session_event_carries_needs_attention(

@@ -2,9 +2,13 @@
 
 A guest agent asks Forge for its session's credentials. The configured
 ``GuestIdentity`` proves which allocation is asking; the request names the slot, and
-Forge answers only for the session currently bound to that slot of the allocation, from
-the launch payload the session was started with. A stopping, unbound or released
-allocation gets nothing, and a restart revokes what an earlier launch handed out.
+Forge answers only for sessions of the unit currently bound to that slot of the
+allocation, from the launch payload the unit was started with. That is the bound session
+and, when it is a workflow run's unit, the members of the run its payload lists: they run
+in the same slot as the slot's one Unix user and so share it (docs/design/
+workflow-mesh-handoff.md, decision 2), and a request names the member it fetches for.
+A stopping, unbound or released allocation gets nothing, and a restart revokes what an
+earlier launch handed out.
 """
 
 from __future__ import annotations
@@ -50,7 +54,10 @@ IssueForgeSession = Callable[[UUID], Awaitable[IssuedForgeSessionToken | None]]
 
 
 #: The body a guest must send; ``slot`` may be omitted only for a single-slot allocation.
-BAD_BODY = 'The request body must be {"allocation_id": "<uuid>", "slot": <index>}'
+BAD_BODY = (
+    'The request body must be {"allocation_id": "<uuid>", "slot": <index>}, with an optional '
+    '"session_id": "<uuid>" naming a member of the unit bound to the slot'
+)
 
 
 class GuestRequestError(ValueError):
@@ -79,6 +86,10 @@ class GuestMetadataService:
     async def credentials(self, request: GuestRequest) -> GuestCredentials:
         """Authenticate the guest and issue the credentials its bound session needs.
 
+        The body may name a member of the unit with ``session_id``; the answer is then that
+        member's Forge session credential alone, and only when the unit's launch payload
+        lists it (``GuestCredentialUnavailableError`` otherwise).
+
         Raises ``GuestAuthenticationError`` when the request does not prove an allocation
         of this pool (a bad proof and an unknown allocation are the same error), and
         ``GuestCredentialUnavailableError`` when the named slot has no running session.
@@ -88,7 +99,7 @@ class GuestMetadataService:
         only for a single-slot allocation.
         """
         allocation_id = await self._identity.authenticate(request)
-        requested_allocation, requested_slot = self._requested(request.body)
+        requested_allocation, requested_slot, requested_session = self._requested(request.body)
         if requested_allocation != allocation_id:
             raise GuestAuthenticationError
         machine = await self._repository.get(allocation_id)
@@ -96,8 +107,11 @@ class GuestMetadataService:
             raise GuestAuthenticationError
         slot = self._slot_index(requested_slot, machine)
         lease = await self._bound_slot(machine, slot)
+        launch = await self._launch(lease)
+        if requested_session is not None and requested_session != lease.session_id:
+            return await self._member_credentials(lease, launch, requested_session)
         session_id = lease.session_id
-        plan = await self._plan(lease)
+        plan = GuestCredentialPlan.from_launch(launch)
 
         issued_tokens: list[IssuedGuestToken] = []
         if plan.token_volumes and not plan.service_account:
@@ -121,28 +135,60 @@ class GuestMetadataService:
                     )
                 )
 
-        forge_session = None
-        if plan.forge_session:
-            credential = await self._issue_forge_session(session_id)
-            if credential is None:
-                raise GuestCredentialUnavailableError(
-                    GuestUnavailableReason.NO_FORGE_SESSION,
-                    "The session needs a Forge session credential but none can be issued "
-                    "(the session has no owner or launch, or forge_mcp.session_tokens is off)",
-                )
-            forge_session = IssuedGuestForgeSession(
-                token=credential.token,
-                grants=tuple(sorted(grant.value for grant in credential.grants)),
-            )
+        forge_session = await self._forge_session(plan, session_id)
         return GuestCredentials(
             service_account_tokens=tuple(issued_tokens), forge_session=forge_session
         )
 
+    async def _forge_session(
+        self, plan: GuestCredentialPlan, session_id: UUID
+    ) -> IssuedGuestForgeSession | None:
+        if not plan.forge_session:
+            return None
+        credential = await self._issue_forge_session(session_id)
+        if credential is None:
+            raise GuestCredentialUnavailableError(
+                GuestUnavailableReason.NO_FORGE_SESSION,
+                "The session needs a Forge session credential but none can be issued "
+                "(the session has no owner or launch, or forge_mcp.session_tokens is off)",
+            )
+        return IssuedGuestForgeSession(
+            token=credential.token,
+            grants=tuple(sorted(grant.value for grant in credential.grants)),
+        )
+
+    async def _member_credentials(
+        self, lease: SlotLease, launch: dict, session_id: UUID
+    ) -> GuestCredentials:
+        """The Forge session credential of one member of the unit bound to the slot.
+
+        Only a session the unit's own launch payload lists answers. The payload is what Forge
+        wrote when it started the unit, so a session that asks for another run's member, or
+        for a session that is no member at all, gets the same refusal as an unbound slot. A
+        member holds no ServiceAccount tokens of its own: those belong to the unit.
+        """
+        member = next(
+            (m for m in launch.get("members") or [] if m.get("id") == str(session_id)), None
+        )
+        if member is None:
+            raise GuestCredentialUnavailableError(
+                GuestUnavailableReason.UNBOUND,
+                f"Session {session_id} is not a member of the unit bound to slot {lease.slot}",
+            )
+        plan = GuestCredentialPlan.from_launch(member)
+        forge_session = await self._forge_session(plan, session_id)
+        return GuestCredentials(forge_session=forge_session)
+
     @staticmethod
-    def _requested(body: bytes) -> tuple[UUID, object]:
+    def _requested(body: bytes) -> tuple[UUID, object, UUID | None]:
         try:
             document = json.loads(body)
-            return UUID(document["allocation_id"]), document.get("slot")
+            session = document.get("session_id")
+            return (
+                UUID(document["allocation_id"]),
+                document.get("slot"),
+                UUID(session) if session is not None else None,
+            )
         except (ValueError, KeyError, TypeError, AttributeError) as exc:
             raise GuestRequestError(BAD_BODY) from exc
 
@@ -179,7 +225,7 @@ class GuestMetadataService:
             )
         return SlotLease(allocation=machine, binding=binding)
 
-    async def _plan(self, lease: SlotLease) -> GuestCredentialPlan:
+    async def _launch(self, lease: SlotLease) -> dict:
         bootstrap = await self._compute.bootstrap_for(lease)
         # A host execution for several platforms keeps one launch per platform.
         machine = lease.machine
@@ -192,4 +238,4 @@ class GuestMetadataService:
                 GuestUnavailableReason.NOT_LAUNCHED,
                 "The allocation's session has not been launched",
             )
-        return GuestCredentialPlan.from_launch(json.loads(launch))
+        return json.loads(launch)

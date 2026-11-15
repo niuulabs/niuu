@@ -26,7 +26,7 @@ curl -fsSL https://dev.meta.ai/install.sh | bash     # installs ~/.local/bin/mus
 muse --version                                         # Muse Code 1.0.2 or newer
 ```
 
-Skuld and OpenShell images include checksum-pinned Muse Code `1.3.0-R3233.1` for
+Skuld and OpenShell images include checksum-pinned Muse Code `1.4.14-R7309.1` for
 Linux amd64 and arm64. Docker, Kubernetes and SSH VM sessions use the Skuld image;
 OpenShell-backed sessions use the OpenShell image. Rebuild those images for this release.
 Mini-mode hosts still need the installation above.

@@ -25,6 +25,7 @@ from niuu.observability import get_observability
 from ting.domain.campaign_run_projection import RunProjection
 from ting.domain.campaign_stages import FAILURE_STAGE_KEY
 from ting.domain.models import (
+    TERMINAL_CAMPAIGN_STATUSES,
     CampaignStageState,
     WorkflowCampaign,
     WorkflowCampaignStatus,
@@ -300,6 +301,8 @@ class WorkflowCampaignProjector:
             event_name = "workflow.campaign.completed"
         elif next_status == WorkflowCampaignStatus.FAILED:
             event_name = "workflow.campaign.failed"
+        elif next_status == WorkflowCampaignStatus.CANCELED:
+            event_name = "workflow.campaign.canceled"
         try:
             await self._event_bus.emit(
                 TingEvent(
@@ -338,7 +341,7 @@ class WorkflowCampaignProjector:
         return True
 
 
-_TERMINAL_STATUSES = frozenset({WorkflowCampaignStatus.COMPLETED, WorkflowCampaignStatus.FAILED})
+_TERMINAL_STATUSES = TERMINAL_CAMPAIGN_STATUSES
 
 
 @dataclass(frozen=True)
@@ -364,6 +367,7 @@ _A2A_STATE_BY_STATUS = {
     WorkflowCampaignStatus.BLOCKED: "TASK_STATE_INPUT_REQUIRED",
     WorkflowCampaignStatus.COMPLETED: "TASK_STATE_COMPLETED",
     WorkflowCampaignStatus.FAILED: "TASK_STATE_FAILED",
+    WorkflowCampaignStatus.CANCELED: "TASK_STATE_CANCELED",
 }
 
 
@@ -375,7 +379,7 @@ def _record_a2a_state_transition(campaign: WorkflowCampaign) -> None:
         attributes=attributes,
         description="A2A task state transitions observed by Ting.",
     )
-    if campaign.status not in {WorkflowCampaignStatus.COMPLETED, WorkflowCampaignStatus.FAILED}:
+    if campaign.status not in TERMINAL_CAMPAIGN_STATUSES:
         return
     finished_at = campaign.completed_at or campaign.updated_at
     telemetry.duration(

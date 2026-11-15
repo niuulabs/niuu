@@ -16,7 +16,7 @@ data:
   LOG_FORMAT: {{ .Values.config.logFormat | default "json" | quote }}
   HOST: {{ .Values.config.host | default "0.0.0.0" | quote }}
   PORT: {{ .Values.service.targetPort | default 8000 | quote }}
-  WORKERS: {{ .Values.config.workers | default 2 | quote }}
+  WORKERS: {{ .Values.config.workers | default 1 | quote }}
   {{- with .Values.config.extra }}
   {{- range $key, $value := . }}
   {{ $key }}: {{ $value | quote }}
@@ -184,6 +184,8 @@ data:
 
     workflow_steps:
       step_deadline_seconds: {{ .Values.workflowSteps.stepDeadlineSeconds }}
+      pickup_grace_seconds: {{ .Values.workflowSteps.pickupGraceSeconds }}
+      catch_up_page_size: {{ .Values.workflowSteps.catchUpPageSize }}
       sessions:
         adapter: {{ .Values.workflowSteps.sessions.adapter | quote }}
         kwargs:
@@ -191,7 +193,18 @@ data:
       stuck:
         enabled: {{ .Values.workflowSteps.stuckDetection.enabled | toJson }}
         sweep_interval_seconds: {{ .Values.workflowSteps.stuckDetection.sweepIntervalSeconds }}
-        start_grace_seconds: {{ .Values.workflowSteps.stuckDetection.startGraceSeconds }}
+
+    {{- if and .Values.memoryImports.enabled (not .Values.memoryImports.gatewayUrl) }}
+    {{- fail "memoryImports.enabled: true needs memoryImports.gatewayUrl, the Mimir API prefix (for example http://mimir:8080/api/v1/mimir)" }}
+    {{- end }}
+    memory_imports:
+      enabled: {{ .Values.memoryImports.enabled | toJson }}
+      gateway_url: {{ .Values.memoryImports.gatewayUrl | quote }}
+      gateway_auth:
+        adapter: {{ .Values.memoryImports.gatewayAuth.adapter | quote }}
+        kwargs: {{ .Values.memoryImports.gatewayAuth.kwargs | default dict | toJson }}
+      gateway_timeout_seconds: {{ .Values.memoryImports.gatewayTimeoutSeconds }}
+      poll_seconds: {{ .Values.memoryImports.pollSeconds }}
 
     workflow_execution:
       enabled: {{ .Values.workflowExecution.enabled }}
@@ -237,6 +250,23 @@ data:
       default_user_id: {{ .Values.auth.defaultUserId | quote }}
       default_tenant_id: {{ .Values.auth.defaultTenantId | quote }}
       pat_ttl_days: {{ .Values.auth.patTtlDays | default 365 }}
+
+    {{- $attestation := dict }}
+    {{- range $key, $value := ((.Values.mesh | default dict).attestation | default dict) }}
+    {{- if not (kindIs "invalid" $value) }}
+    {{- $_ := set $attestation $key $value }}
+    {{- end }}
+    {{- end }}
+    {{- /* Off unless the operator sets required: true, and then only with a key to sign with. */}}
+    {{- $required := eq (index $attestation "required" | default false) true }}
+    {{- $_ := set $attestation "required" $required }}
+    {{- if and $required (not (and .Values.workloadIdentity.enabled .Values.workloadIdentity.signingKey.existingSecret)) }}
+    {{- fail "mesh.attestation.required: true needs a key Ting signs with: enable workloadIdentity with signingKey.existingSecret (the key Forge signs with), or set mesh.attestation.required: false" }}
+    {{- end }}
+
+    # One decision about proof of who published a platform event.
+    mesh:
+      attestation: {{ toJson $attestation }}
 
     workload_identity:
       enabled: {{ .Values.workloadIdentity.enabled | default false }}

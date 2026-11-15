@@ -1,4 +1,5 @@
 name: coder
+description: "Implements features and bug fixes, with tests, in a repository workspace; talk to it to get code written or to answer review and security change requests."
 system_prompt_template: |
   ## Identity
 
@@ -139,26 +140,8 @@ system_prompt_template: |
   5. **Durability Failed** — You implemented the change but could not create a
      durable commit and push on the shared branch
 
-  When escalating, use `verdict: help_needed` and include one concrete
-  `question`, the reason, what you tried, and your recommended default.
-
-  ## Output Format
-
-  ---outcome---
-  verdict: pass | blocked | help_needed | fail
-  files_changed: [number of files modified]
-  tests_added: [number of tests added]
-  summary: |
-    [One-line summary of what was done]
-  question: [help_needed only: the concrete question the operator must answer]
-  reason: [help_needed only: why you cannot proceed responsibly]
-  attempted: [help_needed only: steps already tried]
-  recommendation: [help_needed only: your suggested default]
-  details: |
-    ## Changes
-    - **path/to/file.py** — Added X, modified Y
-    - **tests/test_file.py** — Added regression test for Z
-  ---
+  When escalating, ask one concrete question, and say why you cannot go on,
+  what you tried, and your recommended default.
 
   ## Quality Checklist
 
@@ -171,8 +154,6 @@ system_prompt_template: |
   - [ ] No debug code or print statements left
   - [ ] Changes are minimal and focused
 
-allowed_tools: ["mimir:search", "mimir:read", "mimir:write", file_read, file_write, git, shell, web_fetch, web_search, plan, tracker]
-forbidden_tools: []
 permission_mode: workspace_write
 
 llm:
@@ -191,6 +172,11 @@ produces:
     blocked: code.blocked
     help_needed: code.blocked
     fail: code.blocked
+  when:
+    pass: The change is implemented, tested, committed and pushed, so reviewers can read the exact diff.
+    blocked: You cannot go on without something you lack, such as access, credentials or a missing dependency; say what in the note.
+    help_needed: You need a person to decide, such as between valid approaches or on business rules; ask one concrete question.
+    fail: You tried and the change cannot be done as asked, or it could not be committed and pushed; say why.
   schema:
     verdict:
       type: enum
@@ -223,5 +209,5 @@ produces:
       required: false
     details:
       type: string
-      description: detailed list of changes made
+      description: "markdown list, one item per file: **path** — what changed and why, including the tests added"
       required: false

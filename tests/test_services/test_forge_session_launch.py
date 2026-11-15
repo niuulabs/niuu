@@ -5,11 +5,14 @@ from __future__ import annotations
 import pytest
 
 from niuu.domain.services.token_scope import (
+    FORGE_MEMORY_SCOPE,
+    FORGE_MESH_IDENTITY_SCOPE,
     FORGE_NOTIFY_SCOPE,
     FORGE_SESSION_LIFECYCLE_SCOPE,
     FORGE_SESSION_MESSAGE_SCOPE,
     FORGE_SESSION_READ_SCOPE,
     FORGE_SESSION_SECRET_SCOPE,
+    FORGE_SESSION_VOICE_SCOPE,
 )
 from niuu.forge_mcp.models import ForgeMcpGrant
 from tests.conftest import InMemorySessionRepository, MockPodManager
@@ -67,6 +70,9 @@ class TestMintAtStart:
             FORGE_NOTIFY_SCOPE,
             FORGE_SESSION_READ_SCOPE,
             FORGE_SESSION_SECRET_SCOPE,
+            FORGE_MESH_IDENTITY_SCOPE,
+            FORGE_MEMORY_SCOPE,
+            FORGE_SESSION_VOICE_SCOPE,
         )
         stored = await forge.sessions.get(session.id)
         assert stored.workload_config["forge_mcp"] == {
@@ -113,6 +119,9 @@ class TestMintAtStart:
             FORGE_NOTIFY_SCOPE,
             FORGE_SESSION_READ_SCOPE,
             FORGE_SESSION_SECRET_SCOPE,
+            FORGE_MESH_IDENTITY_SCOPE,
+            FORGE_MEMORY_SCOPE,
+            FORGE_SESSION_VOICE_SCOPE,
             FORGE_SESSION_LIFECYCLE_SCOPE,
             FORGE_SESSION_MESSAGE_SCOPE,
         )
@@ -147,6 +156,32 @@ class TestMintAtStart:
         assert pods.start_calls[-1][1].forge_session is None
         stored = await sessions.get(session.id)
         assert launch_id_of(stored.workload_config)  # the launch is still recorded
+
+    async def test_the_manager_that_runs_the_session_decides(self) -> None:
+        """A placement manager whose pool delivers nothing still serves local sessions."""
+
+        class PerSessionDelivery(MockPodManager):
+            delivers_forge_session_token = False  # the whole-Forge answer: not every session
+
+            def __init__(self, delivers_to: set[str]) -> None:
+                super().__init__()
+                self._delivers_to = delivers_to
+
+            def delivers_forge_session_token_for(self, session: Session) -> bool:
+                return session.name in self._delivers_to
+
+        sessions = InMemorySessionRepository()
+        pods = PerSessionDelivery({"local"})
+        service = SessionService(
+            sessions, pods, provisioning_initial_delay=0, forge_session_tokens=token_service()
+        )
+        for name in ("local", "pooled"):
+            session = await sessions.create(Session(name=name, owner_id=OWNER))
+            await service.start_session(session.id)
+            await service._provisioning_tasks[session.id]
+        local_spec, pooled_spec = (spec for _, spec in pods.start_calls[-2:])
+        assert local_spec.forge_session is not None
+        assert pooled_spec.forge_session is None
 
     async def test_no_mint_without_a_token_service(self) -> None:
         forge = build_forge_app(tokens=False)
@@ -367,6 +402,39 @@ class TestProjectedCredential:
                 forge_session_tokens=token_service(),
                 forge_session_projection=RecordingProjection(backend="vm"),
             )
+
+    def test_delivery_somewhere_is_enough_for_a_feature_that_needs_it(self) -> None:
+        """A placement manager whose pool cannot deliver still serves its local sessions."""
+
+        class SomeDeliver(MockPodManager):
+            delivers_forge_session_token = False
+            delivers_forge_session_token_somewhere = True
+
+        class NoneDeliver(MockPodManager):
+            delivers_forge_session_token = False
+            delivers_forge_session_token_somewhere = False
+
+        class Delivers(MockPodManager):
+            delivers_forge_session_token = True
+
+        def service(pods, **kwargs) -> SessionService:
+            return SessionService(InMemorySessionRepository(), pods, **kwargs)
+
+        assert service(
+            SomeDeliver(), forge_session_tokens=token_service()
+        ).delivers_forge_session_somewhere
+        assert not service(
+            NoneDeliver(), forge_session_tokens=token_service()
+        ).delivers_forge_session_somewhere
+        assert service(
+            Delivers(), forge_session_tokens=token_service()
+        ).delivers_forge_session_somewhere
+        assert service(
+            NoneDeliver(),
+            forge_session_tokens=token_service(),
+            forge_session_projection=RecordingProjection(),
+        ).delivers_forge_session_somewhere
+        assert not service(SomeDeliver()).delivers_forge_session_somewhere
 
     def test_no_delivery_without_tokens_or_a_way_to_deliver(self) -> None:
         assert not SessionService(

@@ -31,9 +31,20 @@ import {
   buildSpecsHttpAdapter,
   buildDispatchBusHttpAdapter,
   buildTingSettingsHttpAdapter,
+  RunWorkflowGraph,
+  buildRunGateService,
   buildTingAuditLogHttpAdapter,
+  buildMemoryImportsHttpAdapter,
+  createMockMemoryImportsService,
+  MEMORY_IMPORTS_SERVICE_KEY,
 } from '@niuulabs/plugin-ting';
-import { createMimirMockAdapter, buildMimirHttpAdapter } from '@niuulabs/plugin-mimir';
+import {
+  createMimirMockAdapter,
+  buildMimirHttpAdapter,
+  buildMemoryGatewayHttpAdapter,
+  createMemoryGatewayMockAdapter,
+  MEMORY_GATEWAY_SERVICE_KEY,
+} from '@niuulabs/plugin-mimir';
 import {
   buildSetupHttpAdapter,
   createMockSetupService,
@@ -71,6 +82,10 @@ import {
   type Session,
   type SessionFilters,
   type VolundrSession,
+  RUN_WORKFLOW_VIEW_SERVICE,
+  type RunWorkflowView,
+  RUN_GATE_SERVICE,
+  type IRunGateService,
 } from '@niuulabs/plugin-volundr';
 import {
   REALM_GOVERNANCE_SERVICE_KEY,
@@ -764,8 +779,10 @@ function toSessionState(session: VolundrSession): Session['state'] {
   }
 }
 
-function toSessionTemplateId(session: VolundrSession): string {
+function toSessionTemplateId(session: VolundrSession): string | undefined {
   if (session.taskType) return session.taskType;
+  // A shared session has no workspace: Forge withholds the source from a room participant.
+  if (!session.source) return undefined;
   if (session.source.type === 'git') {
     const repoName = session.source.repo.split('/').pop();
     return repoName && repoName.length > 0 ? repoName : 'git';
@@ -789,6 +806,7 @@ function toSessionRavnId(session: VolundrSession): string {
 }
 
 function toSessionPreview(session: VolundrSession): string | undefined {
+  if (!session.source) return undefined;
   if (session.source.type === 'git') {
     // Sessions with no repository still carry an empty git source.
     if (!session.source.repo) return undefined;
@@ -824,8 +842,15 @@ function toDomainSession(session: VolundrSession): Session {
     personaName: session.name,
     model: session.model,
     sessionDefinition: session.sessionDefinition,
-    source: session.source,
+    ...(session.source ? { source: session.source } : {}),
+    ...(session.room ? { room: session.room } : {}),
+    ...(session.ownerId ? { ownerId: session.ownerId } : {}),
+    ...(session.ownerName ? { ownerName: session.ownerName } : {}),
     coordination: session.coordination,
+    ...(session.hostedBy ? { hostedBy: session.hostedBy } : {}),
+    ...(session.team ? { team: session.team } : {}),
+    ...(session.teamMember ? { teamMember: session.teamMember } : {}),
+    ...(session.peopleCount !== undefined ? { peopleCount: session.peopleCount } : {}),
     templateId: toSessionTemplateId(session),
     clusterId: toSessionClusterId(session),
     clusterName: session.instanceName ?? session.instanceId ?? undefined,
@@ -845,6 +870,7 @@ function toDomainSession(session: VolundrSession): Session {
     tokensOut: 0,
     preview: toSessionPreview(session),
     trackerIssue: session.trackerIssue,
+    ...(session.runId ? { runId: session.runId } : {}),
     origin: session.origin,
     error: session.error,
     readState: session.readState,
@@ -884,6 +910,23 @@ function buildSplitVolundrService(
     getProjects: (options) => forge.getProjects(options),
     createProject: (name, options) => forge.createProject(name, options),
     updateProject: (project, changes) => forge.updateProject(project, changes),
+    getProjectMembers: (project) => forge.getProjectMembers(project),
+    getProjectMemberCandidates: (project, query) =>
+      forge.getProjectMemberCandidates(project, query),
+    addProjectMember: (project, member) => forge.addProjectMember(project, member),
+    updateProjectMember: (project, userId, change) =>
+      forge.updateProjectMember(project, userId, change),
+    removeProjectMember: (project, userId) => forge.removeProjectMember(project, userId),
+    getSessionParticipants: (id, options) => forge.getSessionParticipants(id, options),
+    getSessionProjectPeople: (id, options) => forge.getSessionProjectPeople(id, options),
+    getParticipantCandidates: (id, query, options) =>
+      forge.getParticipantCandidates(id, query, options),
+    getTeamInviteCandidates: (query, options) => forge.getTeamInviteCandidates(query, options),
+    inviteSessionParticipant: (id, invitation, options) =>
+      forge.inviteSessionParticipant(id, invitation, options),
+    acceptSessionInvitation: (id, options) => forge.acceptSessionInvitation(id, options),
+    removeSessionParticipant: (id, userId, options) =>
+      forge.removeSessionParticipant(id, userId, options),
     getSessionProject: (id, options) => forge.getSessionProject(id, options),
     assignSessionProject: (id, assignment, options) =>
       forge.assignSessionProject(id, assignment, options),
@@ -899,6 +942,8 @@ function buildSplitVolundrService(
     getAdminSettings: () => forge.getAdminSettings(),
     updateAdminSettings: (data) => forge.updateAdminSettings(data),
     startSession: (config) => forge.startSession(config),
+    startTeam: (request) => forge.startTeam(request),
+    getSessionMembers: (id, options) => forge.getSessionMembers(id, options),
     evaluatePermissionAutoApproval: (sessionId, request) =>
       forge.evaluatePermissionAutoApproval(sessionId, request),
     connectSession: (config) => forge.connectSession(config),
@@ -1513,16 +1558,26 @@ export function buildServices(config: NiuuConfig): ServicesMap {
     ? buildTingAuditLogHttpAdapter(auditClient)
     : demoService(config, 'ting.audit', createMockAuditLogService);
 
+  const workService = workClient
+    ? buildWorkHttpAdapter(workClient)
+    : config.demoMode
+      ? createMockWorkService()
+      : unavailableService<IWorkService>(
+          'ting.work',
+          'Configure a live work backend to view work.',
+        );
+
   return {
     ting: tingService,
-    'ting.work': workClient
-      ? buildWorkHttpAdapter(workClient)
-      : config.demoMode
-        ? createMockWorkService()
-        : unavailableService<IWorkService>(
-            'ting.work',
-            'Configure a live work backend to view work.',
-          ),
+    'ting.work': workService,
+    // Forge draws a run's workflow with Ting's view, where Ting can read the run.
+    ...(workClient || config.demoMode
+      ? {
+          [RUN_WORKFLOW_VIEW_SERVICE]: RunWorkflowGraph satisfies RunWorkflowView,
+          // A run's gate is asked for above its coordinator's composer, decided in Ting.
+          [RUN_GATE_SERVICE]: buildRunGateService(workService) satisfies IRunGateService,
+        }
+      : {}),
     // Artifacts are Forge's publications on every Forge host the registry lists.
     'ting.runLog': forgeBase
       ? buildRunLogHttpAdapter(
@@ -1530,6 +1585,9 @@ export function buildServices(config: NiuuConfig): ServicesMap {
           artifactRegistryBase ? createApiClient(artifactRegistryBase) : null,
         )
       : demoService(config, 'ting.runLog', createMockRunLogService),
+    [MEMORY_IMPORTS_SERVICE_KEY]: tingClient
+      ? buildMemoryImportsHttpAdapter(tingClient)
+      : demoService(config, MEMORY_IMPORTS_SERVICE_KEY, createMockMemoryImportsService),
     'ting.workflowExecutions': tingClient
       ? buildWorkflowExecutionHttpAdapter(tingClient)
       : unavailableService<IWorkflowExecutionService>('ting.workflowExecutions'),
@@ -1548,6 +1606,9 @@ export function buildServices(config: NiuuConfig): ServicesMap {
     'ravn.personas': ravnPersonas,
     setup,
     mimir,
+    [MEMORY_GATEWAY_SERVICE_KEY]: hasHttpBackend(mimirSvc)
+      ? buildMemoryGatewayHttpAdapter(createApiClient(mimirSvc.baseUrl))
+      : demoService(config, MEMORY_GATEWAY_SERVICE_KEY, createMemoryGatewayMockAdapter),
     bifrost,
     volundr,
     'niuu.repos': repoCatalogService,

@@ -50,6 +50,16 @@ Skuld is **not installed manually**. It is deployed automatically by the Volundr
 
 The session definitions in the Volundr chart define default values for Skuld deployments. Per-session overrides (model, repo, resources) are merged at deployment time.
 
+### A unit: one pod for a whole workflow run
+
+A workflow run is one **unit**: its root session's release hosts every member as a container of the same pod, all started together.
+
+- **One Skuld per member.** `members` lists them; each member's container runs the same image with its own configuration (`<release>-members` ConfigMap, a key per member session id), its own broker port and, through Forge, its own credential Secret mounted into that container only. The chart renders a member from `members[].values` over the chart defaults (`files/defaults.yaml` is `values.yaml`), so a member's configuration is exactly what it would have been on its own.
+- **A local mesh.** `unit.meshDir` is an `emptyDir` mounted into every Skuld of the pod; the Skulds use nng on loopback and `registry` discovery on a file in it, so they find each other without listing pods. Nothing outside the pod can reach a mesh port.
+- **One checkout, one home each.** Every member works in the root's workspace (`<persistence.mountPath>/<root id>/workspace`), cloned once by the `git-clone` init container from the root's repository or, when the root names none, from `unit.checkoutFrom`. Each member keeps its own `CODEX_HOME` (`<persistence.mountPath>/<root id>/members/<member id>/.codex`, seeded from the home volume) and its own scratch directory; the user's home volume is the one every session of the user mounts.
+- **One address each.** With `gateway.enabled`, every member has its own `HTTPRoute` and `SecurityPolicy` at `/s/<member id>`; the pod's nginx sends `/m/<member id>/` to that member's Skuld, behind the same Envoy and owner check as the root's.
+- **Pod-level settings are the root's.** Scheduling (`nodeSelector`, `tolerations`, `affinity`, `runtimeClassName`), `serviceAccountName`, `securityContext`, and the home and sessions volumes belong to the pod. The pod's resources are the sum of its containers'; nothing is shrunk to fit.
+
 ## Installation (Manual / Development)
 
 For development or testing, you can deploy Skuld directly:
@@ -101,6 +111,18 @@ These values are typically set by Volundr at deployment time, not by the user.
 | `session.id` | string | `""` | Session identifier (UUID, set by Volundr) |
 | `session.name` | string | `""` | Human-readable session name |
 | `session.model` | string | `"claude-sonnet-4-20250514"` | AI model to use for the session |
+
+### Unit (a workflow run's pod)
+
+These values are set by Volundr's Flux pod manager for a unit root, not by the user.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `brokerPort` | int | `8081` | Port of this release's broker (config `port`); a member of a unit is given its own |
+| `unit.sessionId` | string | `""` | Id of the unit's root session; set on a member's values by the chart, empty for the root |
+| `unit.meshDir` | string | `""` | Directory every Skuld of the unit shares for its local mesh (an `emptyDir`) |
+| `unit.checkoutFrom` | string | `""` | Member whose repository, branch and Git credential the unit's checkout is cloned from, when the root names no repository |
+| `members` | list | `[]` | The sessions this pod hosts besides its own: `id`, `port` and the complete `values` of each member |
 
 ### Image (Skuld Broker)
 
@@ -254,8 +276,72 @@ An agent asks the user for a secret with `request-secret` or the Forge MCP `requ
 |-----|------|---------|-------------|
 | `secretRequests.pollIntervalS` | int | `2` | Seconds between checks of whether the user answered the card (`secret_requests.poll_interval_s`) |
 | `secretRequests.waitMaxS` | int | `50` | Longest one `request_secret` call waits for the user, in seconds (`secret_requests.wait_max_s`) |
+| `ask.pollIntervalS` | int | `2` | Seconds between checks of whether an `ask` recipient is blocked on a person or gone (`ask.poll_interval_s`) |
+| `ask.waitMaxS` | int | `50` | Longest one `ask` call waits, and the ceiling for a caller's `deadline_s`, in seconds (`ask.wait_max_s`); must stay below `forgeMcp.brokerRequestTimeoutS` and `forgeMcp.toolTimeoutS` |
 | `forgeMcp.brokerRequestTimeoutS` | number | `null` | Seconds the engine allows one stdio-server to broker tool call (`forge_mcp.broker_request_timeout_s`); null keeps the broker default of 60 |
-| `forgeMcp.toolTimeoutS` | number | `null` | Seconds the engine allows one MCP tool call (`forge_mcp.tool_timeout_s`); null keeps the broker default of 120 |
+| `forgeMcp.toolTimeoutS` | number | `null` | Seconds the engine allows one MCP tool call (`forge_mcp.tool_timeout_s`), set for both Codex (`tool_timeout_sec`) and Claude Code (per-server `timeout`); null keeps the broker default of 120 |
+
+### Workflow steps
+
+A workflow run's sessions take part in the run's mesh: each **member** takes the offers of the topics its pinned persona consumes and closes its steps, and the run's **root** (the run's room, a Skuld with no agent) publishes the offers Ting hands it. Forge sets these values when it launches a run's session (the `workflow_step_host` session contributor); an ordinary session leaves them off and empty. Each renders into the `workflow_steps` section of the broker's config file under the key shown. Skuld refuses to start a member or root that lacks a field it needs, so none is defaulted.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `workflowSteps.enabled` | bool | `false` | This session is a member of a workflow run (`workflow_steps.enabled`). Needs `runId`, `member`, `personaAlias` and `orchestratorPeerId`, the mesh and a pinned persona |
+| `workflowSteps.root` | bool | `false` | This session is the root of a workflow run (`workflow_steps.root`); exclusive with `enabled`. Needs `runId` and the mesh |
+| `workflowSteps.runId` | string | `""` | The workflow run the session belongs to (`workflow_steps.run_id`); offers of any other run are refused |
+| `workflowSteps.member` | string | `""` | The member's name in the workflow stage (`workflow_steps.member`) |
+| `workflowSteps.personaAlias` | string | `""` | The alias the workflow gives the member's pinned persona (`workflow_steps.persona_alias`); the offer carries one contract per alias and the member finds its own by this |
+| `workflowSteps.orchestratorPeerId` | string | `""` | The mesh peer id of the run's root (`workflow_steps.orchestrator_peer_id`), which is the root session's id; a member takes offers published by this peer and no other |
+| `workflowSteps.topics` | list | `[]` | Every topic the workflow routes to the member (`workflow_steps.topics`, its stages' `consumesEventTypes`); it subscribes to them on top of its persona's own topics |
+| `workflowSteps.eventFilters` | object | `{}` | The member's `eventFilters` from the workflow (`workflow_steps.event_filters`); each key must equal the value in the offered inputs' payload, else the member passes the offer. Empty takes every offer of its topics |
+| `workflowSteps.orchestration` | string | `""` | Who decides the run's next step, `engine` or `session` (`workflow_steps.orchestration`); empty keeps Skuld's default, `engine` |
+
+### Mesh
+
+A session joins a flock as a mesh peer when `mesh.enabled` is true: it announces itself (persona, role, description, capabilities, the topics it consumes and produces, its activity), receives what peers send into its inbox, and gets the `mesh_send`, `mesh_publish` and `mesh_peers` session tools. Every value below renders into the `mesh` section of the broker's config file under the key shown; a value left `null` (or empty) keeps Skuld's own default, so a chart that sets none of them renders `enabled: false` and `transport: "nng"` exactly as Skuld defaults. Forge hands these to a session pod as it does every other value of this chart: the pod manager's `session_defaults` (the volundr chart's `podManager.kwargs`) and the session contributors merge into the release values.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `room.enabled` | bool | `false` | Host a room (`room.enabled`); the session keeps its own agent. Forge turns it on for a workflow run's first session |
+| `room.environmentId` | string | `""` | Environment of the room's participants (`room.environment_id`); empty uses `mesh.realmId` |
+| `room.realmRoom` | bool | `false` | Show every member of the mesh realm, not only events tagged with this session (`room.realm_room`) |
+| `room.routed` | bool | `false` | The session runs no agent of its own and only hosts the room (`room.routed`); a workflow run's room session |
+| `room.untargetedDelivery` | string | `refuse` | What a routed room does with a browser message that names no participant (`room.untargeted_delivery`): `refuse` sends it to the room's sole ravn and refuses it when there are two or more; `everyone` delivers it to every agent in the room, as a team's room does |
+| `mesh.announce` | object | `{}` | `persona`, `consumes` and `emits` written as the pod's `ravn.niuu.world/persona`, `/consumes` and `/emits` annotations, which pod discovery shows to the realm's other peers. Forge sets it for a workflow step session from its pinned persona |
+| `mesh.shareWork` | bool | `false` | Share this session's replies, tool work and step closes with its realm's room (`mesh.share_work`); Forge sets it for a workflow run's member sessions |
+| `mesh.enabled` | bool | `false` | Join the flock as a mesh peer (`mesh.enabled`) |
+| `mesh.transport` | string | `"nng"` | Mesh transport: `nng`, `nats`, `in_process` or a Sleipnir transport class path (`mesh.transport`) |
+| `mesh.peerPorts` | list | `[]` | Container ports to expose for direct mesh peers; not a Skuld setting |
+| `mesh.peerId` | string | `""` | This peer's id (`mesh.peer_id`); empty uses the session id (transport, discovery, certificate and reply routes share it) |
+| `mesh.realmId` | string | `""` | Realm the peer announces in and discovers within (`mesh.realm_id`) |
+| `mesh.displayName` | string | `""` | What the session is called on the mesh and in its room (`mesh.display_name`); empty uses the session's name, a team's agents go by their role |
+| `mesh.persona` | string | `null` | Persona name announced when no persona is pinned (`mesh.persona`); null keeps `coder` |
+| `mesh.role` | string | `""` | What the session is for, announced so peers can choose (`mesh.role`); empty announces the pinned persona's id |
+| `mesh.description` | string | `""` | What the session does, announced to peers (`mesh.description`); the pinned persona's own description wins |
+| `mesh.capabilities` | list | `null` | Capabilities announced (`mesh.capabilities`) |
+| `mesh.tools` | list | `null` | Tools announced (`mesh.tools`) |
+| `mesh.consumesEventTypes` | list | `null` | Topics subscribed to (`mesh.consumes_event_types`); null keeps `["code.requested"]`; a pinned persona's `consumes` are added |
+| `mesh.publishEventTypes` | list | `null` | Topics `mesh_publish` may publish (`mesh.publish_event_types`), added to the pinned persona's `produces`; any other topic is refused |
+| `mesh.publishedEventUrgency` | number | `null` | Attention hint 0.0-1.0 on published events (`mesh.published_event_urgency`); null keeps 0.8 |
+| `mesh.discoverPods` | bool | `true` | With the mesh on nng and no `mesh.discoveryAdapters` or `mesh.adapters`, find the session pods of the realm by listing pods (`k8s` discovery) and dial the PUB socket each pod opens on its own IP. The chart then also sets `POD_IP`, labels the pod `ravn.niuu.world/realm` and `ravn.niuu.world/role: agent`, annotates it `ravn.niuu.world/peer-id`, `ravn.niuu.world/participant-type: skuld` and `ravn.niuu.world/display-name` (the session name), exposes `mesh-pub` and, with `networkPolicy.enabled`, lets the realm's pods reach it. The chart creates the namespaced Role and RoleBinding that let the session's ServiceAccount read pods (`mesh.rbac.create`). `false` leaves such a mesh without discovery, which Skuld refuses to start |
+| `mesh.rbac.create` | bool | `true` | Create a namespaced Role (`get`, `list`, `watch` on `pods` only) and a RoleBinding to the session's ServiceAccount (`serviceAccountName`, else `default`), only when the mesh uses `k8s` discovery of the release namespace: the cluster default, or a `discoveryAdapters` entry naming `k8s` and this namespace. Nothing is cluster-wide; a `k8s` entry for another or for every namespace is yours to grant. `false` leaves the grant to you |
+| `mesh.nng.port` | int | `null` | Port of the PUB socket in that cluster default (`null` keeps 7480) |
+| `mesh.nng.pubSubAddress` | string | `""` | NNG publish/subscribe address (`mesh.nng.pub_sub_address`); empty keeps `tcp://127.0.0.1:0`, or `tcp://0.0.0.0:<port>` in the cluster default |
+| `mesh.nng.reqRepAddress` | string | `""` | NNG request/reply address (`mesh.nng.req_rep_address`) |
+| `mesh.nng.advertiseHost` | string | `""` | Host other machines dial this session at (`mesh.nng.advertise_host`); required when `pubSubAddress` listens on every interface, the cluster default announces the pod IP |
+| `mesh.nng.rediscoverIntervalS` | number | `null` | Seconds between re-reads of the discovered peers (`mesh.nng.rediscover_interval_s`); `null` keeps 1 |
+| `mesh.adapters` | list | `null` | Mesh adapter entries (`mesh.adapters`): an `adapter` alias or class path plus that adapter's settings |
+| `mesh.discoveryAdapters` | list | `null` | Discovery adapter entries (`mesh.discovery_adapters`); with none, `mesh_peers` is an error |
+| `mesh.nats` | map | `{}` | NATS JetStream settings (`mesh.nats`), keys of `niuu.mesh.config.MeshNatsConfig` |
+| `mesh.rpcTimeoutS` | number | `null` | Seconds a mesh request waits for the peer's answer (`mesh.rpc_timeout_s`); null keeps 10 |
+| `mesh.rpcReplyCacheSize` | int | `null` | Replies remembered so a retried request is answered once (`mesh.rpc_reply_cache_size`) |
+| `mesh.diffMaxBytes` | int | `null` | Largest diff a peer may fetch (`mesh.diff_max_bytes`); null keeps 8192 |
+| `mesh.diffTimeoutS` | number | `null` | Seconds a diff request may take (`mesh.diff_timeout_s`); null keeps 10 |
+
+Setting `mesh.enabled` or `mesh.transport` had no effect on the broker before these values were rendered; only `mesh.peerPorts` did.
+
+The `skuld-planner` chart renders the same section with the same template (`templates/_mesh-config.tpl`, symlinked into the planner chart) and has the same `mesh` values, so the two cannot drift; a test compares them.
 
 ### Environment Variables
 
@@ -309,6 +395,7 @@ Optional Envoy sidecar for JWT validation and header extraction. When enabled, E
 | `envoy.headerNames.email` | string | `"x-auth-email"` | Header name for email |
 | `envoy.headerNames.tenant` | string | `"x-auth-tenant"` | Header name for tenant |
 | `envoy.headerNames.roles` | string | `"x-auth-roles"` | Header name for roles |
+| `envoy.headerNames.displayName` | string | `"x-auth-display-name"` | Header the session proxy stamps with the caller's percent-encoded display name; recorded as the author of their messages. The Gateway removes any client-supplied copy |
 | `envoy.jwt.enabled` | bool | `false` | Enable JWT authentication filter |
 | `envoy.jwt.issuer` | string | `""` | JWT issuer URL (Keycloak realm) |
 | `envoy.jwt.audiences` | list | `[]` | Allowed JWT audiences |

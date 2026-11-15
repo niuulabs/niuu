@@ -13,15 +13,16 @@ from niuu.ports.cli import CLITransport
 from niuu.utils import import_class, resolve_secret_kwargs
 from personas.domain.persona_document import PersonaDocumentError, PortablePersonaDefinition
 from skuld.broker_api import _rebuild_presented_registry, _resume_presented_uploads
+from skuld.channels import TelegramChannelError
 from skuld.chronicle_watcher import ChronicleWatcher
 from skuld.codex_auth import CodexAuthProviderPort
 from skuld.conversation_models import ConversationTurn
+from skuld.memory_mcp.gateway import MemoryContextPackError
 from skuld.personas.projection import PersonaProjectionError, ProjectionContext
 from skuld.personas.registry import projector_for
 from skuld.service_manager import ServiceManager
 from skuld.session_artifacts import _capture_git_workspace_checkpoint
 from skuld.session_runtime import write_private_file
-from skuld.transports.mcp_config import mcp_server_names
 
 logger = logging.getLogger("skuld.broker")
 
@@ -48,6 +49,22 @@ class TransportLifecycleMixin:
         self._startup_state = "failed"
         self._startup_failure = f"{type(exc).__name__}: {message}"[:2000]
         self._set_activity_state("error")
+
+    def _report_startup_failure(self) -> None:
+        """Tell Forge the broker cannot start, so a session still coming up fails now.
+
+        Without it Forge sees only a pod that never turns ready, and a run waiting on the
+        session learns of the failure when the platform gives up on the install. Fire-and-
+        forget like the provisioning report: the diagnostics listener must still bind.
+        """
+        if not self.volundr_api_url:
+            return
+        asyncio.create_task(
+            self._report_activity_state(
+                "error",
+                extra_metadata={"error": self._startup_failure, "startup_failed": True},
+            )
+        )
 
     def _build_transport_kwargs(self) -> dict:
         """Return superset of kwargs that any transport constructor might need."""
@@ -97,6 +114,9 @@ class TransportLifecycleMixin:
             "dsh_api_key": self._settings.dsh.api_key,
             "dsh_provider": self._settings.dsh.provider,
             "dsh_prompt_timeout_s": self._settings.dsh.prompt_timeout_s,
+            "claude_auth": self._settings.claude_auth,
+            "claude_oauth_token_file": self._settings.claude_oauth_token_file,
+            "tmux_remote_control": self._settings.tmux_remote_control,
             "model_gateway_url": self._settings.model_gateway.url,
             "model_gateway_token": self._settings.model_gateway.token,
         }
@@ -163,14 +183,11 @@ class TransportLifecycleMixin:
             runtime_dir=self._session_runtime.root,
             request_prompt=self._settings.session.system_prompt,
             mcp_servers=tuple(kwargs.get("mcp_servers") or ()),
-            platform_mcp_servers=tuple(mcp_server_names(self._builtin_mcp_servers())),
             node_skip_permissions=self._settings.skip_permissions,
             node_claude_permission_mode=self._settings.claude_permission_mode,
             node_approval_policy=self._settings.approval_policy,
             node_sandbox=self._settings.sandbox,
-            supports_read_only_mcp_boundary=bool(
-                getattr(cls, "supports_read_only_mcp_boundary", False)
-            ),
+            outcome_contract=not self._settings.session.conversational,
         )
         projection = projector_for(adapter_path).project(persona, context)
         projection.require_playable(persona.id, adapter_path)
@@ -312,6 +329,9 @@ class TransportLifecycleMixin:
         # Ensure workspace directory exists
         os.makedirs(self.workspace_dir, exist_ok=True)
 
+        # The voice channel folds its call list from the durable history read below.
+        self._start_voice_channel()
+
         # Load conversation history from disk
         self._load_control_state()
         self._load_conversation_history()
@@ -320,6 +340,20 @@ class TransportLifecycleMixin:
         # Show participants whose heartbeats lapse as away (room mode only)
         if self._room_bridge is not None:
             self._room_bridge.start_presence_sweep()
+
+        # The memory context pack goes into the harness instructions, so it is fetched once
+        # before the transport is created. No gateway answer, no start: an empty pack never
+        # stands in for the missing one.
+        try:
+            await self._load_memory_context_pack()
+        except MemoryContextPackError as exc:
+            self._fail_startup(exc)
+            logger.critical(
+                "Memory context pack unavailable; broker remains unready: %s",
+                self._startup_failure,
+            )
+            self._report_startup_failure()
+            return
 
         # Initialize transport
         try:
@@ -333,6 +367,7 @@ class TransportLifecycleMixin:
                 self._startup_failure,
                 exc_info=True,
             )
+            self._report_startup_failure()
             return
         self._transport.on_event(self._handle_cli_event)
 
@@ -343,8 +378,19 @@ class TransportLifecycleMixin:
         self._start_preview()
         self._git_workspace_checkpoint = _capture_git_workspace_checkpoint(self.workspace_dir)
 
-        # Initialize Telegram channel if configured
-        await self._init_telegram_channel()
+        # Initialize Telegram channel if configured. A configured channel that cannot start
+        # fails the session: it would otherwise run unreachable from the operator's chat.
+        try:
+            await self._init_telegram_channel()
+        except TelegramChannelError as exc:
+            self._fail_startup(exc)
+            logger.critical(
+                "Configured Telegram channel cannot start; broker remains unready: %s",
+                self._startup_failure,
+                exc_info=True,
+            )
+            self._report_startup_failure()
+            return
 
         # Start chronicle watcher (tails JSONL session files for terminal mode)
         if self._settings.chronicle_watcher_enabled and self.volundr_api_url:
@@ -410,6 +456,7 @@ class TransportLifecycleMixin:
                     self._startup_failure,
                     exc_info=True,
                 )
+                self._report_startup_failure()
                 # Keep the HTTP diagnostics surface alive so the pod manager can
                 # observe the exact terminal failure through /ready, persist it,
                 # and tear down the runtime.  Nothing below this point should
@@ -431,12 +478,10 @@ class TransportLifecycleMixin:
                 # first message. Startup is complete; the session takes that
                 # message now, so it is idle, not starting.
                 asyncio.create_task(self._report_activity_state("idle"))
-            if self._settings.workflow_steps.enabled:
-                # A step restored from the durable log whose instructions never reached the
+            if self._settings.workflow_steps.enabled or self._peer_messages_waiting():
+                # A step or peer message restored from the durable log that never reached the
                 # harness is handed over now; one already handed over is left to its turn.
-                asyncio.create_task(
-                    self._maybe_inject_workflow_step(), name="workflow-step-restore-inject"
-                )
+                self._spawn_boundary_injection("restore-inject")
 
     async def shutdown(self) -> None:
         """Clean up on shutdown.
@@ -444,6 +489,9 @@ class TransportLifecycleMixin:
         Reports chronicle summary to Volundr API before stopping the
         transport, so the CLI process is still alive for summary generation.
         """
+        if self._shutdown_started:
+            return
+        self._shutdown_started = True
         logger.info("Broker shutting down")
         self._startup_ready = False
         self._startup_state = "stopping"
@@ -544,3 +592,7 @@ class TransportLifecycleMixin:
         if self._http_client:
             await self._http_client.aclose()
             self._http_client = None
+        if self._session_http_client:
+            await self._session_http_client.aclose()
+            self._session_http_client = None
+        await self._close_memory_gateway()

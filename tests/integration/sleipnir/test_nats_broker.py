@@ -495,13 +495,13 @@ async def test_nats_consumer_group_delivers_resident_signals_once():
         return [*received_by_a, *received_by_b]
 
     async with publisher, worker_a, worker_b:
-        await worker_a.subscribe(["ravn.mesh.signal.kubernetes.pod"], handler_a)
-        await worker_b.subscribe(["ravn.mesh.signal.kubernetes.pod"], handler_b)
+        await worker_a.subscribe(["mesh.signal.kubernetes.pod"], handler_a)
+        await worker_b.subscribe(["mesh.signal.kubernetes.pod"], handler_b)
 
         events = [
             make_event(
                 event_id=f"resident-signal-{idx}",
-                event_type="ravn.mesh.signal.kubernetes.pod",
+                event_type="mesh.signal.kubernetes.pod",
                 payload={"pod": f"api-{idx}", "reason": "Restarted"},
                 correlation_id=f"corr-group-{idx}",
             )
@@ -531,20 +531,20 @@ async def test_nats_consumer_group_keeps_distinct_subscription_filters():
         judgment_received.append(event)
 
     async with transport:
-        await transport.subscribe(["ravn.mesh.rpc.valkyrie_a"], rpc_handler)
-        await transport.subscribe(["ravn.mesh.valkyrie.judgment.proposed"], judgment_handler)
+        await transport.subscribe(["mesh.rpc.valkyrie_a"], rpc_handler)
+        await transport.subscribe(["mesh.valkyrie.judgment.proposed"], judgment_handler)
 
         await transport.publish(
             make_event(
                 event_id="rpc-event",
-                event_type="ravn.mesh.rpc.valkyrie_a",
+                event_type="mesh.rpc.valkyrie_a",
                 payload={"kind": "rpc"},
             )
         )
         await transport.publish(
             make_event(
                 event_id="judgment-event",
-                event_type="ravn.mesh.valkyrie.judgment.proposed",
+                event_type="mesh.valkyrie.judgment.proposed",
                 payload={"kind": "judgment"},
             )
         )

@@ -87,6 +87,8 @@ async def test_real_tmux_say_reaches_pane_and_stop_hook(tmp_path: Path) -> None:
             turn_idle_timeout_s=0.2,
             turn_no_output_timeout_s=2.0,
             pane_poll_interval_s=0.2,
+            # Remote Control must not try to reach claude.ai in tests.
+            tmux_remote_control=False,
         )
         transport.on_event(on_event)
 
@@ -94,8 +96,6 @@ async def test_real_tmux_say_reaches_pane_and_stop_hook(tmp_path: Path) -> None:
 
         old_path = os.environ.get("PATH", "")
         os.environ["PATH"] = monkey_path
-        # Remote Control must not try to reach claude.ai in tests.
-        os.environ["SKULD__TMUX_REMOTE_CONTROL"] = "0"
         try:
             await transport.start()
             page = TmuxPage(
@@ -116,7 +116,6 @@ async def test_real_tmux_say_reaches_pane_and_stop_hook(tmp_path: Path) -> None:
         finally:
             await transport.stop()
             os.environ["PATH"] = old_path
-            os.environ.pop("SKULD__TMUX_REMOTE_CONTROL", None)
     finally:
         await hook_server.stop()
 

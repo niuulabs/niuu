@@ -18,7 +18,7 @@ import re
 from pathlib import Path
 from typing import Annotated, Any, Literal
 
-from pydantic import AliasChoices, BaseModel, Field, field_validator, model_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator, model_validator
 from pydantic_settings import (
     BaseSettings,
     PydanticBaseSettingsSource,
@@ -62,6 +62,7 @@ from niuu.domain.presented_files import (
 )
 from niuu.domain.tenancy import DEFAULT_PLATFORM_TENANT_ID
 from niuu.forge_mcp.models import ForgeMcpGrant
+from niuu.mesh.config import MeshSettings
 from personas.config import PersonaSourceConfig
 from skuld.tool_result_preview import PREVIEW_EDGE_LIMIT, PREVIEW_MAX_EDGE, PREVIEW_MIN_EDGE
 from volundr.compute.config import ComputeConfig
@@ -1667,7 +1668,7 @@ class NotificationsConfig(BaseModel):
         description="Label for this Forge host in delivered messages; empty uses its hostname.",
     )
     session_link_path: str = Field(
-        default="/volundr/session/{session_id}#notification-{notification_id}",
+        default="/volundr/sessions/{session_id}#notification-{notification_id}",
         description="Deep-link path for a session notification ({session_id}, {notification_id}).",
     )
     feed_link_path: str = Field(
@@ -1802,6 +1803,31 @@ class ForgeMcpSessionTokenConfig(BaseModel):
     )
 
 
+class ForgeMcpMeshIdentityConfig(BaseModel):
+    """The mesh certificate Forge issues to a session's peer (``POST .../mesh-identity``).
+
+    A certificate proves to other mesh peers who sent a message (``niuu.mesh.attestation``).
+    It is signed with the same key as the ``forge_session`` credentials, so it exists only
+    where ``forge_mcp.session_tokens`` is enabled; with that enabled, the mesh identity
+    must come up too, and Forge refuses to start when it cannot. Whether the mesh proves
+    its senders at all is the one decision ``mesh.attestation.required``: with it false
+    Forge issues no certificates, signs nothing and publishes no revocations. There is no
+    separate switch here, so the two cannot disagree.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    ttl_seconds: int = Field(
+        default=900,
+        ge=2,
+        description="Lifetime of a mesh certificate. It bounds how long a leaked or stale "
+        "certificate is believed by other peers (a stopped session is also revoked at once "
+        "when Forge has an event bus; without one this is the only bound). Peers renew "
+        "in the background at half of it, so a shorter value means more renewal calls to "
+        "Forge and a longer one a longer exposure.",
+    )
+
+
 class ForgeMcpHttpConfig(BaseModel):
     """The Forge-hosted MCP endpoint (``POST /api/v1/forge/mcp``) for external agents."""
 
@@ -1885,10 +1911,14 @@ class ForgeMcpConfig(BaseModel):
           default_grants: []          # message, lifecycle: added to every session
           role_grants:                # by project role (coordination.role)
             coordinator: [lifecycle, message]
+            worker: [message]
           session_tokens:
             enabled: true
             ttl_seconds: 2592000
             signing_key_file: ~/.niuu/forge-session-signing-key.pem
+          mesh_identity:
+            enabled: true
+            ttl_seconds: 900
           http:
             enabled: true
             allowed_origins: []
@@ -1902,12 +1932,15 @@ class ForgeMcpConfig(BaseModel):
     role_grants: dict[str, list[ForgeMcpGrant]] = Field(
         default_factory=lambda: {
             "coordinator": [ForgeMcpGrant.LIFECYCLE, ForgeMcpGrant.MESSAGE],
+            "worker": [ForgeMcpGrant.MESSAGE],
         },
         description="Grants a session's credential carries by its project role "
-        "(coordination.role), applied at every mint. A role not listed gets none; "
-        "set {} to grant nothing by role.",
+        "(coordination.role), applied at every mint. A worker may message any session "
+        "its owner owns (to hand work over, ask or answer); it cannot create, start or "
+        "stop sessions. A role not listed gets none; set {} to grant nothing by role.",
     )
     session_tokens: ForgeMcpSessionTokenConfig = Field(default_factory=ForgeMcpSessionTokenConfig)
+    mesh_identity: ForgeMcpMeshIdentityConfig = Field(default_factory=ForgeMcpMeshIdentityConfig)
     http: ForgeMcpHttpConfig = Field(default_factory=ForgeMcpHttpConfig)
 
 
@@ -2278,6 +2311,15 @@ class IntegrationDefinitionConfig(BaseModel):
             "('bearer' or a header name) and optional extra headers."
         ),
     )
+    team_install: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "Lets a project owner install this integration for the project's team, acting "
+            "as a bot or service account: {method: oauth, authorize_params, scopes} for the "
+            "provider's app install, or {method: client_credentials, token_url, "
+            "token_params} for a service account. Absent: personal connections only."
+        ),
+    )
 
 
 GITHUB_DEVICE_AUTHORIZATION_URL = "https://github.com/login/device/code"
@@ -2479,6 +2521,14 @@ def _default_integration_definitions() -> list[IntegrationDefinitionConfig]:
                 "credential_field": "access_token",
                 "default_credential_name": "jira-signin",
             },
+            # A team's Jira is an Atlassian service account's OAuth 2.0 client
+            # credentials, minted into short-lived tokens; it needs cloud_id.
+            team_install={
+                "method": "client_credentials",
+                "token_url": "https://auth.atlassian.com/oauth/token",
+                "token_params": {"audience": "api.atlassian.com"},
+                "required_config": ["cloud_id"],
+            },
         ),
         IntegrationDefinitionConfig(
             slug="linear",
@@ -2498,6 +2548,15 @@ def _default_integration_definitions() -> list[IntegrationDefinitionConfig]:
                 "token_field": "api_key",
             },
             auth_type="api_key",
+            oauth=OAuthSpecConfig(
+                authorize_url="https://linear.app/oauth/authorize",
+                token_url="https://api.linear.app/oauth/token",
+                # Linear takes a comma-separated scope list.
+                extra_authorize_params={"scope": "read,write,issues:create,comments:create"},
+                client_secret_required=True,
+            ),
+            # A team's Linear is the OAuth app acting as itself, never as the installer.
+            team_install={"method": "oauth", "authorize_params": {"actor": "app"}},
         ),
         IntegrationDefinitionConfig(
             slug="anthropic",
@@ -2671,6 +2730,45 @@ def _default_integration_definitions() -> list[IntegrationDefinitionConfig]:
                 },
             },
             auth_type="api_key",
+        ),
+        IntegrationDefinitionConfig(
+            slug="slack",
+            name="Slack",
+            description=(
+                "Slack bot for a project team: posts to a team channel and messages a "
+                "person directly when something waits on them"
+            ),
+            integration_type="messaging",
+            # Forge delivers through the slug's sink (notifications.integration_sinks).
+            adapter="",
+            icon="slack",
+            credential_schema={
+                "required": ["access_token"],
+                "properties": {"access_token": {"label": "Bot token", "type": "password"}},
+            },
+            config_schema={
+                "properties": {
+                    "channel": {
+                        "label": "Team channel",
+                        "type": "string",
+                        "description": (
+                            "Where team posts go, for example #payments-team. Invite the "
+                            "bot to the channel first."
+                        ),
+                    },
+                },
+            },
+            auth_type="oauth2_authorization_code",
+            oauth=OAuthSpecConfig(
+                authorize_url="https://slack.com/oauth/v2/authorize",
+                token_url="https://slack.com/api/oauth.v2.access",
+                # Slack takes a comma-separated bot scope list.
+                extra_authorize_params={
+                    "scope": "chat:write,im:write,users:read,users:read.email",
+                },
+                client_secret_required=True,
+            ),
+            team_install={"method": "oauth", "team_only": True},
         ),
     ]
 
@@ -3352,6 +3450,153 @@ class ArtifactsConfig(BaseModel):
     type_names: dict[str, str] = Field(default_factory=_default_artifact_type_names)
 
 
+class SessionVoiceProviderConfig(BaseModel):
+    """One realtime voice provider Forge mints call credentials for (a dynamic adapter).
+
+    ``adapter`` is the minter's class path (``volundr.adapters.outbound.realtime_voice.
+    OpenAIRealtimeMinter`` or ``XaiRealtimeMinter``) and ``kwargs`` its constructor
+    arguments (base URL, secret lifetime, request timeout). The owner's API key is read
+    per call from Forge's credential store: the user credential named
+    ``credential_name``, field ``credential_key``. A missing credential is an error with
+    the remedy, never another provider.
+    """
+
+    adapter: str = Field(min_length=1, description="Fully-qualified minter class path.")
+    kwargs: dict[str, Any] = Field(
+        default_factory=dict, description="Keyword arguments for the minter's constructor."
+    )
+    credential_name: str = Field(
+        min_length=1,
+        description="The owner's stored credential (owner type user) holding the API key.",
+    )
+    credential_key: str = Field(
+        default="api_key",
+        min_length=1,
+        description="The field of that credential holding the API key.",
+    )
+
+
+class SessionVoiceConfig(BaseModel):
+    """Realtime voice calls with ordinary Forge sessions (the Skuld voice channel).
+
+    When enabled, every session Forge launches runs Skuld's voice channel (``skuld.voice``):
+    the owner's phone holds a realtime voice call bound to that one session, and Forge
+    advertises the session's voice endpoint while it runs. The phone's realtime model talks
+    to the provider directly; Forge mints its short-lived credential from the owner's own
+    provider key (``providers``), so the key never enters the session pod.
+
+    Requires session credentials (``forge_mcp.session_tokens.enabled``): the broker mints
+    through Forge with them. Disabled is the operator's decision to run without voice.
+    """
+
+    enabled: bool = Field(
+        default=False,
+        description="Run the voice channel in every session this Forge launches.",
+    )
+    default_persona: str = Field(
+        default="",
+        description=(
+            "Persona (by name, from the owner's persona catalog) whose voice: section a "
+            "session uses when its own persona has none, or it plays no persona. Required "
+            "when enabled; a launch fails when the persona is missing or has no voice."
+        ),
+    )
+    providers: dict[str, SessionVoiceProviderConfig] = Field(
+        default_factory=dict,
+        description=(
+            "Realtime providers Forge mints credentials for, by the name the phone asks "
+            "for (openai, xai). A provider not listed is refused, never substituted."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _enabled_needs_persona_and_providers(self) -> "SessionVoiceConfig":
+        if not self.enabled:
+            return self
+        if not self.default_persona.strip():
+            raise ValueError(
+                "voice.enabled is true but voice.default_persona is empty: name a persona "
+                "with a voice: section, or set voice.enabled: false"
+            )
+        if not self.providers:
+            raise ValueError(
+                "voice.enabled is true but voice.providers is empty: configure openai and/or "
+                "xai with the credential holding the owner's key, or set voice.enabled: false"
+            )
+        return self
+
+
+class MemoryConfig(BaseModel):
+    """How sessions reach the memory gateway (the Mimir service) for their memory server."""
+
+    gateway_url: str = Field(
+        default="",
+        description=(
+            "Base URL of the memory gateway as reachable from a session, e.g. "
+            "http://127.0.0.1:8080/api/v1/mimir. When set, every session gets Skuld "
+            "memory.enabled: true and memory.gateway_url, and Forge requires session "
+            "credentials (forge_mcp.session_tokens) so the broker can authenticate to the "
+            "gateway. When set, the gateway also holds the limits of every attached memory "
+            "(read-only mounts, write prefixes), so Forge no longer refuses a restricted "
+            "mount at launch and no longer starts a per-mount mimir-<name> MCP server. "
+            "Empty runs sessions without a memory server and keeps those refusals."
+        ),
+    )
+    gateway_service_subject: str = Field(
+        default="",
+        description=(
+            "The workload subject of the memory gateway's own service credential, e.g. "
+            "system:serviceaccount:niuu:mimir: the workload-identity exchange puts it in the "
+            "'act.sub' claim of the token the gateway presents to Forge. Only that credential "
+            "may call POST /api/v1/forge/memory/ended (when run and session layers ended); a "
+            "person, a session credential or any other service gets 403. Required with "
+            "memory.gateway_url when the identity adapter verifies callers; the allow-all "
+            "identity adapter of local mini mode needs none (its local caller passes). The "
+            "exchange only sets 'act' when the workload is not the token's own subject, so "
+            "map the gateway to an owner that is not the subject itself."
+        ),
+    )
+
+    @field_validator("gateway_service_subject")
+    @classmethod
+    def _trimmed_subject(cls, value: str) -> str:
+        return value.strip()
+
+    @field_validator("gateway_url")
+    @classmethod
+    def _http_url(cls, value: str) -> str:
+        url = value.strip()
+        if url and not url.startswith(("http://", "https://")):
+            raise ValueError(
+                f"memory.gateway_url must be an http(s) URL such as "
+                f"http://127.0.0.1:8080/api/v1/mimir, got {value!r}; leave it empty to run "
+                "sessions without a memory server"
+            )
+        return url.rstrip("/")
+
+
+class ProjectMemoryConfig(BaseModel):
+    """The memory a project owns: where its mounts are stored and looked up."""
+
+    repository_adapter: str = (
+        "volundr.adapters.outbound.postgres_project_memory.PostgresProjectMemoryRepository"
+    )
+    repository_kwargs: dict[str, Any] = Field(
+        default_factory=dict, description="Extra constructor kwargs for the mount store."
+    )
+    directory_adapter: str = (
+        "volundr.adapters.outbound.mimir_registry_directory.MimirRegistryFileDirectory"
+    )
+    directory_kwargs: dict[str, Any] = Field(
+        default_factory=lambda: {"registry_path": "~/.ravn/mimir/.mimir-registry.json"},
+        description=(
+            "Constructor kwargs for the registry lookup a mount is resolved with at add time "
+            "and at every launch. The default reads the Mimir registry file; a missing file "
+            "fails the launch of any session in a project that has mounts."
+        ),
+    )
+
+
 class ProjectsConfig(BaseModel):
     """Storage adapters and bounded checkpoint limits; workflows live in agent skills."""
 
@@ -3361,12 +3606,28 @@ class ProjectsConfig(BaseModel):
         "volundr.adapters.outbound.postgres_projects.PostgresProjectRepository"
     )
     repository_kwargs: dict[str, Any] = Field(default_factory=dict)
+    member_repository_adapter: str = (
+        "volundr.adapters.outbound.postgres_project_members.PostgresProjectMemberRepository"
+    )
+    member_repository_kwargs: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Extra constructor kwargs for the project member store.",
+    )
     workspace_adapter: str = "volundr.adapters.outbound.project_workspace.GitProjectWorkspace"
     workspace_kwargs: dict[str, Any] = Field(default_factory=dict)
     context_bytes: int = Field(default=8192, ge=1024, le=65536)
     git_timeout_seconds: float = Field(default=15.0, gt=0)
     dispatch_wait_seconds: float = Field(default=30.0, gt=0)
     dispatch_poll_seconds: float = Field(default=0.05, gt=0)
+    memory: ProjectMemoryConfig = Field(default_factory=ProjectMemoryConfig)
+    team_usage_page_size: int = Field(
+        default=50,
+        ge=1,
+        description=(
+            "Uses of a project's team integrations returned per page; older uses are "
+            "paged with `before`, never dropped."
+        ),
+    )
 
 
 class Settings(BaseSettings):
@@ -3586,6 +3847,9 @@ class Settings(BaseSettings):
     artifacts: ArtifactsConfig = Field(default_factory=ArtifactsConfig)
     host_identity: HostIdentityConfig = Field(default_factory=HostIdentityConfig)
     forge_mcp: ForgeMcpConfig = Field(default_factory=ForgeMcpConfig)
+    memory: MemoryConfig = Field(default_factory=MemoryConfig)
+    voice: SessionVoiceConfig = Field(default_factory=SessionVoiceConfig)
+    mesh: MeshSettings = Field(default_factory=MeshSettings)
     identity: IdentityConfig = Field(default_factory=IdentityConfig)
     authorization: AuthorizationConfig = Field(default_factory=AuthorizationConfig)
     auth_mode: str = Field(

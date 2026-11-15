@@ -65,6 +65,9 @@ _CAMPAIGN_RUN_STATUS = {
     WorkflowCampaignStatus.BLOCKED: RunStatus.RUNNING,
     WorkflowCampaignStatus.COMPLETED: RunStatus.MERGED,
     WorkflowCampaignStatus.FAILED: RunStatus.FAILED,
+    # The tracker's run states have no canceled: an aborted run did not land, and the
+    # ticket goes back where a run that did not land puts it.
+    WorkflowCampaignStatus.CANCELED: RunStatus.FAILED,
 }
 
 
@@ -111,6 +114,7 @@ class WorkCondition(StrEnum):
     WAITING = "waiting"
     COMPLETED = "completed"
     FAILED = "failed"
+    CANCELED = "canceled"
     UNKNOWN = "unknown"
 
 
@@ -956,6 +960,7 @@ def _campaign_summary(
         ),
         WorkflowCampaignStatus.COMPLETED: WorkCondition.COMPLETED,
         WorkflowCampaignStatus.FAILED: WorkCondition.FAILED,
+        WorkflowCampaignStatus.CANCELED: WorkCondition.CANCELED,
     }[campaign.status]
     attention = None
     if explicit_attention:

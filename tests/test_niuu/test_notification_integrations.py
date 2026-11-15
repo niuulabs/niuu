@@ -143,9 +143,9 @@ class TestIntegrationSinkResolver:
                 "user-1",
                 "not a messaging integration",
             ),
-            (connection(slug="slack", adapter=""), "user-1", "No notification sink"),
-            (connection(slug="slack", adapter="no.such.Module"), "user-1", "cannot be imported"),
-            (connection(slug="slack", adapter=OLD_TELEGRAM), "user-1", "not a NotificationSink"),
+            (connection(slug="pager", adapter=""), "user-1", "No notification sink"),
+            (connection(slug="pager", adapter="no.such.Module"), "user-1", "cannot be imported"),
+            (connection(slug="pager", adapter=OLD_TELEGRAM), "user-1", "not a NotificationSink"),
             (connection(credential_name="missing"), "user-1", "Credential 'missing'"),
         ],
     )
@@ -163,7 +163,7 @@ class TestIntegrationSinkResolver:
         assert "super-secret" not in str(info.value)
 
     def test_default_mapping_and_slug_inference(self):
-        assert set(DEFAULT_INTEGRATION_SINKS) == {"telegram", "webhook"}
+        assert set(DEFAULT_INTEGRATION_SINKS) == {"telegram", "webhook", "slack"}
         assert integration_slug(connection(slug="", adapter=OLD_WEBHOOK)) == "webhook"
         assert integration_slug(connection(slug="", adapter="x.Y")) == ""
 

@@ -57,6 +57,33 @@ def test_pool_controls_discovered_in_existing_settings_and_persisted(app, setup)
         assert setup[2].policies["pool"].warm_min == 2
 
 
+def test_registered_hosts_show_no_maximum_machines_and_save_without_one():
+    from tests.test_adapters.test_vm_pod_manager import FixedInventoryProvider
+
+    pool, _, repo, _, runtime, _ = pool_setup(max_machines=None, provider=FixedInventoryProvider(3))
+    runtime.requires_root_daemon = False
+    app = FastAPI()
+    app.state.admin_settings = {}
+    app.include_router(
+        create_admin_settings_router(
+            _FakeRepository(), home_volumes_supported=False, compute_pool=pool
+        )
+    )
+    app.dependency_overrides[extract_principal] = _mock_admin_principal
+    with TestClient(app) as client:
+        sections = {s["id"]: s for s in client.get("/api/v1/forge/settings").json()["sections"]}
+        fields = {f["key"]: f["value"] for f in sections["compute"]["fields"]}
+        assert "max_machines" not in fields
+        fields["warm_min"] = 2
+        assert client.patch("/api/v1/forge/admin/settings/compute", json=fields).status_code == 200
+        fields["max_machines"] = 8
+        refused = client.patch("/api/v1/forge/admin/settings/compute", json=fields)
+        assert refused.status_code == 422
+        assert "remove compute.max_machines" in refused.json()["detail"]
+    assert repo.policies["pool"].warm_min == 2
+    assert repo.policies["pool"].max_machines is None
+
+
 @pytest.mark.parametrize(
     "method,path",
     [

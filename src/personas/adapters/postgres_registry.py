@@ -26,11 +26,20 @@ from personas.domain.persona import (
 from personas.domain.persona_document import (
     PersonaDocumentError,
     PortablePersonaDefinition,
+    persona_definition_from_mapping,
     portable_persona_from_config,
+    refuse_tool_restrictions,
 )
-from personas.domain.tool_vocabulary import validate_tool_names
 
 _ROLE_DEFAULT = "build"
+#: A payload handed to ``save_persona`` may carry the persona's whole document under this key
+#: (a fork does), as a mapping.
+_DOCUMENT_KEY = "document"
+#: Stored payload key holding a persona's whole document when it was saved as one (from YAML,
+#: or a fork). Present, the document is the persona and the payload's other fields are its
+#: summary. It is JSON text, not a nested object, because ``jsonb`` reorders object keys and
+#: the order of a persona's outcomes is part of what its author wrote.
+_STORED_DOCUMENT_KEY = "document_json"
 _COLOR_BY_ROLE = {
     "arbiter": "var(--color-accent-indigo)",
     "audit": "var(--color-accent-red)",
@@ -145,12 +154,58 @@ class PostgresPersonaRegistry:
         return self._build_view(owner_id, name, overrides.get(name))
 
     async def save_persona(self, owner_id: str, payload: dict[str, Any]) -> None:
+        """Save a persona from its registry payload (the field-by-field form).
+
+        A payload that carries the persona's whole document (``document``, as a view of a
+        persona saved from YAML does, and so a fork of one) is saved as that document under
+        the payload's name, so nothing the form cannot express is dropped.
+        """
+        document = payload.get(_DOCUMENT_KEY)
+        if document is not None:
+            if not isinstance(document, dict):
+                raise PersonaDocumentError("A persona payload's document must be a mapping")
+            name = str(payload.get("name", "")).strip()
+            renamed = persona_definition_from_mapping({**document, "name": name})
+            await self._save_document(owner_id, renamed, presentation=payload)
+            return
         normalized = _normalize_payload(payload)
-        # A new save must speak the neutral vocabulary; a row saved before it existed still
-        # lists and edits, and is refused at launch by the portable document's validation.
-        validate_tool_names("allowed_tools", normalized["allowed_tools"])
-        validate_tool_names("forbidden_tools", normalized["forbidden_tools"])
-        config = _payload_to_config(normalized)
+        await self._write(owner_id, normalized, _payload_to_config(normalized))
+
+    async def save_persona_document(
+        self,
+        owner_id: str,
+        document: PortablePersonaDefinition,
+    ) -> None:
+        """Save a persona from its whole document, exactly as written.
+
+        The document is the persona: every field it declares is kept and is what agents and
+        workflow pins read. The library's presentation (role, letter, colour) of an existing
+        override is kept; its description becomes the summary.
+        """
+        overrides = await self._load_overrides(owner_id, name=document.id)
+        await self._save_document(owner_id, document, presentation=overrides.get(document.id))
+
+    async def _save_document(
+        self,
+        owner_id: str,
+        document: PortablePersonaDefinition,
+        *,
+        presentation: dict[str, Any] | None,
+    ) -> None:
+        config = _document_config(document.definition)
+        payload = _config_to_payload(config)
+        for key in ("role", "letter", "color"):
+            value = str((presentation or {}).get(key) or "").strip()
+            if value:
+                payload[key] = value
+        payload["letter"] = _normalize_letter(payload["letter"], config.name)
+        if config.description:
+            payload["summary"] = config.description
+            payload["description"] = config.description
+        payload[_STORED_DOCUMENT_KEY] = json.dumps(document.definition, ensure_ascii=False)
+        await self._write(owner_id, payload, config)
+
+    async def _write(self, owner_id: str, payload: dict[str, Any], config: PersonaConfig) -> None:
         now = datetime.now(UTC)
         await self._pool.execute(
             """
@@ -163,8 +218,8 @@ class PostgresPersonaRegistry:
                 updated_at = EXCLUDED.updated_at
             """,
             owner_id,
-            normalized["name"],
-            json.dumps(normalized),
+            payload["name"],
+            json.dumps(payload),
             json.dumps(config.to_dict()),
             now,
             now,
@@ -199,6 +254,9 @@ class PostgresPersonaRegistry:
         builtin_document = self._builtin_loader.load_current_portable(persona_id)
         if override_payload is None:
             return builtin_document
+        document = _stored_document(override_payload)
+        if document is not None:
+            return persona_definition_from_mapping(document)
 
         builtin_config: PersonaConfig | None = None
         if builtin_document is not None:
@@ -265,7 +323,8 @@ class PostgresPersonaRegistry:
         is_builtin = builtin_config is not None
         if override_payload is not None:
             payload = _normalize_payload(override_payload, fallback=builtin_config)
-            config = _payload_to_config(payload)
+            document = _stored_document(override_payload)
+            config = _payload_to_config(payload) if document is None else _document_config(document)
             yaml_source = "[built-in]" if is_builtin else f"[user:{owner_id}]"
             override_source = f"[user:{owner_id}]" if is_builtin else None
             return PersonaView(
@@ -315,6 +374,7 @@ def _normalize_payload(
         raise ValueError("Persona name is required")
     if "executor" in payload:
         raise PersonaDocumentError(EXECUTOR_REMOVED_MESSAGE.format(name=name))
+    refuse_tool_restrictions(name, payload)
 
     base = _config_to_payload(fallback) if fallback is not None else _default_payload(name)
     normalized = dict(base)
@@ -328,8 +388,6 @@ def _normalize_payload(
     normalized["system_prompt_template"] = str(
         payload.get("system_prompt_template") or base["system_prompt_template"]
     )
-    normalized["allowed_tools"] = _normalize_str_list(payload.get("allowed_tools"))
-    normalized["forbidden_tools"] = _normalize_str_list(payload.get("forbidden_tools"))
     normalized["permission_mode"] = _normalize_permission_mode(
         payload.get("permission_mode") or base["permission_mode"]
     )
@@ -351,6 +409,9 @@ def _normalize_payload(
     )
     normalized["produces_event_map"] = _normalize_str_map(
         payload.get("produces_event_map", base.get("produces_event_map"))
+    )
+    normalized["produces_when"] = _normalize_str_map(
+        payload.get("produces_when", base.get("produces_when"))
     )
     normalized["produces_schema"] = _normalize_schema(payload.get("produces_schema"))
     normalized["consumes_events"] = _normalize_consumes_events(payload.get("consumes_events"))
@@ -379,8 +440,6 @@ def _config_to_payload(config: PersonaConfig | None) -> dict[str, Any]:
         "summary": summary,
         "description": description,
         "system_prompt_template": config.system_prompt_template,
-        "allowed_tools": list(config.allowed_tools),
-        "forbidden_tools": list(config.forbidden_tools),
         "permission_mode": _normalize_permission_mode(config.permission_mode),
         "iteration_budget": config.iteration_budget,
         "llm_primary_alias": "",
@@ -389,6 +448,7 @@ def _config_to_payload(config: PersonaConfig | None) -> dict[str, Any]:
         "llm_temperature": None,
         "produces_event_type": config.produces.event_type,
         "produces_event_map": dict(config.produces.event_type_map),
+        "produces_when": dict(config.produces.when),
         "produces_schema": {key: field.type for key, field in config.produces.schema.items()},
         "consumes_events": [{"name": name} for name in config.consumes.event_types],
         "consumes_schema": {key: field.type for key, field in config.consumes.schema.items()},
@@ -437,8 +497,6 @@ def _payload_to_config(payload: dict[str, Any]) -> PersonaConfig:
     return PersonaConfig(
         name=str(payload["name"]),
         system_prompt_template=str(payload["system_prompt_template"]),
-        allowed_tools=list(payload["allowed_tools"]),
-        forbidden_tools=list(payload["forbidden_tools"]),
         permission_mode=PERSONA_API_PERMISSION_MODES.get(
             str(payload["permission_mode"]),
             str(payload["permission_mode"]),
@@ -452,6 +510,7 @@ def _payload_to_config(payload: dict[str, Any]) -> PersonaConfig:
         produces=PersonaProduces(
             event_type=str(payload["produces_event_type"]),
             event_type_map=dict(payload.get("produces_event_map") or {}),
+            when=dict(payload.get("produces_when") or {}),
             schema=produces_schema,
         ),
         consumes=PersonaConsumes(
@@ -468,6 +527,33 @@ def _payload_to_config(payload: dict[str, Any]) -> PersonaConfig:
     )
 
 
+def _stored_document(payload: dict[str, Any]) -> dict[str, Any] | None:
+    """The whole document a stored payload carries, in the order its author wrote it."""
+    raw = payload.get(_STORED_DOCUMENT_KEY)
+    if raw is None:
+        return None
+    if not isinstance(raw, str):
+        raise PersonaDocumentError(
+            f"Stored persona {payload.get('name')!r} has a document that is not JSON text"
+        )
+    document = json.loads(raw)
+    if not isinstance(document, dict):
+        raise PersonaDocumentError(
+            f"Stored persona {payload.get('name')!r} document is not a mapping"
+        )
+    return document
+
+
+def _document_config(document: object) -> PersonaConfig:
+    """Read a stored persona document back as the persona it declares."""
+    definition = persona_definition_from_mapping(document)  # type: ignore[arg-type]
+    config = parse_persona(
+        yaml.safe_dump(definition.definition, allow_unicode=True, sort_keys=False)
+    )
+    assert config is not None  # a validated definition always has a name
+    return config
+
+
 def _default_payload(name: str) -> dict[str, Any]:
     role = _BUILTIN_METADATA.get(name, {}).get("role", _ROLE_DEFAULT)
     summary = _BUILTIN_METADATA.get(name, {}).get("summary", _humanize_name(name))
@@ -482,8 +568,6 @@ def _default_payload(name: str) -> dict[str, Any]:
         "summary": summary,
         "description": summary,
         "system_prompt_template": "",
-        "allowed_tools": [],
-        "forbidden_tools": [],
         "permission_mode": "default",
         "iteration_budget": 0,
         "llm_primary_alias": "",
@@ -492,6 +576,7 @@ def _default_payload(name: str) -> dict[str, Any]:
         "llm_temperature": None,
         "produces_event_type": "",
         "produces_event_map": {},
+        "produces_when": {},
         "produces_schema": {},
         "consumes_events": [],
         "consumes_schema": {},

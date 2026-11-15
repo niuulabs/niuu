@@ -542,7 +542,10 @@ def _durable_name_for_subject(consumer_group: str, subject: str) -> str:
     """
     safe_group = "".join(ch if ch.isalnum() or ch in ("_", "-") else "-" for ch in consumer_group)
     safe_group = safe_group.strip("-_") or "group"
-    digest = hashlib.sha1(subject.encode("utf-8")).hexdigest()[:12]
+    # The digest only keeps durable names short and unique per subject. It was SHA-1 until
+    # the mesh wire rename; changing it renamed every durable once (see the rollout notes in
+    # docs/operator/agent-messaging.md).
+    digest = hashlib.sha256(subject.encode("utf-8")).hexdigest()[:12]
     return f"{safe_group[:48]}-{digest}"
 
 

@@ -265,7 +265,7 @@ class TestRestContract:
     def test_response_maps_the_stamps(self) -> None:
         session = Session(name="s", short_description="x")
         stamped = session.model_copy(update={"short_description_updated_at": session.created_at})
-        response = SessionResponse.from_session(stamped)
+        response = SessionResponse.from_session(stamped, people_count=1)
         assert response.short_description == "x"
         assert response.short_description_updated_at == session.created_at.isoformat()
         assert response.description_updated_at is None

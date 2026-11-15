@@ -10,17 +10,20 @@ import yaml
 
 CHART_DIR = Path(__file__).parent.parent.parent / "charts" / "volundr"
 BIFROST_URL = ("--set", "bifrost.url=http://bifrost.test")
-#: The smallest cluster setup for durable presented files: the quota, session
-#: credentials, and their projection into session pods.
+#: The smallest cluster setup for durable presented files: the quota and a signing key
+#: for session credentials, which then follow into session pods by themselves.
+WORKLOAD_SIGNING_KEY = (
+    "--set",
+    "workloadIdentity.enabled=true",
+    "--set",
+    "workloadIdentity.signingKey.existingSecret=wi-key",
+)
 PRESENTED_FILES_ON = (
     "--set",
     "presentedFiles.enabled=true",
     "--set",
     "presentedFiles.maxTotalBytes=5368709120",
-    "--set",
-    "forgeMcp.session_tokens.enabled=true",
-    "--set",
-    "sessionCredentialProjection.enabled=true",
+    *WORKLOAD_SIGNING_KEY,
     "--set",
     "podManager.kwargs.namespace=volundr-sessions",
 )
@@ -591,6 +594,29 @@ class TestRbacTemplate:
             ["get", "list", "watch", "create", "update", "patch", "delete"]
         ]
 
+    DIRECT = "volundr.adapters.outbound.direct_k8s_pod_manager.DirectK8sPodManager"
+
+    def test_namespaced_role_may_manage_roles_for_the_direct_pod_manager_only(self):
+        """The direct pod manager gives a session whose mesh lists pods a Role and binding."""
+        role = self._namespaced_role("--set", f"podManager.adapter={self.DIRECT}")
+        assert self._verbs_for(role, "roles") == [["get", "create", "patch", "delete"]]
+        assert self._verbs_for(role, "rolebindings") == [["get", "create", "patch", "delete"]]
+        # It may only grant what it holds: reading pods.
+        assert ["get", "list", "watch"] in self._verbs_for(role, "pods")
+
+        assert self._verbs_for(self._namespaced_role(), "roles") == []
+
+    def test_cluster_wide_release_gets_the_same_grant_only_for_the_direct_pod_manager(self):
+        documents = self._render_rbac("--set", f"podManager.adapter={self.DIRECT}")
+        cluster_role = next(doc for doc in documents if doc.get("kind") == "ClusterRole")
+        assert self._verbs_for(cluster_role, "rolebindings") == [
+            ["get", "create", "patch", "delete"]
+        ]
+
+        documents = self._render_rbac()
+        cluster_role = next(doc for doc in documents if doc.get("kind") == "ClusterRole")
+        assert self._verbs_for(cluster_role, "rolebindings") == []
+
     def test_namespaced_role_reads_only_without_agent_injection(self):
         role = self._namespaced_role()
 
@@ -959,16 +985,12 @@ class TestConfigMapTemplate:
             )
             return yaml.safe_load(configmap["data"]["config.yaml"])
 
-        # The read-only root filesystem rules out the key file: session credentials
-        # default on only when workload identity signs with a configured key.
+        # The read-only root filesystem rules out Forge's default key file: session
+        # credentials default on only where Forge has a key it can keep.
         assert render()["forge_mcp"] == {"session_tokens": {"enabled": False}}
-        signed = render(
-            "--set",
-            "workloadIdentity.enabled=true",
-            "--set",
-            "workloadIdentity.signingKey.existingSecret=wi-key",
-        )
-        assert signed["forge_mcp"] == {"session_tokens": {"enabled": True}}
+        signed = render(*WORKLOAD_SIGNING_KEY)["forge_mcp"]["session_tokens"]
+        assert signed["enabled"] is True
+        assert signed["projection_adapter"].endswith("KubernetesExecutionCredentialProjection")
         config = render(
             "--set-json",
             'forgeMcp={"default_grants":["message"],"session_tokens":{"ttl_seconds":604800},'
@@ -2045,8 +2067,16 @@ class TestPresentedFilesOnACluster:
         ("drop", "extra", "message"),
         [
             ("presentedFiles.maxTotalBytes=5368709120", (), "presentedFiles.maxTotalBytes"),
-            ("forgeMcp.session_tokens.enabled=true", (), "Forge session credentials"),
-            ("sessionCredentialProjection.enabled=true", (), "sessionCredentialProjection"),
+            (
+                "workloadIdentity.enabled=true",
+                (),
+                "presentedFiles.enabled needs Forge session credentials",
+            ),
+            (
+                None,
+                ("sessionCredentialProjection.enabled=false",),
+                "needs session pods to hold their Forge credential",
+            ),
             (
                 None,
                 ("presentedFiles.persistence.accessMode=ReadWriteOnce", "rollout.colocate=false"),
@@ -2066,11 +2096,7 @@ class TestPresentedFilesOnACluster:
 
     def test_an_openshell_forge_needs_no_projection(self):
         """The OpenShell pod manager writes the credential into the sandbox itself."""
-        args: list[str] = []
-        pairs = list(zip(PRESENTED_FILES_ON[::2], PRESENTED_FILES_ON[1::2], strict=True))
-        for flag, value in pairs:
-            if value != "sessionCredentialProjection.enabled=true":
-                args += [flag, value]
+        args: list[str] = list(PRESENTED_FILES_ON)
         args += [
             "--set",
             "podManager.adapter=volundr.adapters.outbound.openshell_gateway."
@@ -2083,6 +2109,138 @@ class TestPresentedFilesOnACluster:
     def test_read_write_once_is_accepted_with_colocated_pods(self):
         args = (*PRESENTED_FILES_ON, "--set", "presentedFiles.persistence.accessMode=ReadWriteOnce")
         assert _rendered_configmap(*args)["presented_files"]["enabled"] is True
+
+
+SESSION_CREDENTIALS_ROLE = "test-volundr-session-credentials"
+DIRECT_K8S = "volundr.adapters.outbound.direct_k8s_pod_manager.DirectK8sPodManager"
+OPENSHELL = "volundr.adapters.outbound.openshell_gateway.OpenShellGatewayPodManager"
+KEY_FILE = ("--set", "forgeMcp.session_tokens.signing_key_file=/keys/forge-session.pem")
+
+
+@pytest.mark.skipif(shutil.which("helm") is None, reason="Helm is required")
+class TestSessionCredentialsNeedNoSetup:
+    """A session broker asks Forge for its mesh certificate with the credential Forge mints
+    at launch, so a cluster that can sign gets the credential, its Secret projection and
+    the RBAC for it without further values."""
+
+    @staticmethod
+    def _tokens(*args: str) -> dict:
+        return _rendered_configmap(*args)["forge_mcp"]["session_tokens"]
+
+    @staticmethod
+    def _has_secret_role(*args: str) -> bool:
+        return any(
+            doc["kind"] == "Role" and doc["metadata"]["name"] == SESSION_CREDENTIALS_ROLE
+            for doc in _rendered_documents(*args)
+        )
+
+    def test_workload_identity_key_turns_on_credentials_projection_and_rbac(self):
+        tokens = self._tokens(*WORKLOAD_SIGNING_KEY)
+        assert tokens["enabled"] is True
+        assert tokens["projection_adapter"] == (
+            "volundr.adapters.outbound.execution_credential_k8s."
+            "KubernetesExecutionCredentialProjection"
+        )
+        assert tokens["projection_kwargs"]["mount_path"] == "/var/run/secrets/niuu-forge-session"
+        assert self._has_secret_role(*WORKLOAD_SIGNING_KEY)
+
+    def test_an_operator_key_file_is_a_key_forge_keeps(self):
+        tokens = self._tokens(*KEY_FILE)
+        assert tokens["enabled"] is True
+        assert tokens["signing_key_file"] == "/keys/forge-session.pem"
+        assert "projection_adapter" in tokens
+        assert self._has_secret_role(*KEY_FILE)
+
+    def test_the_direct_kubernetes_pod_manager_is_projected_too(self):
+        args = (*WORKLOAD_SIGNING_KEY, "--set", f"podManager.adapter={DIRECT_K8S}")
+        assert "projection_adapter" in self._tokens(*args)
+        assert self._has_secret_role(*args)
+
+    def test_a_pod_manager_that_delivers_itself_gets_no_projection_or_role(self):
+        args = (*WORKLOAD_SIGNING_KEY, "--set", f"podManager.adapter={OPENSHELL}")
+        assert self._tokens(*args) == {"enabled": True}
+        assert not self._has_secret_role(*args)
+
+    def test_no_key_means_off_and_nothing_is_rendered_for_it(self):
+        assert self._tokens() == {"enabled": False}
+        assert not self._has_secret_role()
+
+    def test_credentials_can_still_be_switched_off(self):
+        args = (*WORKLOAD_SIGNING_KEY, "--set", "forgeMcp.session_tokens.enabled=false")
+        assert self._tokens(*args) == {"enabled": False}
+        assert not self._has_secret_role(*args)
+        # The mesh identity follows them, so it is not asked for while they are off.
+        assert "mesh_identity" not in _rendered_configmap(*args)["forge_mcp"]
+
+    def test_the_projection_can_be_switched_off_on_its_own(self):
+        args = (*WORKLOAD_SIGNING_KEY, "--set", "sessionCredentialProjection.enabled=false")
+        assert self._tokens(*args) == {"enabled": True}
+        assert not self._has_secret_role(*args)
+
+    def test_rbac_follows_rbac_create(self):
+        args = (*WORKLOAD_SIGNING_KEY, "--set", "rbac.create=false")
+        assert "projection_adapter" in self._tokens(*args)
+        assert not self._has_secret_role(*args)
+
+    def test_an_operator_projection_adapter_is_kept(self):
+        args = (
+            *WORKLOAD_SIGNING_KEY,
+            "--set",
+            "forgeMcp.session_tokens.projection_adapter=acme.Projection",
+        )
+        assert self._tokens(*args)["projection_adapter"] == "acme.Projection"
+
+    def test_mesh_identity_stays_on_with_credentials(self):
+        from volundr.config import ForgeMcpConfig
+
+        args = (*WORKLOAD_SIGNING_KEY, "--set", "forgeMcp.mesh_identity.ttl_seconds=600")
+        parsed = ForgeMcpConfig.model_validate(_rendered_configmap(*args)["forge_mcp"])
+        assert parsed.session_tokens.enabled is True
+        assert parsed.mesh_identity.ttl_seconds == 600
+
+    def test_enabling_credentials_without_a_key_is_refused_with_the_remedy(self):
+        error = _render_failure("--set", "forgeMcp.session_tokens.enabled=true")
+        assert "needs a signing key Forge can keep" in error
+        for remedy in ("workloadIdentity", "signing_key_file", "enabled: false"):
+            assert remedy in error
+
+    def test_workload_identity_without_its_key_secret_is_not_a_key(self):
+        error = _render_failure(
+            "--set",
+            "workloadIdentity.enabled=true",
+            "--set",
+            "forgeMcp.session_tokens.enabled=true",
+        )
+        assert "needs a signing key Forge can keep" in error
+
+    def test_the_old_mesh_identity_switch_is_refused_with_the_new_name(self):
+        error = _render_failure("--set", "forgeMcp.mesh_identity.enabled=false")
+        assert "mesh.attestation.required" in error
+
+    def test_mesh_signing_renders_nothing_by_default_and_the_one_switch_when_set(self):
+        assert "mesh" not in _rendered_configmap(*WORKLOAD_SIGNING_KEY)
+        config = _rendered_configmap(
+            *WORKLOAD_SIGNING_KEY, "--set", "mesh.attestation.required=false"
+        )
+        assert config["mesh"] == {"attestation": {"required": False}}
+        from volundr.config import MeshSettings
+
+        assert MeshSettings.model_validate(config["mesh"]).attestation.required is False
+
+    def test_a_projection_with_nothing_to_project_is_refused(self):
+        error = _render_failure("--set", "sessionCredentialProjection.enabled=true")
+        assert "sessionCredentialProjection.enabled has no credential to project" in error
+
+    def test_an_explicit_projection_is_honoured_for_any_pod_manager(self):
+        args = (
+            *WORKLOAD_SIGNING_KEY,
+            "--set",
+            f"podManager.adapter={OPENSHELL}",
+            "--set",
+            "sessionCredentialProjection.enabled=true",
+        )
+        assert "projection_adapter" in self._tokens(*args)
+        assert self._has_secret_role(*args)
 
 
 GUEST_METADATA_ON = ("--set", "guestMetadata.enabled=true")
@@ -2291,8 +2449,28 @@ class TestComputeHosts:
         assert config["pod_manager"]["adapter"].endswith("VmPodManager")
         assert config["pod_manager"]["runtime_backend"] == "vm"
         assert config["pod_manager"]["kwargs"]["pool_id"] == compute.pool_id
+        # The pool is the hosts that joined: no machine maximum strands any of them.
+        assert "max_machines" not in config["compute"]
+        assert "max_machines" not in config["pod_manager"]["kwargs"]
         # Without guestMetadata there is no credential delivery to configure.
         assert compute.credential_delivery is None
+
+    def test_the_mesh_is_off_unless_it_is_asked_for(self):
+        assert "mesh" not in self._config(*self.ON)["pod_manager"]["kwargs"]
+
+        config = self._config(*self.ON, "--set", "computeHosts.mesh.enabled=true")
+
+        # Teams and workflow runs on the hosts talk over the pod manager's mesh.
+        assert config["pod_manager"]["kwargs"]["mesh"] == {"enabled": True}
+
+    def test_macs_share_their_slots_only_when_asked(self):
+        catalog = self._config(*self.ON)["compute"]["execution_catalog"]["kwargs"]
+        assert catalog["darwin_shared_slots"] is False
+
+        config = self._config(*self.ON, "--set", "computeHosts.darwin.sharedSlots=true")
+
+        catalog = config["compute"]["execution_catalog"]["kwargs"]
+        assert catalog["darwin_shared_slots"] is True
 
     def test_the_catalog_it_renders_resolves(self, tmp_path):
         from niuu.utils import import_class
@@ -2395,3 +2573,176 @@ def test_forge_keeps_its_private_files_private_across_restarts():
     assert deployment["spec"]["template"]["spec"]["securityContext"]["fsGroupChangePolicy"] == (
         "OnRootMismatch"
     )
+
+
+@pytest.mark.skipif(shutil.which("helm") is None, reason="Helm is required")
+class TestProjectMemoryDirectory:
+    """Where a project's memory mounts are resolved: the file in mini mode, the hosted Mimir."""
+
+    def test_without_a_hosted_mimir_the_file_directory_is_left_to_the_default(self):
+        from volundr.config import ProjectsConfig
+
+        config = _rendered_configmap()
+        memory = ProjectsConfig.model_validate(config["projects"]).memory
+        assert memory.directory_adapter.endswith("MimirRegistryFileDirectory")
+        assert "mimir" not in config["workload_identity"]["audiences"]
+
+    def test_a_hosted_mimir_makes_the_http_directory_the_default(self):
+        from volundr.config import ProjectsConfig
+
+        config = _rendered_configmap(
+            "--set", "projectMemory.mimirUrl=https://mimir.example.com", *WORKLOAD_SIGNING_KEY
+        )
+        memory = ProjectsConfig.model_validate(config["projects"]).memory
+        assert memory.directory_adapter.endswith("MimirRegistryHttpDirectory")
+        assert memory.directory_kwargs == {
+            "base_url": "https://mimir.example.com",
+            "audience": "mimir",
+        }
+        assert config["workload_identity"]["audiences"] == ["volundr-api", "mimir"]
+
+    def test_the_audience_is_not_listed_twice(self):
+        config = _rendered_configmap(
+            "--set",
+            "projectMemory.mimirUrl=https://mimir.example.com",
+            "--set-json",
+            'workloadIdentity.audiences=["volundr-api","mimir"]',
+            *WORKLOAD_SIGNING_KEY,
+        )
+        assert config["workload_identity"]["audiences"] == ["volundr-api", "mimir"]
+
+    def test_a_hosted_mimir_without_workload_identity_refuses_to_render(self):
+        command = [
+            "helm",
+            "template",
+            "test",
+            str(CHART_DIR),
+            *BIFROST_URL,
+            "--set",
+            "projectMemory.mimirUrl=https://mimir.example.com",
+        ]
+        result = subprocess.run(command, capture_output=True, text=True)
+        assert result.returncode != 0
+        assert "projectMemory.mimirUrl asks the hosted Mimir with a workload token" in result.stderr
+
+
+@pytest.mark.skipif(shutil.which("helm") is None, reason="Helm is required")
+class TestMemoryGateway:
+    """memory.gatewayUrl: the gateway every session's memory server calls."""
+
+    def test_without_a_gateway_no_memory_section_is_rendered(self):
+        assert "memory" not in _rendered_configmap()
+
+    def test_a_gateway_is_rendered_for_forge_to_hand_to_every_session(self):
+        from volundr.config import MemoryConfig
+
+        config = _rendered_configmap(
+            "--set",
+            "memory.gatewayUrl=http://mimir.volundr.svc/api/v1/mimir",
+            *WORKLOAD_SIGNING_KEY,
+        )
+        memory = MemoryConfig.model_validate(config["memory"])
+        assert memory.gateway_url == "http://mimir.volundr.svc/api/v1/mimir"
+
+    def test_the_gateways_service_subject_is_rendered_for_forge(self):
+        from volundr.config import MemoryConfig
+
+        config = _rendered_configmap(
+            "--set",
+            "memory.gatewayUrl=http://mimir.volundr.svc/api/v1/mimir",
+            "--set",
+            "memory.gatewayServiceSubject=system:serviceaccount:niuu:mimir",
+            *WORKLOAD_SIGNING_KEY,
+        )
+        memory = MemoryConfig.model_validate(config["memory"])
+        assert memory.gateway_service_subject == "system:serviceaccount:niuu:mimir"
+
+    def test_a_verifying_identity_needs_the_gateways_service_subject(self):
+        command = [
+            "helm",
+            "template",
+            "test",
+            str(CHART_DIR),
+            *BIFROST_URL,
+            *WORKLOAD_SIGNING_KEY,
+            "--set",
+            "memory.gatewayUrl=http://mimir.volundr.svc/api/v1/mimir",
+            "--set",
+            "identity.adapter=volundr.adapters.outbound.identity.EnvoyHeaderIdentityAdapter",
+        ]
+        result = subprocess.run(command, capture_output=True, text=True)
+        assert result.returncode != 0
+        assert "memory.gatewayServiceSubject" in result.stderr
+
+        with_subject = [
+            *command,
+            "--set",
+            "memory.gatewayServiceSubject=system:serviceaccount:niuu:mimir",
+        ]
+        assert subprocess.run(with_subject, capture_output=True, text=True).returncode == 0
+
+    def test_a_gateway_without_session_credentials_refuses_to_render(self):
+        command = [
+            "helm",
+            "template",
+            "test",
+            str(CHART_DIR),
+            *BIFROST_URL,
+            "--set",
+            "memory.gatewayUrl=http://mimir.volundr.svc/api/v1/mimir",
+        ]
+        result = subprocess.run(command, capture_output=True, text=True)
+        assert result.returncode != 0
+        assert "memory.gatewayUrl needs Forge session credentials" in result.stderr
+
+
+_VOICE_PROVIDER = (
+    "voice.providers.openai.adapter=volundr.adapters.outbound.realtime_voice.OpenAIRealtimeMinter",
+    "voice.providers.openai.credential_name=openai",
+)
+
+
+def _voice_args(*sets: str) -> list[str]:
+    args: list[str] = []
+    for value in sets:
+        args += ["--set", value]
+    return args
+
+
+@pytest.mark.skipif(shutil.which("helm") is None, reason="Helm is required")
+class TestSessionVoice:
+    """voice: realtime voice calls with ordinary sessions."""
+
+    def test_off_renders_no_voice_section(self):
+        assert "voice" not in _rendered_configmap()
+
+    def test_on_renders_what_forge_validates(self):
+        from volundr.config import SessionVoiceConfig
+
+        config = _rendered_configmap(
+            *_voice_args("voice.enabled=true", "voice.defaultPersona=lexi", *_VOICE_PROVIDER),
+            *WORKLOAD_SIGNING_KEY,
+        )
+        voice = SessionVoiceConfig.model_validate(config["voice"])
+        assert voice.enabled is True
+        assert voice.default_persona == "lexi"
+        assert voice.providers["openai"].credential_name == "openai"
+        assert voice.providers["openai"].credential_key == "api_key"
+
+    def test_without_session_credentials_refuses_to_render(self):
+        stderr = _render_failure(
+            *_voice_args("voice.enabled=true", "voice.defaultPersona=lexi", *_VOICE_PROVIDER)
+        )
+        assert "voice.enabled needs Forge session credentials" in stderr
+
+    def test_without_a_default_persona_refuses_to_render(self):
+        stderr = _render_failure(
+            *_voice_args("voice.enabled=true", *_VOICE_PROVIDER), *WORKLOAD_SIGNING_KEY
+        )
+        assert "voice.enabled needs voice.defaultPersona" in stderr
+
+    def test_without_providers_refuses_to_render(self):
+        stderr = _render_failure(
+            *_voice_args("voice.enabled=true", "voice.defaultPersona=lexi"), *WORKLOAD_SIGNING_KEY
+        )
+        assert "voice.enabled needs voice.providers" in stderr

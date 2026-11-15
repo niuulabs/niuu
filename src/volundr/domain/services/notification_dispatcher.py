@@ -30,11 +30,14 @@ import asyncio
 import logging
 import random
 import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from contextlib import suppress
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 
+from niuu.cap_telemetry import record_degraded
+from niuu.domain.models import IntegrationUsage
+from niuu.ports.integrations import IntegrationUsageLog
 from niuu.ports.notifications import (
     NotificationDeliveryError,
     NotificationSink,
@@ -50,9 +53,24 @@ from volundr.domain.notifications import (
     NotificationDelivery,
     NotificationRateLimit,
     NotificationRule,
+    TeamDeliverTo,
+    TeamRoute,
+    team_route,
 )
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class TeamDelivery:
+    """What delivering a project's team routes needs beyond a person's own rules.
+
+    ``recipient_email`` finds the email of the person a row is for, so a team bot can
+    message them directly; ``usage`` records each post the team's bot made.
+    """
+
+    recipient_email: Callable[[str], Awaitable[str | None]]
+    usage: IntegrationUsageLog
 
 
 def _utc_now() -> datetime:
@@ -287,7 +305,9 @@ class NotificationDispatcher:
         clock: Callable[[], datetime] = _utc_now,
         monotonic: Callable[[], float] = time.monotonic,
         jitter: Callable[[], float] = random.random,
+        team: TeamDelivery | None = None,
     ) -> None:
+        self._team = team
         self._deliveries = deliveries
         self._sinks = sinks
         self._renderer = renderer
@@ -465,6 +485,18 @@ class NotificationDispatcher:
             )
             return False
         message = self._renderer.render(claimed)
+        try:
+            route = team_route(rule, rule.owner_id)
+            if route is not None:
+                message = await self._address(route, message)
+        except ValueError as exc:
+            await self._settle_failure(
+                delivery, NotificationDeliveryError(str(exc), retryable=False)
+            )
+            return False
+        except NotificationDeliveryError as exc:
+            await self._settle_failure(delivery, exc)
+            return False
         reason = sink.skip_reason(message)
         if reason:
             await self._suppress(delivery, reason)
@@ -515,6 +547,8 @@ class NotificationDispatcher:
                 )
                 return False
         if await self._deliveries.mark_delivered(delivery):
+            if route is not None:
+                await self._record_team_use(route, rule, message)
             self.stats.delivered += 1
             self.stats.by_sink[sink.name] = self.stats.by_sink.get(sink.name, 0) + 1
             logger.info(
@@ -528,6 +562,57 @@ class NotificationDispatcher:
             return True
         self._stale(delivery)
         return True
+
+    async def _address(
+        self, route: TeamRoute, message: OutboundNotification
+    ) -> OutboundNotification:
+        """Point a team route's message at its channel, or at the person it is for."""
+        if self._team is None:
+            raise NotificationDeliveryError(
+                "Team routes are not available on this host: notification delivery was "
+                "built without the user directory and the integration usage log",
+                retryable=False,
+            )
+        if route.deliver_to is TeamDeliverTo.CHANNEL:
+            return replace(message, destination=route.channel or None)
+        email = await self._team.recipient_email(message.owner_id)
+        if not email:
+            raise NotificationDeliveryError(
+                f"{message.owner_id} has no email on record, so the team's bot cannot "
+                "message them; they must sign in through the identity provider once",
+                retryable=False,
+            )
+        return replace(message, recipient_email=email)
+
+    async def _record_team_use(
+        self, route: TeamRoute, rule: NotificationRule, message: OutboundNotification
+    ) -> None:
+        """Record what the team's bot posted, and for whom. The post already happened."""
+        assert self._team is not None and rule.integration_connection_id
+        subject = (
+            f"to {message.owner_id}"
+            if route.deliver_to is TeamDeliverTo.RECIPIENT
+            else f"to {route.channel or 'the team channel'}"
+        )
+        try:
+            await self._team.usage.record(
+                IntegrationUsage(
+                    connection_id=rule.integration_connection_id,
+                    project_id=route.project_id,
+                    action=f"notify:{route.event.value}",
+                    acting_for=message.owner_id,
+                    actor="notifications",
+                    subject=f"{message.title} {subject}",
+                    session_id=message.session_id or "",
+                )
+            )
+        except Exception as exc:
+            # Sent and marked delivered: raising would only lose the loop tick.
+            record_degraded(
+                "notifications.team_usage",
+                f"Team post {message.notification_id} was sent but its use was not "
+                f"recorded: {type(exc).__name__}",
+            )
 
     def backoff_seconds(self, attempts: int, retry_after: float | None = None) -> float:
         """Exponential backoff with jitter for the retry after attempt ``attempts``."""

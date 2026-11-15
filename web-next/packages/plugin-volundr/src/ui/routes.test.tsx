@@ -3,12 +3,7 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ServicesProvider } from '@niuulabs/plugin-sdk';
 import { createMockBifrostService } from '@niuulabs/plugin-bifrost';
-import {
-  VolundrSessionRoute,
-  VolundrArchivedRoute,
-  VolundrSessionsRoute,
-  VolundrHostsRoute,
-} from './routes';
+import { VolundrArchivedRoute, VolundrSessionsRoute, VolundrHostsRoute } from './routes';
 import {
   createMockVolundrService,
   createMockSessionStore,
@@ -120,46 +115,6 @@ describe('VolundrSessionsRoute', () => {
   it('renders the full forge console', () => {
     wrap(<VolundrSessionsRoute />);
     expect(screen.getByTestId('sessions-page')).toBeInTheDocument();
-  });
-});
-
-describe('VolundrSessionRoute', () => {
-  it('renders the session page with the param sessionId', async () => {
-    localStorage.setItem('niuu.forge.details', '1');
-    wrap(<VolundrSessionRoute />);
-    const label = await screen.findByTestId('session-id-label');
-    expect(label).toHaveTextContent('sess-rou');
-  });
-
-  it('renders in interactive (non-read-only) mode', async () => {
-    wrap(<VolundrSessionRoute />);
-    await screen.findByTestId('live-session-detail-page');
-    expect(screen.queryByText('Archived')).not.toBeInTheDocument();
-  });
-
-  it('consumes a source-qualified Work return route', async () => {
-    routeState.search = {
-      instance_id: 'forge-east',
-      returnTo: '/ting/work/campaign%3Acampaign-1',
-    };
-    wrap(<VolundrSessionRoute />);
-
-    const back = await screen.findByRole('button', { name: 'Back to Work' });
-    fireEvent.click(back);
-    expect(routeState.navigate).toHaveBeenCalledWith({
-      to: '/ting/work/campaign%3Acampaign-1',
-    });
-  });
-
-  it('does not render navigation for an external return target', async () => {
-    routeState.search = {
-      instance_id: 'forge-east',
-      returnTo: 'https://malicious.example/ting/work/campaign-1',
-    };
-    wrap(<VolundrSessionRoute />);
-
-    await screen.findByTestId('live-session-detail-page');
-    expect(screen.queryByRole('button', { name: 'Back to Work' })).not.toBeInTheDocument();
   });
 });
 

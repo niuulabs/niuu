@@ -7,7 +7,7 @@ Adapters implement these interfaces.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import AsyncGenerator, Sequence
+from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -40,6 +40,7 @@ from niuu.ports.integrations import IntegrationRepository  # noqa: F401
 from niuu.ports.session_proxy import SessionProxyTarget
 from tracker.ports import IssueTrackerProvider, ProjectMappingRepository  # noqa: F401
 from volundr.domain.models import (  # noqa: F401
+    HOSTED_MEMBERS_KEY,
     Chronicle,
     ClusterResourceInfo,
     CommunicationRoute,
@@ -70,6 +71,7 @@ from volundr.domain.models import (  # noqa: F401
     ResidentRuntime,
     ResidentSession,
     RoomParticipantInfo,
+    RoomRoster,
     SavedPrompt,
     SecretInfo,
     SecretMountSpec,
@@ -98,7 +100,11 @@ from volundr.domain.models import (  # noqa: F401
 from volundr.domain.projects import SessionCoordination
 from volundr.domain.push import PushTokenKind
 from volundr.domain.session_changes import SessionChanges
-from volundr.domain.session_participants import ParticipantRole, SessionParticipant
+from volundr.domain.session_participants import (
+    ParticipantCandidate,
+    ParticipantRole,
+    SessionParticipant,
+)
 from volundr.domain.session_read_state import SessionReadState, SessionReadStateChange
 from volundr.domain.session_runtimes import SessionRuntimeOffer
 from volundr.domain.session_startup import SessionStartup, StartupStage
@@ -123,6 +129,34 @@ class PodStartResult:
     chat_endpoint: str
     code_endpoint: str
     pod_name: str
+
+
+@dataclass(frozen=True)
+class Playability:
+    """One persona on the harness a model's session would run, and why it cannot, if so."""
+
+    model: str
+    definition: str
+    transport: str
+    reasons: tuple[str, ...]
+
+    @property
+    def playable(self) -> bool:
+        return not self.reasons
+
+
+class PersonaNotPlayableError(ValueError):
+    """A session's persona cannot be played on the harness its model runs; nothing started."""
+
+
+class PersonaPlayabilityPort(ABC):
+    """Whether a session's persona can be played on the harness its model runs."""
+
+    @abstractmethod
+    def check(
+        self, model: str, persona: Mapping[str, Any], *, definition: str | None = None
+    ) -> Playability:
+        """The harness a session of ``model`` would run, and its refusals of ``persona``."""
 
 
 class SessionRepository(ABC):
@@ -150,8 +184,35 @@ class SessionRepository(ABC):
         """Retrieve sessions, filtered by status/tenant/owner."""
 
     @abstractmethod
+    async def list_by_project(self, project_ids: list[UUID], tenant_id: str) -> list[Session]:
+        """Sessions of *tenant_id* attached to any of the projects, newest first."""
+
+    @abstractmethod
+    async def list_by_workflow_runs(self, run_ids: list[str]) -> list[Session]:
+        """Sessions whose ``workload_config.workflow_run_id`` is any of *run_ids*, across
+        tenants, oldest first. Callers scope the result to the caller they answer."""
+
+    @abstractmethod
     async def update(self, session: Session) -> Session:
         """Update an existing session."""
+
+    @abstractmethod
+    async def attach_to_unit(
+        self, session_id: UUID, unit_id: UUID, base_port: int
+    ) -> Session | None:
+        """Make ``session_id`` a member of the unit rooted at ``unit_id``, atomically.
+
+        The unit row is locked while the member is attached, so a unit cannot start
+        between the check and the write. The member's port is one above the unit's highest
+        member port (``base_port`` for the first) and is unique within the unit. Returns
+        the stored member, or ``None`` when the unit does not exist or has already
+        started (its status is not ``created``). Hosting is never written by an
+        ordinary ``update``.
+        """
+
+    @abstractmethod
+    async def list_hosted(self, unit_id: UUID) -> list[Session]:
+        """The members of the unit rooted at ``unit_id``, ordered by port."""
 
     @abstractmethod
     async def update_coordination(
@@ -468,6 +529,47 @@ class SessionParticipantRepository(ABC):
         read/list grant.
         """
 
+    @abstractmethod
+    async def list_invited_for_user(self, user_id: str) -> list[SessionParticipant]:
+        """Return every status=INVITED grant for a user, across sessions.
+
+        Lets the invitee find the invitation in their session list and accept or
+        decline it. Callers still filter expiry (``SessionParticipant.is_pending``).
+        """
+
+    @abstractmethod
+    async def count_active_for_sessions(
+        self, session_ids: list[UUID], now: datetime
+    ) -> dict[UUID, int]:
+        """Active, unexpired grants per session, for all of ``session_ids`` in one read.
+
+        ``now`` is the instant expiry is judged at (``SessionParticipant.is_active`` judges
+        it in Python, so the database clock never disagrees with it). A session with no
+        such grant has no entry.
+        """
+
+    @abstractmethod
+    async def candidates(
+        self, session_id: UUID, tenant_id: str, owner_id: str, query: str
+    ) -> list[ParticipantCandidate]:
+        """Active members of ``tenant_id`` who could be invited into the session.
+
+        Not the owner, and not anyone already invited or active on the session; a
+        revoked grant can be invited again. ``query`` matches display name or email,
+        case-insensitively; empty matches everyone.
+        """
+
+    @abstractmethod
+    async def tenant_people(
+        self, tenant_id: str, excluded_user_id: str, query: str
+    ) -> list[ParticipantCandidate]:
+        """Active members of ``tenant_id`` other than ``excluded_user_id``.
+
+        The people someone may invite before any session exists, so no session's grants
+        are consulted. ``query`` matches display name or email, case-insensitively; empty
+        matches everyone.
+        """
+
 
 class ChronicleRepository(ABC):
     """Port for chronicle persistence operations."""
@@ -561,8 +663,127 @@ class SessionCapacity:
         return max(self.limit - self.active, 0)
 
 
+class HostedUnitError(RuntimeError):
+    """A workflow run's unit cannot be hosted as configured; the message names the remedy."""
+
+
+@dataclass(frozen=True)
+class HostedMemberLaunch:
+    """A member of a unit as its own start prepares it.
+
+    ``session`` is the member's stored session (its own launch id, port and workload config)
+    and ``spec`` what the contributor pipeline made for it as if it were started alone: its
+    persona, prompts and environment, and ``spec.forge_session``, the credential minted for
+    its current launch (or, where the runtime projects credentials, the Secret mount that
+    carries it). A runtime holds the credential in memory and writes it where only that
+    member can read it; it is never stored.
+    """
+
+    session: Session
+    spec: SessionSpec
+
+
+#: Resolves the launches of a unit's members, ordered by port: the unit root's id and, to
+#: start one member again in place, that member's id (None for every member of the unit).
+#: Forge answers it (``SessionService.hosted_member_launches``); every pod manager that
+#: hosts units takes the same callable through ``PodManager.configure_hosted_members``.
+HostedMemberSource = Callable[[UUID, UUID | None], Awaitable[Sequence[HostedMemberLaunch]]]
+
+
 class PodManager(ABC):
     """Port for managing session pods (Skuld, code-server, terminal)."""
+
+    #: What resolves a unit root's members; set by ``configure_hosted_members``.
+    _hosted_members: HostedMemberSource | None = None
+
+    def configure_hosted_members(self, source: HostedMemberSource) -> None:
+        """Attach what resolves a unit root's members (their sessions and own specs).
+
+        A unit root starts its members with it, and each member's persona, prompts and
+        credential come from its own contributor pipeline, which only Forge can run. Starting
+        a unit root with no source is an error, never a unit without its members.
+        """
+        self._hosted_members = source
+
+    async def hosted_member_launches(
+        self, root: Session, member_id: UUID | None = None
+    ) -> tuple[HostedMemberLaunch, ...]:
+        """The launches of a unit root's members, from the configured source.
+
+        Empty for a root that recorded no members. A root that recorded members and a
+        manager with no source is an error, as is a source whose answer is not the members
+        asked for: a unit never starts as a pod with only its root.
+        """
+        recorded = [
+            str(entry["id"]) for entry in root.workload_config.get(HOSTED_MEMBERS_KEY) or ()
+        ]
+        if not recorded:
+            return ()
+        if self._hosted_members is None:
+            raise HostedUnitError(
+                f"Session {root.id} is a unit that hosts {len(recorded)} member session(s), "
+                f"but this {type(self).__name__} has no member source; compose it with "
+                "configure_hosted_members"
+            )
+        launches = tuple(await self._hosted_members(root.id, member_id))
+        wanted = recorded if member_id is None else [str(member_id)]
+        if sorted(str(m.session.id) for m in launches) != sorted(wanted):
+            raise HostedUnitError(
+                f"The members resolved for unit {root.id} are "
+                f"{sorted(str(m.session.id) for m in launches)}, not the {sorted(wanted)} it "
+                "was started with: a run's members are fixed when its unit starts"
+            )
+        return launches
+
+    async def hosted_member_launch(self, member: Session) -> HostedMemberLaunch:
+        """The launch of one member of a running unit, as Forge builds it now.
+
+        Built from the member's current row, so it carries the credential of its current
+        launch (a runtime that projects credentials has just rewritten the member's Secret).
+        """
+        if member.hosted_by is None:
+            raise HostedUnitError(f"Session {member.id} is not a member of a unit")
+        if self._hosted_members is None:
+            raise HostedUnitError(
+                f"{type(self).__name__} has no member source, so member {member.id} of unit "
+                f"{member.hosted_by} cannot be launched again; compose it with "
+                "configure_hosted_members"
+            )
+        launches = tuple(await self._hosted_members(member.hosted_by, member.id))
+        if [str(m.session.id) for m in launches] != [str(member.id)]:
+            raise HostedUnitError(
+                f"The member source answered {[str(m.session.id) for m in launches]} for "
+                f"member {member.id} of unit {member.hosted_by}"
+            )
+        return launches[0]
+
+    async def restart_hosted_member(self, member: Session) -> None:
+        """Start one member's process again, in place, under its current launch.
+
+        The member's unit keeps running. A runtime that can restart one process of a running
+        unit does it; one that cannot (a pod's containers and a sandbox's peers restart only
+        with the pod) asks the member's own Skuld to restart its harness and re-read its
+        credential. Raises, naming the reason, when it can do neither: a restart is never
+        skipped silently.
+        """
+        raise HostedUnitError(
+            f"{type(self).__name__} cannot start one member of a unit again; stop the run and "
+            "start it again"
+        )
+
+    async def stop_hosted_member(self, member: Session) -> None:
+        """Stop one member's process while its unit keeps running.
+
+        The default is the runtime's ``stop`` for a runtime whose ``stop(member)`` ends the
+        member's process (a local process, a VM's container). One whose ``stop`` cannot (a
+        container of a pod) overrides this to ask the member's own Skuld. Raises when the
+        member's process was not stopped.
+        """
+        if not await self.stop(member):
+            raise HostedUnitError(
+                f"{type(self).__name__} did not stop member {member.id}, so its process may "
+                "still be running; stop the run to end it"
+            )
 
     async def capacity(self) -> SessionCapacity | None:
         """The runtime's session capacity, or None when it has no fixed cap."""
@@ -1793,6 +2014,19 @@ class SecretInjectionPort(ABC):
         return False
 
     @property
+    def injects_per_pod(self) -> bool:
+        """Whether the injection is a property of the pod, not of the session.
+
+        An injector that mutates the pod from its annotations and runs it under a
+        ServiceAccount of its own (the OpenBao agent injector, Infisical's) gives one
+        pod one injection. A session hosted in another session's unit is a container of
+        that pod, so it cannot have an injection of its own: the unit root's covers the
+        members' credentials (``SessionContext.unit_members``) and the members add nothing
+        to the pod.
+        """
+        return False
+
+    @property
     def supports_guest_agents(self) -> bool:
         """Whether this adapter can run its own agent containers on a VM guest.
 
@@ -2019,6 +2253,26 @@ from niuu.ports.pat_repository import PATRepository  # noqa: F401, E402
 
 
 @dataclass(frozen=True)
+class UnitMemberContext:
+    """What a unit root's pipeline knows of one member that is hosted in its pod.
+
+    A member is a container of its unit root's pod, so whatever the pod itself carries (an
+    injector's annotations and ServiceAccount) is the root's, and has to cover what the
+    members need. The root's contributors read this to see those needs. It is the part of a
+    member's launch that decides what it is given: the member's own session pipeline still
+    builds the member's spec.
+    """
+
+    session_id: str
+    owner_id: str
+    tenant_id: str | None
+    credential_names: tuple[str, ...] = ()
+    integration_ids: tuple[str, ...] = ()
+    integration_connections: tuple[IntegrationConnection, ...] = ()
+    workload_config: dict = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
 class SessionContext:
     """Read-only context for contributors."""
 
@@ -2037,6 +2291,9 @@ class SessionContext:
     initial_prompt: str = ""
     workload_type: str = "session"
     workload_config: dict = field(default_factory=dict)
+    #: For a unit root: the members its pod hosts (see ``UnitMemberContext``). Empty for
+    #: every other session.
+    unit_members: tuple[UnitMemberContext, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -2066,10 +2323,17 @@ class SessionPersonaProvider(ABC):
 
 @dataclass(frozen=True)
 class SessionContribution:
-    """Output from a single contributor."""
+    """Output from a single contributor.
+
+    ``launch_facts`` are facts this launch establishes about the session (for example that
+    its broker runs the voice channel). The launch records them on the session's workload
+    config (``session_launch_facts``) and every launch replaces the whole record, so a fact
+    never outlives the launch that made it.
+    """
 
     values: dict[str, Any] = field(default_factory=dict)
     pod_spec: PodSpecAdditions | None = None
+    launch_facts: dict[str, Any] = field(default_factory=dict)
 
 
 class SessionContributor(ABC):
@@ -2126,6 +2390,16 @@ class SessionRoomPort(ABC):
     @abstractmethod
     async def list_room_participants(self, session_id: UUID) -> list[RoomParticipantInfo]:
         """Return the current room participants for a live session."""
+
+    @abstractmethod
+    async def read_room(self, session_id: UUID, *, credential: str | None = None) -> RoomRoster:
+        """Return the room's seated participants and the people connected to it.
+
+        ``credential`` is the caller's own ``Authorization`` value, presented to the
+        session's broker, which admits the caller as it does any request to the session.
+        ``list_room_participants`` is the same read without the connected people, for the
+        callers that route to participants only.
+        """
 
 
 class SessionCommunicationPort(ABC):

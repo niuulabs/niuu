@@ -4,7 +4,8 @@ The distributed executable is `niuu`, with the existing subcommands. PyApp
 launches `niuu.__main__:main`, the same entry point as the installed Python
 command. Niuu remains Python; only the small PyApp launcher is compiled to native
 code. The executable embeds Python, locked application dependencies, the Niuu
-wheel, web assets, migrations and PostgreSQL with its extensions.
+wheel, web assets, migrations, PostgreSQL with its extensions, and the gbrain
+executable mini mode's memory runs.
 
 No system Python or package downloads are needed to bootstrap the executable. The first invocation unpacks the embedded Zstandard archive into
 PyApp's per-user installation directory. Subsequent invocations reuse that
@@ -22,8 +23,8 @@ Install Rust/Cargo, uv and Zstandard on the build host. Linux also needs
 `patchelf`. The normal commands are:
 
 ```bash
-make build                 # web, PostgreSQL, then the executable
-make build-cli-bin         # package with web/PostgreSQL assets already prepared
+make build                 # web, PostgreSQL, gbrain, then the executable
+make build-cli-bin         # package with web/PostgreSQL/gbrain assets already prepared
 ./dist/niuu-darwin-arm64 --version
 ./dist/niuu-darwin-arm64 platform --help
 ```
@@ -73,6 +74,7 @@ additional live inference check on release builds.
 | --- | --- | --- |
 | uv | Downloaded Python packages | Existing setup action; lockfile, Python and selected extras |
 | PostgreSQL | Built database/extension bundle | `build/pginstall`; runner, architecture, version definitions and build script |
+| gbrain | Compiled gbrain executable | `build/gbrain`; runner, architecture, gbrain Dockerfile, security patch and build script |
 | Rust build | Compiled PyApp dependencies | `.build-cache/pyapp-target`; runner, architecture and actual Rust/C/SDK toolchain |
 | Cargo downloads | Registry and Git sources | `~/.cargo/registry`, `~/.cargo/git`, saved with the Rust build cache |
 | Runtime installation | Unpacked Python and Niuu | PyApp's per-user directory; separate from all CI/build caches |

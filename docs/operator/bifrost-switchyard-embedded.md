@@ -67,8 +67,12 @@ JSON schema whose `target` enum is the route's target list.
 For classified routes, Bifrost drives Switchyard's `Step.CallModel` using its
 existing provider adapter, sends the native structured-output schema, validates
 the returned choice, and resumes the native algorithm. On `Step.Done`, Bifrost
-executes only the chosen target. Invalid JSON, unknown targets, truncated judge
-output, transport failures, or access denial stop the request. No provider
+executes only the chosen target, and only when the judge's own answer chose it:
+Switchyard's default target is refused. `max_tokens` is required on a classifier
+route and must be sized for the judge's answer, reasoning included; a judge answer
+cut off at it is recorded as a cap hit on
+`bifrost.selection.routes.<name>.max_tokens` and fails the request. Invalid JSON, unknown targets, transport failures, or
+access denial stop the request. No provider
 fallback or native default choice is used after a classifier failure.
 
 The classifier sees conversation content plus request configuration such as

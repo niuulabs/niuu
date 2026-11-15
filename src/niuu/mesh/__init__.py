@@ -44,7 +44,26 @@ class MeshBuildError(RuntimeError):
 def mesh_event_prefix(environment_id: str = "") -> str:
     """Return the event namespace for one isolated mesh environment."""
     normalized = re.sub(r"[^a-z0-9_]", "_", environment_id.strip().lower()).strip("_")
-    return f"ravn.mesh.realm_{normalized}" if normalized else "ravn.mesh"
+    return f"mesh.realm_{normalized}" if normalized else "mesh"
+
+
+def mesh_topic_segment(segment: str) -> str:
+    """One segment of a topic or peer id as the mesh transports spell it.
+
+    Sleipnir event type segments are lowercase alphanumerics and underscores and start with a
+    letter: ``-`` becomes ``_``, and a segment that starts with a digit (a session's UUID peer
+    id does in 10 of 16 cases) gets a ``p`` in front. The one spelling every end of the mesh
+    uses: the transport's addresses, and the topic a signature is bound to.
+    """
+    spelled = segment.lower().replace("-", "_")
+    if spelled[:1].isdigit():
+        return f"p{spelled}"
+    return spelled
+
+
+def mesh_topic(topic: str) -> str:
+    """A dotted topic as the mesh transports spell it, segment by segment."""
+    return ".".join(mesh_topic_segment(segment) for segment in topic.split("."))
 
 
 @runtime_checkable

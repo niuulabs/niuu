@@ -18,7 +18,7 @@ REAL tmux session driving ``fakeagent``:
     a documented xfail rather than a fragile Postgres-wired test.
 
 Integration tests drive real tmux and are deselected by the default addopts;
-run with ``-m integration`` and ``SKULD__TMUX_REMOTE_CONTROL=0``.
+run with ``-m integration``.
 """
 
 from __future__ import annotations

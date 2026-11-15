@@ -119,6 +119,31 @@ class RestForgeClient(ForgeClient):
             "GET", f"/sessions/{quote(session_id)}", params=self._instance_params(instance_id)
         )
 
+    async def list_session_people(self, session_id: str) -> list[dict[str, Any]]:
+        path = f"/sessions/{quote(session_id)}/people"
+        body = await self._request("GET", path)
+        if not isinstance(body, list):
+            raise ForgeApiError(f"unexpected response shape from {path}")
+        return body
+
+    async def create_person_question(
+        self, session_id: str, *, user_id: str, question: str, request_id: str
+    ) -> dict[str, Any]:
+        return await self._object(
+            "POST",
+            f"/sessions/{quote(session_id)}/person-questions",
+            json={"user_id": user_id, "question": question, "request_id": request_id},
+        )
+
+    async def answer_person_question(
+        self, session_id: str, question_id: str, *, answered_by_user_id: str, answered_by_name: str
+    ) -> dict[str, Any]:
+        return await self._object(
+            "POST",
+            f"/sessions/{quote(session_id)}/person-questions/{quote(question_id)}/answer",
+            json={"answered_by_user_id": answered_by_user_id, "answered_by_name": answered_by_name},
+        )
+
     async def get_conversation(
         self, session_id: str, *, turns: int, instance_id: str | None
     ) -> dict[str, Any]:
@@ -128,13 +153,34 @@ class RestForgeClient(ForgeClient):
         )
 
     async def send_message(
-        self, session_id: str, *, content: str, request_id: str, instance_id: str | None
+        self,
+        session_id: str,
+        *,
+        content: str,
+        request_id: str,
+        instance_id: str | None,
+        in_reply_to: str = "",
+        urgent: bool = False,
     ) -> dict[str, Any]:
+        body: dict[str, Any] = {"content": content, "request_id": request_id}
+        if in_reply_to:
+            body["in_reply_to"] = in_reply_to
+        if urgent:
+            body["urgent"] = True
         return await self._object(
             "POST",
             f"/sessions/{quote(session_id)}/messages",
             params=self._instance_params(instance_id),
-            json={"content": content, "request_id": request_id},
+            json=body,
+        )
+
+    async def post_room_message(
+        self, host_session_id: str, *, room_id: str, content: str
+    ) -> dict[str, Any]:
+        return await self._object(
+            "POST",
+            f"/sessions/{quote(host_session_id)}/room/session-message",
+            json={"room_id": room_id, "content": content},
         )
 
     async def get_message_delivery(

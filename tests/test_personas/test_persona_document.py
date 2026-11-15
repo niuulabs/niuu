@@ -16,7 +16,10 @@ from personas.domain.persona_document import (
     PersonaDependencyResolutionError,
     PersonaDocumentError,
     PortablePersonaCollection,
+    PortablePersonaDefinition,
+    parse_persona_definition_yaml,
     parse_portable_persona,
+    persona_definition_from_mapping,
     portable_persona_from_config,
     portable_persona_yaml,
     resolve_persona_dependencies,
@@ -26,9 +29,8 @@ from personas.domain.persona_document import (
 def _complete_persona(prompt: str = "First line.\nSecond line.\n") -> PersonaConfig:
     return PersonaConfig(
         name="reviewer",
+        description="Reviews pull requests for correctness.",
         system_prompt_template=prompt,
-        allowed_tools=["file_read", "git"],
-        forbidden_tools=["shell"],
         permission_mode="read-only",
         llm=PersonaLLMConfig(
             primary_alias="powerful",
@@ -78,6 +80,63 @@ def test_portable_persona_round_trips_every_source_field_without_prompt_injectio
     assert parsed.digest == document.digest
 
 
+def test_the_description_is_optional_and_leaves_a_persona_without_one_unchanged() -> None:
+    without = PersonaConfig(name="plain", system_prompt_template="x")
+    assert "description" not in without.to_dict()
+    assert portable_persona_from_config(without).definition == {
+        "name": "plain",
+        "system_prompt_template": "x",
+    }
+
+
+def test_a_description_that_is_not_text_is_refused() -> None:
+    with pytest.raises(PersonaDocumentError, match="description must be a string"):
+        parse_portable_persona(
+            {
+                "schema_version": 1,
+                "id": "p",
+                "revision": "r1",
+                "definition": {"name": "p", "description": 3},
+            }
+        )
+
+
+def _guided(when: object) -> dict:
+    return {
+        "schema_version": 1,
+        "id": "worker",
+        "revision": "content-1234567890abcdef",
+        "definition": {
+            "name": "worker",
+            "produces": {
+                "event_type_map": {"pass": "work.done", "blocked": "work.blocked"},
+                "when": when,
+            },
+        },
+    }
+
+
+def test_a_portable_persona_says_when_to_report_each_verdict() -> None:
+    portable = parse_portable_persona(_guided({"pass": "The work is done and pushed."}))
+
+    assert portable.definition["produces"]["when"] == {"pass": "The work is done and pushed."}
+
+
+@pytest.mark.parametrize(
+    ("when", "message"),
+    [
+        ({"approved": "Looks good."}, "names verdict 'approved'.*the verdicts are"),
+        ({"pass": "  "}, r"produces.when.pass must say when to report it"),
+        (["pass"], "produces.when must map each verdict"),
+    ],
+)
+def test_guidance_for_a_verdict_the_persona_cannot_report_or_empty_guidance_is_refused(
+    when: object, message: str
+) -> None:
+    with pytest.raises(PersonaDocumentError, match=message):
+        parse_portable_persona(_guided(when))
+
+
 def test_portable_persona_rejects_an_executor_field() -> None:
     document = {
         "schema_version": 1,
@@ -88,6 +147,57 @@ def test_portable_persona_rejects_an_executor_field() -> None:
 
     with pytest.raises(PersonaDocumentError, match="unsupported field.*executor"):
         parse_portable_persona(document)
+
+
+@pytest.mark.parametrize(
+    ("fields", "message"),
+    [
+        ({"allowed_tools": ["file_read"]}, "persona worker: allowed_tools is not supported"),
+        ({"forbidden_tools": ["shell"]}, "persona worker: forbidden_tools is not supported"),
+        (
+            {"allowed_tools": [], "forbidden_tools": []},
+            "persona worker: allowed_tools and forbidden_tools are not supported",
+        ),
+    ],
+)
+def test_portable_persona_refuses_tool_restrictions_even_when_empty(
+    fields: dict[str, list[str]], message: str
+) -> None:
+    document = {
+        "schema_version": 1,
+        "id": "worker",
+        "revision": "content-1234567890abcdef",
+        "definition": {"name": "worker", **fields},
+    }
+
+    with pytest.raises(PersonaDocumentError, match=message) as raised:
+        parse_portable_persona(document)
+
+    assert "per-harness tool restrictions are not available yet" in str(raised.value)
+    assert "remove allowed_tools (and forbidden_tools) from the persona" in str(raised.value)
+
+
+def test_a_portable_persona_built_directly_refuses_tool_restrictions_too() -> None:
+    with pytest.raises(PersonaDocumentError, match="allowed_tools is not supported"):
+        PortablePersonaDefinition(
+            id="worker",
+            revision="content-1234567890abcdef",
+            definition={"name": "worker", "allowed_tools": ["file_read"]},
+        )
+
+
+def test_pinning_a_workflow_scoped_persona_with_a_tool_restriction_is_refused() -> None:
+    """Ting pins a workflow's personas through this resolution; the refusal reaches it too."""
+    scoped = {
+        "schema_version": 1,
+        "id": "worker",
+        "revision": "content-1234567890abcdef",
+        "definition": {"name": "worker", "forbidden_tools": ["shell"]},
+    }
+    pin = {"id": "worker", "revision": "content-1234567890abcdef", "digest": "sha256:" + "0" * 64}
+
+    with pytest.raises(PersonaDocumentError, match="persona worker: forbidden_tools is not"):
+        resolve_persona_dependencies({"worker": pin}, {"worker": scoped}, None)
 
 
 def test_persona_dependency_rejects_path_traversal_identifier() -> None:
@@ -199,3 +309,20 @@ def test_inline_adapter_runs_exact_source_and_only_then_injects_outcome_prompt()
     assert runtime.system_prompt_template.startswith("Pinned prompt")
     assert "---outcome---" in runtime.system_prompt_template
     assert document.definition["system_prompt_template"] == "Pinned prompt"
+
+
+class TestAuthoredDefinitions:
+    def test_a_definition_gets_its_content_revision(self) -> None:
+        document = parse_persona_definition_yaml("name: helper\ndescription: Helps.\n")
+
+        assert document.id == "helper"
+        assert document.definition == {"name": "helper", "description": "Helps."}
+        assert document.revision.startswith("content-")
+
+    def test_a_definition_that_is_not_a_mapping_is_refused(self) -> None:
+        with pytest.raises(PersonaDocumentError, match="mapping of its fields"):
+            persona_definition_from_mapping(["name", "helper"])  # type: ignore[arg-type]
+
+    def test_a_duplicate_key_is_refused_not_overwritten(self) -> None:
+        with pytest.raises(PersonaDocumentError, match="duplicate key"):
+            parse_persona_definition_yaml("name: helper\nname: other\n")

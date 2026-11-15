@@ -19,7 +19,6 @@ import yaml
 from yaml.constructor import ConstructorError
 
 from personas.domain.permission_mode import parse_permission_mode
-from personas.domain.tool_vocabulary import PersonaToolError, validate_tool_names
 
 PERSONA_DOCUMENT_SCHEMA_VERSION = 1
 _DIGEST_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
@@ -27,9 +26,8 @@ _IDENTIFIER_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,255}$")
 _PORTABLE_DEFINITION_FIELDS = frozenset(
     {
         "name",
+        "description",
         "system_prompt_template",
-        "allowed_tools",
-        "forbidden_tools",
         "permission_mode",
         "llm",
         "iteration_budget",
@@ -43,8 +41,30 @@ _PORTABLE_DEFINITION_FIELDS = frozenset(
 )
 
 
+#: Persona fields that restricted a role's tools. Restricting tools per harness is not available
+#: yet, so a persona that still carries one is refused rather than read with it ignored.
+REMOVED_TOOL_RESTRICTION_FIELDS: tuple[str, ...] = ("allowed_tools", "forbidden_tools")
+
+
 class PersonaDocumentError(ValueError):
     """A portable persona document or dependency pin is invalid."""
+
+
+def refuse_tool_restrictions(persona: str, document: Mapping[str, Any]) -> None:
+    """Raise :class:`PersonaDocumentError` when the persona still carries a tool restriction.
+
+    Any presence of ``allowed_tools`` or ``forbidden_tools`` is refused, an empty list included:
+    the persona must be corrected, not read with the restriction dropped.
+    """
+    present = [name for name in REMOVED_TOOL_RESTRICTION_FIELDS if name in document]
+    if not present:
+        return
+    fields = " and ".join(present)
+    verb = "is" if len(present) == 1 else "are"
+    raise PersonaDocumentError(
+        f"persona {persona}: {fields} {verb} not supported: per-harness tool restrictions are "
+        "not available yet; remove allowed_tools (and forbidden_tools) from the persona"
+    )
 
 
 class PersonaDependencyResolutionError(PersonaDocumentError):
@@ -229,13 +249,46 @@ def parse_portable_persona(value: str | bytes | Mapping[str, Any]) -> PortablePe
         value = value.decode("utf-8")
     if isinstance(value, str):
         try:
-            loaded = yaml.load(value, Loader=_StrictSafeLoader)
+            loaded = _load_strict_yaml(value)
         except yaml.YAMLError as exc:
             raise PersonaDocumentError(f"Invalid persona YAML: {exc}") from exc
         if not isinstance(loaded, dict):
             raise PersonaDocumentError("Portable persona document must be a mapping")
         value = loaded
     return PortablePersonaDefinition.from_dict(value)
+
+
+def persona_definition_from_mapping(definition: Mapping[str, Any]) -> PortablePersonaDefinition:
+    """Validate a persona definition as its author wrote it and give it its content revision.
+
+    The definition is the persona itself (``name``, ``description``, ``produces``, …), not the
+    portable wrapper around it. It is checked as strictly as a pinned persona: an unknown field,
+    a verdict rule for a verdict the persona does not map, or a mode no enforcer knows is refused,
+    naming the field, rather than saved with it dropped.
+    """
+    if not isinstance(definition, Mapping):
+        raise PersonaDocumentError("A persona is a mapping of its fields, starting with its name")
+    name = str(definition.get("name") or "").strip()
+    if not name:
+        raise PersonaDocumentError("A persona needs a name")
+    _validate_definition(name, definition)
+    copied = _json_copy(dict(definition))
+    return PortablePersonaDefinition(
+        id=name,
+        revision=persona_revision_for_definition(copied),
+        definition=copied,
+    )
+
+
+def parse_persona_definition_yaml(text: str) -> PortablePersonaDefinition:
+    """Parse persona YAML as its author wrote it; see :func:`persona_definition_from_mapping`."""
+    try:
+        loaded = _load_strict_yaml(text)
+    except yaml.YAMLError as exc:
+        raise PersonaDocumentError(f"Invalid persona YAML: {exc}") from exc
+    if not isinstance(loaded, dict):
+        raise PersonaDocumentError("A persona is a YAML mapping of its fields, starting with name")
+    return persona_definition_from_mapping(loaded)
 
 
 def portable_persona_yaml(document: PortablePersonaDefinition) -> str:
@@ -318,7 +371,7 @@ def persona_mapping_compatibility_issues(
     required: PortablePersonaDefinition,
     candidate: PortablePersonaDefinition,
 ) -> list[str]:
-    """Describe event/capability incompatibilities for an intentional mapping."""
+    """Describe event incompatibilities for an intentional mapping."""
     issues: list[str] = []
     required_consumes = _string_set((required.definition.get("consumes") or {}).get("event_types"))
     candidate_consumes = _string_set(
@@ -334,11 +387,6 @@ def persona_mapping_compatibility_issues(
     if missing_produces:
         issues.append(f"does not produce events: {', '.join(sorted(missing_produces))}")
 
-    required_tools = _string_set(required.definition.get("allowed_tools"))
-    candidate_tools = _string_set(candidate.definition.get("allowed_tools"))
-    missing_tools = required_tools - candidate_tools if candidate_tools else set()
-    if missing_tools:
-        issues.append(f"does not request capabilities: {', '.join(sorted(missing_tools))}")
     return issues
 
 
@@ -376,6 +424,7 @@ def _coerce_dependency(raw: Any) -> PersonaDependency:
 
 
 def _validate_definition(persona_id: str, definition: Mapping[str, Any]) -> None:
+    refuse_tool_restrictions(persona_id, definition)
     unknown = set(definition) - _PORTABLE_DEFINITION_FIELDS
     if unknown:
         raise PersonaDocumentError(
@@ -389,10 +438,8 @@ def _validate_definition(persona_id: str, definition: Mapping[str, Any]) -> None
         raise PersonaDocumentError(
             f"Portable persona id '{persona_id}' does not match definition.name '{name}'"
         )
+    _validate_optional_string(definition, "description")
     _validate_optional_string(definition, "system_prompt_template")
-    _validate_string_list(definition, "allowed_tools")
-    _validate_string_list(definition, "forbidden_tools")
-    _validate_tools(persona_id, definition)
     _validate_optional_string(definition, "permission_mode")
     _validate_permission_mode(persona_id, definition)
     _validate_non_negative_int(definition, "iteration_budget")
@@ -407,17 +454,6 @@ def _validate_definition(persona_id: str, definition: Mapping[str, Any]) -> None
         json.dumps(definition, allow_nan=False, ensure_ascii=False, sort_keys=True)
     except (TypeError, ValueError, RecursionError) as exc:
         raise PersonaDocumentError("Portable persona definition must be JSON-serializable") from exc
-
-
-def _validate_tools(persona_id: str, definition: Mapping[str, Any]) -> None:
-    """Refuse a tool outside the neutral vocabulary; the message lists the valid set."""
-    for key in ("allowed_tools", "forbidden_tools"):
-        if key not in definition:
-            continue
-        try:
-            validate_tool_names(key, definition[key])
-        except PersonaToolError as exc:
-            raise PersonaDocumentError(f"Portable persona '{persona_id}': {exc}") from exc
 
 
 def _validate_permission_mode(persona_id: str, definition: Mapping[str, Any]) -> None:
@@ -487,7 +523,8 @@ def _string_set(value: Any) -> set[str]:
     return {str(item).strip() for item in value if str(item).strip()}
 
 
-def _produced_events(definition: Mapping[str, Any]) -> set[str]:
+def produced_event_types(definition: Mapping[str, Any]) -> set[str]:
+    """Every event type the persona declares it produces: its default and its mapped ones."""
     raw = definition.get("produces")
     if not isinstance(raw, dict):
         return set()
@@ -498,8 +535,32 @@ def _produced_events(definition: Mapping[str, Any]) -> set[str]:
     return {event for event in events if event}
 
 
+def consumed_event_types(definition: Mapping[str, Any]) -> set[str]:
+    """Every event type the persona declares it consumes."""
+    raw = definition.get("consumes")
+    if not isinstance(raw, dict):
+        return set()
+    return _string_set(raw.get("event_types"))
+
+
+_produced_events = produced_event_types
+
+
 class _StrictSafeLoader(yaml.SafeLoader):
     """Safe YAML loader that rejects duplicate mapping keys."""
+
+
+def _load_strict_yaml(text: str) -> Any:
+    """Load one YAML document with the safe, duplicate-rejecting loader.
+
+    Builds only plain YAML types (``SafeLoader`` constructors); never arbitrary
+    Python objects.
+    """
+    loader = _StrictSafeLoader(text)
+    try:
+        return loader.get_single_data()
+    finally:
+        loader.dispose()
 
 
 def _construct_unique_mapping(
@@ -596,11 +657,31 @@ def _validate_llm(value: Any) -> None:
     _validate_non_negative_int(llm, "max_tokens")
 
 
+def _validate_verdict_guidance(when: Any, event_type_map: Mapping[str, Any]) -> None:
+    """``produces.when``: for each verdict the persona maps, when to report it, in words."""
+    if when is None:
+        return
+    if not isinstance(when, dict):
+        raise PersonaDocumentError(
+            "Portable persona definition.produces.when must map each verdict to when to report it"
+        )
+    for verdict, text in when.items():
+        if not isinstance(verdict, str) or (event_type_map and verdict not in event_type_map):
+            raise PersonaDocumentError(
+                f"Portable persona definition.produces.when names verdict {verdict!r}, which "
+                f"produces.event_type_map does not map; the verdicts are {sorted(event_type_map)}"
+            )
+        if not isinstance(text, str) or not text.strip():
+            raise PersonaDocumentError(
+                f"Portable persona definition.produces.when.{verdict} must say when to report it"
+            )
+
+
 def _validate_event_contract(value: Any, *, produces: bool) -> None:
     field = "produces" if produces else "consumes"
     allowed = {"schema"}
     if produces:
-        allowed.update({"event_type", "event_type_map"})
+        allowed.update({"event_type", "event_type_map", "when"})
     else:
         allowed.update({"event_types", "injects"})
     contract = _validate_mapping(value, field=field, allowed=allowed)
@@ -618,6 +699,7 @@ def _validate_event_contract(value: Any, *, produces: bool) -> None:
                     "Portable persona definition.produces.event_type_map must map "
                     "strings to strings"
                 )
+        _validate_verdict_guidance(contract.get("when"), event_type_map or {})
     else:
         _validate_string_list(contract, "event_types")
         _validate_string_list(contract, "injects")

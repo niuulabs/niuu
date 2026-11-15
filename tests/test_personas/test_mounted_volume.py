@@ -18,21 +18,18 @@ _PERSONA_A_YAML = """\
 name: agent-a
 system_prompt_template: |
   You are agent A.
-allowed_tools: [file_read, git]
 permission_mode: workspace-write
 """
 
 _PERSONA_B_YAML = """\
 name: agent-b
 system_prompt_template: You are agent B.
-allowed_tools: [web_fetch]
 """
 
 _PERSONA_A_OVERRIDE_YAML = """\
 name: agent-a
 system_prompt_template: |
   You are the overridden agent A.
-allowed_tools: [web_search]
 permission_mode: read-only
 """
 
@@ -50,7 +47,6 @@ _NOT_A_DICT_YAML = """\
 
 _NO_NAME_YAML = """\
 system_prompt_template: persona without a name field
-allowed_tools: [file_read]
 """
 
 
@@ -90,7 +86,6 @@ class TestHappyPath:
         assert persona is not None
         assert persona.name == "agent-a"
         assert "agent A" in persona.system_prompt_template
-        assert persona.allowed_tools == ["file_read", "git"]
 
     def test_load_returns_none_for_missing_name(self, tmp_path: Path) -> None:
         adapter = MountedVolumePersonaAdapter(mount_path=str(tmp_path))
@@ -167,7 +162,6 @@ class TestOverlayOrdering:
         persona = adapter.load("agent-a")
         assert persona is not None
         assert "overridden" in persona.system_prompt_template
-        assert persona.allowed_tools == ["web_search"]
         assert persona.permission_mode == "read-only"
 
     def test_overlay_does_not_affect_non_overlapping_names(self, tmp_path: Path) -> None:

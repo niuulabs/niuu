@@ -42,20 +42,18 @@ test('native text/tool anchors survive live completion, snapshot repair and lega
           ? session
           : path.endsWith('/sessions')
             ? [session]
-            : path.includes('/workflow/gates')
-              ? { gates: [] }
-              : path.includes('/diff')
-                ? { files: [] }
-                : path.includes('/stats')
-                  ? {}
-                  : [];
+            : path.includes('/diff')
+              ? { files: [] }
+              : path.includes('/stats')
+                ? {}
+                : [];
     return route.fulfill({ json });
   });
   let socket: WebSocketRoute | undefined;
   await page.routeWebSocket('ws://forge-interleaving.invalid/**', (ws) => {
     if (new URL(ws.url()).pathname.endsWith('/session')) socket = ws;
   });
-  await page.goto(`/volundr/session/${session.id}`);
+  await page.goto(`/volundr/sessions/${session.id}`);
   await page.locator('#tab-chat').click();
   await expect(page.getByRole('button', { name: 'Hide tool calls and results' })).toBeVisible();
   await expect.poll(() => Boolean(socket)).toBe(true);

@@ -11,6 +11,7 @@ from uuid import UUID, uuid4
 
 import pytest
 
+from tests.support.full_catalogue import load_full_catalogue as load_system_workflows
 from ting.domain.models import (
     RunStatus,
     Saga,
@@ -25,7 +26,6 @@ from ting.domain.ticket_coordinator import (
     ticket_metadata,
 )
 from ting.ports.workflow_campaign_repository import WorkflowCampaignRepository
-from ting.system_workflows import load_system_workflows
 
 NOW = datetime(2026, 10, 30, 12, 0, tzinfo=UTC)
 PLANNING = "Ticket Planning Flow"

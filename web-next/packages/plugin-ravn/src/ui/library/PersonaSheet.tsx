@@ -102,25 +102,6 @@ export function PersonaSheet({ persona }: { persona: PersonaDetail }) {
         )}
       </Section>
 
-      <Section title="Tools">
-        {persona.allowedTools.length === 0 && persona.forbiddenTools.length === 0 ? (
-          <p className="rw-muted">No tools granted.</p>
-        ) : (
-          <div className="rw-tools-list">
-            {persona.allowedTools.map((tool) => (
-              <span key={tool} className="rw-tool">
-                {tool}
-              </span>
-            ))}
-            {persona.forbiddenTools.map((tool) => (
-              <span key={tool} className="rw-tool rw-tool--forbidden" title="Forbidden">
-                {tool}
-              </span>
-            ))}
-          </div>
-        )}
-      </Section>
-
       <Section title="Behaviour">
         <div className="rw-kv">
           <Field label="Permission mode">{persona.permissionMode}</Field>

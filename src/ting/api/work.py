@@ -26,6 +26,7 @@ from ting.api.sagas import resolve_saga_repo
 from ting.api.tracker import resolve_trackers
 from ting.domain.exceptions import WorkflowDocumentError
 from ting.domain.models import Saga, WorkflowCampaign, WorkflowCampaignStatus
+from ting.domain.run_graph import run_graph
 from ting.domain.services.dispatch_service import DispatchService
 from ting.domain.services.review_list import ReviewKind, ReviewState, review_list, review_run
 from ting.domain.services.ticket_coordinator import (
@@ -92,6 +93,27 @@ def _camel(value: str) -> str:
 
 class _ResponseModel(BaseModel):
     model_config = ConfigDict(from_attributes=True, alias_generator=_camel, populate_by_name=True)
+
+
+class RunGraphMemberResponse(_ResponseModel):
+    member: str
+    state: str
+    verdict: str | None = None
+    session_id: str | None = None
+
+
+class RunGraphNodeResponse(_ResponseModel):
+    node_id: str
+    state: str
+    members: list[RunGraphMemberResponse]
+
+
+class RunGraphResponse(_ResponseModel):
+    """A run's workflow graph (the snapshot it was launched with) and where it is at each node."""
+
+    workflow_name: str
+    graph: dict[str, Any]
+    nodes: list[RunGraphNodeResponse]
 
 
 class CoverageErrorResponse(_ResponseModel):
@@ -364,6 +386,12 @@ class ReviewTicketResponse(_ResponseModel):
     issue_id: str
 
 
+class ReviewSessionResponse(_ResponseModel):
+    session_id: str
+    member: str
+    connection_id: str | None = None
+
+
 class ReviewRunResponse(_ResponseModel):
     slug: str
     title: str
@@ -375,6 +403,8 @@ class ReviewRunResponse(_ResponseModel):
     started_by: str | None = None
     #: The ticket the run was started for; its review page names it and talks to its coordinator.
     ticket: ReviewTicketResponse | None = None
+    #: Every session the run worked in: one per member of a step-engine run.
+    sessions: list[ReviewSessionResponse] = []
 
 
 class RunReviewsResponse(_ResponseModel):
@@ -521,7 +551,7 @@ async def _decide_shown_gate(
             campaign,
             str(shown["node_id"]),
             GateDecision(body.decision),
-            by=GateActor(ActorKind.PERSON, principal.user_id),
+            by=GateActor(ActorKind.PERSON, principal.user_id, principal.email),
             note=body.notes.strip(),
         )
     except (GateRefusedError, RunStateError) as exc:
@@ -807,6 +837,64 @@ def create_work_router() -> APIRouter:
             )
         return ReviewWidgetResponse.model_validate(widget)
 
+    @router.get("/runs/{slug}", response_model=WorkDetailResponse)
+    async def get_run(
+        slug: str,
+        request: Request,
+        principal: Principal = Depends(extract_principal),
+        saga_repo: SagaRepository = Depends(resolve_saga_repo),
+        campaign_repo: WorkflowCampaignRepository = Depends(resolve_workflow_campaign_repo),
+    ) -> WorkDetailResponse:
+        """One run by its slug, whatever page of Work it is on, finished or not."""
+        campaign = await _owned_run(campaign_repo, slug, principal)
+        # A run is read from its campaign alone: no tracker is asked.
+        service = WorkReadService(
+            principal=principal,
+            saga_repo=saga_repo,
+            campaign_repo=campaign_repo,
+            trackers=[],
+            execution_repo=None,
+            campaign_lifecycle_available=bool(
+                getattr(request.app.state, "subscriber", None)
+                and request.app.state.subscriber.running
+            ),
+        )
+        try:
+            return _detail_response(await service.get_campaign(campaign.id))
+        except WorkNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @router.get("/runs/{slug}/graph", response_model=RunGraphResponse)
+    async def get_run_graph(
+        slug: str,
+        request: Request,
+        principal: Principal = Depends(extract_principal),
+        campaign_repo: WorkflowCampaignRepository = Depends(resolve_workflow_campaign_repo),
+    ) -> RunGraphResponse:
+        """The run's workflow graph, each node with where the run is at it."""
+        campaign = await _owned_run(campaign_repo, slug, principal)
+        drawn = run_graph(campaign, await _workflow_runs(request).state(campaign.id))
+        return RunGraphResponse(
+            workflow_name=drawn.workflow_name,
+            graph=dict(drawn.graph),
+            nodes=[
+                RunGraphNodeResponse(
+                    node_id=node.node_id,
+                    state=node.state,
+                    members=[
+                        RunGraphMemberResponse(
+                            member=member.member,
+                            state=member.state,
+                            verdict=member.verdict,
+                            session_id=member.session_id,
+                        )
+                        for member in node.members
+                    ],
+                )
+                for node in drawn.nodes
+            ],
+        )
+
     @router.get("/{kind}/{work_id}", response_model=WorkDetailResponse)
     async def get_work(
         kind: Literal["project", "campaign", "execution"],
@@ -982,11 +1070,12 @@ def create_work_router() -> APIRouter:
         principal: Principal = Depends(extract_principal),
         campaign_repo: WorkflowCampaignRepository = Depends(resolve_workflow_campaign_repo),
     ) -> RunReviewsResponse:
-        """What a run has put in front of a person, and the ticket it was started for."""
+        """What a run has put in front of a person, the sessions it worked in, and its ticket."""
         campaign = await _owned_run(campaign_repo, slug, principal)
-        reviews = await _read_reviews([campaign], request)
+        state = await _workflow_runs(request).state(campaign.id)
+        reviews = ledger_reviews(campaign, state)
         return RunReviewsResponse.model_validate(
-            {"run": review_run(campaign), "reviews": reviews, "unreadable_runs": []}
+            {"run": review_run(campaign, state), "reviews": reviews, "unreadable_runs": []}
         )
 
     @router.post("/runs/{slug}/gate-decision", response_model=GateDecisionResponse)

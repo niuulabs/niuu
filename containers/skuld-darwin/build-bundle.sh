@@ -77,7 +77,18 @@ PYTHON="$B/python/bin/python3"
   --format requirements-txt --output-file "$WORK/requirements.txt" >/dev/null
 "$UV" pip install --python "$PYTHON" --target "$B/site" --require-hashes --no-deps \
   --no-build --requirement "$WORK/requirements.txt"
-"$UV" pip install --python "$PYTHON" --target "$B/site" --no-deps --no-build "$WORK"/dist/*.whl
+# The project wheel is built here; hash it too so every install enforces integrity.
+"$PYTHON" - "$WORK/dist" "$WORK/project-requirements.txt" <<'PYTHON_HASH'
+import hashlib
+import pathlib
+import sys
+(wheel,) = pathlib.Path(sys.argv[1]).glob("*.whl")
+pathlib.Path(sys.argv[2]).write_text(
+    f"{wheel.as_uri()} --hash=sha256:{hashlib.sha256(wheel.read_bytes()).hexdigest()}\n"
+)
+PYTHON_HASH
+"$UV" pip install --python "$PYTHON" --target "$B/site" --require-hashes --no-deps \
+  --no-build --requirement "$WORK/project-requirements.txt"
 PYTHONPATH="$B/site" "$PYTHON" -c 'import skuld.broker, volundr.guest_agent'
 
 # Node and the agent CLIs from the image's lockfile; npm verifies every package's integrity

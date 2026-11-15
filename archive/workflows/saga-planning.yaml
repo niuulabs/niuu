@@ -1,0 +1,203 @@
+schema_version: 1
+id: a4c7067a-ac22-5b64-bde1-ec8ad1507e73
+name: Saga Planning
+description: Focused planning workflow that clarifies a brief, drafts a saga breakdown, and pauses for
+  review before publishing the plan.
+version: 1.0.5
+persona_dependencies:
+  saga-brief-framer:
+    id: saga-brief-framer
+    revision: content-0ab23ec496e2f81f
+    digest: sha256:0ab23ec496e2f81f093ae6c9616f80f58c9185f200df691acfa71a77d6e2e603
+    path: personas/saga-brief-framer.yaml
+  saga-plan-publisher:
+    id: saga-plan-publisher
+    revision: content-2fc24585a899e893
+    digest: sha256:2fc24585a899e893023fe9aaf85e18b1d49d9cb9c8a65ddb79f6f83f4a11cae3
+    path: personas/saga-plan-publisher.yaml
+  saga-plan-reviewer:
+    id: saga-plan-reviewer
+    revision: content-60c85b4b19846c96
+    digest: sha256:60c85b4b19846c964213dac0919c79b459c13e88a9eb340d5e93d0e15c22cf87
+    path: personas/saga-plan-reviewer.yaml
+  saga-planner:
+    id: saga-planner
+    revision: content-3df02662e1825a4c
+    digest: sha256:3df02662e1825a4c19820639e88dea900a304406576eec385f5731a23ceeabd5
+    path: personas/saga-planner.yaml
+graph:
+  tags:
+  - planning
+  - saga
+  nodes:
+  - id: plan-request
+    kind: trigger
+    label: Start saga planning
+    source: ting plan
+    dispatchEvent: plan.requested
+    position:
+      x: 96
+      y: 320
+  - id: plan-memory
+    kind: resource
+    label: Planning Memory
+    resourceType: mimir
+    bindingMode: registry
+    registryEntryId: mimir-yggdrasil
+    url: https://mimir.yggdrasil.niuu.world/api/v1
+    authRef: workload:mimir
+    role: shared
+    categories:
+    - planning
+    - saga
+    position:
+      x: 352
+      y: 560
+  - id: plan-clarify
+    kind: stage
+    label: Clarify brief
+    executionMode: sequential
+    joinMode: any
+    stageMembers:
+    - personaId: saga-brief-framer
+      budget: 12
+      model: gpt-5.6-terra
+      consumesEventTypes:
+      - plan.requested
+      - plan.brief.changes_requested
+    position:
+      x: 352
+      y: 320
+  - id: plan-brief-gate
+    kind: gate
+    label: Planning feedback gate
+    condition: Review the framed planning brief before drafting implementation work.
+    mode: human_approval
+    pendingBehavior: help_needed
+    approvalEvent: plan.brief.approved
+    changesRequestedEvent: plan.brief.changes_requested
+    instructions: Approve the framed brief when it captures the intent, or request focused changes before
+      breakdown planning.
+    autoForwardAfter: 30m
+    position:
+      x: 608
+      y: 448
+  - id: plan-breakdown
+    kind: stage
+    label: Draft saga breakdown
+    executionMode: sequential
+    joinMode: any
+    stageMembers:
+    - personaId: saga-planner
+      budget: 18
+      model: gpt-5.6-terra
+      consumesEventTypes:
+      - plan.brief.approved
+      - plan.breakdown.changes_requested
+    position:
+      x: 864
+      y: 320
+  - id: plan-review
+    kind: stage
+    label: Review saga breakdown
+    executionMode: sequential
+    joinMode: any
+    stageMembers:
+    - personaId: saga-plan-reviewer
+      budget: 12
+      model: gpt-5.6-terra
+      consumesEventTypes:
+      - plan.breakdown.drafted
+    position:
+      x: 1120
+      y: 224
+  - id: plan-review-gate
+    kind: gate
+    label: Draft plan review gate
+    condition: Review the draft saga plan before publishing it for approval in Ting.
+    mode: human_approval
+    pendingBehavior: help_needed
+    approvalEvent: plan.approved
+    changesRequestedEvent: plan.breakdown.changes_requested
+    instructions: Approve the draft if it is bounded and actionable, or request focused changes before
+      Ting commit.
+    autoForwardAfter: 30m
+    position:
+      x: 1120
+      y: 448
+  - id: plan-publish
+    kind: stage
+    label: Publish planning draft
+    executionMode: sequential
+    joinMode: any
+    stageMembers:
+    - personaId: saga-plan-publisher
+      budget: 8
+      model: gpt-5.6-terra
+      consumesEventTypes:
+      - plan.approved
+    position:
+      x: 1376
+      y: 320
+  - id: plan-complete
+    kind: end
+    label: Saga planning complete
+    joinMode: all
+    completionEvent: plan.completed
+    position:
+      x: 1632
+      y: 320
+  edges:
+  - id: edge-plan-request-to-clarify
+    source: plan-request
+    target: plan-clarify
+    label: plan.requested -> plan.requested
+  - id: edge-plan-clarify-to-brief-gate
+    source: plan-clarify
+    target: plan-brief-gate
+    label: plan.brief.framed -> plan.brief.framed
+  - id: edge-plan-brief-gate-to-breakdown
+    source: plan-brief-gate
+    target: plan-breakdown
+    label: plan.brief.approved -> plan.brief.approved
+  - id: edge-plan-brief-gate-to-clarify
+    source: plan-brief-gate
+    target: plan-clarify
+    label: plan.brief.changes_requested -> plan.brief.changes_requested
+    rework: true
+  - id: edge-plan-breakdown-to-review
+    source: plan-breakdown
+    target: plan-review
+    label: plan.breakdown.drafted -> plan.breakdown.drafted
+  - id: edge-plan-review-to-breakdown
+    source: plan-review
+    target: plan-breakdown
+    label: plan.breakdown.changes_requested -> plan.breakdown.changes_requested
+    rework: true
+  - id: edge-plan-review-to-review-gate
+    source: plan-review
+    target: plan-review-gate
+    label: plan.breakdown.ready_for_gate -> plan.breakdown.ready_for_gate
+  - id: edge-plan-review-gate-to-breakdown
+    source: plan-review-gate
+    target: plan-breakdown
+    label: plan.breakdown.changes_requested -> plan.breakdown.changes_requested
+    rework: true
+  - id: edge-plan-review-gate-to-publish
+    source: plan-review-gate
+    target: plan-publish
+    label: plan.approved -> plan.approved
+  - id: edge-plan-publish-to-complete
+    source: plan-publish
+    target: plan-complete
+    label: plan.completed -> plan.completed
+  resourceBindings:
+  - id: binding-plan-memory
+    resourceNodeId: plan-memory
+    targetType: workflow
+    targetId: saga-planning
+    access: read_write
+    writePrefixes:
+    - planning/
+    - sagas/
+    readPriority: 1

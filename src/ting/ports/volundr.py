@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Protocol
@@ -24,6 +24,7 @@ from niuu.domain.delivery import (
 from niuu.domain.models import Principal
 from personas.domain.persona_document import PortablePersonaDefinition
 from ting.domain.models import PRStatus
+from ting.domain.run_members import RunMember
 
 
 class HostTagSetsUnreadableError(Exception):
@@ -41,6 +42,9 @@ class ForgeProjectRef:
     id: str
     name: str
     instance_id: str
+    #: The org the project belongs to, as Forge answers it; empty when the caller's Forge
+    #: answer does not name one (fakes and older Forges).
+    tenant_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -118,9 +122,71 @@ class StepSessionRequest:
     tracker_issue_id: str
     run_id: str
     member: str
+    #: The alias the workflow gives the member's pinned persona: the offer carries one contract
+    #: per alias, and the member finds its own by this.
+    persona_alias: str
+    #: Who decides the run's next step: ``engine`` (Ting) or ``session`` (a coordinator agent).
+    orchestration: str
+    #: The stage member's ``eventFilters``: each key must equal the value in the offered
+    #: inputs' payload. Empty takes every offer of the member's topics.
+    event_filters: Mapping[str, str] = field(default_factory=dict)
+    #: Every topic the workflow routes to the member (its stages' ``consumesEventTypes``): the
+    #: member subscribes to them on top of its persona's own.
+    topics: tuple[str, ...] = ()
     repo: str = ""
     branch: str = ""
     base_branch: str = ""
+    #: The stage member's ``systemPromptExtra``: appended after the persona's own
+    #: instructions, in the form each harness takes (Forge's ``system_prompt``).
+    system_prompt: str = ""
+    #: The run's project, the member's role in it, the run as objective and its label,
+    #: so Forge shows the run's sessions together; ``None`` for a run in no project.
+    membership: SessionMembership | None = None
+    #: The run's root (the unit root session) that runs this member in its unit. Forge holds
+    #: the member, not started, until the root starts; it refuses the create (409) once the
+    #: unit has started, for another owner's unit and for another run's. Empty creates a
+    #: session with a runtime of its own.
+    hosted_by: str = ""
+
+
+@dataclass(frozen=True)
+class MemberPlayability:
+    """Whether a run member's persona can be played on the harness its model runs."""
+
+    member: str
+    model: str
+    transport: str
+    reasons: tuple[str, ...]
+
+    @property
+    def playable(self) -> bool:
+        return not self.reasons
+
+
+@dataclass(frozen=True)
+class RunRoomRequest:
+    """The session that is a workflow run's room: a Skuld with no agent of its own.
+
+    It hosts the run's thread: every member session of the run is nested under it
+    (``membership`` of the members names it as their parent) and shares its work into it.
+    With ``hosts_members`` it is also the run's *unit root*: created and held, not started,
+    so the members can be created hosted by it; starting it starts the unit with them all.
+    """
+
+    name: str
+    #: The session record needs a model; the room runs no agent, so it never uses it.
+    model: str
+    tracker_issue_id: str
+    run_id: str
+    #: Who decides the run's next step: ``engine`` (Ting) or ``session`` (a coordinator agent).
+    #: The room is the run's root, and tells its members whose offers to take.
+    orchestration: str
+    #: The run's project and the room's role in it; ``None`` for a run in no project.
+    membership: SessionMembership | None = None
+    repo: str = ""
+    branch: str = ""
+    base_branch: str = ""
+    hosts_members: bool = False
 
 
 @dataclass(frozen=True)
@@ -146,6 +212,13 @@ class VolundrSession:
     # Advanced by recorded work (usage reports, session changes), never by an
     # activity heartbeat, unlike ``last_active``.
     updated_at: datetime | None = None
+    #: The Forge project the session is in, and the session it is nested under there.
+    project_id: str = ""
+    parent_session_id: str = ""
+    #: Why the session failed, as Forge recorded it (a broker that could not start says why).
+    error: str = ""
+    #: The unit root this session runs in as a member, when Forge says so; empty otherwise.
+    hosted_by: str = ""
 
 
 @dataclass(frozen=True)
@@ -252,6 +325,29 @@ class VolundrPort(ABC):
         principal: Principal | None = None,
     ) -> ForgeProjectRef | None:
         """The project as this Forge knows it; None when it does not."""
+        raise NotImplementedError(f"{type(self).__name__} does not hold Forge projects")
+
+    async def list_member_project_ids(
+        self,
+        *,
+        auth_token: str | None = None,
+        principal: Principal | None = None,
+    ) -> list[str]:
+        """Ids of the Forge projects the caller is a member of."""
+        raise NotImplementedError(f"{type(self).__name__} does not hold Forge projects")
+
+    async def get_project_role(
+        self,
+        project_id: str,
+        *,
+        auth_token: str | None = None,
+        principal: Principal | None = None,
+    ) -> str | None:
+        """The caller's role on the project (viewer, contributor, approver or owner).
+
+        ``None`` when this Forge has no such project or the caller is not on it: Forge
+        answers both the same way, so a caller cannot learn that a project exists.
+        """
         raise NotImplementedError(f"{type(self).__name__} does not hold Forge projects")
 
     async def ensure_project(
@@ -390,27 +486,73 @@ class VolundrPort(ABC):
         """Create the harness session that hosts a run's steps for one stage member."""
         raise NotImplementedError(f"{type(self).__name__} cannot create workflow step sessions")
 
-    async def deliver_workflow_step(
+    async def check_playability(
+        self,
+        members: Sequence[RunMember],
+        *,
+        auth_token: str | None = None,
+        principal: Principal | None = None,
+    ) -> list[MemberPlayability]:
+        """For each member, whether this Forge's harness for its model can play its persona."""
+        raise NotImplementedError(f"{type(self).__name__} cannot check persona playability")
+
+    async def create_run_room(
+        self,
+        request: RunRoomRequest,
+        *,
+        auth_token: str | None = None,
+        principal: Principal | None = None,
+    ) -> VolundrSession:
+        """Create the session that is a workflow run's room (no agent of its own)."""
+        raise NotImplementedError(f"{type(self).__name__} cannot create workflow run rooms")
+
+    async def post_room_notice(
         self,
         session_id: str,
-        activation: dict,
+        content: str,
+        *,
+        notice_id: str,
+        auth_token: str | None = None,
+        principal: Principal | None = None,
+    ) -> None:
+        """Post a notice in the room a session hosts, as its Coordinator; sent to no one.
+
+        ``notice_id`` keys it, so a notice posted again is shown once.
+        """
+        raise NotImplementedError(f"{type(self).__name__} cannot post room notices")
+
+    async def post_room_offer(
+        self,
+        session_id: str,
+        offer: dict,
         *,
         auth_token: str | None = None,
         principal: Principal | None = None,
     ) -> None:
-        """Hand a step activation to the session. Re-delivering one is idempotent."""
-        raise NotImplementedError(f"{type(self).__name__} cannot deliver workflow steps")
+        """Hand a signed ``step.offered`` event to the room a session hosts, to publish.
 
-    async def get_workflow_step(
+        The session is a run's root; its Skuld publishes ``offer`` verbatim on the run's
+        mesh. One call per offer. Posting the same offer again is the same event (its id
+        derives from the offer id), so a retry is safe.
+        """
+        raise NotImplementedError(f"{type(self).__name__} cannot post room offers")
+
+    async def submit_session_notification(
         self,
         session_id: str,
-        activation_id: str,
+        draft: dict,
         *,
-        auth_token: str | None = None,
-        principal: Principal | None = None,
-    ) -> dict | None:
-        """The session's durable state of one step (``active`` or ``closed``), if it has it."""
-        raise NotImplementedError(f"{type(self).__name__} cannot read workflow steps")
+        idempotency_key: str,
+    ) -> dict:
+        """Record a notification in Forge's feed for the session's owner; the stored row.
+
+        The same ``idempotency_key`` returns the notification already recorded.
+        """
+        raise NotImplementedError(f"{type(self).__name__} cannot submit notifications")
+
+    async def resolve_notification(self, notification_id: str, *, resolution: str) -> dict:
+        """Mark a notification resolved (idempotent; the first resolution is kept)."""
+        raise NotImplementedError(f"{type(self).__name__} cannot resolve notifications")
 
     @abstractmethod
     async def get_session(

@@ -21,6 +21,7 @@ from uuid import uuid4
 import pytest
 
 from personas.adapters.loader import FilesystemPersonaAdapter
+from tests.support.full_catalogue import load_full_catalogue as load_system_workflows
 from tests.test_ting.test_workflow_execution_service import (
     AcceptingEvidenceVerifier,
     InMemoryWorkflowRepository,
@@ -45,7 +46,6 @@ from ting.domain.workflow_execution import (
     validate_expansion,
 )
 from ting.domain.workflow_snapshot import build_workflow_snapshot
-from ting.system_workflows import load_system_workflows
 
 CAMPAIGN_SLUG = "test-campaign-fanout"
 

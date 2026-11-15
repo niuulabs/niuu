@@ -23,6 +23,7 @@ DISCOVERY_ALIASES: dict[str, str] = {
     "sleipnir": "niuu.adapters.discovery.sleipnir.SleipnirDiscoveryAdapter",
     "k8s": "niuu.adapters.discovery.k8s.K8sDiscoveryAdapter",
     "static": "niuu.adapters.discovery.static.StaticDiscoveryAdapter",
+    "registry": "niuu.adapters.discovery.registry.RegistryDiscoveryAdapter",
     "event_bus": "niuu.adapters.discovery.event_bus.EventBusDiscoveryAdapter",
 }
 
@@ -38,6 +39,7 @@ def build_discovery_adapters(
     heartbeat_interval_s: float = 5.0,
     peer_ttl_s: float = 30.0,
     sleipnir_transport_builder: Any | None = None,
+    attestor: Any | None = None,
 ) -> Any | None:
     """Build discovery adapters from a list-based config using dynamic import.
 
@@ -61,6 +63,11 @@ def build_discovery_adapters(
     sleipnir_transport_builder:
         Optional callable(adapter_entry) -> transport (publisher and
         subscriber) for adapters that declare ``requires_sleipnir_transport``.
+    attestor:
+        Optional ``niuu.adapters.mesh.attested.MeshAttestor``. Adapters that carry
+        announcements over a shared bus (``signs_announcements``) sign their own and accept
+        only announcements that verify; the ones that do not ride the bus (static, k8s,
+        mdns) are unaffected.
 
     Returns
     -------
@@ -114,6 +121,8 @@ def build_discovery_adapters(
         kwargs["own_identity"] = own_identity
         kwargs.setdefault("heartbeat_interval_s", heartbeat_interval_s)
         kwargs.setdefault("peer_ttl_s", peer_ttl_s)
+        if attestor is not None and getattr(cls, "signs_announcements", False):
+            kwargs["attestor"] = attestor
         if getattr(cls, "requires_sleipnir_transport", False):
             if sleipnir_transport_builder is None:
                 raise DiscoveryBuildError(

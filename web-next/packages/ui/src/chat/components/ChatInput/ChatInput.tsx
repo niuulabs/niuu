@@ -14,6 +14,7 @@ import { useFileAttachments, type FileAttachment } from '../../hooks/useFileAtta
 import { useSlashMenu } from '../../hooks/useSlashMenu';
 import { useDictation } from '../../hooks/useDictation';
 import { mentionId, useMentionMenu } from '../../hooks/useMentionMenu';
+import { isRoomAgent } from '../../workers';
 import { SlashCommandMenu } from '../SlashCommandMenu';
 import { MentionMenu } from '../MentionMenu';
 import { MentionPill } from '../MentionPill';
@@ -67,13 +68,22 @@ const ACCEPTED_FILE_TYPES = [
   '.sql',
 ].join(',');
 
+/** Whether ``text`` already @-names any of ``labels`` as a word of its own. */
+function namesInText(text: string, labels: ReadonlyArray<string | undefined>): boolean {
+  const words = new Set(
+    Array.from(text.matchAll(/(^|\s)@([^\s@]+)/g), (match) => match[2]?.toLowerCase()),
+  );
+  return labels.some((label) => Boolean(label) && words.has(label!.toLowerCase()));
+}
+
 function resolveInlineAgentMentions(
   input: string,
   participants: ReadonlyMap<string, RoomParticipant>,
+  hostPeerId?: string,
 ): RoomParticipant[] {
   const byPersona = new Map<string, RoomParticipant | null>();
   for (const participant of participants.values()) {
-    if (participant.participantType !== 'ravn' || participant.status === 'left') continue;
+    if (!isRoomAgent(participant, hostPeerId) || participant.status === 'left') continue;
     for (const label of [participant.persona, participant.displayName, participant.peerId]) {
       if (!label) continue;
       const key = label.toLowerCase();
@@ -117,6 +127,8 @@ interface ChatInputProps {
   chatEndpoint?: string | null;
   availableCommands?: readonly SlashCommand[];
   participants?: ReadonlyMap<string, RoomParticipant>;
+  /** The mesh peer of the session whose room this is: it hosts the room and is not @-named. */
+  hostPeerId?: string;
   onFetchFiles?: (path: string, apiBase: string) => Promise<FileEntry[]>;
   /** What the session's transport supports; `steer` changes the send hint while working. */
   capabilities?: SessionCapabilities;
@@ -147,6 +159,7 @@ export function ChatInput({
   chatEndpoint = null,
   availableCommands,
   participants = EMPTY_PARTICIPANTS,
+  hostPeerId,
   onFetchFiles,
   capabilities,
   effort = null,
@@ -174,6 +187,7 @@ export function ChatInput({
     participants,
     onFetchFiles,
     eventRouting,
+    hostPeerId,
   );
   const {
     attachments: fileAttachmentsList,
@@ -249,7 +263,7 @@ export function ChatInput({
     const selectedAgentMentions = mentionMenu.mentions
       .filter((m): m is Extract<SelectedMention, { kind: 'agent' }> => m.kind === 'agent')
       .map((m) => m.participant);
-    const inlineAgentMentions = resolveInlineAgentMentions(trimmed, participants);
+    const inlineAgentMentions = resolveInlineAgentMentions(trimmed, participants, hostPeerId);
     const agentMentions = Array.from(
       new Map(
         [...selectedAgentMentions, ...inlineAgentMentions].map((participant) => [
@@ -263,8 +277,13 @@ export function ChatInput({
       (m): m is Extract<SelectedMention, { kind: 'file' }> => m.kind === 'file',
     );
 
-    const agentPrefixes = selectedAgentMentions.map((p) => `@${p.persona}`);
-    const filePaths = fileMentions.map((m) => `@${m.entry.path}`);
+    // Picking a mention already writes it into the text; only one that is not there is added.
+    const agentPrefixes = selectedAgentMentions
+      .filter((p) => !namesInText(trimmed, [p.persona, p.displayName]))
+      .map((p) => `@${p.persona}`);
+    const filePaths = fileMentions
+      .filter((m) => !namesInText(trimmed, [m.entry.path, m.entry.name]))
+      .map((m) => `@${m.entry.path}`);
     const allPrefixes = [...agentPrefixes, ...filePaths];
     const fullMessage = allPrefixes.length > 0 ? `${allPrefixes.join(' ')} ${trimmed}` : trimmed;
 
@@ -293,6 +312,7 @@ export function ChatInput({
     clearFileAttachments,
     slashMenu,
     participants,
+    hostPeerId,
   ]);
 
   const handleKeyDown = useCallback(

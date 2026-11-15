@@ -420,6 +420,62 @@ class TestReconcileActiveSessions:
         assert status_calls == []
         spawn.cancel()
 
+    @pytest.mark.parametrize("held_by", ["unit_start", "root_spawn"])
+    async def test_a_starting_member_of_a_unit_being_started_is_not_reaped(
+        self, service, repo, pod_manager, held_by
+    ):
+        # The root's start spawns its members; a member marked STARTING before that
+        # spawn has no runtime yet, which must not read as a dead one.
+        root_id = uuid4()
+        member = _session(SessionStatus.STARTING, datetime.now(UTC)).model_copy(
+            update={"hosted_by": root_id}
+        )
+        await repo.create(member)
+        status_calls: list[object] = []
+
+        async def absent(observed):
+            status_calls.append(observed)
+            return SessionStatus.STOPPED
+
+        pod_manager.status = absent  # type: ignore[method-assign]
+
+        async def look_up() -> Session:
+            assert await service.reconcile_active_sessions() == 0
+            return await service.reconcile_session_if_active(member.id)
+
+        if held_by == "unit_start":
+            async with service.unit_starting(root_id):
+                looked_up = await look_up()
+        else:
+            spawn = asyncio.get_running_loop().create_future()
+            service._provisioning_tasks[root_id] = spawn
+            looked_up = await look_up()
+            spawn.cancel()
+
+        assert looked_up.status == SessionStatus.STARTING
+        assert (await repo.get(member.id)).status == SessionStatus.STARTING
+        assert status_calls == []
+
+    async def test_a_starting_member_is_reconciled_once_its_unit_start_is_over(
+        self, service, repo, pod_manager
+    ):
+        root_id = uuid4()
+        member = _session(SessionStatus.STARTING, datetime.now(UTC)).model_copy(
+            update={"hosted_by": root_id}
+        )
+        await repo.create(member)
+
+        async def absent(_session):
+            return SessionStatus.STOPPED
+
+        pod_manager.status = absent  # type: ignore[method-assign]
+        async with service.unit_starting(root_id):
+            pass
+
+        result = await service.reconcile_session_if_active(member.id)
+
+        assert result.status == SessionStatus.STOPPED
+
     async def test_starting_row_without_spawn_task_is_reconciled(self, service, repo, pod_manager):
         # A process restart mid-spawn leaves a STARTING row nobody is creating.
         session = _session(SessionStatus.STARTING, datetime.now(UTC))

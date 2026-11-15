@@ -766,6 +766,11 @@ async def test_openshell_managed_http_mcp_uses_dynamic_provider(session):
     # No tls: OpenShell v0.1.6 rejects "terminate" and auto-terminates when omitted.
     assert "tls" not in mapping["provider"]["endpoints"][0]
     assert mapping["provider"]["authStyle"] == "bearer"
+    # OpenShell matches the binary a process runs: the harnesses' native executables.
+    binaries = mapping["provider"]["binaries"]
+    assert "/opt/skuld-tools/node_modules/@anthropic-ai/**" in binaries
+    assert "/opt/skuld-tools/node_modules/@openai/**" in binaries
+    assert len(binaries) == len(set(binaries))
     assert "private-access" not in repr(result)
 
 

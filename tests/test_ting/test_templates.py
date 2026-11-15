@@ -178,7 +178,7 @@ class TestPersonaOverridesField:
 
 
 # ---------------------------------------------------------------------------
-# Security boundary: allowed_tools / forbidden_tools are rejected at parse time
+# Tool restrictions: allowed_tools / forbidden_tools are rejected at parse time
 # ---------------------------------------------------------------------------
 
 
@@ -279,7 +279,7 @@ class TestPersonaOverridesSecurityBoundary:
         with pytest.raises(ValueError, match="my-stage"):
             _load(yaml_str)
 
-    def test_error_message_mentions_security_boundary(self):
+    def test_error_message_says_tool_restrictions_are_not_available(self):
         yaml_str = textwrap.dedent(
             """
             name: "P"
@@ -295,7 +295,7 @@ class TestPersonaOverridesSecurityBoundary:
                       forbidden_tools: ["Edit"]
             """
         )
-        with pytest.raises(ValueError, match="security boundary"):
+        with pytest.raises(ValueError, match="not available yet"):
             _load(yaml_str)
 
     def test_safe_overrides_do_not_raise(self):

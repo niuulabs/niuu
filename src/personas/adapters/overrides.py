@@ -9,8 +9,8 @@ Concatenation order for system_prompt_extra (lowest → highest priority):
   1. Persona's built-in system_prompt_template
   2. persona_overrides.system_prompt_extra (injected by Volundr)
 
-Security keys (``allowed_tools``, ``forbidden_tools``) are dropped
-with a WARN log — they are not overridable at the workload_config layer.
+``allowed_tools`` and ``forbidden_tools`` are refused: per-harness tool
+restrictions are not available yet.
 """
 
 from __future__ import annotations
@@ -18,7 +18,7 @@ from __future__ import annotations
 import dataclasses
 import logging
 
-from niuu.domain.llm_merge import _SECURITY_KEYS, concat_prompt_extras
+from niuu.domain.llm_merge import REMOVED_TOOL_RESTRICTION_KEYS, concat_prompt_extras
 from personas.domain.persona import PersonaConfig, PersonaConsumes
 
 logger = logging.getLogger(__name__)
@@ -40,15 +40,13 @@ def apply_config_overrides(persona: PersonaConfig, overrides: dict) -> PersonaCo
     if not overrides:
         return persona
 
-    # Security keys are not overridable at the workload_config layer.
-    for key in _SECURITY_KEYS:
-        if key in overrides:
-            logger.warning(
-                "persona_overrides: dropping security key %r — "
-                "allowed_tools/forbidden_tools are not overridable at the "
-                "workload_config layer",
-                key,
-            )
+    refused = [key for key in REMOVED_TOOL_RESTRICTION_KEYS if key in overrides]
+    if refused:
+        raise ValueError(
+            f"persona_overrides for persona {persona.name!r} set {', '.join(refused)}: "
+            "per-harness tool restrictions are not available yet; remove allowed_tools "
+            "(and forbidden_tools) from the persona_overrides block."
+        )
 
     # Concatenate system_prompt_extra onto the persona's base template.
     extra = overrides.get("system_prompt_extra") or ""

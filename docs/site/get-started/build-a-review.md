@@ -161,8 +161,8 @@ review_widgets:
 A package can ship only widgets, or widgets alongside its other components.
 
 Install the package the same way as any other external package. In single-host
-mode, add it to `docker.external_integrations`. On Kubernetes, mount it with the Ting
-chart's `extraVolumes` and `extraVolumeMounts`, then list its manifest:
+mode, add it to `docker.external_integrations`. On Kubernetes, mount it with the workflow engine
+chart's (`ting`) `extraVolumes` and `extraVolumeMounts`, then list its manifest:
 
 ```yaml
 reviewWidgets:
@@ -184,7 +184,7 @@ The widget reads that with `niuu.review.source()`: outcome text, a file's bytes,
 or the URL.
 
 A widget runs in the same sandbox as a page, with the same bridge, so installing
-one grants it nothing extra. Ting reads every declared widget at startup and
+one grants it nothing extra. The workflow engine reads every declared widget at startup and
 stops if one cannot be read. A board that needs a widget this deployment has not
 installed is refused when it is set up. If the module is removed later, the
 review says which widget is missing.

@@ -3,11 +3,26 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from pathlib import Path
 
 import pytest
 import typer
 
 from cli.registry import PluginRegistry, Service, ServicePlugin
+
+
+@pytest.fixture(autouse=True)
+def _carried_gbrain(tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch):
+    """Mini mode runs memory by default and needs the gbrain this niuu carries; a test
+    checkout has none built, so point the lookup at a stand-in executable."""
+    executable = tmp_path_factory.mktemp("gbrain") / "gbrain"
+    executable.write_text("#!/bin/sh\nexit 0\n")
+    executable.chmod(0o755)
+    monkeypatch.setattr("cli.services.local_memory.BUNDLED_GBRAIN_EXECUTABLE", executable)
+    monkeypatch.setattr(
+        "cli.services.local_memory.DEV_GBRAIN_EXECUTABLE", Path("/nonexistent/gbrain")
+    )
+    return executable
 
 
 class StubService(Service):

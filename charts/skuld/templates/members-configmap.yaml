@@ -1,0 +1,35 @@
+{{- if .Values.members }}
+{{- /* Every container of the pod listens on its own port. */}}
+{{- $taken := dict }}
+{{- range (list 8080 (.Values.brokerPort | default 8081) .Values.envoy.port .Values.envoy.adminPort .Values.envoy.authorization.port .Values.localServices.terminal.port) }}
+{{- $_ := set $taken (toString (int .)) "the pod's own" }}
+{{- end }}
+{{- range $i, $m := .Values.members }}
+{{- if not $m.port }}
+{{- fail (printf "member %d (%s) has no broker port" $i (toString $m.id)) }}
+{{- end }}
+{{- if hasKey $taken (toString (int $m.port)) }}
+{{- fail (printf "member %d (%s) uses port %d, which is already taken by %s listener" $i (toString $m.id) (int $m.port) (get $taken (toString (int $m.port)))) }}
+{{- end }}
+{{- $_ := set $taken (toString (int $m.port)) (printf "member %d's" $i) }}
+{{- end }}
+{{- if and .Values.ingress.enabled (not .Values.gateway.enabled) }}
+{{- fail "members are reached through the gateway (gateway.enabled): an Ingress routes one address to one session" }}
+{{- end }}
+{{- /*
+The configuration of each member of the unit (see skuld.memberValues): one file per member,
+named by its session id, mounted into that member's container only.
+*/}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "skuld.fullname" . }}-members
+  labels:
+    {{- include "skuld.labels" . | nindent 4 }}
+data:
+  {{- range $i, $m := .Values.members }}
+  {{- $ctx := dict "Values" (include "skuld.memberValues" (dict "root" $ "index" $i) | fromJson) "Release" $.Release "Chart" $.Chart "Files" $.Files "Template" $.Template "Capabilities" $.Capabilities }}
+  {{ $m.id }}.yaml: |
+{{ include "skuld.configYaml" $ctx }}
+  {{- end }}
+{{- end }}

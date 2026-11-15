@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   advanceDelivery,
   deliveryFromSteeringState,
+  parseMessageAuthor,
   parseAgentUpdate,
   parseDeliveryFrame,
   parseEffortFrame,
@@ -258,4 +259,28 @@ describe('delivery', () => {
       state: 'delivered',
     });
   });
+});
+
+describe('parseMessageAuthor', () => {
+  it('reads the broker author shape', () => {
+    expect(parseMessageAuthor({ user_id: ' u-1 ', display_name: ' Ada ' })).toEqual({
+      userId: 'u-1',
+      displayName: 'Ada',
+    });
+  });
+
+  it('keeps an author whose name the proxy did not know, with an empty name', () => {
+    expect(parseMessageAuthor({ user_id: 'u-1' })).toEqual({ userId: 'u-1', displayName: '' });
+    expect(parseMessageAuthor({ user_id: 'u-1', display_name: 7 })).toEqual({
+      userId: 'u-1',
+      displayName: '',
+    });
+  });
+
+  it.each([undefined, null, 'u-1', 3, [], {}, { user_id: '' }, { user_id: '  ' }, { user_id: 4 }])(
+    'treats %j as no author',
+    (raw) => {
+      expect(parseMessageAuthor(raw)).toBeUndefined();
+    },
+  );
 });

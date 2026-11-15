@@ -7,7 +7,6 @@ export interface WorkflowRegistryMount {
   lifecycle: 'registered' | 'ephemeral';
   role: 'local' | 'shared' | 'domain';
   url: string;
-  path: string;
   categories: string[] | null;
   adapter?: string;
   kwargs?: Record<string, unknown>;
@@ -30,7 +29,6 @@ export const EPHEMERAL_LOCAL_MOUNT: WorkflowRegistryMount = {
   lifecycle: 'ephemeral',
   role: 'local',
   url: '',
-  path: '',
   categories: ['scratch', 'workspace'],
   authRef: null,
   defaultReadPriority: 10,
@@ -65,7 +63,6 @@ export function parseWorkflowRegistryMount(raw: string): WorkflowRegistryMount |
           ? parsed.role
           : 'shared',
       url: typeof parsed.url === 'string' ? parsed.url : '',
-      path: typeof parsed.path === 'string' ? parsed.path : '',
       categories: Array.isArray(parsed.categories) ? parsed.categories.filter(Boolean) : [],
       authRef: typeof parsed.authRef === 'string' ? parsed.authRef : null,
       defaultReadPriority:

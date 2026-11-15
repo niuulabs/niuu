@@ -36,3 +36,5 @@ data:
     {{- end }}
     service_user_id: {{ .Values.volundr.serviceUserId | default "skuld-broker" | quote }}
     service_tenant_id: {{ .Values.volundr.serviceTenantId | default "default" | quote }}
+
+    {{- include "skuld.meshConfig" . | nindent 4 }}

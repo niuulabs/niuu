@@ -17,6 +17,8 @@ const bifrostMocks = vi.hoisted(() => ({
 }));
 
 const tingMocks = vi.hoisted(() => ({
+  RunWorkflowGraph: () => null,
+  buildRunGateService: vi.fn(() => ({ kind: 'run-gates' })),
   createMockTingService: vi.fn(() => ({ kind: 'mock-ting' })),
   createMockDispatcherService: vi.fn(() => ({ kind: 'mock-dispatcher' })),
   createMockTingSessionService: vi.fn(() => ({ kind: 'mock-sessions' })),
@@ -43,6 +45,9 @@ const tingMocks = vi.hoisted(() => ({
   buildDispatchBusHttpAdapter: vi.fn((client) => ({ kind: 'dispatch', client })),
   buildTingSettingsHttpAdapter: vi.fn((client) => ({ kind: 'settings', client })),
   buildTingAuditLogHttpAdapter: vi.fn((client) => ({ kind: 'audit', client })),
+  buildMemoryImportsHttpAdapter: vi.fn((client) => ({ kind: 'memory-imports', client })),
+  createMockMemoryImportsService: vi.fn(() => ({ kind: 'mock-memory-imports' })),
+  MEMORY_IMPORTS_SERVICE_KEY: 'ting.memoryImports',
 }));
 
 const ravnMocks = vi.hoisted(() => ({
@@ -76,6 +81,8 @@ const realmsMocks = vi.hoisted(() => ({
 }));
 
 const volundrMocks = vi.hoisted(() => ({
+  RUN_WORKFLOW_VIEW_SERVICE: 'volundr.runWorkflowView',
+  RUN_GATE_SERVICE: 'volundr.runGates',
   createMockVolundrService: vi.fn(() => ({ kind: 'mock-volundr' })),
   createMockClusterAdapter: vi.fn(() => ({ kind: 'mock-clusters' })),
   createMockSessionStore: vi.fn(() => ({ kind: 'mock-session-store' })),
@@ -118,6 +125,9 @@ vi.mock('@niuulabs/plugin-ravn', () => ravnMocks);
 vi.mock('@niuulabs/plugin-mimir', () => ({
   createMimirMockAdapter: vi.fn(() => ({})),
   buildMimirHttpAdapter: vi.fn(() => ({})),
+  buildMemoryGatewayHttpAdapter: vi.fn((client) => ({ kind: 'memory-gateway', client })),
+  createMemoryGatewayMockAdapter: vi.fn(() => ({ kind: 'mock-memory-gateway' })),
+  MEMORY_GATEWAY_SERVICE_KEY: 'mimir.memory',
 }));
 vi.mock('@niuulabs/plugin-setup', () => ({
   createMockSetupService: vi.fn(() => ({})),
@@ -564,6 +574,35 @@ describe('buildServices live base selection', () => {
     const live = buildServices({ demoMode: false, services: {} } as any);
     expect(tingMocks.createMockWorkService).not.toHaveBeenCalled();
     expect(isUnavailableService(live['ting.work'])).toBe(true);
+  });
+
+  it('wires the memory gateway and memory imports to Mímir and Ting, mocks only in demo', () => {
+    const live = buildServices({
+      demoMode: false,
+      services: {
+        mimir: { mode: 'http', baseUrl: '/api/v1/mimir' },
+        ting: { mode: 'http', baseUrl: '/api/v1/ting' },
+      },
+    } as any);
+    expect(live['mimir.memory']).toMatchObject({ kind: 'memory-gateway' });
+    expect(live['ting.memoryImports']).toMatchObject({ kind: 'memory-imports' });
+    const demo = buildServices({ demoMode: true, services: {} } as any);
+    expect(demo['mimir.memory']).toEqual({ kind: 'mock-memory-gateway' });
+    expect(demo['ting.memoryImports']).toEqual({ kind: 'mock-memory-imports' });
+    const off = buildServices({ demoMode: false, services: {} } as any);
+    expect(isUnavailableService(off['mimir.memory'])).toBe(true);
+    expect(isUnavailableService(off['ting.memoryImports'])).toBe(true);
+  });
+
+  it("wires Ting's run workflow view into Forge only where Ting can read the run", () => {
+    const demo = buildServices({ demoMode: true, services: {} } as any);
+    expect(demo['volundr.runWorkflowView']).toBe(tingMocks.RunWorkflowGraph);
+    expect(demo['volundr.runGates']).toEqual({ kind: 'run-gates' });
+    expect(tingMocks.buildRunGateService).toHaveBeenCalledWith(demo['ting.work']);
+
+    const live = buildServices({ demoMode: false, services: {} } as any);
+    expect(live['volundr.runWorkflowView']).toBeUndefined();
+    expect(live['volundr.runGates']).toBeUndefined();
   });
 
   it('reports work as a demo adapter in demo mode', () => {
@@ -1178,6 +1217,116 @@ describe('buildServices', () => {
       shortDescription: 'Tests next',
       workedSeconds24h: 120,
     });
+  });
+
+  it("carries a shared session's room and owner into the list without inventing a workspace", async () => {
+    const services = buildServices({
+      demoMode: true,
+      theme: 'ice',
+      plugins: {},
+      services: {
+        forge: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/forge' },
+        ting: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/ting' },
+      },
+    } as any);
+    const forgeVolundr = volundrMocks.buildVolundrHttpAdapter.mock.results[0]?.value;
+    const room = { role: 'viewer', participantStatus: 'active', expiresAt: null };
+    forgeVolundr.getSession.mockResolvedValue({
+      id: 'shared-1',
+      name: 'alice-feature',
+      status: 'running',
+      model: 'm',
+      source: null,
+      room,
+      ownerId: 'alice',
+      ownerName: 'Alice Smith',
+      coordination: { projectId: 'p1', role: 'worker' },
+      lastActive: 0,
+    });
+
+    const session = await (services.sessionStore as any).getSession('shared-1');
+
+    expect(session).toMatchObject({
+      id: 'shared-1',
+      room,
+      ownerId: 'alice',
+      ownerName: 'Alice Smith',
+      coordination: { projectId: 'p1', role: 'worker' },
+    });
+    expect(session.source).toBeUndefined();
+    expect(session.templateId).toBeUndefined();
+    expect(session.preview).toBeUndefined();
+  });
+
+  it("carries a team's root, its members and the people in the room into the list", async () => {
+    const services = buildServices({
+      demoMode: true,
+      theme: 'ice',
+      plugins: {},
+      services: {
+        forge: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/forge' },
+        ting: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/ting' },
+      },
+    } as any);
+    const forgeVolundr = volundrMocks.buildVolundrHttpAdapter.mock.results[0]?.value;
+    forgeVolundr.getSession.mockImplementation(async (id: string) =>
+      id === 'team'
+        ? {
+            id,
+            name: 'team',
+            status: 'running',
+            model: 'm',
+            team: { taskTo: 'lead' },
+            peopleCount: 2,
+            lastActive: 0,
+          }
+        : {
+            id,
+            name: 'member',
+            status: 'running',
+            model: 'm',
+            hostedBy: 'team',
+            teamMember: { lead: true },
+            lastActive: 0,
+          },
+    );
+
+    const store = services.sessionStore as any;
+    await expect(store.getSession('team')).resolves.toMatchObject({
+      team: { taskTo: 'lead' },
+      peopleCount: 2,
+    });
+    await expect(store.getSession('member')).resolves.toMatchObject({
+      hostedBy: 'team',
+      teamMember: { lead: true },
+    });
+    const plain = await store.getSession('team');
+    expect(plain).not.toHaveProperty('hostedBy');
+  });
+
+  it('starts teams and reads their members from the Forge host', async () => {
+    const services = buildServices({
+      demoMode: true,
+      theme: 'ice',
+      plugins: {},
+      services: {
+        forge: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/forge' },
+        ting: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/ting' },
+      },
+    } as any);
+    const forgeVolundr = volundrMocks.buildVolundrHttpAdapter.mock.results[0]?.value;
+    forgeVolundr.startTeam = vi.fn().mockResolvedValue({ session: { id: 'team' }, members: [] });
+    forgeVolundr.getSessionMembers = vi.fn().mockResolvedValue({ agents: [], people: [] });
+    const volundr = services.volundr as any;
+
+    const request = { name: 'n', members: [] };
+    await expect(volundr.startTeam(request)).resolves.toEqual({
+      session: { id: 'team' },
+      members: [],
+    });
+    expect(forgeVolundr.startTeam).toHaveBeenCalledWith(request);
+    await volundr.getSessionMembers('team', { instanceId: 'thor' });
+    expect(forgeVolundr.getSessionMembers).toHaveBeenCalledWith('team', { instanceId: 'thor' });
   });
 
   it('prefers an explicit filesystem base over the derived Volundr route', () => {

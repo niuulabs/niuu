@@ -13,7 +13,7 @@ dependencies = [
     "pydantic>=2.13.5",
     "pydantic-settings>=2.15.0",
     "pyyaml>=6.0.3",
-    "claude-agent-sdk==0.2.178",
+    "claude-agent-sdk==0.2.179",
     "mcp==1.30.0",
     "asyncpg>=0.31.0",
     "httpx[http2]>=0.28.1",
@@ -54,7 +54,7 @@ openshell = [
 # DeepSeek Harness runtime for DshJsonRpcTransport (Skuld and OpenShell images).
 # Exact pin: dsh is a developer preview with promised breaking changes.
 dsh = [
-    "deepseek-harness-runtime-bin==0.1.2rc1",
+    "deepseek-harness-runtime-bin==0.2.1rc2",
 ]
 nats = [
     "nats-py[nkeys]>=2.15.0",
@@ -91,8 +91,16 @@ redis = [
 k8s = [
     "kubernetes-asyncio>=36.1.0",
 ]
+# The mesh's `k8s` discovery (niuu.adapters.discovery.k8s), the skuld chart's default for
+# a session mesh on nng in a cluster: it lists the realm's pods. Skuld and OpenShell images
+# install it; without it a session that joins a cluster mesh refuses to start its mesh.
+# 36.x: kubernetes 37 requires pydantic>=2.14.2 and python-dateutil>=3, which would move every
+# package of the platform; bump with those.
+mesh-k8s = [
+    "kubernetes>=36.0.3,<37",
+]
 otel = [
-    "opentelemetry-api>=1.44.0",
+    "opentelemetry-api>=1.45.2",
     "opentelemetry-sdk>=1.44.0",
     "opentelemetry-exporter-otlp-proto-grpc>=1.44.0",
     "opentelemetry-exporter-otlp-proto-http>=1.44.0",
@@ -200,14 +208,10 @@ packages = ["src/audit", "src/cli", "src/credentials", "src/features", "src/guil
 [tool.hatch.metadata]
 allow-direct-references = true
 
-# uv installs the OpenShell SDK from the copy committed under vendor/wheels/,
-# never from the GitHub release URL named in the `openshell` extra above: that
-# host times out from CI runners and failed every `uv sync`. The URL stays in the
-# extra so the built niuu wheel's metadata (what pip reads) is unchanged.
-# tests/test_containers/test_vendored_openshell_wheel.py keeps the two in step; to
-# bump the SDK, replace the wheel, the extra's URL and this path together.
+# Build the pinned SDK from reviewable local source; GitHub release downloads
+# time out from CI runners. Keep pip's published extra URL above unchanged.
 [tool.uv.sources]
-openshell = { path = "vendor/wheels/openshell-0.1.8.dev40+ge9825820d-py3-none-any.whl" }
+openshell = { path = "vendor/openshell" }
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -230,9 +234,10 @@ line-length = 100
 # scripts/generate_envoy_authz_protos.py), not hand-written; force-exclude so
 # pre-commit's explicit-file invocation honours this even though it bypasses
 # ruff's default directory-discovery exclude behavior.
+# vendor/openshell/ is an unchanged upstream SDK snapshot; do not reformat it.
 # tests/fixtures/control_plane/ holds verbatim copies of the control-plane reference
 # (lexi-ios docs); it must stay byte-identical to its source, so it is not reformatted.
-extend-exclude = ["vendor/envoy_authz_protos", "tests/fixtures/control_plane"]
+extend-exclude = ["vendor/envoy_authz_protos", "vendor/openshell", "tests/fixtures/control_plane"]
 force-exclude = true
 
 [tool.ruff.lint]

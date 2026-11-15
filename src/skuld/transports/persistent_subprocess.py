@@ -41,6 +41,7 @@ from niuu.adapters.cli.runtime import (
     stop_subprocess as _stop_process,
 )
 from niuu.ports.cli import CLITransport, TransportCapabilities
+from skuld.claude_auth import ClaudeAuthMode
 from skuld.claude_permission import (
     DEFAULT_CLAUDE_PERMISSION_MODE,
     resolve_claude_permission_mode,
@@ -92,8 +93,6 @@ def _format_answer_message(questions: list[dict[str, Any]], answers: object) -> 
 class PersistentSubprocessTransport(CLITransport):
     """Long-lived Claude subprocess driven via stream-json stdin/stdout."""
 
-    supports_read_only_mcp_boundary = True
-
     def __init__(
         self,
         workspace_dir: str,
@@ -112,8 +111,12 @@ class PersistentSubprocessTransport(CLITransport):
         read_only_mcp_only: bool = False,
         allowed_mcp_tools: list[str] | None = None,
         claude_tool_policy: ClaudeToolPolicy | None = None,
+        claude_auth: ClaudeAuthMode = "subscription",
+        claude_oauth_token_file: str | None = None,
     ) -> None:
         super().__init__()
+        self._claude_auth = claude_auth
+        self._claude_oauth_token_file = claude_oauth_token_file
         self._model_gateway_url = model_gateway_url
         self._model_gateway_token = model_gateway_token
         self.workspace_dir = workspace_dir
@@ -122,9 +125,7 @@ class PersistentSubprocessTransport(CLITransport):
         self._read_only_mcp_only = read_only_mcp_only
         self._allowed_mcp_tools = list(allowed_mcp_tools or [])
         self._tool_policy = claude_tool_policy
-        bounded = read_only_mcp_only or (
-            claude_tool_policy is not None and claude_tool_policy.sets_permission_mode
-        )
+        bounded = read_only_mcp_only or claude_tool_policy is not None
         self._skip_permissions = skip_permissions and not bounded
         self._claude_permission_mode = resolve_claude_permission_mode(claude_permission_mode)
         self._agent_teams = agent_teams and not bounded
@@ -176,6 +177,7 @@ class PersistentSubprocessTransport(CLITransport):
             skills=True,
             # ``claude -p`` emits system/init only after reading its first message.
             announces_ready=False,
+            send_runs_turn=True,
         )
 
     @property
@@ -333,7 +335,7 @@ class PersistentSubprocessTransport(CLITransport):
             )
             if self._allowed_mcp_tools:
                 cmd.extend(["--allowedTools", ",".join(self._allowed_mcp_tools)])
-        elif self._tool_policy is not None and self._tool_policy.sets_permission_mode:
+        elif self._tool_policy is not None:
             cmd.extend(self._tool_policy.cli_args())
         elif self._ask_user_question_enabled:
             # Do NOT pass --permission-mode bypassPermissions in this mode —
@@ -346,9 +348,6 @@ class PersistentSubprocessTransport(CLITransport):
             cmd.extend(["--permission-prompt-tool", "stdio"])
         elif self._skip_permissions:
             cmd.extend(["--permission-mode", self._claude_permission_mode])
-        if self._tool_policy is not None and not self._tool_policy.sets_permission_mode:
-            # A persona that only forbids a few tools leaves the node's mode in place.
-            cmd.extend(self._tool_policy.cli_args())
         # ``--resume`` applies when re-spawning after a crash or when a
         # resume id was seeded for an imported session. Otherwise the first
         # spawn has no session yet — Claude assigns one in its first
@@ -370,8 +369,10 @@ class PersistentSubprocessTransport(CLITransport):
         self._reader_error = None
         self._required_mcp_ready = not self._read_only_mcp_only
         cmd = self._build_command()
-        # Subscription auth by default (SKULD__CLAUDE_AUTH); the gateway when set.
+        # The claude_auth setting (subscription by default); the gateway when set.
         env = claude_spawn_env(
+            claude_auth=self._claude_auth,
+            claude_oauth_token_file=self._claude_oauth_token_file,
             gateway_url=self._model_gateway_url,
             gateway_token=self._model_gateway_token,
         )
@@ -379,7 +380,6 @@ class PersistentSubprocessTransport(CLITransport):
             env["CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS"] = "1"
         _, shim_env = ensure_codex_tool_shims(
             self.workspace_dir,
-            mcp_servers=self._raw_mcp_servers,
             session_env=self._session_tools.env if self._session_tools else None,
         )
         if shim_env:

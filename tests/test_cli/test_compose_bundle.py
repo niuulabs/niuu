@@ -116,6 +116,8 @@ class TestRender:
         assert env["NIUU_STACK_DIR"] == data
         assert env["NIUU_MODE"] == "mini"
         assert env["NIUU_SETUP_MODE"] == "docker"
+        # The platform image carries no gbrain for mini mode's local memory.
+        assert env["NIUU_LOCAL_MEMORY__ENABLED"] == "false"
         assert env["NIUU_DATABASE_MODE"] == "external"
         assert env["DATABASE__HOST"] == "postgres"
         assert env["INTEGRATIONS__DATABASE_NAME"] == "niuu_shared"
@@ -123,8 +125,8 @@ class TestRender:
         assert env["NIUU_POD_MANAGER__ADAPTER"] == sc.DOCKER_POD_MANAGER_ADAPTER
         assert env["NIUU_POD_MANAGER__NETWORK"] == "${COMPOSE_PROJECT_NAME}_default"
         assert env["NIUU_POD_MANAGER__PLATFORM_URL"] == "http://niuu:8080"
-        # the session cap the wizard's runtime step can raise (max_sessions)
-        assert env["NIUU_POD_MANAGER__MAX_CONCURRENT"] == "4"
+        # no session cap unless the operator set one (the wizard's max_sessions)
+        assert "NIUU_POD_MANAGER__MAX_CONCURRENT" not in env
         store = json.loads(env["CREDENTIAL_STORE"])
         assert store["secret_kwargs_env"] == {"encryption_key": "NIUU_CREDENTIAL_KEY"}
         assert store["kwargs"]["base_dir"] == f"{data}/credentials"

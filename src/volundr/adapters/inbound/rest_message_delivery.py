@@ -1,4 +1,9 @@
-"""Owner-authorized durable dispatch claims and delivery-status lookup."""
+"""Owner-authorized durable dispatch claims and delivery-status lookup.
+
+The session's broker claims and settles with its own session credential
+(``forge_session``, scope ``forge:notify``), which the session-route allow-list
+admits for its own session only; the owner and admins may call them too.
+"""
 
 from dataclasses import asdict
 from typing import Annotated, Literal
@@ -7,7 +12,11 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Path, Request
 from pydantic import BaseModel, Field
 
-from niuu.domain.services.token_scope import FORGE_SESSION_READ_SCOPE, require_scope
+from niuu.domain.services.token_scope import (
+    FORGE_NOTIFY_SCOPE,
+    FORGE_SESSION_READ_SCOPE,
+    require_scope,
+)
 from volundr.adapters.inbound.auth import extract_principal
 from volundr.domain.message_delivery import MessageDeliveryConflictError, MessageDeliveryRepository
 from volundr.domain.services.session import SessionAccessDeniedError, SessionService
@@ -44,7 +53,10 @@ def create_message_delivery_router(
         except SessionAccessDeniedError:
             raise HTTPException(403, "Not authorized to access message delivery") from None
 
-    @router.post("/sessions/{session_id}/message-deliveries/{request_id}/claim")
+    @router.post(
+        "/sessions/{session_id}/message-deliveries/{request_id}/claim",
+        dependencies=[Depends(require_scope(FORGE_NOTIFY_SCOPE))],
+    )
     async def claim(
         request: Request, session_id: UUID, request_id: RequestId, body: ClaimRequest
     ) -> dict:
@@ -57,7 +69,10 @@ def create_message_delivery_router(
             raise HTTPException(409, str(exc)) from exc
         return asdict(result)
 
-    @router.post("/sessions/{session_id}/message-deliveries/{request_id}/settle")
+    @router.post(
+        "/sessions/{session_id}/message-deliveries/{request_id}/settle",
+        dependencies=[Depends(require_scope(FORGE_NOTIFY_SCOPE))],
+    )
     async def settle(
         request: Request, session_id: UUID, request_id: RequestId, body: SettleRequest
     ) -> dict:

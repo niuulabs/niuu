@@ -29,6 +29,7 @@ from niuu.domain.models import Principal
 from personas.adapters.loader import FilesystemPersonaAdapter
 from personas.domain.persona import PersonaConfig, PersonaConsumes, PersonaProduces
 from personas.domain.persona_document import portable_persona_from_config
+from tests.support.full_catalogue import load_full_catalogue as load_system_workflows
 from ting.adapters.campaign_step_definitions import CampaignStepRunDefinitions
 from ting.adapters.forge_step_sessions import ForgeStepSessions, step_session_name
 from ting.api.a2a import (
@@ -51,7 +52,7 @@ from ting.domain.models import (
 from ting.domain.services.workflow_campaign_projector import WorkflowCampaignProjector
 from ting.domain.services.workflow_runs import WorkflowRuns
 from ting.domain.services.workflow_step_engine import WorkflowStepEngine
-from ting.domain.step_engine import EngineSettings
+from ting.domain.step_engine import EngineSettings, unit_sessions
 from ting.domain.workflow_execution import ExecutionConflictError
 from ting.domain.workflow_snapshot import build_workflow_snapshot, pin_workflow_personas
 from ting.ports.volundr import (
@@ -64,9 +65,9 @@ from ting.ports.volundr import (
 )
 from ting.ports.workflow_campaign_repository import WorkflowCampaignRepository
 from ting.ports.workflow_repository import WorkflowRepository
-from ting.system_workflows import load_system_workflows
 
-from .step_support import InMemoryStepRepository
+from .fake_forge import FakeSagas
+from .step_support import FakeSigner, InMemoryStepRepository, minted_activation_id
 
 A2A_PATH = "/api/v1/ting/a2a"
 _SIGNING_KEY = "test-only-signing-key-32-bytes-long!"
@@ -323,7 +324,10 @@ class RecordingVolundrPort(VolundrPort):
         self._spawn_failure = spawn_failure
         self.spawned: list[SpawnRequest] = []
         self.step_session_requests: list[StepSessionRequest] = []
-        self.delivered_steps: list[tuple[str, dict]] = []
+        self.run_room_requests: list = []
+        #: (root session id, offer body) of each offer handed to a run's room.
+        self.room_offers: list[tuple[str, dict]] = []
+        self.started: list[str] = []
         self.stopped: list[str] = []
         self.stop_attempts: list[str] = []
         self.stop_failures = stop_failures
@@ -335,6 +339,18 @@ class RecordingVolundrPort(VolundrPort):
         self.session_projects: dict[str, str] = {}
         self.ensured_projects: list[tuple[str, str]] = []
         self.joined_projects: list[tuple[str, str, str]] = []
+
+    async def check_playability(self, members, *, auth_token=None, principal=None):
+        from ting.ports.volundr import MemberPlayability
+
+        self.playability_checks = [*getattr(self, "playability_checks", []), list(members)]
+        refusals = getattr(self, "playability_refusals", {})
+        return [
+            MemberPlayability(
+                member.member, member.model, "test-harness", tuple(refusals.get(member.member, ()))
+            )
+            for member in members
+        ]
 
     async def get_project(
         self,
@@ -412,6 +428,25 @@ class RecordingVolundrPort(VolundrPort):
             workload_type=request.workload_type,
         )
 
+    async def create_run_room(
+        self,
+        request,
+        *,
+        auth_token: str | None = None,
+        principal: Principal | None = None,
+    ) -> VolundrSession:
+        self.auth_calls.append(("create_run_room", auth_token, principal))
+        self.run_room_requests.append(request)
+        session = VolundrSession(
+            id=f"room-{len(self.run_room_requests)}",
+            name=request.name,
+            status=self._session_status,
+            tracker_issue_id=request.tracker_issue_id,
+            cluster_name=self._name,
+        )
+        self.sessions.append(session)
+        return session
+
     async def create_step_session(
         self,
         request: StepSessionRequest,
@@ -433,18 +468,25 @@ class RecordingVolundrPort(VolundrPort):
         self.sessions.append(session)
         return session
 
-    async def deliver_workflow_step(
+    async def post_room_offer(
         self,
         session_id: str,
-        activation: dict,
+        offer: dict,
         *,
         auth_token: str | None = None,
         principal: Principal | None = None,
     ) -> None:
-        self.delivered_steps.append((session_id, activation))
+        self.room_offers.append((session_id, offer))
+
+    async def start_session(
+        self, session_id: str, *, auth_token: str | None = None, principal: Principal | None = None
+    ) -> None:
+        self.started.append(session_id)
 
     async def get_session(self, session_id: str, *, auth_token=None, principal=None):
-        return None
+        # A run's sessions are up by the time the engine asks.
+        session = next((item for item in self.sessions if item.id == session_id), None)
+        return None if session is None else replace(session, status="running")
 
     async def list_sessions(self, *, auth_token=None, principal=None):
         self.auth_calls.append(("list_sessions", auth_token, principal))
@@ -782,7 +824,7 @@ class _NullEventBus:
 
 
 def _workflow_runs(
-    campaigns: WorkflowCampaignRepository, factory: RecordingVolundrFactory
+    campaigns: WorkflowCampaignRepository, factory: RecordingVolundrFactory, sagas: Any = None
 ) -> WorkflowRuns:
     """The real step engine over an in-memory ledger and the real Forge session adapter."""
     steps = InMemoryStepRepository()
@@ -795,9 +837,13 @@ def _workflow_runs(
         engine=WorkflowStepEngine(
             repository=steps,
             sessions=ForgeStepSessions(
-                volundr_factory=factory, campaigns=campaigns, default_model="gpt-5.5"
+                volundr_factory=factory,
+                campaigns=campaigns,
+                sagas=sagas or FakeSagas(),
+                default_model="gpt-5.5",
             ),
             definitions=CampaignStepRunDefinitions(campaigns),
+            offers=FakeSigner(),
             settings=EngineSettings(step_deadline_seconds=600.0),
         ),
         steps=steps,
@@ -837,7 +883,7 @@ def _make_client(
     app.state.ticket_coordinator_repo = SimpleNamespace(get=AsyncMock(return_value=None))
     launch_repo = launch_repo or InMemoryA2ALaunchRepository()
     factory = volundr_factory or RecordingVolundrFactory([port])
-    app.state.workflow_runs = _workflow_runs(campaigns, factory)
+    app.state.workflow_runs = _workflow_runs(campaigns, factory, app.state.saga_repo)
     app.dependency_overrides[resolve_workflow_repo] = lambda: workflow_repo
     app.dependency_overrides[resolve_workflow_campaign_repo] = lambda: campaigns
     app.dependency_overrides[resolve_a2a_launch_repo] = lambda: launch_repo
@@ -851,11 +897,55 @@ def _run_async(awaitable: Any) -> Any:
     return asyncio.run(awaitable)
 
 
+_PLAYED: set[tuple[UUID, str, str]] = set()
+
+
+async def _play_members(runs: WorkflowRuns, campaign: WorkflowCampaign) -> None:
+    """Play the run's members the way their Skuld does: listen, then take up every offer.
+
+    Offers reach the run's room only once every member that takes their topic listens, so a
+    launched run has offered nothing until this has run. Calling it again takes up only what
+    was offered since.
+    """
+    members = unit_sessions(await runs.state(campaign.id))
+    for member, session_id in members.items():
+        await runs.record_listening(
+            run_id=campaign.id, session_id=session_id, member=member, start_id="start-1"
+        )
+    forge = await runs._forge(campaign)
+    for _, body in list(forge.room_offers):
+        offer = body["offer"]
+        if offer["run_id"] != str(campaign.id):
+            continue
+        for contract in offer["contracts"]:
+            member = contract["persona"]["alias"]
+            key = (campaign.id, offer["offer_id"], member)
+            if key in _PLAYED:
+                continue
+            _PLAYED.add(key)
+            await runs.record_picked_up(
+                run_id=campaign.id,
+                session_id=members[member],
+                member=member,
+                offer_id=UUID(offer["offer_id"]),
+                activation_id=minted_activation_id(
+                    offer["offer_id"], members[member], offer["attempt"]
+                ),
+                attempt=offer["attempt"],
+            )
+
+
+def _play(client: TestClient, campaign: WorkflowCampaign) -> None:
+    _run_async(_play_members(client.app.state.workflow_runs, campaign))
+
+
 def _launch(client: TestClient, workflow: WorkflowDefinition, **headers: Any) -> WorkflowCampaign:
-    """Start a run through SendMessage and return its campaign."""
+    """Start a run through SendMessage, play its members, and return its campaign."""
     sent = _rpc(client, "SendMessage", _send_params(str(workflow.id)), **headers)
     task_id = sent.json()["result"]["task"]["id"]
-    return _run_async(client.app.state.workflow_runs._campaigns.get_campaign_by_slug(task_id))
+    campaign = _run_async(client.app.state.workflow_runs._campaigns.get_campaign_by_slug(task_id))
+    _play(client, campaign)
+    return campaign
 
 
 def _close_stage(client: TestClient, campaign: WorkflowCampaign, verdict: str = "built") -> None:
@@ -863,6 +953,7 @@ def _close_stage(client: TestClient, campaign: WorkflowCampaign, verdict: str = 
     runs = client.app.state.workflow_runs
 
     async def close() -> None:
+        await _play_members(runs, campaign)
         state = await runs.state(campaign.id)
         step = next(step for step in state.steps if step.is_open and step.member)
         await runs.record_step_closed(
@@ -1052,7 +1143,12 @@ class TestSendMessage:
         assert campaign.metadata["model"] == "gpt-5.5"
         assert campaign.active_stage_id == "stage-1"
 
-        # The member's session was created and handed its step.
+        # The run is one unit: a root (its room) and the member's session, created hosted by it.
+        # Nothing is offered until the member reports it listens.
+        [room] = port.run_room_requests
+        assert room.hosts_members is True
+        assert port.room_offers == []
+        _play(client, campaign)
         assert len(port.step_session_requests) == 1
         request = port.step_session_requests[0]
         assert request.tracker_issue_id == f"workflow:{result['id']}"
@@ -1060,13 +1156,20 @@ class TestSendMessage:
         assert request.run_id == str(campaign.id)
         assert request.persona_definition["id"] == "tool-smith"
         assert request.model == "gpt-5.5"
-        assert len(port.delivered_steps) == 1
-        session_id, activation = port.delivered_steps[0]
-        assert session_id == "session-1"
-        assert activation["node_id"] == "stage-1"
-        assert activation["member"] == "tool-smith"
-        assert activation["valid_verdicts"] == ["built"]
-        assert "Build the widget tool" in activation["instructions"]
+        # The first step is offered once, to the run's root, which publishes it on the mesh.
+        [(root_id, body)] = port.room_offers
+        assert root_id == "room-1"
+        offer = body["offer"]
+        assert offer["node_id"] == "stage-1"
+        [contract] = offer["contracts"]
+        assert contract["persona"]["alias"] == "tool-smith"
+        assert contract["valid_verdicts"] == ["built"]
+        assert "Build the widget tool" in offer["instructions"]
+        assert body["attestation"]["signed_by"] == "service:ting"
+        # The member took it up: its own step, on its own session.
+        state = _run_async(client.app.state.workflow_runs.state(campaign.id))
+        [pickup] = [step for step in state.steps if step.member]
+        assert (pickup.member, pickup.session_id) == ("tool-smith", "session-1")
 
     def test_caller_session_name_does_not_name_the_run_sessions(self) -> None:
         workflow = _make_workflow()
@@ -1154,7 +1257,13 @@ class TestSendMessage:
         campaign = next(iter(campaigns._campaigns.values()))
         assert campaign.metadata["ticket"] == ticket
         assert campaign.status is WorkflowCampaignStatus.RUNNING
-        assert len(port.step_session_requests) == 1
+        [request] = port.step_session_requests
+        # The ticket's run joins the ticket's project, nested under the run's room.
+        assert request.membership is not None
+        assert request.membership.project_id == str(saga_id)
+        [room] = port.run_room_requests
+        assert room.membership.role == "coordinator"
+        assert request.membership.parent_session_id == "room-1"
 
     def test_campaign_names_the_workload_that_sent_the_task(self) -> None:
         """A resident's exchanged token (act.sub) is recorded on the campaign it launches."""
@@ -1214,10 +1323,10 @@ class TestSendMessage:
         assert canceled.status_code == 200
         assert canceled.json()["result"]["status"]["state"] == "TASK_STATE_CANCELED"
         # Canceling the run stops its sessions.
-        assert port.stopped == ["session-1"]
+        assert port.stopped == ["session-1", "room-1"]
         persisted = next(iter(campaigns._campaigns.values()))
         assert persisted.metadata["a2a_canceled"] is True
-        assert persisted.status is WorkflowCampaignStatus.FAILED
+        assert persisted.status is WorkflowCampaignStatus.CANCELED
 
     def test_jsonrpc_span_uses_traceparent_header(self, monkeypatch: pytest.MonkeyPatch) -> None:
         class Span:
@@ -1389,7 +1498,12 @@ class TestSendMessage:
         assert retried["id"] == first["id"]
         assert retried["contextId"] == "resident-operation-1"
         assert len(port.step_session_requests) == 1
-        assert len(port.delivered_steps) == 1
+        assert len(port.run_room_requests) == 1
+        _play(
+            client,
+            _run_async(client.app.state.workflow_runs._campaigns.get_campaign_by_slug(first["id"])),
+        )
+        assert len(port.room_offers) == 1
 
     def test_reused_message_id_rejects_changed_launch_content(self) -> None:
         workflow = _make_workflow()
@@ -1585,9 +1699,15 @@ class TestSendMessage:
 
         assert response.status_code == 200, response.text
         # The pinned result contract rides in the run's trigger, so the first step reads it.
-        [(_, activation)] = port.delivered_steps
-        assert '"additionalProperties": false' in activation["instructions"]
-        assert '"evidence"' in activation["instructions"]
+        task_id = response.json()["result"]["task"]["id"]
+        _play(
+            client,
+            _run_async(client.app.state.workflow_runs._campaigns.get_campaign_by_slug(task_id)),
+        )
+        [(_, body)] = port.room_offers
+        instructions = body["offer"]["instructions"]
+        assert '"additionalProperties": false' in instructions
+        assert '"evidence"' in instructions
 
     def test_human_token_is_unaffected_by_scope_check(self) -> None:
         workflow = _make_workflow()
@@ -1791,10 +1911,12 @@ class TestSendMessage:
         assert response.status_code == 200, response.text
         assert cpu.step_session_requests == []
         assert spark.step_session_requests == []  # found again, not created again
-        # The recovered session is the one the member's step was handed to.
-        assert [session_id for session_id, _ in spark.delivered_steps] == ["recovered-session"]
         task = response.json()["result"]["task"]
         assert task["id"] == task_id
+        # The recovered session is the one the unit took as the member's.
+        recovered_campaign = asyncio.run(campaigns.get_campaign_by_slug(task_id))
+        state = asyncio.run(client.app.state.workflow_runs.state(recovered_campaign.id))
+        assert unit_sessions(state) == {"tool-smith": "recovered-session"}
         assert task["metadata"]["connectionId"] == "spark-01"
 
         campaign = asyncio.run(campaigns.get_campaign_by_slug(task_id))
@@ -1819,13 +1941,14 @@ class TestSendMessage:
 
         response = _rpc(client, "SendMessage", _send_params(str(workflow.id)))
 
-        assert response.json()["result"]["task"]["status"]["state"] == "TASK_STATE_FAILED"
+        # A unit that cannot be created fails the launch loudly: the caller gets the error
+        # and the campaign is failed with the reason, not left pending.
+        assert response.json()["error"]["message"] == "spawn failed"
         campaigns_list = asyncio.run(campaigns.list_campaigns(owner_id="user-1"))
         assert len(campaigns_list) == 1
         [campaign] = campaigns_list
         assert campaign.status == WorkflowCampaignStatus.FAILED
         assert "spawn failed" in campaign.metadata["failure_error"]
-        assert campaign.metadata["failure_stage_id"] == "stage-1"
 
     @pytest.mark.parametrize(
         ("ledger", "status_code", "reason"),
@@ -2051,8 +2174,8 @@ class TestGateContinuation:
         assert resolved[0].payload["verdict"] == "approve"
         assert resolved[0].payload["by"] == {"kind": "person", "id": "user-1"}
         assert resolved[0].payload["note"] == "LGTM"
-        # The run ended, so its sessions were stopped.
-        assert port.stopped == ["session-1"]
+        # The run ended, so its sessions were stopped: the member's first, then the root.
+        assert port.stopped == ["session-1", "room-1"]
 
     def test_an_answered_gate_clears_the_pending_gate_and_keeps_the_campaign_metadata(
         self,
@@ -2102,10 +2225,19 @@ class TestGateContinuation:
         )
 
         assert response.json()["result"]["task"]["status"]["state"] == "TASK_STATE_WORKING"
-        # Rework: the member's same session gets its step again, with the reviewer's notes.
+        # Rework: the stage is offered again, with the reviewer's notes, and the member's same
+        # session takes it up: no new session, no new unit.
         assert len(port.step_session_requests) == 1
-        assert [session_id for session_id, _ in port.delivered_steps] == ["session-1", "session-1"]
-        rework = port.delivered_steps[-1][1]
+        assert len(port.run_room_requests) == 1
+        _play(client, campaign)
+        offered = port.room_offers
+        assert [root_id for root_id, _ in offered] == ["room-1", "room-1"]
+        state = _run_async(client.app.state.workflow_runs.state(campaign.id))
+        assert [step.session_id for step in state.steps if step.member] == [
+            "session-1",
+            "session-1",
+        ]
+        rework = offered[-1][1]["offer"]
         assert rework["node_id"] == "stage-1"
         assert rework["attempt"] == 2
         assert rework["generation"] == 1
@@ -2284,7 +2416,7 @@ class TestGetTask:
 
         assert response.status_code == 200
         assert response.json()["result"]["status"]["state"] == "TASK_STATE_CANCELED"
-        assert port.stopped == ["session-1"]
+        assert port.stopped == ["session-1", "room-1"]
 
     def test_a_credential_bound_to_one_forge_session_cannot_be_matched_to_a_task(self) -> None:
         """A run's steps run on one session per member, so a session-bound credential is refused."""
@@ -2572,7 +2704,7 @@ class TestCancelTask:
 
         result = response.json()["result"]
         assert result["status"]["state"] == "TASK_STATE_CANCELED"
-        assert port.stopped == ["session-1"]
+        assert port.stopped == ["session-1", "room-1"]
         state = _run_async(client.app.state.workflow_runs.state(campaign.id))
         assert "engine.run.canceled" in [event.event_type for event in state.events]
         assert [step.state.value for step in state.steps if step.member] == ["canceled"]
@@ -2612,7 +2744,7 @@ class TestCancelTask:
         response = _rpc(client, "CancelTask", {"id": campaign.slug})
 
         assert response.json()["result"]["status"]["state"] == "TASK_STATE_CANCELED"
-        assert canceled_at_stop == [True]
+        assert canceled_at_stop == [True, True]  # the member's stop, then the root's
 
     def test_cancel_terminal_task_is_not_cancelable(self) -> None:
         campaign = _make_campaign(status=WorkflowCampaignStatus.COMPLETED)
@@ -2918,7 +3050,8 @@ def _mimir_workflow(root: Path) -> WorkflowDefinition:
                     "resourceType": "mimir",
                     "bindingMode": "registry",
                     "mount_name": "local",
-                    "path": str(root),
+                    "adapter": "tests.support.directory_mimir.DirectoryMimirAdapter",
+                    "kwargs": {"root": str(root)},
                 },
                 {
                     "id": "stage-1",
@@ -3036,3 +3169,32 @@ class TestTaskArtifacts:
         result = _rpc(client, "GetTask", {"id": campaign.slug}).json()["result"]
 
         assert result.get("artifacts", []) == []
+
+
+def test_a_canceled_campaign_is_a_canceled_task_with_no_failure_message() -> None:
+    from ting.api.a2a import TaskState, campaign_to_task
+
+    now = datetime.now(UTC)
+    campaign = WorkflowCampaign(
+        id=uuid4(),
+        slug="aborted",
+        name="aborted",
+        owner_id="owner",
+        workflow_id=uuid4(),
+        workflow_version="1.0.0",
+        workflow_name="W",
+        workflow_snapshot={},
+        session_id="",
+        session_name="",
+        status=WorkflowCampaignStatus.CANCELED,
+        active_stage_id=None,
+        stage_state=[],
+        metadata={"cancel_reason": "wrong ticket", "run_canceled": True},
+        created_at=now,
+        updated_at=now,
+    )
+
+    task = campaign_to_task(campaign)
+
+    assert task.status.state == TaskState.TASK_STATE_CANCELED
+    assert not task.status.message.message_id

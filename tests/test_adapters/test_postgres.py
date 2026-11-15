@@ -101,15 +101,15 @@ class TestPostgresSessionRepositoryCreate:
     async def test_create_records_the_acting_workload(
         self, repository: PostgresSessionRepository, mock_pool, sample_session: Session
     ):
-        """actor_id is the INSERT's last column, so a delegated session keeps its actor."""
+        """actor_id is recorded by the INSERT, so a delegated session keeps its actor."""
         delegated = sample_session.model_copy(
             update={"actor_id": "system:serviceaccount:nats:regin"}
         )
         await repository.create(delegated)
 
         call_args = mock_pool.execute.call_args[0]
-        assert "coordination, actor_id)" in call_args[0]
-        assert call_args[-1] == "system:serviceaccount:nats:regin"
+        assert "coordination, actor_id, hosted_by, hosted_port)" in call_args[0]
+        assert call_args[-3] == "system:serviceaccount:nats:regin"
 
     async def test_create_returns_session(
         self, repository: PostgresSessionRepository, sample_session: Session
@@ -706,7 +706,7 @@ async def test_create_persists_seeded_descriptions(repository, mock_pool, sample
     )
     await repository.create(seeded)
     args = mock_pool.execute.call_args.args
-    assert args[-7:-3] == ("Seed", None, sample_session.created_at, None)
+    assert args[-9:-5] == ("Seed", None, sample_session.created_at, None)
 
 
 def test_rows_before_the_migration_read_as_unset(repository, sample_row):
@@ -831,3 +831,106 @@ class TestSessionStartupPersistence:
         actual = await repository.update(stale)
 
         assert actual.startup is None
+
+
+class TestHostedMembers:
+    """A run's member sessions are hosted by the run's unit root."""
+
+    async def test_create_records_the_unit_and_the_member_port(
+        self, repository: PostgresSessionRepository, mock_pool, sample_session: Session
+    ):
+        unit_id = uuid4()
+        member = sample_session.model_copy(update={"hosted_by": unit_id, "hosted_port": 8083})
+
+        await repository.create(member)
+
+        args = mock_pool.execute.call_args.args
+        assert args[-2:] == (unit_id, 8083)
+
+    async def test_update_never_writes_hosting_and_returns_the_stored_one(
+        self, repository: PostgresSessionRepository, mock_pool, sample_session: Session
+    ):
+        unit_id = uuid4()
+        mock_pool.fetchrow.return_value = {
+            **mock_pool.fetchrow.return_value,
+            "hosted_by": unit_id,
+            "hosted_port": 8082,
+        }
+
+        stored = await repository.update(sample_session)
+
+        sql = mock_pool.fetchrow.call_args.args[0]
+        assert "hosted_by =" not in sql.split("RETURNING")[0]
+        assert (stored.hosted_by, stored.hosted_port) == (unit_id, 8082)
+
+    async def test_attach_locks_the_unit_and_numbers_the_port_after_the_highest(
+        self, repository: PostgresSessionRepository, mock_pool, sample_session: Session
+    ):
+        unit_id = uuid4()
+        conn = MagicMock()
+        conn.fetchval = AsyncMock(return_value="created")
+        conn.fetchrow = AsyncMock(
+            return_value={
+                "id": sample_session.id,
+                "name": "m",
+                "model": "",
+                "status": "created",
+                "chat_endpoint": None,
+                "code_endpoint": None,
+                "created_at": sample_session.created_at,
+                "updated_at": sample_session.updated_at,
+                "last_active": None,
+                "message_count": 0,
+                "tokens_used": 0,
+                "pod_name": None,
+                "error": None,
+                "hosted_by": unit_id,
+                "hosted_port": 8083,
+            }
+        )
+        acquire = MagicMock()
+        acquire.__aenter__ = AsyncMock(return_value=conn)
+        acquire.__aexit__ = AsyncMock(return_value=None)
+        mock_pool.acquire = MagicMock(return_value=acquire)
+        transaction = MagicMock()
+        transaction.__aenter__ = AsyncMock(return_value=None)
+        transaction.__aexit__ = AsyncMock(return_value=None)
+        conn.transaction = MagicMock(return_value=transaction)
+
+        attached = await repository.attach_to_unit(sample_session.id, unit_id, 8082)
+
+        assert "FOR UPDATE" in conn.fetchval.call_args.args[0]
+        assert "max(hosted_port) + 1" in conn.fetchrow.call_args.args[0]
+        assert conn.fetchrow.call_args.args[1:4] == (sample_session.id, unit_id, 8082)
+        assert (attached.hosted_by, attached.hosted_port) == (unit_id, 8083)
+
+    @pytest.mark.parametrize("unit_status", ["starting", "running", "stopped", None])
+    async def test_attach_is_refused_unless_the_unit_has_not_started(
+        self, repository: PostgresSessionRepository, mock_pool, unit_status
+    ):
+        conn = MagicMock()
+        conn.fetchval = AsyncMock(return_value=unit_status)
+        conn.fetchrow = AsyncMock()
+        acquire = MagicMock()
+        acquire.__aenter__ = AsyncMock(return_value=conn)
+        acquire.__aexit__ = AsyncMock(return_value=None)
+        mock_pool.acquire = MagicMock(return_value=acquire)
+        transaction = MagicMock()
+        transaction.__aenter__ = AsyncMock(return_value=None)
+        transaction.__aexit__ = AsyncMock(return_value=None)
+        conn.transaction = MagicMock(return_value=transaction)
+
+        assert await repository.attach_to_unit(uuid4(), uuid4(), 8082) is None
+        conn.fetchrow.assert_not_called()
+
+    async def test_list_hosted_orders_by_port(
+        self, repository: PostgresSessionRepository, mock_pool
+    ):
+        mock_pool.fetch.return_value = []
+        unit_id = uuid4()
+
+        assert await repository.list_hosted(unit_id) == []
+
+        sql, arg = mock_pool.fetch.call_args.args
+        assert "WHERE hosted_by = $1 ORDER BY hosted_port" in sql
+        assert arg == unit_id

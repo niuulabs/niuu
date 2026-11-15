@@ -230,7 +230,8 @@ def verify(manifest: dict) -> dict:
     suite = unittest.defaultTestLoader.loadTestsFromTestCase(BackportRegressionTests)
     if not unittest.TextTestRunner(stream=sys.stderr).run(suite).wasSuccessful():
         raise RuntimeError("Installed Python security regression tests failed")
-    library = Path(sysconfig.get_config_var("LIBDIR")) / sysconfig.get_config_var("LDLIBRARY")
+    # python-build-standalone keeps its original LIBDIR after bundle relocation.
+    library = stdlib.parent / sysconfig.get_config_var("LDLIBRARY")
     library = library.resolve(strict=True)
     if not library.is_file():
         raise RuntimeError("Python shared library is not a regular file")

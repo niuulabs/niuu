@@ -193,7 +193,7 @@ async function configure(
 }
 
 async function openEditor(page: Page) {
-  await page.goto(`/ting/workflows?id=${workflowId}`);
+  await page.goto(`/ting/workflows?workflow=${workflowId}`);
   await expect(page.getByTestId('workflow-builder')).toBeVisible();
   await page.getByTestId('zoom-fit').click();
 }
@@ -300,7 +300,7 @@ test('zoomed HTML cards stay painted and clickable at their SVG positions', asyn
   await expect(page.getByTestId('child-workflow-select')).toBeVisible();
 });
 
-test('right-click searches all node types and inserts at the clicked canvas point', async ({
+test('right-click searches all node types and adds the step to the laid-out workflow', async ({
   page,
 }) => {
   await configure(page);
@@ -310,11 +310,6 @@ test('right-click searches all node types and inserts at the clicked canvas poin
   const canvas = page.getByTestId('graph-canvas');
   const bounds = (await canvas.boundingBox())!;
   const point = { x: bounds.x + bounds.width - 30, y: bounds.y + bounds.height - 90 };
-  const position = await canvas.evaluate((element, point) => {
-    const layer = element.querySelector(':scope > g') as SVGGElement;
-    const world = new DOMPoint(point.x, point.y).matrixTransform(layer.getScreenCTM()!.inverse());
-    return { x: world.x, y: world.y };
-  }, point);
   await page.mouse.click(point.x, point.y, { button: 'right' });
   const picker = page.getByRole('dialog', { name: 'Add workflow node' });
   await expect(picker).toBeVisible();
@@ -325,9 +320,9 @@ test('right-click searches all node types and inserts at the clicked canvas poin
   await picker.getByRole('textbox').fill('child');
   await picker.getByTestId('library-add-subworkflow').click();
   await expect(picker).toHaveCount(0);
-  const added = page.locator('[data-testid^="workflow-node-node-"] foreignObject').first();
-  expect(Number(await added.getAttribute('x'))).toBeCloseTo(position.x, 3);
-  expect(Number(await added.getAttribute('y'))).toBeCloseTo(position.y, 3);
+  // The canvas lays every step out itself: the new one joins the workflow's layout.
+  await expect(page.locator('[data-testid^="workflow-node-node-"]')).toHaveCount(1);
+  await expect(page.locator('[data-testid^="workflow-node-"]')).toHaveCount(nodes.length + 1);
   await page.getByTestId('btn-undo').click();
   await expect(page.locator('[data-testid^="workflow-node-"]')).toHaveCount(nodes.length);
 });
@@ -444,13 +439,13 @@ test('historical versions remain viewable, editable, and launch exactly', async 
   await expect(page.getByTestId('workflow-version-picker')).toHaveValue('0.9.0');
   await expect(page.getByTestId('workflow-editor-mode')).toHaveText('Viewing');
 
-  await page.getByTestId('launch-workflow').click();
+  await expect(page.getByTestId('launch-workflow')).toHaveCount(0);
   await page.getByTestId('workflow-launch-prompt').fill('Run the historical workflow');
-  await page.getByRole('button', { name: 'Launch', exact: true }).click();
+  await page.getByTestId('catalog-workflow-launch').click();
   await expect.poll(() => launchBody?.workflow_version).toBe('0.9.0');
   await expect(page).toHaveURL(/\/volundr\/sessions\/historical-session$/);
 
-  await page.goto(`/ting/workflows?id=${workflowId}`);
+  await page.goto(`/ting/workflows?workflow=${workflowId}`);
   await expect(page.getByTestId('workflow-builder')).toBeVisible();
   await page.getByTestId('workflow-version-picker').selectOption('0.9.0');
   await editWorkflow(page);
@@ -468,7 +463,6 @@ test('Edit stays blocked until a requested historical document is loaded', async
   await page.getByTestId('workflow-version-picker').selectOption('0.9.0');
   await expect(page.getByTestId('workflow-versions-loading')).toBeVisible();
   await expect(page.getByTestId('edit-workflow')).toBeDisabled();
-  await expect(page.getByTestId('launch-workflow')).toBeDisabled();
 
   releaseVersion();
   await expect(page.getByTestId('workflow-version-picker')).toHaveValue('0.9.0');
@@ -481,7 +475,7 @@ test('workflow catalog exposes a loading state before the real editor mounts', a
     release = resolve;
   });
   await configure(page, { loading });
-  await page.goto('/ting/workflows/build');
+  await page.goto('/ting/workflows');
   await expect(page.getByText(/Loading workflows/i)).toBeVisible();
   await expect(page.getByTestId('workflow-builder')).toHaveCount(0);
   release();
@@ -492,7 +486,7 @@ test('workflow catalog failure is visible and never replaced by a fake editor', 
   page,
 }) => {
   await configure(page, { fail: true });
-  await page.goto('/ting/workflows/build');
+  await page.goto('/ting/workflows');
   await expect(page.getByRole('alert')).toContainText('API request failed: 500', {
     timeout: 20_000,
   });
@@ -592,7 +586,7 @@ test('child exploration returns to the exact historical parent draft', async ({ 
 test('editor gives long names room alongside the Work navigation', async ({ page }) => {
   await page.setViewportSize({ width: 2048, height: 950 });
   await configure(page, { name: 'Research Campaign copy for cross-team investigation' });
-  await page.goto('/ting/workflows/build');
+  await page.goto('/ting/workflows');
   const title = page.getByTestId('builder-title');
   await expect(title).toHaveText('Research Campaign copy for cross-team investigation');
   await expect(page.getByRole('navigation', { name: 'Workflow execution' })).toHaveCount(0);

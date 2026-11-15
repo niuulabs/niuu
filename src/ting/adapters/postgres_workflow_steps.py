@@ -1,7 +1,10 @@
 """Postgres ledger of workflow step activations and run events.
 
 ``workflow_steps`` holds one row per step activation and ``workflow_run_events`` is
-the append-only log of a run (migration ``000054_workflow_steps``). Every write to a
+the append-only log of a run (migration ``000054_workflow_steps``). A row is an offer (kind
+``offer``, one per delivery to a stage), a member's pickup of an offer (``stage_member``, with
+the ``offer_id`` it took up and when) or a gate, wait or end (migration
+``000060_workflow_step_offers``). Every write to a
 run goes through ``transaction``, which takes a transaction-scoped advisory lock on
 the run, so two decisions about the same run never interleave; sequence numbers are
 assigned under that lock.
@@ -37,11 +40,11 @@ _UPSERT_STEP = """
 INSERT INTO workflow_steps (
     id, run_id, node_id, member, kind, attempt, generation, state, session_id,
     inputs, verdict, outcome, note, evidence, waiting_on,
-    deadline_at, created_at, activated_at, closed_at
+    deadline_at, created_at, activated_at, closed_at, offer_id, picked_up_at, orchestration
 ) VALUES (
     $1, $2, $3, $4, $5, $6, $7, $8, $9,
     $10::jsonb, $11, $12::jsonb, $13, $14::jsonb, $15::jsonb,
-    $16, $17, $18, $19
+    $16, $17, $18, $19, $20, $21, $22
 )
 ON CONFLICT (id) DO UPDATE SET
     generation = EXCLUDED.generation,
@@ -55,7 +58,9 @@ ON CONFLICT (id) DO UPDATE SET
     waiting_on = EXCLUDED.waiting_on,
     deadline_at = EXCLUDED.deadline_at,
     activated_at = EXCLUDED.activated_at,
-    closed_at = EXCLUDED.closed_at
+    closed_at = EXCLUDED.closed_at,
+    offer_id = EXCLUDED.offer_id,
+    picked_up_at = EXCLUDED.picked_up_at
 """
 
 _APPEND_EVENT = """
@@ -74,6 +79,15 @@ INSERT INTO workflow_step_flags (
     activation_id, kind, run_id, since, raised_at, detail
 ) VALUES ($1, $2, $3, $4, $5, $6)
 ON CONFLICT (activation_id, kind) DO NOTHING
+RETURNING activation_id
+"""
+
+_REOPEN_FLAG = """
+UPDATE workflow_step_flags
+SET since = $3, raised_at = $4, detail = $5, notified_at = NULL,
+    resolved_at = NULL, resolution = '',
+    action_at = NULL, action_done_at = NULL, action_error = ''
+WHERE activation_id = $1 AND kind = $2 AND resolved_at IS NOT NULL
 RETURNING activation_id
 """
 
@@ -171,6 +185,9 @@ class _PostgresLedgerTransaction(LedgerTransaction):
             step.created_at,
             step.activated_at,
             step.closed_at,
+            step.offer_id,
+            step.picked_up_at,
+            step.orchestration,
         )
 
     async def append_event(
@@ -199,6 +216,17 @@ class _PostgresLedgerTransaction(LedgerTransaction):
             flag.activation_id,
             flag.kind.value,
             flag.run_id,
+            flag.since,
+            flag.raised_at,
+            flag.detail,
+        )
+        return row is not None
+
+    async def reopen_flag(self, flag: StepFlag) -> bool:
+        row = await self._conn.fetchrow(
+            _REOPEN_FLAG,
+            flag.activation_id,
+            flag.kind.value,
             flag.since,
             flag.raised_at,
             flag.detail,
@@ -275,6 +303,9 @@ def _step_from_row(row: Any) -> WorkflowStep:
         deadline_at=row["deadline_at"],
         activated_at=row["activated_at"],
         closed_at=row["closed_at"],
+        offer_id=row["offer_id"],
+        picked_up_at=row["picked_up_at"],
+        orchestration=row["orchestration"],
     )
 
 

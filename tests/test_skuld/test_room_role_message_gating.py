@@ -45,6 +45,9 @@ _EXPECTED_VIEWER = {
     "discover_slash_commands",
     "get_effort",
     "get_runtime_options",
+    # A person answering the question the agent put to them: the handler lets through the
+    # addressee, or an approver.
+    "person_answer",
 }
 _EXPECTED_APPROVER_ONLY = {"permission_response", "ask_user_answer"}
 _EXPECTED_OWNER_ONLY = {
@@ -62,6 +65,9 @@ _EXPECTED_OWNER_ONLY = {
     "rewind_files",
     "resend_initial_prompt",
     "publish_event",
+    # Another agent's message, with a sender it claims: only the owner connection (Forge
+    # acting for the session) may hand one over.
+    "peer_message",
 }
 
 

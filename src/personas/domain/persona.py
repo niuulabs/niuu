@@ -1,17 +1,15 @@
 """The persona model: a role a worker plays in a workflow or team.
 
-A persona says what a role is: its prompt, the tools it may and may not use, its
-permission mode, the events it consumes and produces, and how its output combines
-with parallel peers. It does not say which harness runs the role; the workflow step
-or spec decides that.
+A persona says what a role is: its prompt, its permission mode, the events it consumes and
+produces, and how its output combines with parallel peers. It does not say which harness
+runs the role; the workflow step or spec decides that.
 
 Persona YAML format::
 
     name: coding-agent
+    description: Implements features and fixes bugs in a repository, with tests.
     system_prompt_template: |
       You are a focused coding agent. ...
-    allowed_tools: [file_read, file_write, shell, web_fetch, plan, "mimir:search"]
-    forbidden_tools: [web_search]
     permission_mode: workspace_write
     llm:
       thinking_enabled: true
@@ -35,6 +33,7 @@ Persona YAML format::
 from __future__ import annotations
 
 import dataclasses
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
@@ -42,8 +41,7 @@ import yaml
 
 from niuu.domain.outcome import OutcomeField, OutcomeSchema, generate_outcome_instruction
 from personas.domain.permission_mode import PermissionMode, parse_optional_permission_mode
-from personas.domain.persona_document import PersonaDocumentError
-from personas.domain.tool_vocabulary import validate_tool_names
+from personas.domain.persona_document import PersonaDocumentError, refuse_tool_restrictions
 
 EXECUTOR_REMOVED_MESSAGE = (
     "Persona {name!r} declares an 'executor' block. A persona no longer names the "
@@ -68,7 +66,7 @@ class PersonaVoiceConfig:
     ``voices`` maps a realtime provider (``grok-voice``, ``openai-realtime``) to the
     provider's voice name; a persona with no voices does not take voice calls.
     ``style`` is how the persona speaks. ``tools`` names the tools a voice call may
-    use, inside ``allowed_tools``; empty means none. ``grok`` holds Grok Voice
+    use; empty means none. ``grok`` holds Grok Voice
     session fields (reasoning, turn detection, transcription key terms) sent as is.
     """
 
@@ -101,11 +99,15 @@ class PersonaProduces:
         {"pass": "review.passed", "needs_changes": "review.changes_requested"}
         The map is checked against the 'verdict' field in the outcome.
     schema: Expected fields in the outcome block
+    when: For each verdict, when to report it, e.g.:
+        {"pass": "The change is safe to run as it is."}
+        The member is told these where it closes a step, so it knows which verdict fits.
     """
 
     event_type: str = ""
     event_type_map: dict[str, str] = field(default_factory=dict)
     schema: dict[str, OutcomeField] = field(default_factory=dict)
+    when: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -141,9 +143,10 @@ class PersonaConfig:
     """
 
     name: str
+    #: One or two sentences on what the persona does, announced to a session's peers so they
+    #: can choose whom to talk to. Never injected into a prompt.
+    description: str = ""
     system_prompt_template: str = ""
-    allowed_tools: list[str] = field(default_factory=list)
-    forbidden_tools: list[str] = field(default_factory=list)
     permission_mode: str = ""
     parsed_permission_mode: PermissionMode | None = field(init=False, default=None, compare=False)
     llm: PersonaLLMConfig = field(default_factory=PersonaLLMConfig)
@@ -180,12 +183,10 @@ class PersonaConfig:
         """
         d: dict = {"name": self.name}
 
+        if self.description:
+            d["description"] = self.description
         if self.system_prompt_template:
             d["system_prompt_template"] = self.system_prompt_template
-        if self.allowed_tools:
-            d["allowed_tools"] = list(self.allowed_tools)
-        if self.forbidden_tools:
-            d["forbidden_tools"] = list(self.forbidden_tools)
         if self.permission_mode:
             d["permission_mode"] = str(self.permission_mode)
 
@@ -202,12 +203,19 @@ class PersonaConfig:
         if self.iteration_budget:
             d["iteration_budget"] = self.iteration_budget
 
-        if self.produces.event_type or self.produces.event_type_map or self.produces.schema:
+        if (
+            self.produces.event_type
+            or self.produces.event_type_map
+            or self.produces.schema
+            or self.produces.when
+        ):
             produces_dict: dict = {}
             if self.produces.event_type:
                 produces_dict["event_type"] = self.produces.event_type
             if self.produces.event_type_map:
                 produces_dict["event_type_map"] = dict(self.produces.event_type_map)
+            if self.produces.when:
+                produces_dict["when"] = dict(self.produces.when)
             if self.produces.schema:
                 schema_dict: dict = {}
                 for fname, f in self.produces.schema.items():
@@ -313,7 +321,37 @@ def parse_produces(raw: Any) -> PersonaProduces:
             parsed = parse_outcome_field(fname, fval)
             if parsed is not None:
                 schema[fname] = parsed
-    return PersonaProduces(event_type=event_type, event_type_map=event_type_map, schema=schema)
+    return PersonaProduces(
+        event_type=event_type,
+        event_type_map=event_type_map,
+        schema=schema,
+        when=parse_verdict_guidance(raw.get("when"), event_type_map),
+    )
+
+
+def parse_verdict_guidance(raw: Any, event_type_map: Mapping[str, str]) -> dict[str, str]:
+    """Parse ``produces.when``: for each verdict, when the member should report it.
+
+    Every key must be a verdict the persona maps to an event, and every value says something:
+    guidance for a verdict the persona cannot report, or empty guidance, is a mistake in the
+    document, so it is refused, naming the verdict.
+    """
+    if raw is None:
+        return {}
+    if not isinstance(raw, Mapping):
+        raise ValueError("produces.when must map each verdict to when to report it")
+    guidance: dict[str, str] = {}
+    for verdict, text in raw.items():
+        verdict = str(verdict)
+        if event_type_map and verdict not in event_type_map:
+            raise ValueError(
+                f"produces.when names verdict {verdict!r}, which produces.event_type_map does "
+                f"not map to an event; the verdicts are {sorted(event_type_map)}"
+            )
+        if not isinstance(text, str) or not text.strip():
+            raise ValueError(f"produces.when.{verdict} must say when to report {verdict!r}")
+        guidance[verdict] = text.strip()
+    return guidance
 
 
 def parse_consumes(raw: Any) -> PersonaConsumes:
@@ -406,13 +444,12 @@ def parse_persona(text: str) -> PersonaConfig | None:
     Returns ``None`` on empty input or YAML that is not a persona mapping with a
     name. Handles the ``produces``, ``consumes`` and ``fan_in`` sections.
 
-    Raises :class:`ValueError` when ``permission_mode`` is not a known mode or a tool list
-    names a tool outside the neutral vocabulary (``personas.domain.tool_vocabulary``; the
-    message lists the valid set), and
+    Raises :class:`ValueError` when ``permission_mode`` is not a known mode, and
     :class:`~personas.domain.persona_document.PersonaDocumentError` when the document
-    still carries an ``executor`` block. A persona no longer names the
-    harness that runs it, and a document that does must be corrected rather than read
-    with the block dropped.
+    still carries an ``executor`` block or a tool restriction (``allowed_tools``,
+    ``forbidden_tools``). A persona no longer names the harness that runs it, and
+    per-harness tool restrictions are not available yet; a document that carries either
+    must be corrected rather than read with it dropped.
     """
     if not text.strip():
         return None
@@ -432,6 +469,8 @@ def parse_persona(text: str) -> PersonaConfig | None:
     if "executor" in raw:
         raise PersonaDocumentError(EXECUTOR_REMOVED_MESSAGE.format(name=name))
 
+    refuse_tool_restrictions(name, raw)
+
     llm_raw: dict[str, Any] = {}
     if isinstance(raw.get("llm"), dict):
         llm_raw = raw["llm"]
@@ -442,23 +481,13 @@ def parse_persona(text: str) -> PersonaConfig | None:
         max_tokens=safe_int(llm_raw.get("max_tokens", 0)),
     )
 
-    allowed = raw.get("allowed_tools", [])
-    forbidden = raw.get("forbidden_tools", [])
-    for field_name, tools in (("allowed_tools", allowed), ("forbidden_tools", forbidden)):
-        if not isinstance(tools, list):
-            continue
-        try:
-            validate_tool_names(field_name, tools)
-        except ValueError as exc:
-            raise ValueError(f"Persona {name!r}: {exc}") from exc
     delivery_workspace_actions = raw.get("delivery_workspace_actions", [])
     raw_permission_mode = raw.get("permission_mode")
 
     return PersonaConfig(
         name=name,
+        description=str(raw.get("description") or "").strip(),
         system_prompt_template=str(raw.get("system_prompt_template", "")),
-        allowed_tools=list(allowed) if isinstance(allowed, list) else [],
-        forbidden_tools=list(forbidden) if isinstance(forbidden, list) else [],
         permission_mode="" if raw_permission_mode is None else str(raw_permission_mode),
         llm=llm,
         iteration_budget=safe_int(raw.get("iteration_budget", 0)),

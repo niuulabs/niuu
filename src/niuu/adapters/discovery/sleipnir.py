@@ -6,7 +6,7 @@ SPIFFE JWT-SVID validation is used for trust — no separate handshake socket.
 **Announce event schema**::
 
     {
-      "event_type": "ravn.mesh.announce",
+      "event_type": "mesh.announce",
       "source": "ravn:{peer_id}",
       "payload": {
         "identity": { <MeshIdentity fields> },
@@ -33,7 +33,13 @@ from contextlib import suppress
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
-from niuu.mesh.identity import MeshCandidate, MeshIdentity, MeshPeer
+from niuu.adapters.discovery._failures import (
+    DiscoveryError,
+    notify,
+    refuse_message,
+    report_failure,
+)
+from niuu.mesh.identity import MeshCandidate, MeshIdentity, MeshPeer, unannounced_facts
 from niuu.ports.discovery import PeerCallback
 
 if TYPE_CHECKING:
@@ -46,8 +52,8 @@ except ImportError:  # pragma: no cover
 
 logger = logging.getLogger(__name__)
 
-_ANNOUNCE_ROUTING_KEY = "ravn.mesh.announce"
-_EXCHANGE_NAME = "ravn.mesh"
+_ANNOUNCE_ROUTING_KEY = "mesh.announce"
+_EXCHANGE_NAME = "mesh"
 
 
 class SleipnirDiscoveryAdapter:
@@ -71,6 +77,9 @@ class SleipnirDiscoveryAdapter:
         Ignored — allows forward compatibility with new config fields.
     """
 
+    #: ``build_discovery_adapters`` passes ``attestor`` to adapters that set this.
+    signs_announcements = True
+
     def __init__(
         self,
         own_identity: MeshIdentity,
@@ -82,8 +91,10 @@ class SleipnirDiscoveryAdapter:
         peer_ttl_s: float = 90.0,
         # Legacy: accept config objects for backward compatibility
         config: DiscoveryConfig | None = None,
+        attestor: Any | None = None,
         **kwargs: Any,
     ) -> None:
+        self._attestor = attestor
         self._identity = own_identity
         self._amqp_url_env = amqp_url_env
         self._convergence_wait_s = convergence_wait_s
@@ -107,27 +118,30 @@ class SleipnirDiscoveryAdapter:
         self._exchange: object | None = None
 
         self._heartbeat_task: asyncio.Task | None = None
-        self._consumer_task: asyncio.Task | None = None
 
     # ------------------------------------------------------------------
     # DiscoveryPort interface
     # ------------------------------------------------------------------
 
     async def start(self) -> None:
-        """Connect to AMQP, publish join announce, and start consumer + heartbeat."""
+        """Connect to AMQP, publish join announce, and start the consumer and heartbeat.
+
+        Raises :class:`DiscoveryError` when it cannot: a session that is configured to be
+        discovered and is not would run unseen.
+        """
         if aio_pika is None:  # pragma: no cover
-            logger.warning("sleipnir_discovery: aio_pika not installed — discovery disabled")
-            return
+            raise DiscoveryError(
+                "sleipnir discovery needs the aio_pika package and it is not installed: "
+                "install it, or remove the sleipnir entry from the discovery adapters"
+            )
 
         await self._connect()
+        await self._start_consumer()
         await self.announce()
 
         # Wait briefly for other peers to respond with their announces.
         await asyncio.sleep(self._convergence_wait_s)
 
-        self._consumer_task = asyncio.create_task(
-            self._consume_loop(), name="sleipnir_discovery_consumer"
-        )
         self._heartbeat_task = asyncio.create_task(
             self._heartbeat_loop(), name="sleipnir_discovery_heartbeat"
         )
@@ -135,20 +149,23 @@ class SleipnirDiscoveryAdapter:
 
     async def stop(self) -> None:
         """Publish leave announce, cancel tasks, close connection."""
-        await self._publish_announce("leave")
+        try:
+            await self._publish_announce("leave")
+        except DiscoveryError as exc:
+            # Stopping goes on; peers learn this session left when its heartbeats stop.
+            report_failure("sleipnir", "leave", str(exc))
 
-        for task in (self._heartbeat_task, self._consumer_task):
-            if task is not None:
-                task.cancel()
-                with suppress(asyncio.CancelledError):
-                    _ = await task
-
+        if self._heartbeat_task is not None:
+            self._heartbeat_task.cancel()
+            with suppress(asyncio.CancelledError):
+                _ = await self._heartbeat_task
         self._heartbeat_task = None
-        self._consumer_task = None
 
         if self._connection is not None:
-            with suppress(Exception):
+            try:
                 await self._connection.close()  # type: ignore[union-attr]
+            except Exception as exc:  # the one close; stopping goes on
+                report_failure("sleipnir", "close", f"closing the AMQP connection failed: {exc}")
             self._connection = None
 
         logger.info("sleipnir_discovery: stopped peer=%s", self._identity.peer_id)
@@ -182,16 +199,13 @@ class SleipnirDiscoveryAdapter:
     # Internal — AMQP
     # ------------------------------------------------------------------
 
-    async def _connect(self) -> bool:
-        if aio_pika is None:
-            return False
+    async def _connect(self) -> None:
         amqp_url = os.environ.get(self._amqp_url_env, "")
         if not amqp_url:
-            logger.debug(
-                "sleipnir_discovery: %s not set — discovery disabled",
-                self._amqp_url_env,
+            raise DiscoveryError(
+                f"sleipnir discovery is configured but {self._amqp_url_env} is not set: set it "
+                "to the AMQP URL, or remove the sleipnir entry from the discovery adapters"
             )
-            return False
         try:
             conn = await aio_pika.connect_robust(amqp_url)
             channel = await conn.channel()
@@ -200,78 +214,104 @@ class SleipnirDiscoveryAdapter:
                 aio_pika.ExchangeType.TOPIC,
                 durable=True,
             )
-            self._connection = conn
-            self._channel = channel
-            self._exchange = exchange
-            return True
-        except Exception as exc:
-            logger.debug("sleipnir_discovery: connection failed: %s", exc)
-            return False
+        except Exception as exc:  # any connection failure is the same remedy
+            raise DiscoveryError(
+                f"sleipnir discovery could not connect to AMQP ({self._amqp_url_env}): "
+                f"{type(exc).__name__}: {exc}. Fix the URL or the broker, or remove the "
+                "sleipnir entry from the discovery adapters"
+            ) from exc
+        self._connection = conn
+        self._channel = channel
+        self._exchange = exchange
 
     async def _publish_announce(
         self,
         action: str,
         *,
-        status: str = "idle",
+        status: str | None = None,
         task_count: int = 0,
     ) -> None:
         if self._exchange is None:
-            return
+            if action == "leave":
+                return  # never connected: there is nothing to announce leaving
+            raise DiscoveryError(
+                f"cannot announce ({action}): sleipnir discovery is not connected to AMQP"
+            )
+        if status is None:
+            status = "busy" if getattr(self._identity, "busy", False) else "idle"
+        announcement: dict[str, Any] = {
+            "identity": self._identity_dict(),
+            "action": action,
+            "status": status,
+            "task_count": task_count,
+        }
+        if self._attestor is not None:
+            announcement = self._attestor.sign(announcement)
         payload = {
-            "event_type": "ravn.mesh.announce",
+            "event_type": "mesh.announce",
             "source": f"ravn:{self._identity.peer_id}",
-            "payload": {
-                "identity": self._identity_dict(),
-                "action": action,
-                "status": status,
-                "task_count": task_count,
-            },
+            "payload": announcement,
         }
         body = json.dumps(payload).encode()
         try:
             msg = aio_pika.Message(body=body, content_type="application/json")  # type: ignore[union-attr]
             await self._exchange.publish(msg, routing_key=_ANNOUNCE_ROUTING_KEY)  # type: ignore[union-attr]
-        except Exception as exc:
-            logger.debug("sleipnir_discovery: publish announce failed: %s", exc)
+        except Exception as exc:  # the one publish; peers stop seeing this session without it
+            raise DiscoveryError(
+                f"the {action} announce was not published ({type(exc).__name__}: {exc}); "
+                "until one is, peers do not see this session"
+            ) from exc
 
-    async def _consume_loop(self) -> None:
-        if self._channel is None or self._exchange is None:
-            return
+    async def _start_consumer(self) -> None:
+        """Bind a queue to the announce routing key and handle what arrives on it."""
         try:
             queue = await self._channel.declare_queue("", exclusive=True)  # type: ignore[union-attr]
             await queue.bind(self._exchange, routing_key=_ANNOUNCE_ROUTING_KEY)
+            await queue.consume(self._on_message)  # type: ignore[union-attr]
+        except Exception as exc:  # setup of the one consumer; without it no peer is ever seen
+            raise DiscoveryError(
+                f"sleipnir discovery could not start consuming announcements "
+                f"({type(exc).__name__}: {exc}); this session would see no peers"
+            ) from exc
 
-            async def _on_message(message: object) -> None:
-                async with message.process():  # type: ignore[attr-defined]
-                    try:
-                        raw = json.loads(message.body)  # type: ignore[attr-defined]
-                        await self._handle_announce(raw)
-                    except Exception as exc:
-                        logger.debug("sleipnir_discovery: bad announce message: %s", exc)
-
-            await queue.consume(_on_message)  # type: ignore[union-attr]
-
-            # Keep alive until cancelled
-            await asyncio.Future()
-        except asyncio.CancelledError:
-            return
-        except Exception as exc:
-            logger.debug("sleipnir_discovery: consume_loop error: %s", exc)
+    async def _on_message(self, message: object) -> None:
+        """One announcement off the queue. A malformed one is refused and counted; the
+        consumer carries on, since one peer's bad message must not blind this session."""
+        async with message.process():  # type: ignore[attr-defined]
+            try:
+                raw = json.loads(message.body)  # type: ignore[attr-defined]
+            except ValueError as exc:
+                refuse_message("sleipnir", "malformed", "", f"not JSON: {exc}")
+                return
+            await self._handle_announce(raw)
 
     async def _handle_announce(self, raw: dict) -> None:
-        if raw.get("event_type") != "ravn.mesh.announce":
+        if raw.get("event_type") != "mesh.announce":
             return
 
         payload = raw.get("payload", {})
+        identity_raw = payload.get("identity", {}) if isinstance(payload, dict) else None
+        if not isinstance(identity_raw, dict):
+            refuse_message(
+                "sleipnir", "malformed", str(raw.get("source", "")), "no identity object"
+            )
+            return
         action = payload.get("action", "join")
-        identity_raw = payload.get("identity", {})
         peer_id = identity_raw.get("peer_id", "")
 
         if not peer_id or peer_id == self._identity.peer_id:
             return
 
+        if self._attestor is not None and not self._attestor.accept(payload):
+            return
+
         if not self._validate_spiffe(raw, peer_id):
-            logger.debug("sleipnir_discovery: ignoring peer %s — SPIFFE validation failed", peer_id)
+            refuse_message(
+                "sleipnir",
+                "spiffe_invalid",
+                peer_id,
+                "the announcement carries no valid SPIFFE JWT-SVID for this peer",
+            )
             return
 
         if action == "leave":
@@ -282,18 +322,30 @@ class SleipnirDiscoveryAdapter:
         status = payload.get("status", "idle")
         task_count = int(payload.get("task_count", 0))
 
+        # A peer's busy flag travels with its activity state; an older peer announced a
+        # constant "idle" status, which says nothing about it.
+        not_announced = unannounced_facts(identity_raw, keys={"busy": "activity_state"})
+
         if peer_id in self._peers:
             peer = self._peers[peer_id]
             peer.last_seen = now
             peer.last_heartbeat = now
             peer.status = status  # type: ignore[assignment]
             peer.task_count = task_count
+            peer.role = str(identity_raw.get("role") or "")
+            peer.description = str(identity_raw.get("description") or "")
+            peer.activity_state = str(identity_raw.get("activity_state") or "")
+            peer.consumes_event_types = list(identity_raw.get("consumes_event_types") or [])
+            peer.emits_event_types = list(identity_raw.get("emits_event_types") or [])
+            peer.not_announced = not_announced
             return
 
         peer = MeshPeer(
             peer_id=peer_id,
             realm_id=identity_raw.get("realm_id", ""),
             persona=identity_raw.get("persona", ""),
+            display_name=str(identity_raw.get("display_name") or ""),
+            participant_type=str(identity_raw.get("participant_type") or "ravn"),
             capabilities=identity_raw.get("capabilities", []),
             permission_mode=identity_raw.get("permission_mode", ""),
             version=identity_raw.get("version", ""),
@@ -301,6 +353,12 @@ class SleipnirDiscoveryAdapter:
             pub_address=identity_raw.get("pub_address"),
             spiffe_id=identity_raw.get("spiffe_id"),
             sleipnir_routing_key=identity_raw.get("sleipnir_routing_key"),
+            consumes_event_types=list(identity_raw.get("consumes_event_types") or []),
+            emits_event_types=list(identity_raw.get("emits_event_types") or []),
+            role=str(identity_raw.get("role") or ""),
+            description=str(identity_raw.get("description") or ""),
+            activity_state=str(identity_raw.get("activity_state") or ""),
+            not_announced=not_announced,
             trust_level="verified",
             first_seen=now,
             last_seen=now,
@@ -309,9 +367,7 @@ class SleipnirDiscoveryAdapter:
             task_count=task_count,
         )
         self._peers[peer_id] = peer
-        for cb in self._on_join:
-            with suppress(Exception):
-                cb(peer)
+        notify("sleipnir", "join", self._on_join, peer)
 
     def _validate_spiffe(self, raw: dict, peer_id: str) -> bool:
         """Validate SPIFFE JWT-SVID on the announce message.
@@ -340,15 +396,13 @@ class SleipnirDiscoveryAdapter:
             claims = json.loads(claims_raw)
             sub = claims.get("sub", "")
             return f"/ravn/{peer_id}" in sub
-        except Exception:
-            return False
+        except (ValueError, TypeError, AttributeError):
+            return False  # the caller refuses and counts it
 
     def _remove_peer(self, peer_id: str) -> None:
         peer = self._peers.pop(peer_id, None)
         if peer is not None:
-            for cb in self._on_leave:
-                with suppress(Exception):
-                    cb(peer)
+            notify("sleipnir", "leave", self._on_leave, peer)
 
     def _identity_dict(self) -> dict:
         return {
@@ -362,18 +416,25 @@ class SleipnirDiscoveryAdapter:
             "pub_address": self._identity.pub_address,
             "spiffe_id": self._identity.spiffe_id,
             "sleipnir_routing_key": self._identity.sleipnir_routing_key,
+            "display_name": getattr(self._identity, "display_name", ""),
+            "participant_type": getattr(self._identity, "participant_type", "ravn"),
+            "consumes_event_types": list(getattr(self._identity, "consumes_event_types", [])),
+            "emits_event_types": list(getattr(self._identity, "emits_event_types", [])),
+            "role": getattr(self._identity, "role", ""),
+            "description": getattr(self._identity, "description", ""),
+            "activity_state": getattr(self._identity, "activity_state", ""),
         }
 
     async def _heartbeat_loop(self) -> None:
         while True:
+            await asyncio.sleep(self._heartbeat_interval_s)
             try:
-                await asyncio.sleep(self._heartbeat_interval_s)
                 await self._publish_announce("heartbeat")
-                self._evict_stale_peers()
-            except asyncio.CancelledError:
-                return
-            except Exception as exc:
-                logger.debug("sleipnir_discovery: heartbeat_loop error: %s", exc)
+            except DiscoveryError as exc:
+                # The loop must go on: the next interval may succeed. Until one does, peers
+                # age this session out, which is why this is an error and not a debug line.
+                report_failure("sleipnir", "heartbeat", str(exc))
+            self._evict_stale_peers()
 
     def _evict_stale_peers(self) -> None:
         now = datetime.now(UTC)
@@ -386,7 +447,5 @@ class SleipnirDiscoveryAdapter:
         for pid in to_evict:
             peer = self._peers.pop(pid, None)
             if peer is not None:
-                logger.debug("sleipnir_discovery: evicted stale peer %s", pid)
-                for cb in self._on_leave:
-                    with suppress(Exception):
-                        cb(peer)
+                logger.info("sleipnir_discovery: evicted stale peer %s", pid)
+                notify("sleipnir", "leave", self._on_leave, peer)

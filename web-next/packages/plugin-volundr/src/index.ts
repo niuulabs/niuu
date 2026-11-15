@@ -5,12 +5,7 @@ import { definePlugin } from '@niuulabs/plugin-sdk';
 import { ForgePage } from './ui/ForgePage';
 import { VolundrPage } from './ui/VolundrPage';
 import { NewSessionPage } from './ui/NewSessionPage';
-import {
-  VolundrSessionsRoute,
-  VolundrSessionRoute,
-  VolundrArchivedRoute,
-  VolundrHostsRoute,
-} from './ui/routes';
+import { VolundrSessionsRoute, VolundrArchivedRoute, VolundrHostsRoute } from './ui/routes';
 import { LaunchCatalogPage } from './ui/LaunchCatalogPage';
 import { HistoryPage } from './ui/HistoryPage';
 import { NotificationsPage } from './ui/notifications/NotificationsPage';
@@ -73,8 +68,18 @@ export const volundrPlugin = definePlugin({
     }),
     createRoute({
       getParentRoute: () => rootRoute,
+      // The standalone session page is gone: an old link opens the session on the Sessions
+      // page, keeping its anchor (a notification) and query.
       path: '/volundr/session/$sessionId',
-      component: VolundrSessionRoute,
+      beforeLoad: ({ params, location }) => {
+        throw redirect({
+          to: '/volundr/sessions/$sessionId' as never,
+          params: { sessionId: params.sessionId } as never,
+          search: location.search as never,
+          hash: location.hash,
+        });
+      },
+      component: () => null,
     }),
     createRoute({
       getParentRoute: () => rootRoute,
@@ -155,6 +160,12 @@ export type {
   VolundrSessionChanges,
 } from './ports/IVolundrService';
 export type { IClusterAdapter } from './ports/IClusterAdapter';
+export { RUN_GATE_SERVICE, type IRunGateService, type RunGate } from './ports/IRunGateService';
+export {
+  RUN_WORKFLOW_VIEW_SERVICE,
+  type RunWorkflowView,
+  type RunWorkflowViewProps,
+} from './ports/IRunWorkflowView';
 export type {
   ISessionStore,
   SessionChangeReader,
@@ -203,6 +214,7 @@ export {
 } from './ui/hooks/useNotifications';
 export { NewSessionPage } from './ui/NewSessionPage';
 export { useSessionList, useSessionDetail } from './ui/hooks/useSessionStore';
+export { useSharedOwnerNames, sharedProjects } from './ui/hooks/useSharedOwnerNames';
 export { useSessionRead, type UseSessionRead } from './ui/hooks/useSessionRead';
 export { sessionActivityTs, compareSessionsByActivity } from './ui/sessions/sessionLabels';
 export {
@@ -288,9 +300,33 @@ export type {
   StoredCredential,
   SecretType,
   SessionSource,
+  SessionRoom,
+  SessionRoomRole,
+  SessionParticipant,
+  SessionProjectPerson,
+  ParticipantCandidate,
+  ParticipantRole,
+  ParticipantStatus,
   ForgeProject,
   ForgeProjectChanges,
+  ProjectRole,
+  MemberSkill,
+  ProjectMember,
+  ProjectMemberCandidate,
+  ProjectMemberChange,
   SessionProjectMembership,
+  TeamInstallMethod,
+  TeamConfigField,
+  TeamCatalogEntry,
+  TeamIntegration,
+  ProjectMemoryMount,
+  TeamRouteEvent,
+  TeamDeliverTo,
+  TeamRoute,
+  TeamRouteChange,
+  TeamIntegrationUse,
+  TeamIntegrationUsagePage,
+  TeamServiceAccountConnect,
   SessionDefinition,
   SessionOrigin,
   ExternalSession,
@@ -323,3 +359,13 @@ export type {
 } from './domain/computeHosts';
 
 export { ForgeSessionSettings } from './ui/ForgeSessionSettings';
+
+export {
+  PROJECT_ROLES,
+  isSharedSession,
+  isInvitation,
+  canAnswerGates,
+  sharedSessionLabel,
+  roomRoleOfProjectRole,
+  PARTICIPANT_ROLES,
+} from './models/volundr.model';

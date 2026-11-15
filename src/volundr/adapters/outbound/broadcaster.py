@@ -11,8 +11,10 @@ from uuid import UUID
 
 from volundr.domain.models import EventType, RealtimeEvent, TimelineResponse
 from volundr.domain.ports import EventBroadcaster
+from volundr.domain.team import TEAM_KEY, TEAM_MEMBER_KEY
 
 if TYPE_CHECKING:
+    from niuu.domain.guild_membership import GuildInstance
     from sleipnir.ports.events import SleipnirPublisher
     from volundr.domain.models import Session, TimelineEvent
 
@@ -74,6 +76,7 @@ class InMemoryEventBroadcaster(EventBroadcaster):
         max_queue_size: int = 100,
         sleipnir_publisher: SleipnirPublisher | None = None,
         sleipnir_source: str = "volundr",
+        guild_instance: GuildInstance | None = None,
     ):
         """Initialize the broadcaster.
 
@@ -85,6 +88,9 @@ class InMemoryEventBroadcaster(EventBroadcaster):
                 platform event bus in addition to local SSE clients.
             sleipnir_source: Source string used in Sleipnir events (e.g.
                 ``"volundr"`` or ``"volundr:prod"``).
+            guild_instance: This node's entry in its Guild registry. Session
+                events then carry its ``instance_*`` fields, as the session
+                responses do, so a client of this node alone can place them.
         """
         self._subscribers: set[asyncio.Queue[RealtimeEvent]] = set()
         self._max_queue_size = max_queue_size
@@ -92,6 +98,7 @@ class InMemoryEventBroadcaster(EventBroadcaster):
         self._sleipnir_publisher = sleipnir_publisher
         self._sleipnir_source = sleipnir_source
         self._sleipnir_type_map: dict[str, str] | None = None
+        self._instance_fields = guild_instance.fields() if guild_instance else {}
 
     async def publish(self, event: RealtimeEvent) -> None:
         """Publish an event to all connected subscribers.
@@ -238,6 +245,7 @@ class InMemoryEventBroadcaster(EventBroadcaster):
         return RealtimeEvent(
             type=event_type,
             data={
+                **self._instance_fields,
                 "id": str(session.id),
                 "name": session.name,
                 "model": session.effective_model,
@@ -293,6 +301,19 @@ class InMemoryEventBroadcaster(EventBroadcaster):
                 "startup": (
                     session.startup.model_dump(mode="json") if session.startup is not None else None
                 ),
+                # Where the session sits in its project: clients replace a cached session with
+                # this event, so leaving it out would drop a run's members from their run (and
+                # their project) on every update until the next list read put them back.
+                "coordination": (
+                    session.coordination.model_dump(mode="json")
+                    if session.coordination is not None
+                    else None
+                ),
+                # A unit's members nest under their root, and a team's root and members say
+                # so: dropped here, every update of a member would lift it out of its team.
+                "hosted_by": str(session.hosted_by) if session.hosted_by else None,
+                "team": session.workload_config.get(TEAM_KEY),
+                "team_member": session.workload_config.get(TEAM_MEMBER_KEY),
             },
             timestamp=datetime.now(UTC),
         )

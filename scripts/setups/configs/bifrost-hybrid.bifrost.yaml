@@ -1,11 +1,11 @@
 # ─── Bifrost config for: bifrost-hybrid ──────────────────────────────────────
 #
-# Cloud primary + local Ollama fallback.
-# Failover kicks in on 429/5xx or when cloud is unreachable.
+# Cloud provider + local Ollama. Each request is served by one provider;
+# there is no fallback to the other when it fails.
 # ─────────────────────────────────────────────────────────────────────────────
 
 bifrost:
-  routing_strategy: failover
+  routing_strategy: direct
 
   providers:
     # Configure your cloud provider here

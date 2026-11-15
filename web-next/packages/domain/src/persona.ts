@@ -40,7 +40,6 @@ export interface PersonaSummary {
   color: string;
   summary: string;
   permissionMode: string;
-  allowedTools: string[];
   iterationBudget: number;
   isBuiltin: boolean;
   hasOverride: boolean;

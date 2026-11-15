@@ -3,8 +3,7 @@
 Widening the session proxy's attach guard to any active participant (not
 just owner/admin) means "attach" alone is no longer enough authority to call
 every route under a session's ``/api/*`` — a viewer who can attach must not
-also be able to POST /api/services (host code execution in local mode) or
-resolve a workflow gate.
+also be able to POST /api/services (host code execution in local mode).
 
 This table is enforced in TWO places that must never drift from each other:
 the session proxy (``niuu.session_proxy``, which forwards browser HTTP
@@ -25,11 +24,16 @@ import re
 # literal, so the four call sites can never drift from each other.
 ROOM_ROLE_HEADER = "x-niuu-room-role"
 
+# The verified Forge session that made a room call through Forge. Forge stamps it
+# from the caller's session credential after verifying it; the room host trusts it
+# only because every other source of the header is dropped before it gets there.
+ROOM_CALLER_SESSION_HEADER = "x-niuu-room-caller-session"
+
 ROOM_ROLE_RANK = {"viewer": 0, "approver": 1, "owner": 2}
 
 # Ordered allowlists: (HTTP method, path-regex matched against the request
 # path relative to a session's /api/, e.g. "conversation/history" or
-# "workflow/gates/g1/resolve"). This is a STRICT ALLOWLIST, not a denylist —
+# "help/requests/h1/answer"). This is a STRICT ALLOWLIST, not a denylist —
 # required_role_for_route defaults to "owner" for anything that matches
 # neither list, so a new broker route that forgets to appear here is
 # owner-only by construction, never accidentally open to a viewer.

@@ -16,7 +16,7 @@ from typing import Any
 from niuu.ports.session_proxy import SessionProxyTarget
 from volundr.domain.execution_catalog import ResolvedExecutionPlan
 from volundr.domain.models import Session, SessionSpec, SessionStatus
-from volundr.domain.ports import PodManager, PodStartResult, SessionCapacity
+from volundr.domain.ports import HostedMemberSource, PodManager, PodStartResult, SessionCapacity
 from volundr.domain.session_runtimes import (
     HOST_SELECTOR_KEY,
     RUNTIME_GRANTS_KEY,
@@ -93,6 +93,11 @@ class PlacementPodManager(PodManager):
     def configure_pool(self, service) -> None:
         self._pool.configure_pool(service)
 
+    def configure_hosted_members(self, source: HostedMemberSource) -> None:
+        """Both managers can host a unit, so both resolve its members from Forge."""
+        for child in self._children():
+            child.configure_hosted_members(source)
+
     @property
     def profile(self) -> str:
         return self._pool.profile
@@ -139,6 +144,20 @@ class PlacementPodManager(PodManager):
         return all(child.delivers_forge_session_token for child in self._children())
 
     @property
+    def delivers_forge_session_token_somewhere(self) -> bool:
+        """Whether at least one placement hands its broker the credential."""
+        return any(child.delivers_forge_session_token for child in self._children())
+
+    def delivers_forge_session_token_for(self, session: Session) -> bool:
+        """Whether the manager that runs *session* delivers its credential.
+
+        The whole-Forge property above is for the question "can every session get one"; a
+        launch only needs the manager it is placed on, so a pool with no runtime does not
+        take the credential away from local sessions.
+        """
+        return self._for(session).delivers_forge_session_token
+
+    @property
     def reports_startup_stages(self) -> bool:
         return any(child.reports_startup_stages for child in self._children())
 
@@ -171,6 +190,12 @@ class PlacementPodManager(PodManager):
 
     async def destroy(self, session: Session) -> bool:
         return await self._for(session).destroy(session)
+
+    async def restart_hosted_member(self, member: Session) -> bool:
+        return await self._for(member).restart_hosted_member(member)
+
+    async def stop_hosted_member(self, member: Session) -> None:
+        await self._for(member).stop_hosted_member(member)
 
     async def status(self, session: Session) -> SessionStatus:
         return await self._for(session).status(session)

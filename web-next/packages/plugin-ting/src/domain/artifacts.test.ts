@@ -30,6 +30,7 @@ const RUN: RunRef = {
   workflowId: 'wf-1',
   workflowVersion: '1.0.1',
   updatedAt: '2026-11-02T23:44:00Z',
+  sessions: [{ sessionId: 'session-1', instanceId: 'valhalla', member: '' }],
 };
 
 const NONE = new Set<string>();
@@ -168,6 +169,12 @@ describe('artifacts from publications', () => {
 });
 
 describe('artifact status', () => {
+  it('says a run an operator aborted was canceled, not failed', () => {
+    expect(artifactStatus({ ...RUN, status: 'canceled', condition: 'canceled' }, NONE)).toBe(
+      'canceled',
+    );
+  });
+
   it('waits on a person only while the run is held at a gate', () => {
     expect(
       artifactStatus(

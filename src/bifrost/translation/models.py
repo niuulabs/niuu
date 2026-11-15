@@ -202,10 +202,10 @@ class AnthropicRequest(BaseModel):
     # Set when a strip_images rule removed image blocks, so the native
     # passthrough path can strip them from the provider's own payload too.
     _images_stripped: bool = PrivateAttr(default=False)
-    # The (provider, model) candidates ModelRouter.route chose, so a request
+    # The (provider, model) pair ModelRouter.route chose, so a request
     # routes once even when the inbound layer inspects the route before
     # handing the request back to the router.
-    _routed_candidates: list[tuple[str, str]] | None = PrivateAttr(default=None)
+    _routed_target: tuple[str, str] | None = PrivateAttr(default=None)
 
     @model_validator(mode="before")
     @classmethod

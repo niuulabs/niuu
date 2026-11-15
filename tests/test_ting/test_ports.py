@@ -8,6 +8,7 @@ from ting.ports.git import GitPort
 from ting.ports.llm import LLMPort
 from ting.ports.tracker import TrackerPort
 from ting.ports.volundr import VolundrPort
+from ting.ports.workflow_steps import OfferSigner, StepSessionPort
 
 
 class TestTrackerPort:
@@ -68,6 +69,8 @@ class TestVolundrPort:
         methods = {
             "spawn_session",
             "get_project",
+            "list_member_project_ids",
+            "get_project_role",
             "ensure_project",
             "session_project",
             "join_project",
@@ -80,8 +83,12 @@ class TestVolundrPort:
             "inspect_delivery_integration_chain",
             "get_current_portable_persona",
             "create_step_session",
-            "deliver_workflow_step",
-            "get_workflow_step",
+            "check_playability",
+            "create_run_room",
+            "post_room_notice",
+            "post_room_offer",
+            "submit_session_notification",
+            "resolve_notification",
             "get_session",
             "list_sessions",
             "get_pr_status",
@@ -104,6 +111,38 @@ class TestVolundrPort:
             if not name.startswith("_")
         }
         assert methods == abstract_methods
+
+
+class TestStepSessionPort:
+    def test_is_abstract(self) -> None:
+        with pytest.raises(TypeError):
+            StepSessionPort()  # type: ignore[abstract]
+
+    def test_methods_exist(self) -> None:
+        methods = {
+            "launch_run",
+            "publish_offer",
+            "stop_run_sessions",
+            "session_failure",
+            "session_liveness",
+            "replace_session",
+        }
+        abstract_methods = {
+            name
+            for name, _ in inspect.getmembers(StepSessionPort, predicate=inspect.isfunction)
+            if not name.startswith("_")
+        }
+        assert methods == abstract_methods
+
+    @pytest.mark.parametrize("removed", ["ensure_session", "deliver", "observe"])
+    def test_per_member_delivery_is_gone(self, removed: str) -> None:
+        assert not hasattr(StepSessionPort, removed)
+
+
+class TestOfferSigner:
+    def test_is_abstract(self) -> None:
+        with pytest.raises(TypeError):
+            OfferSigner()  # type: ignore[abstract]
 
 
 class TestLLMPort:

@@ -125,6 +125,14 @@ JSON retains the original findings in `ignoredMatches` with the VEX reason;
 SARIF reports the remaining actionable findings. No global ignore rule or
 version spoofing is used.
 
+The macOS bundle scan runs on macOS so it can execute the bundled interpreter's
+same verifier after relocation. It resolves the bundle's OCI tag to a digest
+before pulling, checks runtime hashes and exploit regressions, and binds VEX
+to that digest and the exact directory/runtime paths Syft scanned. The scanner
+binaries are checksum-pinned for darwin arm64 as well as linux amd64. The raw
+findings, verifier evidence and VEX are retained alongside the filtered scan;
+OpenBao findings receive no Python VEX statements.
+
 The upstream patches and derived modules are covered by `LICENSE.cpython`.
 
 ## Runtime boundary

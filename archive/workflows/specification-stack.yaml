@@ -1,0 +1,405 @@
+schema_version: 1
+id: 96ecf5df-18a0-542b-9df6-aef6aef6a5db
+name: Specification Stack
+description: End-to-end specification workflow that produces a PRD, SRD, SDD, and delivery breakdown with
+  explicit review and approval gates between each artifact.
+version: 1.1.3
+persona_dependencies:
+  specification-breakdown-critic:
+    id: specification-breakdown-critic
+    revision: content-293f50db5fcb2ff3
+    digest: sha256:293f50db5fcb2ff347d1982b757564f48759d17eda4cf921e54d5abe9645c3a6
+    path: personas/specification-breakdown-critic.yaml
+  specification-breakdown-planner:
+    id: specification-breakdown-planner
+    revision: content-c17eb8efcbf851f8
+    digest: sha256:c17eb8efcbf851f8225ac3959010c14ebe2f424ff59c3214171fdb63dd41fc31
+    path: personas/specification-breakdown-planner.yaml
+  specification-framer:
+    id: specification-framer
+    revision: content-44af1901d85eb1be
+    digest: sha256:44af1901d85eb1befe7da012d57d87d23d6451624227b7bc475dea4e8ce26f80
+    path: personas/specification-framer.yaml
+  specification-prd-author:
+    id: specification-prd-author
+    revision: content-21801fa32f129867
+    digest: sha256:21801fa32f1298678412b35719d5a9ba796e77970fcf2785c2a1cafc1bbfa898
+    path: personas/specification-prd-author.yaml
+  specification-prd-critic:
+    id: specification-prd-critic
+    revision: content-d7baa8c5122893d1
+    digest: sha256:d7baa8c5122893d1222b7e4c83e018d104c894e9299366c5a259b1c271d99b5b
+    path: personas/specification-prd-critic.yaml
+  specification-publisher:
+    id: specification-publisher
+    revision: content-bace0c0ca927ab86
+    digest: sha256:bace0c0ca927ab86d610785e71812c209e97ab4fd13d00a22824ca8ac063cc21
+    path: personas/specification-publisher.yaml
+  specification-sdd-author:
+    id: specification-sdd-author
+    revision: content-af48b1dab0bf70c0
+    digest: sha256:af48b1dab0bf70c00841a8fbc70c7753f598a2a4fb9d9665813fcc9964baa3e4
+    path: personas/specification-sdd-author.yaml
+  specification-sdd-critic:
+    id: specification-sdd-critic
+    revision: content-ac42c3587bfe1644
+    digest: sha256:ac42c3587bfe16443c866d67938ec4d232527182f6bf135f2d6d12f19bc71f3b
+    path: personas/specification-sdd-critic.yaml
+  specification-srd-author:
+    id: specification-srd-author
+    revision: content-e79ec7264fba56b3
+    digest: sha256:e79ec7264fba56b306e2e22f0f4ebe85002e666aa1eb937c3679559d859ae60c
+    path: personas/specification-srd-author.yaml
+  specification-srd-critic:
+    id: specification-srd-critic
+    revision: content-af0def427cc622af
+    digest: sha256:af0def427cc622afdfec156a6484c07174d11011af3882614b2fc1ab95c278c0
+    path: personas/specification-srd-critic.yaml
+graph:
+  nodes:
+  - id: spec-request
+    kind: trigger
+    label: Start specification stack
+    source: user specification request
+    dispatchEvent: spec.requested
+    position:
+      x: 96
+      y: 344
+  - id: spec-memory
+    kind: resource
+    label: Specification Memory
+    resourceType: mimir
+    bindingMode: registry
+    registryEntryId: mimir-yggdrasil
+    url: https://mimir.yggdrasil.niuu.world/api/v1
+    authRef: workload:mimir
+    role: shared
+    categories:
+    - specifications
+    - product
+    - design
+    - planning
+    position:
+      x: 320
+      y: 624
+  - id: spec-frame
+    kind: stage
+    label: Frame initiative
+    executionMode: sequential
+    joinMode: any
+    stageMembers:
+    - personaId: specification-framer
+      budget: 18
+      model: gpt-5.6-terra
+      consumesEventTypes:
+      - spec.requested
+    position:
+      x: 320
+      y: 344
+  - id: spec-prd
+    kind: stage
+    label: Draft PRD
+    executionMode: sequential
+    joinMode: any
+    stageMembers:
+    - personaId: specification-prd-author
+      budget: 24
+      model: gpt-5.6-terra
+      consumesEventTypes:
+      - spec.framed
+      - spec.prd.changes_requested
+    position:
+      x: 608
+      y: 344
+  - id: spec-prd-review
+    kind: stage
+    label: Review PRD
+    executionMode: sequential
+    joinMode: any
+    stageMembers:
+    - personaId: specification-prd-critic
+      budget: 18
+      model: gpt-5.6-terra
+      consumesEventTypes:
+      - spec.prd.drafted
+    position:
+      x: 896
+      y: 232
+  - id: spec-prd-gate
+    kind: gate
+    label: PRD approval gate
+    condition: Review the PRD and decide whether it is strong enough to unlock SRD drafting.
+    mode: human_approval
+    pendingBehavior: help_needed
+    approvalEvent: spec.prd.approved
+    changesRequestedEvent: spec.prd.changes_requested
+    instructions: Review the PRD, approve it if it is strong enough to unlock SRD drafting, or request
+      changes with clear feedback.
+    autoForwardAfter: 30m
+    position:
+      x: 896
+      y: 456
+  - id: spec-srd
+    kind: stage
+    label: Draft SRD
+    executionMode: sequential
+    joinMode: any
+    stageMembers:
+    - personaId: specification-srd-author
+      budget: 22
+      model: gpt-5.6-terra
+      consumesEventTypes:
+      - spec.prd.approved
+      - spec.srd.changes_requested
+    position:
+      x: 1184
+      y: 344
+  - id: spec-srd-review
+    kind: stage
+    label: Review SRD
+    executionMode: sequential
+    joinMode: any
+    stageMembers:
+    - personaId: specification-srd-critic
+      budget: 18
+      model: gpt-5.6-terra
+      consumesEventTypes:
+      - spec.srd.drafted
+    position:
+      x: 1472
+      y: 232
+  - id: spec-srd-gate
+    kind: gate
+    label: SRD approval gate
+    condition: Review the SRD and decide whether the system requirements are complete and unambiguous
+      enough to unlock design work.
+    mode: human_approval
+    pendingBehavior: help_needed
+    approvalEvent: spec.srd.approved
+    changesRequestedEvent: spec.srd.changes_requested
+    instructions: Review the SRD, approve it if the system requirements are complete and unambiguous enough
+      to unlock design work, or request changes with clear feedback.
+    autoForwardAfter: 30m
+    position:
+      x: 1472
+      y: 456
+  - id: spec-sdd
+    kind: stage
+    label: Draft SDD
+    executionMode: sequential
+    joinMode: any
+    stageMembers:
+    - personaId: specification-sdd-author
+      budget: 24
+      model: gpt-5.6-terra
+      consumesEventTypes:
+      - spec.srd.approved
+      - spec.sdd.changes_requested
+    position:
+      x: 1760
+      y: 344
+  - id: spec-sdd-review
+    kind: stage
+    label: Review SDD
+    executionMode: sequential
+    joinMode: any
+    stageMembers:
+    - personaId: specification-sdd-critic
+      budget: 18
+      model: gpt-5.6-terra
+      consumesEventTypes:
+      - spec.sdd.drafted
+    position:
+      x: 2048
+      y: 232
+  - id: spec-sdd-gate
+    kind: gate
+    label: SDD approval gate
+    condition: Review the SDD and decide whether the proposed design is coherent, realistic, and ready
+      for breakdown planning.
+    mode: human_approval
+    pendingBehavior: help_needed
+    approvalEvent: spec.sdd.approved
+    changesRequestedEvent: spec.sdd.changes_requested
+    instructions: Review the SDD, approve it if the design is coherent, realistic, and ready for breakdown
+      planning, or request changes with clear feedback.
+    autoForwardAfter: 30m
+    position:
+      x: 2048
+      y: 456
+  - id: spec-breakdown
+    kind: stage
+    label: Draft breakdown
+    executionMode: sequential
+    joinMode: any
+    stageMembers:
+    - personaId: specification-breakdown-planner
+      budget: 22
+      model: gpt-5.6-terra
+      consumesEventTypes:
+      - spec.sdd.approved
+      - spec.breakdown.changes_requested
+    position:
+      x: 2336
+      y: 344
+  - id: spec-breakdown-review
+    kind: stage
+    label: Review breakdown
+    executionMode: sequential
+    joinMode: any
+    stageMembers:
+    - personaId: specification-breakdown-critic
+      budget: 16
+      model: gpt-5.6-terra
+      consumesEventTypes:
+      - spec.breakdown.drafted
+    position:
+      x: 2624
+      y: 232
+  - id: spec-breakdown-gate
+    kind: gate
+    label: Breakdown approval gate
+    condition: Review the implementation breakdown and decide whether the plan is actionable enough to
+      publish.
+    mode: human_approval
+    pendingBehavior: help_needed
+    approvalEvent: spec.breakdown.approved
+    changesRequestedEvent: spec.breakdown.changes_requested
+    instructions: Review the implementation breakdown, approve it if the plan is actionable enough to
+      publish, or request changes with clear feedback.
+    autoForwardAfter: 30m
+    position:
+      x: 2624
+      y: 456
+  - id: spec-publish
+    kind: stage
+    label: Publish specification pack
+    executionMode: sequential
+    joinMode: any
+    stageMembers:
+    - personaId: specification-publisher
+      budget: 16
+      model: gpt-5.6-terra
+      consumesEventTypes:
+      - spec.breakdown.approved
+    position:
+      x: 2912
+      y: 344
+  - id: spec-complete
+    kind: end
+    label: Specification stack complete
+    joinMode: all
+    completionEvent: spec.completed
+    position:
+      x: 3200
+      y: 344
+  edges:
+  - id: edge-spec-request-to-frame
+    source: spec-request
+    target: spec-frame
+    label: spec.requested -> spec.requested
+  - id: edge-frame-to-prd
+    source: spec-frame
+    target: spec-prd
+    label: spec.framed -> spec.framed
+  - id: edge-prd-to-review
+    source: spec-prd
+    target: spec-prd-review
+    label: spec.prd.drafted -> spec.prd.drafted
+  - id: edge-prd-review-to-prd
+    source: spec-prd-review
+    target: spec-prd
+    label: spec.prd.changes_requested -> spec.prd.changes_requested
+    rework: true
+  - id: edge-prd-review-to-gate
+    source: spec-prd-review
+    target: spec-prd-gate
+    label: spec.prd.ready_for_gate -> spec.prd.ready_for_gate
+  - id: edge-prd-gate-to-prd
+    source: spec-prd-gate
+    target: spec-prd
+    label: spec.prd.changes_requested -> spec.prd.changes_requested
+    rework: true
+  - id: edge-prd-gate-to-srd
+    source: spec-prd-gate
+    target: spec-srd
+    label: spec.prd.approved -> spec.prd.approved
+  - id: edge-srd-to-review
+    source: spec-srd
+    target: spec-srd-review
+    label: spec.srd.drafted -> spec.srd.drafted
+  - id: edge-srd-review-to-srd
+    source: spec-srd-review
+    target: spec-srd
+    label: spec.srd.changes_requested -> spec.srd.changes_requested
+    rework: true
+  - id: edge-srd-review-to-gate
+    source: spec-srd-review
+    target: spec-srd-gate
+    label: spec.srd.ready_for_gate -> spec.srd.ready_for_gate
+  - id: edge-srd-gate-to-srd
+    source: spec-srd-gate
+    target: spec-srd
+    label: spec.srd.changes_requested -> spec.srd.changes_requested
+    rework: true
+  - id: edge-srd-gate-to-sdd
+    source: spec-srd-gate
+    target: spec-sdd
+    label: spec.srd.approved -> spec.srd.approved
+  - id: edge-sdd-to-review
+    source: spec-sdd
+    target: spec-sdd-review
+    label: spec.sdd.drafted -> spec.sdd.drafted
+  - id: edge-sdd-review-to-sdd
+    source: spec-sdd-review
+    target: spec-sdd
+    label: spec.sdd.changes_requested -> spec.sdd.changes_requested
+    rework: true
+  - id: edge-sdd-review-to-gate
+    source: spec-sdd-review
+    target: spec-sdd-gate
+    label: spec.sdd.ready_for_gate -> spec.sdd.ready_for_gate
+  - id: edge-sdd-gate-to-sdd
+    source: spec-sdd-gate
+    target: spec-sdd
+    label: spec.sdd.changes_requested -> spec.sdd.changes_requested
+    rework: true
+  - id: edge-sdd-gate-to-breakdown
+    source: spec-sdd-gate
+    target: spec-breakdown
+    label: spec.sdd.approved -> spec.sdd.approved
+  - id: edge-breakdown-to-review
+    source: spec-breakdown
+    target: spec-breakdown-review
+    label: spec.breakdown.drafted -> spec.breakdown.drafted
+  - id: edge-breakdown-review-to-breakdown
+    source: spec-breakdown-review
+    target: spec-breakdown
+    label: spec.breakdown.changes_requested -> spec.breakdown.changes_requested
+    rework: true
+  - id: edge-breakdown-review-to-gate
+    source: spec-breakdown-review
+    target: spec-breakdown-gate
+    label: spec.breakdown.ready_for_gate -> spec.breakdown.ready_for_gate
+  - id: edge-breakdown-gate-to-breakdown
+    source: spec-breakdown-gate
+    target: spec-breakdown
+    label: spec.breakdown.changes_requested -> spec.breakdown.changes_requested
+    rework: true
+  - id: edge-breakdown-gate-to-publish
+    source: spec-breakdown-gate
+    target: spec-publish
+    label: spec.breakdown.approved -> spec.breakdown.approved
+  - id: edge-publish-to-end
+    source: spec-publish
+    target: spec-complete
+    label: spec.completed -> spec.completed
+  resourceBindings:
+  - id: binding-spec-memory
+    resourceNodeId: spec-memory
+    targetType: workflow
+    targetId: specification-stack
+    access: read_write
+    writePrefixes:
+    - specifications/
+    readPriority: 1

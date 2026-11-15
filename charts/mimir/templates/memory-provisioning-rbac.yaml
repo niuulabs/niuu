@@ -1,0 +1,44 @@
+{{- /*
+What the memory gateway needs to provision a gbrain per org (config.memory.provisioning):
+create and read the org's HelmRelease, create and read its signing-key Secret and read the
+owner-token Secret the gbrain chart makes, and read its Service. Only in the namespace the
+brains live in, which should hold nothing else: Secret names are made per org, so the
+rule cannot name them.
+*/ -}}
+{{- with .Values.config.memory }}
+{{- if and .enabled .provisioning .provisioning.enabled }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "mimir.fullname" $ }}-memory-provisioning
+  namespace: {{ .provisioning.namespace }}
+  labels:
+    {{- include "mimir.labels" $ | nindent 4 }}
+rules:
+  - apiGroups: [helm.toolkit.fluxcd.io]
+    resources: [helmreleases]
+    verbs: [get, list, create]
+  - apiGroups: [""]
+    resources: [secrets]
+    verbs: [get, create]
+  - apiGroups: [""]
+    resources: [services]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "mimir.fullname" $ }}-memory-provisioning
+  namespace: {{ .provisioning.namespace }}
+  labels:
+    {{- include "mimir.labels" $ | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "mimir.fullname" $ }}-memory-provisioning
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "mimir.serviceAccountName" $ }}
+    namespace: {{ $.Release.Namespace }}
+{{- end }}
+{{- end }}

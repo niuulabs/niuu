@@ -42,15 +42,18 @@ import {
   messageModel,
   ModelSpeaker,
 } from '../ChatMessages';
+import { isNotificationCardTool, isSecretRequestTool } from '../ToolBlock/groupContentBlocks';
 import { RoomMessage } from '../RoomMessage';
 import { ThreadGroup } from '../ThreadGroup';
 import { WorkersStrip } from '../WorkersStrip';
 import { useSessionLinks, type SessionLink } from '../../sessionLinks';
+import { ChatAuthorshipProvider, conversationAuthorship } from '../../authorship';
+import { PersonQuestionsProvider, type PersonQuestionsState } from '../../personQuestions';
 import { ProgressLane } from '../ProgressLane';
 import { WorkerSheet } from '../WorkerSheet';
 import { HandoffRow, handoffParties } from '../HandoffRow';
 import { AttentionRow } from '../AttentionRow';
-import { isCoordinator } from '../RoomMessage/speaker';
+import { isCoordinator, type RoomHost } from '../RoomMessage/speaker';
 import { ChatInput } from '../ChatInput';
 import { PlanDock } from '../PlanDock';
 import { QuestionBand } from '../QuestionBand';
@@ -143,6 +146,23 @@ function DefaultPermissionRequests({
 export interface SessionChatProps {
   /** All completed messages */
   messages: readonly ChatMessage[];
+  /**
+   * The signed-in person's id, as the broker records authors. With it, a message someone
+   * else wrote names its author even in a conversation of two; without it, authors are
+   * named only once several people have spoken.
+   */
+  viewerId?: string;
+  /**
+   * Questions the agent put to people: the accepted answers, the broker's refusals and the
+   * sends in flight (all by question id), and how to answer. `onAnswer` is omitted where the
+   * conversation cannot be answered in (a replay), so a card then only shows its state.
+   */
+  personQuestions?: Pick<PersonQuestionsState, 'answers' | 'errors' | 'sending' | 'onAnswer'>;
+  /**
+   * The viewer holds the approver room role or above, so may answer any question put to a
+   * person, not only their own. The broker enforces it.
+   */
+  roomApprover?: boolean;
   /** Currently streaming text (if any) */
   streamingContent?: string;
   /** Parts for the streaming message */
@@ -161,6 +181,13 @@ export interface SessionChatProps {
   onLoadOlderHistory?: () => Promise<void>;
   /** Room participants map (peerId → meta) */
   participants?: ReadonlyMap<string, RoomParticipant>;
+  /**
+   * The mesh peer of the session whose room this is (its session id). It leads its room;
+   * another session in it (a member of the workflow run it started) is one of its workers.
+   */
+  hostPeerId?: string;
+  /** What the host is called in its room: Coordinator, or its role in a workflow run's. */
+  hostLabel?: string;
   /**
    * Ids of the worker sessions this session coordinates. They join the room's agents in the
    * Workers strip, resolved through the page's session links.
@@ -186,6 +213,11 @@ export interface SessionChatProps {
   onFocusWorker?: (peerId: string | null) => void;
   /** The room's workers whenever who they are or what they are doing changes. */
   onWorkersChange?: (workers: readonly Worker[]) => void;
+  /**
+   * Show a focused worker's topics (listens for, emits) in its sheet's header. Off when the
+   * host shows them itself, behind the session's details.
+   */
+  showWorkerEvents?: boolean;
   /** Mesh events for the cascade panel */
   meshEvents?: readonly MeshEvent[];
   /** Per-agent internal event frames */
@@ -289,10 +321,10 @@ type InlineItem =
 const COORDINATOR_KEY = 'coordinator';
 
 /** Who a message speaks as, for sharing a header; null for messages that have no speaker. */
-function speakerKey(message: ChatMessage): string | null {
+function speakerKey(message: ChatMessage, host?: RoomHost): string | null {
   if (message.metadata?.messageType === 'system') return null;
   if (message.participant) {
-    return isCoordinator(message.participant) ? COORDINATOR_KEY : message.participant.peerId;
+    return isCoordinator(message.participant, host) ? COORDINATOR_KEY : message.participant.peerId;
   }
   return message.role === 'assistant' ? COORDINATOR_KEY : null;
 }
@@ -313,6 +345,16 @@ function groupStartedAt(
 }
 
 /** "54s", "2m 5s", "1h 12m": how long a turn worked, as Lexi writes it. */
+/** A turn that carries a card for the operator: a notification or a secret request. */
+function addressesOperator(message: ChatMessage): boolean {
+  return (message.parts ?? []).some(
+    (part) =>
+      part.type === 'tool_use' &&
+      !!part.name &&
+      (isNotificationCardTool(part.name) || isSecretRequestTool(part.name)),
+  );
+}
+
 function workedDuration(seconds: number): string {
   if (seconds < 60) return `${seconds}s`;
   const minutes = Math.floor(seconds / 60);
@@ -321,7 +363,37 @@ function workedDuration(seconds: number): string {
   return minutes % 60 ? `${hours}h ${minutes % 60}m` : `${hours}h`;
 }
 
-export function SessionChat({
+const NO_ENTRIES: ReadonlyMap<string, never> = new Map<string, never>();
+const NO_MEMBERS: ReadonlySet<string> = new Set<string>();
+
+/** The conversation: its messages know whether to name who sent them. */
+export function SessionChat(props: SessionChatProps) {
+  const { messages, viewerId, personQuestions, roomApprover = false } = props;
+  const authorship = useMemo(
+    () => conversationAuthorship(messages, viewerId),
+    [messages, viewerId],
+  );
+  const questions = useMemo<PersonQuestionsState>(
+    () => ({
+      viewerId,
+      approver: roomApprover,
+      answers: personQuestions?.answers ?? NO_ENTRIES,
+      errors: personQuestions?.errors ?? NO_ENTRIES,
+      sending: personQuestions?.sending ?? NO_MEMBERS,
+      onAnswer: personQuestions?.onAnswer,
+    }),
+    [viewerId, roomApprover, personQuestions],
+  );
+  return (
+    <ChatAuthorshipProvider value={authorship}>
+      <PersonQuestionsProvider value={questions}>
+        <SessionChatView {...props} />
+      </PersonQuestionsProvider>
+    </ChatAuthorshipProvider>
+  );
+}
+
+function SessionChatView({
   messages,
   streamingContent,
   streamingParts,
@@ -335,12 +407,15 @@ export function SessionChat({
   olderHistoryError,
   onLoadOlderHistory,
   participants = new Map(),
+  hostPeerId,
+  hostLabel,
   workerSessionIds,
   showWorkersStrip = true,
   aboveComposer,
   focusedWorkerId,
   onFocusWorker,
   onWorkersChange,
+  showWorkerEvents = true,
   meshEvents = [],
   agentEvents = new Map(),
   pendingPermissions = [],
@@ -416,18 +491,12 @@ export function SessionChat({
   const [showScrollBtn, setShowScrollBtn] = useState(false);
   const [newMessageCount, setNewMessageCount] = useState(0);
   const conversationView = useConversationView();
-  const [expandedTurns, setExpandedTurns] = useState<ReadonlySet<string>>(new Set());
+  // What the operator chose for a turn's "Worked" disclosure: it wins over every default
+  // (the tool-calls eye, the coordinator's folded view), so a click always opens or closes it.
+  const [turnChoices, setTurnChoices] = useState<ReadonlyMap<string, boolean>>(new Map());
 
-  const toggleTurn = useCallback((turnId: string) => {
-    setExpandedTurns((prev) => {
-      const next = new Set(prev);
-      if (next.has(turnId)) {
-        next.delete(turnId);
-      } else {
-        next.add(turnId);
-      }
-      return next;
-    });
+  const toggleTurn = useCallback((turnId: string, expanded: boolean) => {
+    setTurnChoices((prev) => new Map(prev).set(turnId, !expanded));
   }, []);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
@@ -478,19 +547,26 @@ export function SessionChat({
 
   // The coordinator's workers: the room's agents, their outcomes and the order of their flow.
   const workers = useMemo(
-    () => roomWorkers(participantsMap, meshEvents, messages),
-    [participantsMap, meshEvents, messages],
+    () => roomWorkers(participantsMap, meshEvents, messages, hostPeerId),
+    [participantsMap, meshEvents, messages, hostPeerId],
   );
   const stages = useMemo(() => workerStages(workers), [workers]);
+  const roomHost = useMemo<RoomHost>(
+    () => ({ peerId: hostPeerId, label: hostLabel }),
+    [hostPeerId, hostLabel],
+  );
   const hasWorkers = workers.length > 0;
   const sessionLinks = useSessionLinks();
+  // A worker session that is also in the room (a workflow run's member) is listed once, as
+  // one of the room's workers.
   const workerSessions = useMemo(
     () =>
       (workerSessionIds ?? []).flatMap((id): SessionLink[] => {
+        if (workers.some((worker) => worker.peerId === id)) return [];
         const link = sessionLinks?.resolve(id);
         return link ? [link] : [];
       }),
-    [sessionLinks, workerSessionIds],
+    [sessionLinks, workerSessionIds, workers],
   );
   const roomView = isRoomMode || isRoomSession || hasWorkers;
   const [ownFocus, setOwnFocus] = useState<string | null>(null);
@@ -524,7 +600,10 @@ export function SessionChat({
   const hasConversation = useMemo(
     () =>
       messages.some(
-        (m) => m.role === 'user' || (m.role === 'assistant' && !m.metadata?.messageType),
+        (m) =>
+          m.role === 'user' ||
+          (m.role === 'assistant' &&
+            (!m.metadata?.messageType || m.metadata.messageType === 'notice')),
       ),
     [messages],
   );
@@ -586,7 +665,9 @@ export function SessionChat({
 
   // Never fold across speakers, threads, visibility changes, or system notices.
   // Consecutive contributions remain in transcript order, including when a
-  // participant returns after another participant has spoken.
+  // participant returns after another participant has spoken. A notification or
+  // secret request is addressed to the operator, so it stands on its own like a
+  // notice instead of folding into the speaker's "Worked" row.
   const compactRoomGroups = useMemo(() => {
     const groups: (MessageGroup | { type: 'compact'; turn: CompactTurn })[] = [];
     let run: ChatMsg[] = [];
@@ -609,7 +690,8 @@ export function SessionChat({
       if (
         group.type === 'thread' ||
         group.message.role !== 'assistant' ||
-        group.message.metadata?.messageType
+        group.message.metadata?.messageType ||
+        addressesOperator(group.message)
       ) {
         flush();
         groups.push(group);
@@ -781,7 +863,7 @@ export function SessionChat({
     if (!hasWorkers) return hidden;
     let previous: string | null = null;
     const visit = (message: ChatMsg) => {
-      const key = speakerKey(message);
+      const key = speakerKey(message, roomHost);
       if (key && key === previous) hidden.add(message.id);
       previous = key;
     };
@@ -805,7 +887,7 @@ export function SessionChat({
       if (group.turn.final) visit(group.turn.final);
     }
     return hidden;
-  }, [hasWorkers, timeline]);
+  }, [hasWorkers, timeline, roomHost]);
 
   const hasRunningAssistantMessage = visibleMessages.some(
     (message) => message.role === 'assistant' && message.status === 'running',
@@ -1003,6 +1085,7 @@ export function SessionChat({
           <RoomMessage
             message={msg}
             workerRoom={hasWorkers}
+            host={roomHost}
             showHeader={!hiddenHeaders.has(msg.id)}
             onShowDetail={worker ? openWorker : undefined}
             onCopy={handleCopy}
@@ -1048,10 +1131,12 @@ export function SessionChat({
     // The "show tool calls and results" eye (showInternal) reveals the work
     // inline: when it is on, every turn's intermediary steps (tool calls/results)
     // are expanded without needing to click each "Worked" disclosure.
+    // A coordinator's room folds each worker's work by default: the room reads as who did
+    // what, and each turn's tools open on a click. Elsewhere the eye opens them all.
     const expanded =
-      expandedTurns.has(turn.id) ||
-      showInternal ||
-      turn.intermediaries.some((message) => message.status === 'error');
+      turnChoices.get(turn.id) ??
+      ((showInternal && !roomView) ||
+        turn.intermediaries.some((message) => message.status === 'error'));
     const turnRunning =
       turn.final?.status === 'running' || turn.intermediaries.some((m) => m.status === 'running');
 
@@ -1091,7 +1176,7 @@ export function SessionChat({
             <button
               type="button"
               className="niuu-chat-worked-trigger"
-              onClick={() => toggleTurn(turn.id)}
+              onClick={() => toggleTurn(turn.id, expanded)}
               aria-expanded={expanded}
               data-testid="worked-toggle"
             >
@@ -1472,6 +1557,7 @@ export function SessionChat({
               chatEndpoint={chatEndpoint}
               availableCommands={availableCommands}
               participants={participants}
+              hostPeerId={hostPeerId}
               onFetchFiles={onFetchFiles}
             />
           </div>
@@ -1486,6 +1572,7 @@ export function SessionChat({
                 events={agentEvents.get(sheetWorker.peerId) ?? []}
                 onClose={closeWorker}
                 onSendDirected={onSendDirected ? handleSendDirected : undefined}
+                showEvents={showWorkerEvents}
               />
             </ToolImageProvider>
           </HistoryDetailsContext.Provider>

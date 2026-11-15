@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { getAuthHeaders } from '@niuulabs/query';
 import { FORGE_NOTIFICATION_TOOL_NAME } from '@niuulabs/domain';
 import { extractOutcomeBlock } from '../components/OutcomeCard';
+import { authorName } from '../authorship';
 import type {
   AgentInternalEvent,
   AgentEventTarget,
@@ -24,6 +25,13 @@ import type {
   SessionRuntimeOptions,
   SessionUsage,
 } from '../types';
+import { SESSION_AGENT_PEER_ID } from '../types';
+import {
+  PERSON_ANSWER_MESSAGE,
+  isPersonQuestionTurn,
+  parsePersonAnsweredFrame,
+  type PersonQuestionAnswer,
+} from '../personQuestions';
 import type { SlashCommand } from '../utils/slashCommands';
 import type { FileAttachment } from './useFileAttachments';
 import { useWebSocket } from './useWebSocket';
@@ -41,6 +49,7 @@ import { reconcileHistoryMessages } from './historyReconciliation';
 import {
   advanceDelivery,
   deliveryFromSteeringState,
+  parseMessageAuthor,
   effortFromRuntimeOptions,
   parseAgentUpdate,
   parseDeliveryFrame,
@@ -175,6 +184,14 @@ type CliStreamEvent = {
   threadId?: string;
   visibility?: 'visible' | 'internal';
   metadata?: Record<string, unknown>;
+  /** Who sent a `user_confirmed` message: `{user_id, display_name}`. */
+  author?: unknown;
+  /** The person who decided a permission prompt or answered a question: `{user_id, display_name}`. */
+  decided_by?: unknown;
+  /** `permission_resolved`: what was decided (`allow`, `allowForever`, `deny`). */
+  behavior?: string;
+  /** `person_answered`: the question that was answered. */
+  question_id?: string;
   eventType?: string;
   verdict?: string;
   summary?: string;
@@ -229,6 +246,8 @@ export interface ConversationTurn {
   participant_meta?: Record<string, unknown>;
   thread_id?: string;
   visibility?: 'visible' | 'internal';
+  /** Who sent a user turn: `{user_id, display_name}`; absent on turns from before authorship. */
+  author?: { user_id?: string; display_name?: string } | null;
   in_progress?: boolean;
   history_preview?: boolean;
   history_metadata_preview?: boolean;
@@ -273,6 +292,14 @@ interface UseSkuldChatResult {
   effortError: string | null;
   /** Why the runtime could not report its model choices, when it refused to. */
   runtimeOptionsError: string | null;
+  /** The accepted answers to questions put to a person, by question id (live and replayed). */
+  personAnswers: ReadonlyMap<string, PersonQuestionAnswer>;
+  /** Why the broker refused the last answer to a question put to a person, by question id. */
+  personAnswerErrors: ReadonlyMap<string, string>;
+  /** Questions whose answer was sent and is neither accepted nor refused yet. */
+  personAnswersSending: ReadonlySet<string>;
+  /** Answer a question the agent put to a person; the broker checks who may. */
+  sendPersonAnswer: (questionId: string, content: string) => void;
   sendMessage: (text: string, attachments: FileAttachment[]) => void;
   sendDirectedMessages: (
     participants: RoomParticipant[],
@@ -297,7 +324,6 @@ interface UseSkuldChatResult {
   clearMessages: () => void;
 }
 
-const SINGLE_PARTICIPANT_ID = 'skuld-primary';
 // Frames Claude's interactive transport derives from its native hooks (metadata.source).
 const CLAUDE_HOOK_SOURCE = 'claude_hook';
 // Skuld's correlated rejections of an answer (skuld/control_errors.py): the question is
@@ -415,6 +441,27 @@ function parseAdvertisedSlashCommand(
   };
 }
 
+/** A copy of `map` with `key` set. */
+function withEntry<V>(map: ReadonlyMap<string, V>, key: string, value: V): ReadonlyMap<string, V> {
+  return new Map(map).set(key, value);
+}
+
+/** A copy of `map` without `key`; the same map when it never had it. */
+function withoutEntry<V>(map: ReadonlyMap<string, V>, key: string): ReadonlyMap<string, V> {
+  if (!map.has(key)) return map;
+  const next = new Map(map);
+  next.delete(key);
+  return next;
+}
+
+/** A copy of `set` without `key`; the same set when it never had it. */
+function withoutMember(set: ReadonlySet<string>, key: string): ReadonlySet<string> {
+  if (!set.has(key)) return set;
+  const next = new Set(set);
+  next.delete(key);
+  return next;
+}
+
 export function generateId(): string {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
@@ -443,7 +490,7 @@ export function safeSessionStorageSet(url: string, state: PersistedChatState): v
 
 export function makeSingleParticipant(): RoomParticipant {
   return {
-    peerId: SINGLE_PARTICIPANT_ID,
+    peerId: SESSION_AGENT_PEER_ID,
     persona: 'Skuld',
     displayName: 'Skuld',
     color: 'brand',
@@ -596,32 +643,49 @@ export function serializeAgentEvents(
   );
 }
 
+/** `metadata.messageType` of a room row the broker kept (a hand-off, a workflow step's offer,
+ * pickup or outcome): it is shown as the row it was live, never as a message. */
+export const ROOM_ROW_MESSAGE_TYPE = 'mesh_message';
+
+function isRoomRowTurn(turn: ConversationTurn): boolean {
+  return turn.metadata?.messageType === ROOM_ROW_MESSAGE_TYPE;
+}
+
+/** The mesh event id of a kept turn, the same whether it arrived live or from history. */
+function historyEventId(turnId: string): string {
+  return `history-${turnId}`;
+}
+
 export function transformTurns(turns: ConversationTurn[]): ChatMessage[] {
-  return turns.map((turn) => {
-    const imageContent = extractInlineImages(turn.content);
-    const metadata = turn.metadata as ChatMessage['metadata'] | undefined;
-    const metadataStatus = (turn.metadata as Record<string, unknown> | undefined)?.status;
-    const delivery =
-      turn.role === 'user' ? deliveryFromSteeringState(turn.metadata?.steering_state) : undefined;
-    return {
-      id: turn.id,
-      role: turn.role === 'user' ? 'user' : 'assistant',
-      content: imageContent.text,
-      attachments: imageContent.attachments.length ? imageContent.attachments : undefined,
-      createdAt: new Date(turn.created_at),
-      status: metadataStatus === 'error' ? 'error' : turn.in_progress ? 'running' : 'done',
-      parts: turn.parts as ChatMessagePart[] | undefined,
-      metadata,
-      historyPreview: turn.history_preview,
-      historyMetadataPreview: turn.history_metadata_preview,
-      participant: parseParticipantMeta(
-        turn.participant_meta as Record<string, unknown> | undefined,
-      ),
-      threadId: turn.thread_id,
-      visibility: turn.visibility,
-      ...(delivery ? { delivery } : {}),
-    };
-  });
+  return turns
+    .filter((turn) => !isRoomRowTurn(turn))
+    .map((turn) => {
+      const imageContent = extractInlineImages(turn.content);
+      const metadata = turn.metadata as ChatMessage['metadata'] | undefined;
+      const metadataStatus = (turn.metadata as Record<string, unknown> | undefined)?.status;
+      const delivery =
+        turn.role === 'user' ? deliveryFromSteeringState(turn.metadata?.steering_state) : undefined;
+      const author = turn.role === 'user' ? parseMessageAuthor(turn.author) : undefined;
+      return {
+        id: turn.id,
+        role: turn.role === 'user' ? 'user' : 'assistant',
+        content: imageContent.text,
+        attachments: imageContent.attachments.length ? imageContent.attachments : undefined,
+        createdAt: new Date(turn.created_at),
+        status: metadataStatus === 'error' ? 'error' : turn.in_progress ? 'running' : 'done',
+        parts: turn.parts as ChatMessagePart[] | undefined,
+        metadata,
+        historyPreview: turn.history_preview,
+        historyMetadataPreview: turn.history_metadata_preview,
+        participant: parseParticipantMeta(
+          turn.participant_meta as Record<string, unknown> | undefined,
+        ),
+        threadId: turn.thread_id,
+        visibility: turn.visibility,
+        ...(delivery ? { delivery } : {}),
+        ...(author ? { author } : {}),
+      };
+    });
 }
 
 /** Broker-appended notification turns (contract §1) that must render live, not only on reload. */
@@ -734,12 +798,26 @@ export function meshEventsFromTurns(turns: ConversationTurn[]): MeshEvent[] {
       turn.participant_meta as Record<string, unknown> | undefined,
     );
     if (!participant?.peerId) continue;
+    if (isRoomRowTurn(turn)) {
+      const row = turn.metadata ?? {};
+      events.push({
+        type: 'mesh_message',
+        id: historyEventId(turn.id),
+        timestamp: new Date(turn.created_at),
+        participantId: participant.peerId,
+        participant: { color: participant.color },
+        fromPersona: typeof row.fromPersona === 'string' ? row.fromPersona : participant.persona,
+        eventType: typeof row.eventType === 'string' ? row.eventType : '',
+        preview: turn.content ?? '',
+      });
+      continue;
+    }
     const outcome = extractOutcomeBlock(turn.content ?? '');
     if (!outcome) continue;
     const fields = parseOutcomeFields(outcome.raw);
     events.push({
       type: 'outcome',
-      id: `history-${turn.id}`,
+      id: historyEventId(turn.id),
       timestamp: new Date(turn.created_at),
       participantId: participant.peerId,
       participant: { color: participant.color },
@@ -861,6 +939,24 @@ export function useSkuldChat(
   useEffect(() => {
     pendingInputRequestsRef.current = pendingInputRequests;
   }, [pendingInputRequests]);
+  const pendingPermissionsRef = useRef<PermissionRequest[]>([]);
+  useEffect(() => {
+    pendingPermissionsRef.current = pendingPermissions;
+  }, [pendingPermissions]);
+  // Answers to questions put to a person live apart from the messages: the question card is
+  // rebuilt from history whenever it is reloaded, and its answer must not depend on the order
+  // in which history and the frame arrive.
+  const [personAnswers, setPersonAnswers] = useState<ReadonlyMap<string, PersonQuestionAnswer>>(
+    () => new Map(),
+  );
+  const [personAnswerErrors, setPersonAnswerErrors] = useState<ReadonlyMap<string, string>>(
+    () => new Map(),
+  );
+  const [personAnswersSending, setPersonAnswersSending] = useState<ReadonlySet<string>>(
+    () => new Set(),
+  );
+  // request id of a sent `person_answer` -> its question, so a refusal finds its card.
+  const personAnswerRequestsRef = useRef(new Map<string, string>());
   const [availableCommandsState, setAvailableCommandsState] = useState<{
     url: string | null;
     commands: SlashCommand[];
@@ -983,14 +1079,14 @@ export function useSkuldChat(
   const ensureSingleParticipant = useCallback((): RoomParticipant => {
     const participant = makeSingleParticipant();
     setParticipants((prev) => {
-      if (prev.size > 0 || prev.has(SINGLE_PARTICIPANT_ID)) return prev;
+      if (prev.size > 0 || prev.has(SESSION_AGENT_PEER_ID)) return prev;
       return new Map(prev).set(participant.peerId, participant);
     });
     return participant;
   }, []);
 
   const getDefaultAssistantParticipant = useCallback((): RoomParticipant | undefined => {
-    const existing = participantsRef.current.get(SINGLE_PARTICIPANT_ID);
+    const existing = participantsRef.current.get(SESSION_AGENT_PEER_ID);
     if (existing) return existing;
     if (participantsRef.current.size > 0) return undefined;
     return ensureSingleParticipant();
@@ -1337,6 +1433,26 @@ export function useSkuldChat(
     });
   }, [agentEvents, meshEvents, messages, participants, url]);
 
+  // Who decided a permission prompt or answered a question, as a slim line in the
+  // conversation. Once per request: a repeated frame adds nothing.
+  const appendDecisionNote = useCallback((id: string, content: string) => {
+    setMessages((prev) =>
+      prev.some((message) => message.id === id)
+        ? prev
+        : [
+            ...prev,
+            {
+              id,
+              role: 'system',
+              content,
+              createdAt: new Date(),
+              status: 'done',
+              metadata: { messageType: 'decision' },
+            },
+          ],
+    );
+  }, []);
+
   const handleMessage = useCallback(
     (raw: string) => {
       const events = raw
@@ -1672,7 +1788,7 @@ export function useSkuldChat(
             if (explicitParticipant) {
               setParticipants((prev) => {
                 const next = new Map(prev);
-                next.delete(SINGLE_PARTICIPANT_ID);
+                next.delete(SESSION_AGENT_PEER_ID);
                 next.set(explicitParticipant.peerId, explicitParticipant);
                 return next;
               });
@@ -1977,6 +2093,17 @@ export function useSkuldChat(
                 ? event.error
                 : (event.error?.message ??
                   (typeof event.content === 'string' ? event.content : 'Unknown error'));
+            const personQuestionId = event.request_id
+              ? personAnswerRequestsRef.current.get(event.request_id)
+              : undefined;
+            if (personQuestionId && event.request_id) {
+              // The broker refused the answer: say why on the question's card, and let the
+              // person try again.
+              personAnswerRequestsRef.current.delete(event.request_id);
+              setPersonAnswersSending((prev) => withoutMember(prev, personQuestionId));
+              setPersonAnswerErrors((prev) => withEntry(prev, personQuestionId, errorMessage));
+              break;
+            }
             const controlRead = event.request_id
               ? controlReadsRef.current.get(event.request_id)
               : undefined;
@@ -2185,7 +2312,8 @@ export function useSkuldChat(
           }
           case 'conversation.turn': {
             // Other broker turns keep their existing (history-refresh) behaviour.
-            if (!isNotificationTurn(event.turn)) break;
+            if (!event.turn) break;
+            if (!isNotificationTurn(event.turn) && !isPersonQuestionTurn(event.turn)) break;
             const [message] = transformTurns([event.turn]);
             if (!message) break;
             const streamingId = streamingMessageIdRef.current;
@@ -2211,6 +2339,10 @@ export function useSkuldChat(
               optimisticUserMessagesRef.current.delete(requestId);
             }
             const confirmedDelivery = deliveryFromSteeringState(event.steering_state);
+            const confirmedAuthor = parseMessageAuthor(event.author);
+            // Said in the room by a participant (another session of the room), not by a
+            // person at this keyboard: it keeps its speaker, as history does.
+            const confirmedParticipant = parseParticipantMeta(event.participant);
             setMessages((prev) => {
               if (optimisticMessageId) {
                 return prev.map((message) =>
@@ -2224,6 +2356,7 @@ export function useSkuldChat(
                         createdAt: event.created_at
                           ? new Date(event.created_at)
                           : message.createdAt,
+                        ...(confirmedAuthor ? { author: confirmedAuthor } : {}),
                         status: 'done',
                         visibility: event.visibility ?? message.visibility,
                         metadata:
@@ -2254,6 +2387,8 @@ export function useSkuldChat(
                       : undefined,
                   visibility: event.visibility,
                   ...(confirmedDelivery ? { delivery: confirmedDelivery } : {}),
+                  ...(confirmedAuthor ? { author: confirmedAuthor } : {}),
+                  ...(confirmedParticipant ? { participant: confirmedParticipant } : {}),
                 },
               ];
             });
@@ -2287,6 +2422,18 @@ export function useSkuldChat(
           }
           case 'permission_resolved': {
             if (!event.request_id) break;
+            const decidedBy = parseMessageAuthor(event.decided_by);
+            if (decidedBy) {
+              const permission = pendingPermissionsRef.current.find(
+                (candidate) => candidate.requestId === event.request_id,
+              );
+              appendDecisionNote(
+                `decision-${event.request_id}`,
+                `${authorName(decidedBy)} ${event.behavior === 'deny' ? 'denied' : 'allowed'} ${
+                  permission?.toolName ?? 'a tool request'
+                }`,
+              );
+            }
             setPendingPermissions((prev) =>
               prev.filter((permission) => permission.requestId !== event.request_id),
             );
@@ -2350,6 +2497,31 @@ export function useSkuldChat(
             ]);
             break;
           }
+          case 'ask_user_answered': {
+            // Skuld's record of who answered a question the agent asked the room.
+            if (!event.request_id) break;
+            const decidedBy = parseMessageAuthor(event.decided_by);
+            if (!decidedBy) break;
+            const asked =
+              answeredInputRequestsRef.current.get(event.request_id) ??
+              pendingInputRequestsRef.current.find(
+                (request) => request.requestId === event.request_id,
+              );
+            const prompt = asked?.questions[0]?.prompt;
+            appendDecisionNote(
+              `decision-${event.request_id}`,
+              `${authorName(decidedBy)} answered${prompt ? `: ${prompt}` : ' a question'}`,
+            );
+            break;
+          }
+          case 'person_answered': {
+            const parsed = parsePersonAnsweredFrame(event as unknown as Record<string, unknown>);
+            if (!parsed) break;
+            setPersonAnswers((prev) => withEntry(prev, parsed.questionId, parsed.answer));
+            setPersonAnswersSending((prev) => withoutMember(prev, parsed.questionId));
+            setPersonAnswerErrors((prev) => withoutEntry(prev, parsed.questionId));
+            break;
+          }
           case 'ask_user_resolved': {
             if (!event.request_id) break;
             answeredInputRequestsRef.current.delete(event.request_id);
@@ -2401,6 +2573,10 @@ export function useSkuldChat(
                   participant: parseParticipantMeta(event.participant),
                   threadId: event.threadId ?? event.thread_id,
                   visibility: event.visibility,
+                  // A host's notice: the stored turn carries the same, so it reads alike on reload.
+                  ...(event.metadata?.messageType
+                    ? { metadata: { messageType: String(event.metadata.messageType) } }
+                    : {}),
                 },
               ];
             });
@@ -2451,11 +2627,13 @@ export function useSkuldChat(
           }
           case 'room_mesh_message': {
             const participant = parseParticipantMeta(event.participant);
+            // The broker keeps the row as a turn under this id: the history shows it once.
+            const rowId = typeof event.id === 'string' && event.id ? historyEventId(event.id) : '';
             setMeshEvents((prev) => [
-              ...prev,
+              ...prev.filter((existing) => !rowId || existing.id !== rowId),
               {
                 type: 'mesh_message',
-                id: generateId(),
+                id: rowId || generateId(),
                 timestamp: new Date(),
                 participantId: String(event.participantId ?? event.participant_id ?? ''),
                 participant: { color: participant?.color },
@@ -2625,6 +2803,7 @@ export function useSkuldChat(
       }
     },
     [
+      appendDecisionNote,
       ensureSingleParticipant,
       finalizeStreaming,
       getDefaultAssistantParticipant,
@@ -2967,6 +3146,25 @@ export function useSkuldChat(
     [sendJson],
   );
 
+  const sendPersonAnswer = useCallback(
+    (questionId: string, content: string) => {
+      const answer = content.trim();
+      if (!answer) return;
+      // A fresh request id per send: the broker's refusal names it, so it finds this card.
+      const requestId = generateId();
+      personAnswerRequestsRef.current.set(requestId, questionId);
+      setPersonAnswerErrors((prev) => withoutEntry(prev, questionId));
+      setPersonAnswersSending((prev) => new Set(prev).add(questionId));
+      sendJson({
+        type: PERSON_ANSWER_MESSAGE,
+        question_id: questionId,
+        content: answer,
+        request_id: requestId,
+      });
+    },
+    [sendJson],
+  );
+
   const dismissInputRequest = useCallback((requestId: string) => {
     answeredInputRequestsRef.current.delete(requestId);
     setPendingInputRequests((prev) => prev.filter((request) => request.requestId !== requestId));
@@ -3025,6 +3223,10 @@ export function useSkuldChat(
     usage: live.usage,
     effortError: live.effortError,
     runtimeOptionsError: live.runtimeOptionsError,
+    personAnswers,
+    personAnswerErrors,
+    personAnswersSending,
+    sendPersonAnswer,
     sendMessage,
     sendDirectedMessages,
     publishEvent,

@@ -1,14 +1,12 @@
 """Aggregate Mímir reads across mounts: concurrent, single-pass, failures loud.
 
 Measured on yggdrasil (2026-11-03): ``/mimir/graph`` cost the sum of eight
-mounts' graphs, ``/mimir/pages`` listed every mount twice, and one gbrain
-mount with no lint made ``/mimir/lint`` answer 501 for every Mímir mount.
+mounts' graphs and ``/mimir/pages`` listed every mount twice.
 """
 
 from __future__ import annotations
 
 import asyncio
-from pathlib import Path
 
 import pytest
 from fastapi import FastAPI
@@ -16,11 +14,11 @@ from fastapi.testclient import TestClient
 
 from identity.adapters.identity import EnvoyHeaderAuthenticationAdapter
 from mimir.adapters.composite import CompositeMimirAdapter
-from mimir.adapters.markdown import MarkdownMimirAdapter
 from mimir.domain import MimirMount, WriteRouting
 from mimir.exceptions import MimirUnavailableError
 from mimir.router import MimirRouter
 from niuu.ports.mimir import MimirPort
+from tests.test_mimir.unit.fakes import InMemoryMimirAdapter
 
 _HEADERS = {
     "x-auth-user-id": "test-user",
@@ -29,11 +27,11 @@ _HEADERS = {
 }
 
 
-class _CountingMarkdown(MarkdownMimirAdapter):
-    """A real wiki that counts listings and how many reads overlap."""
+class _Counting(InMemoryMimirAdapter):
+    """An in-memory store that counts listings and how many graph reads overlap."""
 
-    def __init__(self, root: Path, tracker: dict[str, int]) -> None:
-        super().__init__(root=root)
+    def __init__(self, tracker: dict[str, int]) -> None:
+        super().__init__()
         self.list_calls = 0
         self._tracker = tracker
 
@@ -51,19 +49,7 @@ class _CountingMarkdown(MarkdownMimirAdapter):
             self._tracker["in_flight"] -= 1
 
 
-class _NoLint(MarkdownMimirAdapter):
-    """A backend that, like gbrain, has no lint."""
-
-    async def lint(self, fix: bool = False):  # noqa: ANN201
-        raise NotImplementedError("gbrain has no equivalent for lint.")
-
-
-class _BrokenLint(MarkdownMimirAdapter):
-    async def lint(self, fix: bool = False):  # noqa: ANN201
-        raise RuntimeError("connection refused")
-
-
-class _BrokenListing(MarkdownMimirAdapter):
+class _BrokenListing(InMemoryMimirAdapter):
     async def list_pages(self, category=None, prefix=None):  # noqa: ANN001, ANN201
         raise RuntimeError("connection refused")
 
@@ -84,20 +70,18 @@ def _client(mounts: list[tuple[str, MimirPort]]) -> TestClient:
     return TestClient(app, headers=_HEADERS)
 
 
-def _page(root: Path, path: str, title: str) -> None:
-    target = root / "wiki" / path
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(f"# {title}\n\nAbout {title}.\n")
+def _page(adapter: InMemoryMimirAdapter, path: str, title: str) -> None:
+    asyncio.run(adapter.upsert_page(path, f"# {title}\n\nAbout {title}.\n"))
 
 
 class TestPages:
-    def test_an_aggregate_listing_asks_each_mount_once(self, tmp_path: Path) -> None:
+    def test_an_aggregate_listing_asks_each_mount_once(self) -> None:
         tracker = {"in_flight": 0, "peak": 0}
-        local = _CountingMarkdown(tmp_path / "local", tracker)
-        shared = _CountingMarkdown(tmp_path / "shared", tracker)
-        _page(tmp_path / "local", "notes/a.md", "A")
-        _page(tmp_path / "shared", "notes/a.md", "A")
-        _page(tmp_path / "shared", "notes/b.md", "B")
+        local = _Counting(tracker)
+        shared = _Counting(tracker)
+        _page(local, "notes/a.md", "A")
+        _page(shared, "notes/a.md", "A")
+        _page(shared, "notes/b.md", "B")
 
         pages = _client([("local", local), ("shared", shared)]).get("/mimir/pages").json()
 
@@ -107,11 +91,11 @@ class TestPages:
             "notes/b.md": ["shared"],
         }
 
-    def test_a_listing_of_one_mount_does_not_walk_the_others(self, tmp_path: Path) -> None:
+    def test_a_listing_of_one_mount_does_not_walk_the_others(self) -> None:
         tracker = {"in_flight": 0, "peak": 0}
-        local = _CountingMarkdown(tmp_path / "local", tracker)
-        shared = _CountingMarkdown(tmp_path / "shared", tracker)
-        _page(tmp_path / "shared", "notes/b.md", "B")
+        local = _Counting(tracker)
+        shared = _Counting(tracker)
+        _page(shared, "notes/b.md", "B")
 
         client = _client([("local", local), ("shared", shared)])
         pages = client.get("/mimir/pages", params={"mount": "shared"}).json()
@@ -119,113 +103,23 @@ class TestPages:
         assert [page["mounts"] for page in pages] == [["shared"]]
         assert local.list_calls == 0
 
-    def test_a_mount_that_cannot_list_fails_the_listing_by_name(self, tmp_path: Path) -> None:
+    def test_a_mount_that_cannot_list_fails_the_listing_by_name(self) -> None:
         """The attribution walk used to swallow this and drop the mount."""
         tracker = {"in_flight": 0, "peak": 0}
-        client = _client(
-            [
-                ("local", _CountingMarkdown(tmp_path / "local", tracker)),
-                ("kanuck", _BrokenListing(root=tmp_path / "kanuck")),
-            ]
-        )
+        client = _client([("local", _Counting(tracker)), ("kanuck", _BrokenListing())])
 
         with pytest.raises(MimirUnavailableError, match="'kanuck' failed during list_pages"):
             client.get("/mimir/pages")
 
 
 class TestGraph:
-    def test_mount_graphs_are_asked_for_concurrently(self, tmp_path: Path) -> None:
+    def test_mount_graphs_are_asked_for_concurrently(self) -> None:
         tracker = {"in_flight": 0, "peak": 0}
-        mounts = [(name, _CountingMarkdown(tmp_path / name, tracker)) for name in ("a", "b", "c")]
-        for name, _ in mounts:
-            _page(tmp_path / name, f"{name}.md", name.upper())
+        mounts = [(name, _Counting(tracker)) for name in ("a", "b", "c")]
+        for name, adapter in mounts:
+            _page(adapter, f"{name}.md", name.upper())
 
         graph = _client(mounts).get("/mimir/graph").json()
 
         assert tracker["peak"] == 3
         assert {node["mount"] for node in graph["nodes"]} == {"a", "b", "c"}
-
-    def test_markdown_graph_matches_the_port_projection(self, tmp_path: Path) -> None:
-        root = tmp_path / "wiki-root"
-        adapter = MarkdownMimirAdapter(root=root)
-        _page(root, "people/ada.md", "Ada")
-        (root / "wiki" / "people" / "bob.md").write_text("# Bob\n\nWorks with [[Ada]].\n")
-
-        fast = asyncio.run(adapter.get_graph())
-        default = asyncio.run(MimirPort.get_graph(adapter))
-
-        assert fast == default
-        assert len(fast.edges) == 1
-
-
-class TestLintAcrossMounts:
-    def test_a_mount_without_lint_is_reported_while_the_others_are_linted(
-        self, tmp_path: Path
-    ) -> None:
-        _page(tmp_path / "shared", "notes/a.md", "A")
-        client = _client(
-            [
-                ("shared", MarkdownMimirAdapter(root=tmp_path / "shared")),
-                ("gbrain-kanuck", _NoLint(root=tmp_path / "kanuck")),
-            ]
-        )
-
-        response = client.get("/mimir/lint")
-
-        assert response.status_code == 200
-        body = response.json()
-        assert body["pages_checked"] == 1
-        assert {issue["mount"] for issue in body["issues"]} <= {"shared"}
-        mounts = {mount["name"]: mount for mount in body["mounts"]}
-        assert mounts["shared"]["status"] == "linted"
-        assert mounts["shared"]["pages_checked"] == 1
-        assert mounts["shared"]["issues"] == len(body["issues"])
-        assert mounts["gbrain-kanuck"] == {
-            "name": "gbrain-kanuck",
-            "status": "unsupported",
-            "pages_checked": 0,
-            "issues": 0,
-            "detail": "gbrain has no equivalent for lint.",
-        }
-
-    def test_fix_reports_the_unsupported_mount_too(self, tmp_path: Path) -> None:
-        _page(tmp_path / "shared", "notes/a.md", "A")
-        client = _client(
-            [
-                ("shared", MarkdownMimirAdapter(root=tmp_path / "shared")),
-                ("gbrain-kanuck", _NoLint(root=tmp_path / "kanuck")),
-            ]
-        )
-
-        fixed = client.post("/mimir/lint/fix")
-
-        assert fixed.status_code == 200
-        statuses = {m["name"]: m["status"] for m in fixed.json()["mounts"]}
-        assert statuses == {"shared": "linted", "gbrain-kanuck": "unsupported"}
-
-    def test_naming_the_unsupported_mount_is_still_501(self, tmp_path: Path) -> None:
-        client = _client(
-            [
-                ("shared", MarkdownMimirAdapter(root=tmp_path / "shared")),
-                ("gbrain-kanuck", _NoLint(root=tmp_path / "kanuck")),
-            ]
-        )
-
-        response = client.get("/mimir/lint", params={"mount": "gbrain-kanuck"})
-
-        assert response.status_code == 501
-        assert response.json() == {"detail": "gbrain has no equivalent for lint."}
-
-    def test_a_mount_that_fails_to_lint_still_fails_the_call(self, tmp_path: Path) -> None:
-        """Unsupported is reported; broken is not quietly left out of a clean report."""
-        client = _client(
-            [
-                ("shared", MarkdownMimirAdapter(root=tmp_path / "shared")),
-                ("mimir-ui", _BrokenLint(root=tmp_path / "ui")),
-            ]
-        )
-
-        response = client.get("/mimir/lint")
-
-        assert response.status_code == 503
-        assert "'mimir-ui' failed during lint: connection refused" in response.json()["detail"]

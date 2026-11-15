@@ -10,7 +10,6 @@ const REGISTRY_MOUNT: WorkflowRegistryMount = {
   lifecycle: 'registered',
   role: 'shared',
   url: 'https://mimir.example',
-  path: '/shared',
   categories: ['decision', 'entity'],
   authRef: 'mimir-secret',
   defaultReadPriority: 5,
@@ -37,7 +36,7 @@ describe('LibraryPanel', () => {
   it('displays persona labels', () => {
     render(<LibraryPanel personas={DEFAULT_PERSONAS} />);
     expect(screen.getByText('coder')).toBeInTheDocument();
-    expect(screen.getByText('postmortem-analyst')).toBeInTheDocument();
+    expect(screen.getByText('security-auditor')).toBeInTheDocument();
   });
 
   it('renders with custom personas', () => {
@@ -99,8 +98,8 @@ describe('LibraryPanel', () => {
     expect(screen.queryByTestId('library-add-stage')).not.toBeInTheDocument();
   });
 
-  it('DEFAULT_PERSONAS has 4 entries', () => {
-    expect(DEFAULT_PERSONAS).toHaveLength(4);
+  it('DEFAULT_PERSONAS has 3 entries', () => {
+    expect(DEFAULT_PERSONAS).toHaveLength(3);
   });
 
   it('DEFAULT_PERSONAS all have unique ids', () => {

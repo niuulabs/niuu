@@ -1,12 +1,13 @@
 # ─── Bifrost config for: bifrost-cloud ───────────────────────────────────────
 #
-# Multi-provider cloud gateway with failover routing.
+# Multi-provider cloud gateway; each request is served by one provider.
 # ─────────────────────────────────────────────────────────────────────────────
 
 bifrost:
-  # failover: try Anthropic first, fall back to OpenAI on 429/5xx
+  # direct: the first provider listed for the model serves the request; there
+  # is no fallback to another provider when it fails
   # alternatives: cost_optimised, round_robin, latency_optimised
-  routing_strategy: failover
+  routing_strategy: direct
 
   providers:
     # Configure your providers here. Each provider needs an api_key_env
@@ -18,8 +19,8 @@ bifrost:
       timeout: 120
       cost_per_token: 0.0
 
-    failover:
-      api_key_env: ""                    # env var name for failover provider
+    secondary:
+      api_key_env: ""                    # env var name for secondary provider
       base_url: ""                       # provider API URL
       models: []
       timeout: 120

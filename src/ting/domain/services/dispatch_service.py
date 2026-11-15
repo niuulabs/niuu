@@ -28,6 +28,7 @@ from niuu.domain.models import Principal
 from niuu.domain.tags import matches_tags, residual_selector, satisfiable, validate_match
 from personas.domain.persona_document import PortablePersonaSource
 from ting.domain.models import (
+    TERMINAL_CAMPAIGN_STATUSES,
     DispatcherState,
     Phase,
     PhaseStatus,
@@ -1560,7 +1561,7 @@ class DispatchService:
         """
         if not campaign.metadata.get(DISPATCH_RUN_KEY):
             return
-        if campaign.status not in {WorkflowCampaignStatus.COMPLETED, WorkflowCampaignStatus.FAILED}:
+        if campaign.status not in TERMINAL_CAMPAIGN_STATUSES:
             return
         ticket = ticket_of(campaign.metadata)
         if ticket is None:
@@ -1576,7 +1577,7 @@ class DispatchService:
         await tracker.update_run_progress(
             ticket[1],
             status=status,
-            reason=None if completed else str(campaign.metadata.get("failure_error") or ""),
+            reason=None if completed else _ended_reason(campaign),
         )
         try:
             await tracker.update_run_state(ticket[1], status)
@@ -1652,3 +1653,10 @@ class DispatchService:
         except ValueError as exc:
             return None, str(exc)
         return snapshot, None
+
+
+def _ended_reason(campaign: WorkflowCampaign) -> str:
+    """Why a dispatched run did not land: its failure, or the reason it was aborted."""
+    if campaign.status is WorkflowCampaignStatus.CANCELED:
+        return f"canceled: {campaign.metadata.get('cancel_reason') or 'the run was aborted'}"
+    return str(campaign.metadata.get("failure_error") or "")

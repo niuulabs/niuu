@@ -63,7 +63,6 @@ import type {
   UserFeaturePreference,
   PersonalAccessToken,
   CreatePATResult,
-  VolundrWorkflowGate,
   VolundrSessionTrace,
   VolundrSessionTraceLane,
   VolundrSessionTraceSpan,
@@ -72,7 +71,19 @@ import type {
   SessionReadState,
   SessionStartup,
   StartupStageState,
+  ForgeProject,
+  ParticipantRole,
+  ParticipantStatus,
+  ProjectRole,
+  SessionParticipant,
+  SessionRoomRole,
+  SessionMembers,
+  SessionStatus,
+  SessionTeamTaskTo,
+  StartTeamRequest,
+  StartedTeam,
 } from '../models/volundr.model';
+import { isSharedSession, roomRoleOfProjectRole } from '../models/volundr.model';
 import { normalizeSecretRequest, type SecretRequestPayload } from './secretRequestWire';
 import { SessionForkError, SessionReadStateConflictError } from '../domain/session';
 import type { SessionRuntimeOffer } from '../domain/sessionRuntimes';
@@ -136,6 +147,102 @@ interface SessionProjectPayload {
   coordination: { project_id: string; role: string } | null;
 }
 
+/** A project's member route, on the host that owns the project. */
+function projectMembersPath(
+  project: ForgeProject,
+  tail = 'members',
+  query: Record<string, string> = {},
+): string {
+  const params = new URLSearchParams(query);
+  if (project.instance_id) params.set('instance_id', project.instance_id);
+  const search = params.toString();
+  return `/projects/${encodeURIComponent(project.id)}/${tail}${search ? `?${search}` : ''}`;
+}
+
+type ParticipantPayload = {
+  user_id: string;
+  display_name?: string;
+  role: ParticipantRole;
+  status: ParticipantStatus | 'revoked';
+  invited_by?: string;
+  expires_at?: string | null;
+};
+
+function normalizeParticipant(payload: ParticipantPayload): SessionParticipant {
+  return {
+    userId: payload.user_id,
+    displayName: payload.display_name ?? '',
+    role: payload.role,
+    status: payload.status === 'invited' ? 'invited' : 'active',
+    invitedBy: payload.invited_by ?? '',
+    expiresAt: payload.expires_at ?? null,
+  };
+}
+
+type SessionMembersPayload = {
+  agents: Array<{
+    session_id: string;
+    name: string;
+    persona_name?: string | null;
+    model: string;
+    definition?: string | null;
+    status: SessionStatus;
+    lead: boolean;
+  }>;
+  people: Array<{
+    user_id: string;
+    display_name?: string | null;
+    role: string;
+    status: string;
+    online?: boolean | null;
+  }>;
+};
+
+function normalizeSessionMembers(payload: SessionMembersPayload): SessionMembers {
+  return {
+    agents: payload.agents.map((agent) => ({
+      sessionId: agent.session_id,
+      name: agent.name,
+      personaName: agent.persona_name ?? '',
+      model: agent.model,
+      definition: agent.definition ?? null,
+      status: agent.status,
+      lead: agent.lead === true,
+    })),
+    people: payload.people.map((person) => ({
+      userId: person.user_id,
+      displayName: person.display_name ?? '',
+      role: person.role,
+      status: person.status,
+      online: person.online ?? null,
+    })),
+  };
+}
+
+type StartedTeamPayload = {
+  session: SessionPayload;
+  members: SessionPayload[];
+};
+
+type SessionPersonPayload = {
+  user_id: string;
+  display_name?: string;
+  role: ProjectRole;
+};
+
+/** A session's chat route (people, invitations), on the host that holds the session. */
+function sessionPeoplePath(
+  id: string,
+  tail: string,
+  instanceId?: string,
+  query: Record<string, string> = {},
+): string {
+  const params = new URLSearchParams(query);
+  if (instanceId) params.set('instance_id', instanceId);
+  const search = params.toString();
+  return `/sessions/${encodeURIComponent(id)}/${tail}${search ? `?${search}` : ''}`;
+}
+
 function sessionProjectPath(id: string, instanceId?: string): string {
   return `/sessions/${encodeURIComponent(id)}/project${instanceId ? `?instance_id=${encodeURIComponent(instanceId)}` : ''}`;
 }
@@ -159,6 +266,13 @@ interface FileListPayload {
 }
 
 type SessionPayload = {
+  /** `room_summary` for a session the caller shares without owning (and the room view). */
+  kind?: 'room_summary';
+  room?: {
+    role: SessionRoomRole;
+    participant_status?: string;
+    expires_at?: string | null;
+  } | null;
   session_definition?: string | null;
   sessionDefinition?: string;
   coordination?: {
@@ -170,7 +284,8 @@ type SessionPayload = {
   } | null;
   id: string;
   name: string;
-  source: VolundrSession['source'];
+  /** Absent on a room summary: Forge withholds the workspace from a participant. */
+  source?: VolundrSession['source'];
   status: VolundrSession['status'];
   model: string;
   personaName?: string;
@@ -213,6 +328,11 @@ type SessionPayload = {
   activity_metadata?: Record<string, unknown> | null;
   ownerId?: string | null;
   owner_id?: string | null;
+  owner_name?: string | null;
+  hosted_by?: string | null;
+  team?: { task_to?: SessionTeamTaskTo | null } | null;
+  team_member?: { lead?: boolean } | null;
+  people_count?: number | null;
   tenantId?: string | null;
   tenant_id?: string | null;
   instanceId?: string | null;
@@ -313,33 +433,8 @@ type ConversationPayload = {
     participant_meta?: Record<string, unknown>;
     thread_id?: string;
     visibility?: 'visible' | 'internal';
+    author?: { user_id?: string; display_name?: string } | null;
   }>;
-};
-
-type WorkflowGatePayload = {
-  id: string;
-  node_id?: string;
-  activation_id?: string;
-  label?: string;
-  condition?: string;
-  status?: VolundrWorkflowGate['status'];
-  pending_behavior?: VolundrWorkflowGate['pending_behavior'];
-  approvers?: string[];
-  auto_forward_after?: string;
-  requested_at?: string;
-  updated_at?: string;
-  triggered_by_event_type?: string;
-  approval_event_type?: string;
-  changes_requested_event_type?: string;
-  attempt?: number;
-  decision?: string | null;
-  notes?: string;
-  source?: string;
-  summary?: string;
-};
-
-type WorkflowGateListPayload = {
-  gates?: WorkflowGatePayload[];
 };
 
 type LogPayload = {
@@ -587,6 +682,37 @@ function buildStartSessionBody(
   return body;
 }
 
+/** The body of `POST /teams`; a task and who gets it travel together or not at all. */
+function buildStartTeamBody(request: StartTeamRequest): Record<string, unknown> {
+  const task = request.task?.trim() ?? '';
+  const body: Record<string, unknown> = {
+    name: request.name,
+    source: request.source,
+    task,
+    task_to: task ? request.taskTo : undefined,
+    members: request.members.map((member) => ({
+      model: member.model,
+      definition: member.definition,
+      persona_name: member.personaName ?? '',
+      lead: member.lead,
+      ...(member.voices && Object.keys(member.voices).length ? { voices: member.voices } : {}),
+    })),
+    invitees: request.invitees,
+    launch_spec: request.launchSpec,
+    credential_names: request.credentialNames,
+    integration_ids: request.integrationIds,
+    resource_config: request.resourceConfig,
+    terminal_restricted: Boolean(request.terminalRestricted),
+    instance_id: request.instanceId ?? null,
+    target_tags: request.targetTags?.length ? request.targetTags : undefined,
+    target_match: request.targetMatch ?? undefined,
+  };
+  for (const [key, value] of Object.entries(body)) {
+    if (value === undefined) delete body[key];
+  }
+  return body;
+}
+
 function toEpochMs(value?: number | string | null): number {
   if (typeof value === 'number') return value;
   if (typeof value !== 'string') return 0;
@@ -601,31 +727,28 @@ function toDate(value?: Date | string | null): Date | undefined {
   return Number.isNaN(parsed) ? undefined : new Date(parsed);
 }
 
-const GATE_PENDING = 'pending';
+/** Ting tags each session of a workflow run `workflow:<run slug>`. */
+export const WORKFLOW_RUN_TAG = 'workflow:';
 
-/**
- * A human gate the session's activity metadata records as pending. Brokers that predate
- * reporting gates as `awaiting_input` stay `idle` at an open gate and record it under
- * `help_needed`, but never clear that record once the gate is decided: it only says where
- * to look, and the session's gates say whether one still waits.
- */
-function waitsAtGate(metadata: Record<string, unknown> | null | undefined): boolean {
-  const help = metadata?.help_needed;
-  if (!help || typeof help !== 'object') return false;
-  const context = (help as { context?: unknown }).context;
-  if (!context || typeof context !== 'object') return false;
-  return (context as { gate_status?: unknown }).gate_status === GATE_PENDING;
+/** The workflow run a session works for, from Ting's tag on it. */
+function workflowRunOf(session: SessionPayload): string | undefined {
+  const identifier = session.trackerIssueId ?? session.tracker_issue_id ?? '';
+  return identifier.startsWith(WORKFLOW_RUN_TAG)
+    ? identifier.slice(WORKFLOW_RUN_TAG.length)
+    : undefined;
 }
 
 function normalizeSession(session: SessionPayload): VolundrSession {
+  const runId = workflowRunOf(session);
   const trackerIssue =
     session.trackerIssue ??
     (() => {
       const identifier = session.trackerIssueId ?? session.tracker_issue_id ?? null;
       const url = session.issueTrackerUrl ?? session.issue_tracker_url ?? '';
       if (!identifier) return undefined;
-      // Ting keys a workflow launch as "workflow:<run>": a run, not a ticket to link.
-      if (identifier.startsWith('workflow:')) return undefined;
+      // Ting keys a workflow run's sessions "workflow:<run>": a run, not a ticket to link.
+      // The session carries it as `runId`, which links to the run's own page.
+      if (runId !== undefined) return undefined;
       return {
         id: identifier,
         identifier,
@@ -638,6 +761,7 @@ function normalizeSession(session: SessionPayload): VolundrSession {
   return {
     id: session.id,
     name: session.name,
+    ...(runId !== undefined ? { runId } : {}),
     ...(session.coordination
       ? {
           coordination: {
@@ -656,7 +780,21 @@ function normalizeSession(session: SessionPayload): VolundrSession {
           },
         }
       : {}),
-    source: session.source,
+    source: session.source ?? null,
+    ...(session.owner_name ? { ownerName: session.owner_name } : {}),
+    ...(session.hosted_by ? { hostedBy: session.hosted_by } : {}),
+    ...(session.team ? { team: { taskTo: session.team.task_to ?? null } } : {}),
+    ...(session.team_member ? { teamMember: { lead: session.team_member.lead === true } } : {}),
+    ...(typeof session.people_count === 'number' ? { peopleCount: session.people_count } : {}),
+    ...(session.room
+      ? {
+          room: {
+            role: session.room.role,
+            participantStatus: session.room.participant_status ?? 'active',
+            expiresAt: session.room.expires_at ?? null,
+          },
+        }
+      : {}),
     status: session.status,
     model: session.model,
     sessionDefinition: session.sessionDefinition ?? session.session_definition ?? undefined,
@@ -681,7 +819,6 @@ function normalizeSession(session: SessionPayload): VolundrSession {
     needsAttention:
       Boolean(session.needsAttention ?? session.needs_attention) ||
       (session.activityState ?? session.activity_state) === 'awaiting_input',
-    gateRecorded: session.status === 'running' && waitsAtGate(session.activity_metadata),
     ownerId: session.ownerId ?? session.owner_id ?? undefined,
     tenantId: session.tenantId ?? session.tenant_id ?? undefined,
     instanceId: session.instanceId ?? session.instance_id ?? undefined,
@@ -692,6 +829,29 @@ function normalizeSession(session: SessionPayload): VolundrSession {
       ? { workedSeconds24h: session.worked_seconds_24h }
       : {}),
   };
+}
+
+/**
+ * Normalize a list of sessions one entry at a time. An entry that cannot be read is reported
+ * at error level and left out; it must not fail the whole host's list, which the sessions
+ * page would show as that Forge being unavailable, hiding every session the person can see.
+ */
+function normalizeSessionList(
+  payloads: readonly SessionPayload[],
+  listing: string,
+): VolundrSession[] {
+  const sessions: VolundrSession[] = [];
+  for (const payload of payloads) {
+    try {
+      sessions.push(normalizeSession(payload));
+    } catch (error) {
+      console.error(
+        `Forge returned a session entry in ${listing} that could not be read; it is not listed.`,
+        { id: (payload as { id?: unknown } | null)?.id ?? null, error },
+      );
+    }
+  }
+  return sessions;
 }
 
 function normalizeReadState(payload: ReadStatePayload): SessionReadState {
@@ -894,31 +1054,8 @@ function normalizeConversationHistory(payload: ConversationPayload): VolundrConv
       participant_meta: turn.participant_meta,
       thread_id: turn.thread_id,
       visibility: turn.visibility,
+      ...(turn.author ? { author: turn.author } : {}),
     })),
-  };
-}
-
-function normalizeWorkflowGate(payload: WorkflowGatePayload): VolundrWorkflowGate {
-  return {
-    id: payload.id,
-    node_id: payload.node_id ?? '',
-    activation_id: payload.activation_id ?? '',
-    label: payload.label ?? payload.id,
-    condition: payload.condition ?? '',
-    status: payload.status ?? 'pending',
-    pending_behavior: payload.pending_behavior ?? 'help_needed',
-    approvers: payload.approvers ?? [],
-    auto_forward_after: payload.auto_forward_after ?? '30m',
-    requested_at: payload.requested_at ?? new Date(0).toISOString(),
-    updated_at: payload.updated_at ?? payload.requested_at ?? new Date(0).toISOString(),
-    triggered_by_event_type: payload.triggered_by_event_type ?? '',
-    approval_event_type: payload.approval_event_type ?? '',
-    changes_requested_event_type: payload.changes_requested_event_type ?? '',
-    attempt: payload.attempt ?? 1,
-    decision: payload.decision ?? undefined,
-    notes: payload.notes ?? '',
-    source: payload.source ?? 'human',
-    summary: payload.summary ?? '',
   };
 }
 
@@ -1238,6 +1375,8 @@ export const __testables = {
   normalizeSessionDefinition,
   normalizePermissionAutoApproval,
   buildStartSessionBody,
+  buildStartTeamBody,
+  normalizeSessionMembers,
   toEpochMs,
   toDate,
   normalizeSession,
@@ -1254,7 +1393,6 @@ export const __testables = {
   normalizeSecretTypeInfo,
   normalizeMessages,
   normalizeConversationHistory,
-  normalizeWorkflowGate,
   normalizeLogLevel,
   normalizeLogs,
   normalizeAggregateParticipants,
@@ -1605,10 +1743,13 @@ export function buildVolundrHttpAdapter(
     if (!prior || prior.instanceId !== fresh.instanceId) return fresh;
     const readState = fresh.readState ?? prior.readState;
     const workedSeconds24h = fresh.workedSeconds24h ?? prior.workedSeconds24h;
+    // Counted by the list read only; a streamed update does not carry it.
+    const peopleCount = fresh.peopleCount ?? prior.peopleCount;
     return {
       ...fresh,
       ...(readState ? { readState } : {}),
       ...(workedSeconds24h !== undefined ? { workedSeconds24h } : {}),
+      ...(peopleCount !== undefined ? { peopleCount } : {}),
     };
   }
 
@@ -1623,37 +1764,6 @@ export function buildVolundrHttpAdapter(
       : forgeClient.get<SessionPayload[]>(endpoint);
   }
 
-  // Whether a session whose metadata records a gate really waits at one, from its gates.
-  const gateVerdicts = new Map<string, boolean>();
-
-  function withGateVerdict(session: VolundrSession): VolundrSession {
-    if (!session.gateRecorded || session.needsAttention) return session;
-    return gateVerdicts.get(session.id) ? { ...session, needsAttention: true } : session;
-  }
-
-  async function confirmRecordedGates(
-    sessions: VolundrSession[],
-    signal?: AbortSignal,
-  ): Promise<VolundrSession[]> {
-    await Promise.all(
-      sessions
-        .filter((session) => session.gateRecorded && !session.needsAttention)
-        .map(async (session) => {
-          const path = sessionPath(session.id, '/workflow/gates', session.instanceId);
-          const payload = await (signal
-            ? forgeClient.get<WorkflowGateListPayload>(path, { signal })
-            : forgeClient.get<WorkflowGateListPayload>(path));
-          gateVerdicts.set(
-            session.id,
-            (payload.gates ?? [])
-              .map(normalizeWorkflowGate)
-              .some((gate) => gate.status === 'pending' && gate.pending_behavior === 'help_needed'),
-          );
-        }),
-    );
-    return sessions.map(withGateVerdict);
-  }
-
   async function loadSessions(
     endpoint: string,
     options?: { instanceId?: string; signal?: AbortSignal },
@@ -1661,11 +1771,9 @@ export function buildVolundrHttpAdapter(
     const scoped = options?.instanceId
       ? `${endpoint}${endpoint.includes('?') ? '&' : '?'}instance_id=${encodeURIComponent(options.instanceId)}`
       : endpoint;
-    const sessions = (
-      await confirmRecordedGates(
-        (await readSessionList(scoped, options?.signal)).map(normalizeSession),
-        options?.signal,
-      )
+    const sessions = normalizeSessionList(
+      await readSessionList(scoped, options?.signal),
+      scoped,
     ).map(keepNewerActivity);
     if (options?.instanceId) {
       for (const [id, session] of sessionCache) {
@@ -1702,7 +1810,7 @@ export function buildVolundrHttpAdapter(
       throw new Error(`Invalid session changes from ${instanceId}`);
     }
     const listed = new Set(payload.ids);
-    const sessions = await confirmRecordedGates(payload.sessions.map(normalizeSession), signal);
+    const sessions = normalizeSessionList(payload.sessions, endpoint);
     // Mirror loadSessions/listArchivedSessions: this host's cached membership is
     // exactly what it lists now.
     if (archived) {
@@ -1721,6 +1829,11 @@ export function buildVolundrHttpAdapter(
     return { cursor: payload.cursor, ids: payload.ids, sessions: live };
   }
 
+  /** The host a session was listed from, when this client has seen it. */
+  function cachedInstanceId(sessionId: string): string | undefined {
+    return sessionCache.get(sessionId)?.instanceId ?? archivedSessionOwners.get(sessionId);
+  }
+
   function sessionPath(sessionId: string, suffix = '', explicitInstanceId?: string): string {
     const instanceId =
       explicitInstanceId ??
@@ -1735,21 +1848,46 @@ export function buildVolundrHttpAdapter(
     return sessionPath(sessionId, `/secret-requests/${encodeURIComponent(requestId)}${action}`);
   }
 
+  /**
+   * One session as the caller may read it. The owner, an admin and a tenant viewer read the
+   * full session. A person who shares the session (a project member or an invitee) is refused
+   * it ("read") and reads its room view instead ("read_room"): the same entry the list gave
+   * them, without the workspace. The list says which kind a session is, so a known shared
+   * session goes straight to the room view; otherwise the full read comes first, and a refusal
+   * (403, which the Guild facade passes on from the node that holds the session) is answered by
+   * the room view.
+   */
+  async function readSessionPayload(
+    id: string,
+    options?: { instanceId?: string; signal?: AbortSignal },
+  ): Promise<SessionPayload | null> {
+    const read = (path: string) =>
+      options?.signal
+        ? forgeClient.get<SessionPayload | null>(path, { signal: options.signal })
+        : forgeClient.get<SessionPayload | null>(path);
+    const roomPath = sessionPath(id, '/room', options?.instanceId);
+    const cached = sessionCache.get(id);
+    if (cached && isSharedSession(cached)) return read(roomPath);
+    try {
+      const full = await read(sessionPath(id, '', options?.instanceId));
+      if (full) return full;
+    } catch (error) {
+      if (!(error instanceof ApiClientError) || error.status !== 403) throw error;
+    }
+    return read(roomPath);
+  }
+
   async function loadSession(
     id: string,
     options?: { instanceId?: string; signal?: AbortSignal },
   ): Promise<VolundrSession | null> {
-    const path = sessionPath(id, '', options?.instanceId);
-    const session = await (options?.signal
-      ? forgeClient.get<SessionPayload | null>(path, { signal: options.signal })
-      : forgeClient.get<SessionPayload | null>(path));
+    const session = await readSessionPayload(id, options);
     if (!session) {
       sessionCache.delete(id);
       publishSessions();
       return null;
     }
-    const [fetched] = await confirmRecordedGates([normalizeSession(session)], options?.signal);
-    if (!fetched) throw new Error(`Session ${id} could not be read`);
+    const fetched = normalizeSession(session);
     if (options?.instanceId && fetched.instanceId && fetched.instanceId !== options.instanceId) {
       throw new Error(
         `Session ${id} was returned by ${fetched.instanceId}, expected ${options.instanceId}`,
@@ -1921,7 +2059,7 @@ export function buildVolundrHttpAdapter(
           }
           if (eventType === 'session_created' || eventType === 'session_updated') {
             const session = keepListOnlyFields(
-              keepNewerActivity(withGateVerdict(normalizeSession(payload as SessionPayload))),
+              keepNewerActivity(normalizeSession(payload as SessionPayload)),
             );
             sessionCache.set(session.id, session);
             publishSessions();
@@ -2178,6 +2316,148 @@ export function buildVolundrHttpAdapter(
         `/projects/${encodeURIComponent(project.id)}${project.instance_id ? `?instance_id=${encodeURIComponent(project.instance_id)}` : ''}`,
         { ...changes, revision: project.revision },
       ),
+    getProjectMembers: (project) => forgeClient.get(projectMembersPath(project)),
+    getProjectMemberCandidates: (project, query) =>
+      forgeClient.get(projectMembersPath(project, 'member-candidates', { q: query })),
+    addProjectMember: (project, member) =>
+      forgeClient.post(projectMembersPath(project), {
+        user_id: member.userId,
+        role: member.role,
+        ...(member.expertise ? { expertise: member.expertise } : {}),
+      }),
+    updateProjectMember: (project, userId, change) =>
+      forgeClient.patch(
+        projectMembersPath(project, `members/${encodeURIComponent(userId)}`),
+        change,
+      ),
+    removeProjectMember: async (project, userId) => {
+      await forgeClient.delete(
+        projectMembersPath(project, `members/${encodeURIComponent(userId)}`),
+      );
+    },
+    getTeamIntegrationCatalog: (project) =>
+      forgeClient.get(projectMembersPath(project, 'integrations/catalog')),
+    getTeamIntegrations: (project) => forgeClient.get(projectMembersPath(project, 'integrations')),
+    connectTeamServiceAccount: (project, connect) =>
+      forgeClient.post(projectMembersPath(project, 'integrations'), connect),
+    startTeamOAuth: (project, slug, config) =>
+      forgeClient.post('/integrations/oauth/authorize-team', {
+        slug,
+        project_id: project.id,
+        config,
+      }),
+    updateTeamIntegration: (project, connectionId, change) =>
+      forgeClient.patch(
+        projectMembersPath(project, `integrations/${encodeURIComponent(connectionId)}`),
+        change,
+      ),
+    removeTeamIntegration: async (project, connectionId) => {
+      await forgeClient.delete(
+        projectMembersPath(project, `integrations/${encodeURIComponent(connectionId)}`),
+      );
+    },
+    getTeamRoutes: (project) => forgeClient.get(projectMembersPath(project, 'integrations/routes')),
+    setTeamRoute: (project, event, route) =>
+      forgeClient.put(
+        projectMembersPath(project, `integrations/routes/${encodeURIComponent(event)}`),
+        route,
+      ),
+    removeTeamRoute: async (project, event) => {
+      await forgeClient.delete(
+        projectMembersPath(project, `integrations/routes/${encodeURIComponent(event)}`),
+      );
+    },
+    getProjectMemoryMounts: (project) => forgeClient.get(projectMembersPath(project, 'memory')),
+    addProjectMemoryMount: (project, mount) =>
+      forgeClient.post(projectMembersPath(project, 'memory'), {
+        name: mount.name,
+        registry_entry_id: mount.registryEntryId,
+        access: mount.access,
+      }),
+    removeProjectMemoryMount: async (project, name) => {
+      await forgeClient.delete(projectMembersPath(project, `memory/${encodeURIComponent(name)}`));
+    },
+    getTeamIntegrationUsage: (project, before) =>
+      forgeClient.get(projectMembersPath(project, 'integrations/usage', before ? { before } : {})),
+    getSessionParticipants: async (id, options) => {
+      const payload = await forgeClient.get<ParticipantPayload[]>(
+        sessionPeoplePath(id, 'participants', options?.instanceId ?? cachedInstanceId(id)),
+        { signal: options?.signal },
+      );
+      return payload.filter((entry) => entry.status !== 'revoked').map(normalizeParticipant);
+    },
+    getSessionProjectPeople: async (id, options) => {
+      try {
+        const payload = await forgeClient.get<SessionPersonPayload[]>(
+          sessionPeoplePath(id, 'people', options?.instanceId ?? cachedInstanceId(id)),
+          { signal: options?.signal },
+        );
+        return payload.map((person) => ({
+          userId: person.user_id,
+          displayName: person.display_name ?? '',
+          projectRole: person.role,
+          roomRole: roomRoleOfProjectRole(person.role),
+        }));
+      } catch (error) {
+        // 409 is Forge saying the session has no project: an answer, not a failure.
+        if (error instanceof ApiClientError && error.status === 409) return null;
+        throw error;
+      }
+    },
+    getParticipantCandidates: async (id, query, options) => {
+      const payload = await forgeClient.get<
+        Array<{ user_id: string; display_name: string; email: string }>
+      >(
+        sessionPeoplePath(
+          id,
+          'participant-candidates',
+          options?.instanceId ?? cachedInstanceId(id),
+          {
+            q: query,
+          },
+        ),
+        { signal: options?.signal },
+      );
+      return payload.map((person) => ({
+        userId: person.user_id,
+        displayName: person.display_name,
+        email: person.email,
+      }));
+    },
+    getTeamInviteCandidates: async (query, options) => {
+      const params = new URLSearchParams({ q: query });
+      if (options?.instanceId) params.set('instance_id', options.instanceId);
+      const payload = await forgeClient.get<
+        Array<{ user_id: string; display_name: string; email: string }>
+      >(`/participant-candidates?${params.toString()}`, { signal: options?.signal });
+      return payload.map((person) => ({
+        userId: person.user_id,
+        displayName: person.display_name,
+        email: person.email,
+      }));
+    },
+    inviteSessionParticipant: async (id, invitation, options) =>
+      normalizeParticipant(
+        await forgeClient.post<ParticipantPayload>(
+          sessionPeoplePath(id, 'participants', options?.instanceId ?? cachedInstanceId(id)),
+          { user_id: invitation.userId, role: invitation.role },
+        ),
+      ),
+    acceptSessionInvitation: async (id, options) =>
+      normalizeParticipant(
+        await forgeClient.post<ParticipantPayload>(
+          sessionPeoplePath(id, 'participants/accept', options?.instanceId ?? cachedInstanceId(id)),
+        ),
+      ),
+    removeSessionParticipant: async (id, userId, options) => {
+      await forgeClient.delete(
+        sessionPeoplePath(
+          id,
+          `participants/${encodeURIComponent(userId)}`,
+          options?.instanceId ?? cachedInstanceId(id),
+        ),
+      );
+    },
     getSessionProject: async (id, options) => {
       const payload = await forgeClient.get<SessionProjectPayload>(
         sessionProjectPath(id, options?.instanceId),
@@ -2297,6 +2577,23 @@ export function buildVolundrHttpAdapter(
       normalizeSession(
         await forgeClient.post<SessionPayload>('/sessions', buildStartSessionBody(config)),
       ),
+    startTeam: async (request): Promise<StartedTeam> => {
+      const payload = await forgeClient.post<StartedTeamPayload>(
+        '/teams',
+        buildStartTeamBody(request),
+      );
+      return {
+        session: normalizeSession(payload.session),
+        members: payload.members.map(normalizeSession),
+      };
+    },
+    getSessionMembers: async (id, options) =>
+      normalizeSessionMembers(
+        await forgeClient.get<SessionMembersPayload>(
+          sessionPeoplePath(id, 'members', options?.instanceId ?? cachedInstanceId(id)),
+          { signal: options?.signal },
+        ),
+      ),
     evaluatePermissionAutoApproval: async (sessionId, request) =>
       normalizePermissionAutoApproval(
         await forgeClient.post<PermissionAutoApprovalPayload>(
@@ -2379,12 +2676,11 @@ export function buildVolundrHttpAdapter(
     restoreSession: (sessionId) =>
       forgeClient.patch<void>(sessionPath(sessionId, '/restore'), undefined),
     listArchivedSessions: async (options) => {
-      const sessions = (
-        await readSessionList(
-          `/sessions?status=archived${options?.instanceId ? `&instance_id=${encodeURIComponent(options.instanceId)}` : ''}`,
-          options?.signal,
-        )
-      ).map(normalizeSession);
+      const archivedEndpoint = `/sessions?status=archived${options?.instanceId ? `&instance_id=${encodeURIComponent(options.instanceId)}` : ''}`;
+      const sessions = normalizeSessionList(
+        await readSessionList(archivedEndpoint, options?.signal),
+        archivedEndpoint,
+      );
       if (options?.instanceId) {
         for (const [id, owner] of archivedSessionOwners) {
           if (owner === options.instanceId) archivedSessionOwners.delete(id);
@@ -2422,34 +2718,6 @@ export function buildVolundrHttpAdapter(
         : [];
       if (!turn) throw new Error(`Forge returned no turn for ${turnId}`);
       return turn;
-    },
-    getWorkflowGates: async (sessionId) => {
-      const payload = await forgeClient.get<WorkflowGateListPayload>(
-        sessionPath(sessionId, '/workflow/gates'),
-      );
-      return (payload.gates ?? []).map(normalizeWorkflowGate);
-    },
-    resolveWorkflowGate: async (sessionId, gateId, request) => {
-      const response = await fetch(
-        `${forgeClient.basePath}${sessionPath(sessionId, `/workflow/gates/${gateId}/resolve`)}`,
-        {
-          method: 'POST',
-          headers: getAuthHeaders({
-            'Content-Type': 'application/json',
-            'x-niuu-workflow-gate-intent': 'resolve',
-          }),
-          body: JSON.stringify(request),
-        },
-      );
-      const payload = await response.json();
-      if (!response.ok) {
-        const detail =
-          payload && typeof payload === 'object' && 'detail' in payload
-            ? String((payload as { detail?: unknown }).detail ?? 'Unknown error')
-            : 'Unknown error';
-        throw new Error(`API request failed: ${response.status} ${detail}`);
-      }
-      return normalizeWorkflowGate(payload as WorkflowGatePayload);
     },
     getMessages: (sessionId) => loadMessages(sessionId),
     sendMessage: async (sessionId, content) =>

@@ -56,6 +56,23 @@ def test_nested_pod_managers_get_the_forge_defaults_and_their_own_kwargs(tmp_pat
     assert pool.initial_chat_endpoint(_any_session()).startswith("ws://192.168.1.10:8181/s/")
 
 
+def test_mini_mode_placement_builds_with_mesh_signing_off(tmp_path):
+    """The off switch must not stop the placement pod manager mini mode runs on.
+
+    The wrapper has no mesh setting of its own; each manager it wraps was given the
+    decision, so the wrapper is covered. Its local sessions then run unauthenticated.
+    """
+    settings = _settings(
+        {"local": {"adapter": LOCAL, "kwargs": {"workspaces_dir": str(tmp_path)}}, "pool": POOL}
+    )
+    settings.mesh.attestation.required = False
+
+    pod_manager = _create_pod_manager(settings)
+
+    assert isinstance(pod_manager, PlacementPodManager)
+    assert pod_manager._local._mesh == {"attestation": {"required": False}}
+
+
 def test_a_nested_pod_manager_resolves_its_own_secret_kwargs(monkeypatch, tmp_path):
     monkeypatch.setenv("HOSTS_POOL_ID", "from-env")
     pod_manager = _create_pod_manager(

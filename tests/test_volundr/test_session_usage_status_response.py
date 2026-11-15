@@ -70,7 +70,7 @@ def session(**changes):
 def test_rest_status_list_and_existing_event_share_the_public_context():
     s = session(session_usage=copy.deepcopy(USAGE))
     status = SessionStatusResponse.from_session(s, host="served", now=NOW).model_dump(mode="json")
-    row = SessionResponse.from_session(s).model_dump(mode="json")
+    row = SessionResponse.from_session(s, people_count=1).model_dump(mode="json")
     event = InMemoryEventBroadcaster().create_session_event(EventType.SESSION_UPDATED, s)
     assert "session_usage" not in s.model_dump(mode="json")
     assert s.model_copy(update={"name": "renamed"}).session_usage == s.session_usage
@@ -245,8 +245,8 @@ async def test_postgres_create_persists_usage_json_without_exposing_it():
     pool.execute = AsyncMock()
     repo = PostgresSessionRepository(pool)
     await repo.create(session(session_usage=USAGE))
-    # session_usage precedes coordination and actor_id, which stay last.
-    assert json.loads(pool.execute.call_args.args[-3]) == USAGE
+    # session_usage precedes coordination, actor_id and the hosting columns, which stay last.
+    assert json.loads(pool.execute.call_args.args[-5]) == USAGE
 
 
 async def test_postgres_read_decodes_usage_for_status_and_list():

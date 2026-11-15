@@ -283,6 +283,16 @@ class StubTrackerFactory:
         return [self._tracker]
 
 
+class StubVolundrFactory:
+    def __init__(self, volundr: StubVolundr) -> None:
+        self._volundr = volundr
+        self.owners: list[str] = []
+
+    async def primary_for_owner(self, owner_id: str) -> StubVolundr:
+        self.owners.append(owner_id)
+        return self._volundr
+
+
 class StubDispatcherRepo(DispatcherRepository):
     def __init__(self, running: bool = True) -> None:
         self._state = DispatcherState(
@@ -537,7 +547,7 @@ def client(
     app.state.tracker_factory = StubTrackerFactory(tracker)
     app.state.saga_repo = saga_repo
     app.state.dispatcher_repo = dispatcher_repo
-    app.state.volundr = volundr
+    app.state.volundr_factory = StubVolundrFactory(volundr)
     app.state.telegram_reply_client = reply_client
     app.state.dispatch_service = dispatch_service
     app.state.settings = SimpleNamespace(
@@ -657,7 +667,7 @@ class TestWebhookSecretValidation:
         app.state.tracker_factory = StubTrackerFactory(tracker)
         app.state.saga_repo = saga_repo
         app.state.dispatcher_repo = dispatcher_repo
-        app.state.volundr = volundr
+        app.state.volundr_factory = StubVolundrFactory(volundr)
         app.state.telegram_reply_client = reply_client
         app.state.dispatch_service = dispatch_service
         app.state.settings = SimpleNamespace(
@@ -1326,6 +1336,11 @@ class TestSessionsCommand:
         reply = reply_client.replies[0][1]
         assert "sess-1" in reply
         assert "Alpha run 1" in reply
+
+    def test_sessions_asks_for_the_senders_own_forge(self, client: TestClient):
+        _post_webhook(client, "/sessions")
+
+        assert client.app.state.volundr_factory.owners == [OWNER_ID]
 
     def test_sessions_empty(
         self,

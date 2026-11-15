@@ -8,6 +8,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+import yaml
 
 from niuu.domain.outcome import OutcomeField
 from personas.adapters.loader import (
@@ -34,7 +35,6 @@ _REVIEWER_YAML = """\
 name: reviewer
 system_prompt_template: |
   You are a code reviewer.
-allowed_tools: [file_read, git]
 permission_mode: read-only
 produces:
   event_type: review.completed
@@ -141,7 +141,6 @@ consumes:
 _NO_CONTRACT_YAML = """\
 name: simple-agent
 system_prompt_template: You are a simple agent.
-allowed_tools: [file_read]
 permission_mode: read-only
 """
 
@@ -256,6 +255,41 @@ class TestParseProduces:
 # ---------------------------------------------------------------------------
 # parse_consumes
 # ---------------------------------------------------------------------------
+
+
+class TestParseVerdictGuidance:
+    def test_parses_when_to_report_each_verdict(self) -> None:
+        p = parse_produces(
+            {
+                "event_type_map": {"pass": "x.done", "blocked": "x.blocked"},
+                "when": {"pass": " Done. "},
+            }
+        )
+        assert p.when == {"pass": "Done."}
+
+    def test_no_guidance_is_none(self) -> None:
+        assert parse_produces({"event_type_map": {"pass": "x.done"}}).when == {}
+
+    def test_guidance_for_an_unmapped_verdict_is_refused(self) -> None:
+        with pytest.raises(ValueError, match="names verdict 'later'"):
+            parse_produces({"event_type_map": {"pass": "x.done"}, "when": {"later": "Some day."}})
+
+    def test_empty_guidance_is_refused(self) -> None:
+        with pytest.raises(ValueError, match="must say when to report 'pass'"):
+            parse_produces({"event_type_map": {"pass": "x.done"}, "when": {"pass": ""}})
+
+    def test_guidance_that_is_not_a_mapping_is_refused(self) -> None:
+        with pytest.raises(ValueError, match="must map each verdict"):
+            parse_produces({"event_type_map": {"pass": "x.done"}, "when": "always"})
+
+    def test_guidance_survives_a_round_trip(self) -> None:
+        config = PersonaConfig(
+            name="guided",
+            produces=PersonaProduces(
+                event_type_map={"pass": "x.done"}, when={"pass": "The work is done."}
+            ),
+        )
+        assert config.to_dict()["produces"]["when"] == {"pass": "The work is done."}
 
 
 class TestParseConsumes:
@@ -440,7 +474,6 @@ class TestApplyOutcomeInstruction:
     def test_other_fields_unchanged(self) -> None:
         persona = PersonaConfig(
             name="x",
-            allowed_tools=["file_read"],
             permission_mode="read-only",
             produces=PersonaProduces(
                 event_type="x.done",
@@ -448,7 +481,6 @@ class TestApplyOutcomeInstruction:
             ),
         )
         result = apply_outcome_instruction(persona)
-        assert result.allowed_tools == ["file_read"]
         assert result.permission_mode == "read-only"
 
 
@@ -510,10 +542,14 @@ class TestFilesystemPersonaAdapterLoadInjection:
 
 
 class TestPersonaContractE2E:
-    def test_persona_without_contract_unchanged(self) -> None:
-        """Loading ticket-coordinator (no produces) → no outcome block in system prompt."""
-        loader = FilesystemPersonaAdapter()
-        persona = loader.load("ticket-coordinator")
+    def test_persona_without_contract_unchanged(self, tmp_path: Path) -> None:
+        """Loading a persona with no produces → no outcome block in system prompt."""
+        (tmp_path / "coordinator.yaml").write_text(
+            "name: coordinator\nsystem_prompt_template: Coordinate the work.\n",
+            encoding="utf-8",
+        )
+        loader = FilesystemPersonaAdapter(persona_dirs=[str(tmp_path)], include_builtin=False)
+        persona = loader.load("coordinator")
         assert persona is not None
         assert "---outcome---" not in persona.system_prompt_template
 
@@ -540,11 +576,11 @@ class TestFindConsumersProducers:
         assert "reviewer" in names
         assert "security-auditor" in names
 
-    def test_find_consumers_review_completed_returns_postmortem_analyst(self) -> None:
+    def test_find_consumers_review_completed_has_no_bundled_consumer(self) -> None:
+        # The only bundled consumer (postmortem-analyst) is archived; see archive/README.md.
         loader = FilesystemPersonaAdapter()
         consumers = loader.find_consumers("review.completed")
-        names = [p.name for p in consumers]
-        assert names == ["postmortem-analyst"]
+        assert [p.name for p in consumers] == []
 
     def test_find_consumers_unknown_event_returns_empty(self) -> None:
         loader = FilesystemPersonaAdapter()
@@ -622,12 +658,21 @@ class TestBuiltinSpecialistContracts:
         assert cfg.fan_in.strategy == "all_must_pass"
 
     def test_capability_publisher_uses_json_artifact_publisher(self) -> None:
-        cfg = self._load("capability-publisher")
+        # Archived with Tool & Skill Builder; its document stays valid.
+        # The archived file predates the removal of tool lists, so it is read as plain YAML
+        # rather than loaded as a persona (which refuses the tool lists it still carries).
+        archived = yaml.safe_load(
+            (
+                Path(__file__).resolve().parents[2]
+                / "archive"
+                / "personas"
+                / "capability-publisher.yaml"
+            ).read_text(encoding="utf-8")
+        )
 
-        assert "mimir:publish_artifact" in cfg.allowed_tools
-        assert "mimir_write" not in cfg.allowed_tools
-        assert "mimir_publish_artifact capabilities/{slug}/learned_tool.json" in (
-            cfg.system_prompt_template
+        assert (
+            "mimir_publish_artifact capabilities/{slug}/learned_tool.json"
+            in (archived["system_prompt_template"])
         )
 
     def test_all_specialist_personas_have_system_prompts(self) -> None:

@@ -2,16 +2,14 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from identity.adapters.identity import EnvoyHeaderAuthenticationAdapter
-from mimir.adapters.markdown import MarkdownMimirAdapter
 from mimir.mcp import MimirMcpServer
 from mimir.router import MimirRouter
+from tests.test_mimir.unit.fakes import InMemoryMimirAdapter
 
 
 def _identity(tenant: str) -> dict[str, str]:
@@ -23,8 +21,8 @@ def _identity(tenant: str) -> dict[str, str]:
 
 
 @pytest.fixture
-def client(tmp_path: Path) -> TestClient:
-    adapter = MarkdownMimirAdapter(root=tmp_path / "host")
+def client() -> TestClient:
+    adapter = InMemoryMimirAdapter()
     auth = EnvoyHeaderAuthenticationAdapter()
     app = FastAPI()
     app.include_router(MimirRouter(adapter, name="shared", auth=auth).router)
@@ -68,7 +66,7 @@ def test_another_org_cannot_name_the_hosts_mount(client: TestClient) -> None:
 
 @pytest.mark.parametrize(
     "route",
-    ["/routing/rules", "/ravns/bindings", "/entities/index", "/doctor", "/activity/live"],
+    ["/entities/index", "/eval/latest", "/activity/live"],
 )
 def test_host_only_routes_are_refused(client: TestClient, route: str) -> None:
     assert client.get(route, headers=_identity("org-a")).status_code == 403

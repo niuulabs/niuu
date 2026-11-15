@@ -152,6 +152,56 @@ describe('SessionAttentionPanel workers', () => {
     expect(within(section).getByTestId('panel-ravn-peer-pub')).toHaveTextContent(/^publisher$/);
   });
 
+  it('lists a run member that is both a session and a room worker once, with its verdict', () => {
+    const props = renderPanel({
+      workerSessions: [
+        workerSession(
+          's-coder',
+          'wf-run-coder',
+          'terminated',
+          'Code, Review and Merge: add a util',
+        ),
+        workerSession(
+          's-rev',
+          'wf-run-reviewer',
+          'terminated',
+          'Code, Review and Merge: add a util',
+        ),
+      ],
+      ravnWorkers: [
+        ravnWorker({
+          peerId: 's-coder',
+          name: 'wf-run-coder',
+          latest: {
+            peerId: 's-coder',
+            persona: 'coder',
+            eventType: 'workflow.step.verdict',
+            verdict: 'pass',
+            summary: 'Opened PR #3 with the util and its tests.',
+            fields: {},
+            at: new Date('2026-11-08T21:33:00Z'),
+            tone: 'pass',
+          },
+        }),
+        ravnWorker({ peerId: 's-rev', name: 'wf-run-reviewer' }),
+      ],
+    });
+    const section = screen.getByRole('region', { name: 'Workers' });
+
+    expect(section).toHaveTextContent('2');
+    expect(within(section).queryByTestId('panel-ravn-s-coder')).toBeNull();
+    const coder = within(section).getByTestId('panel-worker-s-coder');
+    expect(coder).toHaveTextContent('Passed');
+    expect(coder).toHaveTextContent('Opened PR #3 with the util and its tests.');
+    expect(coder).not.toHaveTextContent('add a util');
+    // A member that has reported nothing yet keeps its session's state and objective.
+    const reviewer = within(section).getByTestId('panel-worker-s-rev');
+    expect(reviewer).toHaveTextContent('Stopped');
+    expect(reviewer).toHaveTextContent('add a util');
+    fireEvent.click(coder);
+    expect(props.onOpenSession).toHaveBeenCalledWith('s-coder');
+  });
+
   it('shows both kinds under one count, after Needs you and before the plan', () => {
     renderPanel({
       items: [{ kind: 'input', id: 'i', title: 'Which branch?', detail: '' }],

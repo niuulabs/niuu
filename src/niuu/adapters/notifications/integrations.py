@@ -25,7 +25,12 @@ import logging
 from collections.abc import Mapping
 from typing import Any
 
-from niuu.domain.models import IntegrationConnection, IntegrationType, is_push_device
+from niuu.domain.models import (
+    IntegrationConnection,
+    IntegrationType,
+    credential_owner,
+    is_push_device,
+)
 from niuu.ports.channel_resolver import ChannelResolverPort, NotificationChannelUnavailableError
 from niuu.ports.credentials import CredentialStorePort
 from niuu.ports.integrations import IntegrationRepository
@@ -46,6 +51,7 @@ CREDENTIAL_OWNER_TYPE = "user"
 DEFAULT_INTEGRATION_SINKS: dict[str, str] = {
     "telegram": "niuu.adapters.notifications.telegram.TelegramNotificationSink",
     "webhook": "niuu.adapters.notifications.webhook.WebhookNotificationSink",
+    "slack": "niuu.adapters.notifications.slack.SlackNotificationSink",
 }
 
 #: Integration slug → the best-effort channel Ting uses when a connection stores
@@ -190,7 +196,7 @@ class IntegrationSinkResolver(NotificationSinkResolver):
         sink_cls = _sink_class(path)
 
         credential = await self._credential_store.get_value(
-            CREDENTIAL_OWNER_TYPE, owner_id, connection.credential_name
+            *credential_owner(connection), connection.credential_name
         )
         if credential is None:
             raise _unavailable(

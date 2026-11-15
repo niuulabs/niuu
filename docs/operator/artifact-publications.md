@@ -158,17 +158,18 @@ presentedFiles:
     accessMode: ReadWriteMany        # ReadWriteOnce only with rollout.colocate: true
     size: 10Gi
 sessionCredentialProjection:
-  enabled: true
   namespace: ""                      # the session pods' namespace; empty: podManager.kwargs.namespace
 workloadIdentity:
   enabled: true
   signingKey:
-    existingSecret: volundr-workload-identity   # turns forgeMcp session_tokens on
+    existingSecret: volundr-workload-identity   # turns forgeMcp session_tokens and the projection on
 ```
 
 The chart renders the Postgres store with `root` at `presentedFiles.mountPath`
 (`/volundr/presented-files`), a PVC kept on uninstall, a Role in the session namespace
 for Secret get/create/patch/delete, and the projection kwargs. It refuses to render
-without `maxTotalBytes`, without session credentials, without the projection (unless
-the pod manager delivers the credential itself: OpenShell, local process), or with
-`ReadWriteOnce` and `rollout.colocate: false`.
+without `maxTotalBytes`, without session credentials, with the projection switched off
+(`sessionCredentialProjection.enabled: false`; unless the pod manager delivers the
+credential itself: OpenShell, local process), or with `ReadWriteOnce` and
+`rollout.colocate: false`. The projection and its Role come on by themselves with the
+session credentials on a Flux or Kubernetes Forge.

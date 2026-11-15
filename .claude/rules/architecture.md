@@ -65,7 +65,7 @@ least-privilege credential that can do one named thing and nothing else,
 enforced fail-closed at that entry point (Forge session create, Ting workflow
 launch, Observatory topology push). Tokens without
 `token_use == "valkyrie_build"` are never scope-checked, so human sessions and
-ordinary PATs are unaffected.
+unscoped PATs are unaffected.
 
 The `valkyrie_build` claim value is historical — builds were the first use.
 It means "this credential is scoped", not "this credential builds"; the
@@ -77,10 +77,14 @@ edit it can mint authority. A scope is also only real because code enforces
 it — `require_scope("x")` on a route is what gives `"x"` meaning, so a
 config-only scope would grant nothing while reading as protection.
 
-Known limitation (deliberate, for now): PATs themselves cannot carry scopes —
-a leaked PAT retains its owner's full authority. Off-cluster Valkyries using
-a PAT via `external_token_env` therefore do not get least-privilege; scoped
-PAT minting is future work. When adding a NEW scoped entry point, add its
+PATs can carry scopes too: `POST /api/v1/tokens` accepts `scopes`, bounded by
+`validate_pat_scopes` to the `valkyrie_build` family (`VALKYRIE_BUILD_SCOPES`),
+and the issuer writes them to the PAT's `scope` claim. A scoped PAT is
+restricted exactly like a `valkyrie_build` token: at the scoped entry points,
+and nowhere else (`claims_have_scope`). Forge session scopes are never granted
+to a PAT. A PAT minted without `scopes` still carries its owner's full
+authority, so an off-cluster Valkyrie using one via `external_token_env` gets
+least privilege only when its PAT is minted with scopes. When adding a NEW scoped entry point, add its
 scope to `KNOWN_WORKLOAD_SCOPES` and a `require_scope(...)` dependency on the
 route — scoped tokens are only as narrow as the enforcement coverage.
 `tests/test_niuu/test_token_scope.py` fails if the two drift apart in either
@@ -168,9 +172,13 @@ principal for "this one session".
   key file (`forge_mcp.session_tokens`). Enabled with no usable key is fatal at
   startup, never "mint nothing".
 - Its `scopes` are bounded to its own family, `FORGE_SESSION_SCOPES`:
-  `forge:notify`, `forge:session:read` and `forge:session:secret` (ask the session's own
-  owner for a secret and claim it once; supplying or declining a request stays the owner's
-  alone and is closed to every scoped token) for every session, plus
+  `forge:notify`, `forge:session:read`, `forge:memory` and `forge:session:secret` (ask the
+  session's own owner for a secret and claim it once; supplying or declining a request stays
+  the owner's alone and is closed to every scoped token) and `forge:session:voice` (mint a
+  short-lived realtime credential for a voice call with the session's own owner, from the
+  owner's provider key, which never leaves Forge; `POST …/sessions/{id}/voice/client-secrets`,
+  own session only, and refused unless the session's current launch runs the voice channel,
+  `docs/operator/session-voice.md`) for every session, plus
   `forge:session:message` / `forge:session:lifecycle` only through an operator
   grant. The family is part of `KNOWN_WORKLOAD_SCOPES` and keyed by
   `SCOPES_BY_TOKEN_USE` (`src/niuu/domain/services/token_scope.py`) — a
@@ -195,11 +203,156 @@ pods, `forge_mcp.session_tokens.projection_adapter`
 `sessionCredentialProjection`) writes it to one Secret per session and mounts it
 read-only; the HelmRelease values carry only the file path (Skuld's
 `forge_mcp.token_file`), never the token, and the Secret is deleted when the
-session stops. The broker uses it for Forge MCP calls and for durable
-presented-file uploads. The
-Volundr chart leaves `session_tokens` off unless workload identity signs with a
-configured key. When adding a NEW Forge route a session broker may call, add it
+session stops. The broker uses it for Forge MCP calls, for durable
+presented-file uploads, and for its session's own record (durable log, activity, usage,
+and message delivery claims). The
+Volundr chart turns `session_tokens` and this projection on wherever Forge has a signing key
+(workload identity with `signingKey.existingSecret`, or `forge_mcp.session_tokens.signing_key_file`);
+enabling them without one fails the render. When adding a NEW Forge route a session broker may call, add it
 to the allow-list and give it a `require_scope(...)` naming a `forge:*` scope.
+
+The memory gateway (the Mímir service, `docs/design/memory/README.md`) is the one
+non-Forge service that accepts this credential, on exactly three routes:
+`GET …/memory/tools`, `POST …/memory/tools/{name}` and `GET …/memory/context-pack`
+(the only routes its identity middleware exempts). Its people routes
+(`GET …/memory/search`, `GET …/memory/review`, `…/memory/proposals…`, `…/memory/promotions`,
+and `…/memory/graph`, the knowledge graph of the layers that person reads) take a person's
+own login through Mímir's identity adapter, refuse any credential carrying
+`workload_session_id` or that `credential_allows_route` denies, and pass the person's
+`Authorization` on to Forge. `memory/search` reads only the layers Forge says the person
+may see (the org, the projects they are on, a named project's attached memories). The
+gateway calls no model: it collates what each memory system's own search returns. Its own service credential
+(`memory.service_auth`) is used only for `POST /api/v1/forge/memory/ended`. It does not
+verify the token itself. It reads the unverified `workload_session_id` only to address
+`GET /api/v1/forge/sessions/{id}/memory-context` (scope `forge:memory`, the session's own
+only), presents the same token there, and treats Forge's 200 as the verification; any
+other answer is a 401. The broker makes these calls; the `memory` stdio server the agent
+runs only reaches the broker's loopback routes, so the credential stays out of the agent.
+Do not admit the credential on any other Mímir route.
+
+Proposal notifications stay in Forge's feed, never a second channel. When an agent's write
+becomes a proposal to a project, the gateway calls
+`POST /api/v1/forge/sessions/{id}/memory/proposals` with that session's own token (scope
+`forge:memory`, `Binding.OWN`, on the session allow-list); Forge tells only the approvers
+and owners of the session's own project and refuses another project. When a person decides
+it, the gateway calls `POST /api/v1/forge/projects/{id}/memory/proposals/{pid}/decided`
+with that person's own login; Forge settles the rows only for an approver or owner of the
+project. A notice that fails is counted as degraded (`memory.proposal_notify`), never
+retried as a second proposal or decision. Org-layer proposals are not announced: Forge
+cannot list an org's admins.
+
+### Exception: the memory gateway's service credential (`memory.gateway_service_subject`)
+
+The memory gateway asks Forge when run and session layers ended
+(`POST /api/v1/forge/memory/ended`) so it can delete them after retention. No person or
+session is behind that call, so it uses the gateway's own workload-identity token: an
+unscoped exchange token whose `act.sub` equals the configured
+`memory.gateway_service_subject`. Forge admits only that token on that route.
+
+- A `forge_session` credential, any scoped token or PAT, a person and any other service
+  get 403. The session allow-list stays closed to the route.
+- Where Forge's identity adapter is allow-all (local mini mode) nothing verifies callers,
+  so the local caller passes, still never with a session or scoped credential.
+- A Forge that verifies callers and has `memory.gateway_url` but no subject fails at
+  startup, and the chart refuses to render.
+- The exchange sets `act` only when the workload differs from the mapped owner, so map
+  the gateway to an owner that is not its own subject.
+- The platform front door asks every visible node and fails if one cannot answer, so an
+  unreachable node never reads as "gone" (which would delete a live layer).
+
+`GET /projects/{id}/role` and `GET /memory/runs/{id}` take a person's own login only;
+they are not scoped-credential routes.
+
+**Connector sources (`memory.connector_service_subjects`).** The memory gateway admits a
+platform service's credential on exactly one more route, `POST …/memory/sources`, for
+connectors such as Ting's Linear import to keep fetched material as immutable
+`tool`-trust sources (author `tool:<connector>`, evidence `url:<origin_url>`) in a project
+or org layer. The credential is an unscoped workload-identity token whose actor
+(`act.sub`) is listed in `memory.connector_service_subjects`; an empty list admits
+nobody. A person, a `forge_session` or other scoped credential and any other service get
+403. A connector credential is refused on the session routes (401) and the people routes
+(403). With the allow-all identity of local mini mode the local caller passes, still
+never with a session or scoped credential. The route is not exempt from Mímir's identity
+middleware.
+
+### Exception: mesh sender attestation (`mesh_peer` certificates)
+
+The mesh transports (Sleipnir over nng, NATS or RabbitMQ; the webhook adapter; in-process)
+authenticate a connection, never a sender: any member can put any session id, peer id or
+reply route in what it sends. A mesh peer therefore proves who it is with a Forge-signed
+certificate and an Ed25519 signature per message (`niuu.mesh.attestation`, applied by the
+`AttestedMesh` decorator in `niuu.adapters.mesh.attested`). The signature, not the
+transport, is what proves the sender on every transport; NATS credentials or subject
+permissions, where a deployment adds them, are an extra layer and never a substitute.
+
+The certificate is another scoped workload credential, sanctioned on the same grounds as
+`forge_session`: there is no OIDC principal for "this one mesh peer", and a peer that
+holds a bearer others could replay would be worse than one holding a private key that
+never leaves its process.
+
+- `token_use: "mesh_peer"`, `aud: ["niuu-mesh"]`, **no scopes, no roles, and a `sub` that
+  is not a person** (`mesh-peer:<peer id>`). Its scope family is empty and deny-by-default
+  (`MESH_PEER_SCOPES`), `credential_allows_route` admits it on **no route at all**, not
+  even `identity/me`, and no Forge or Envoy audience list contains `niuu-mesh`. A peer
+  that receives one cannot replay it against Forge. `tests/test_adapters/test_mesh_identity_rest.py` fails if any
+  Forge route admits a `mesh_peer` token.
+- Forge sets every claim: peer id, kind (`session`, `resident`, `authority`), the
+  session and launch, the memberships (`tenant:`, `flock:`, `realm:`), and the peer's
+  Ed25519 public key, which is all the peer supplies. The private key is generated in the
+  peer's process memory and never leaves it.
+- **One route issues and renews it:** `POST /api/v1/forge/sessions/{id}/mesh-identity`,
+  scope `forge:mesh:identity` (in `FORGE_SESSION_SCOPES`), `Binding.OWN`: a session asks for
+  its own, with its `forge_session` credential. Forge refuses a stopped session or a stale
+  launch, and refuses a peer id another live holder has claimed (`mesh_peer_claims`).
+  Its answer carries the JWKS, so a receiver verifies offline: no Forge call per message,
+  none for an unknown key (it is refused as `unknown_key` until the next renewal, so a
+  flood of unknown keys cannot become a flood of requests).
+- **The lifetime is bounded and short** (`forge_mcp.mesh_identity.ttl_seconds`, default 15
+  minutes) and renewed in the background at half of it. It bounds only how long a leaked or
+  stale certificate is believed, because stopping a session also announces it:
+- **Revocation is a signed event.** When a session stops or restarts, Forge publishes
+  "session stopped" (session id, launch id) on `mesh.revocation`, signed with Forge's own
+  `authority` certificate. Receivers drop that launch at once, and honour a revocation
+  only from an `authority` certificate. The TTL is the backstop for a receiver that was
+  offline for the event.
+- **Membership, not ownership.** A receiver refuses a sender that shares no tenant, flock
+  or realm with it. It does not compare owners, so flocks of residents and sessions with
+  different owners, and shared organization spaces, work.
+- **Replay.** A signature covers its purpose, recipient, signing time and the whole
+  message, so it cannot be moved to another recipient, topic or message; requests and
+  replies are fresh within `mesh.attestation.clock_skew_s`, events within
+  `mesh.attestation.event_max_age_s`. A replay inside the window repeats what the sender
+  really sent, and `message_id` and `event_id` dedup is the inbox's.
+- **An event's certificate is judged at signing time**, so a bus redelivery still verifies;
+  an event can therefore be accepted up to `mesh.attestation.event_max_age_s` after its
+  certificate expired. The bound for a stopped or compromised session is the certificate
+  lifetime plus that age, and the signed stop notice (which only reaches receivers on a
+  networked bus) ends it sooner.
+- **Discovery announcements are signed** by the discovery adapters that share the bus
+  (`event_bus`, `sleipnir`) through the same peer identity (`MeshAttestor`), bound to the peer
+  they describe and ordered per peer.
+- **Platform events are signed by platform services.** Forge (its `authority` certificate) and
+  every other service that publishes on the bus (Ting; Mímir and Bifröst when wired) sign them
+  through `niuu.mesh.platform_events.SigningBus`, and a subscriber that *acts* on one
+  (`ObservationRelay`, Ting's event triggers) checks it with `PlatformEventVerifier`. The
+  certificate kind is `service` (no scopes, no memberships, peer `service:<name>`) and a service
+  issues it to itself, in process, with the key it already has: the workload-identity signing key
+  where the deployment configures one, else the host key file Forge signs session credentials
+  with (`niuu.mesh.platform_identity`). There is no issuing route: the key is the proof that a
+  service is part of the platform, so a service without it (Ting in its own pod without
+  `workloadIdentity.signingKey`) cannot sign and, with signing required, fails startup naming the
+  fix. A `session` or `resident` certificate is refused as `not_platform_service`. The limits: a
+  platform service can publish any platform event, and the key is shared by every service that
+  holds it, so it is a platform-wide secret, not a per-service one.
+- **Fail closed, counted, never silent.** An unverifiable request gets a signed `refused`
+  reply naming the reason; an unverifiable event is not handled; an unverifiable reply
+  raises. Each counts on `niuu.mesh.attestation.refusals` by reason, direction and claimed
+  sender. A mesh whose peer cannot get a certificate does not start;
+  `mesh.attestation.required: false` is the operator's explicit choice to go without.
+- Consumers that read Sleipnir events directly (the room's collaboration bridge) get them
+  through `VerifiedSleipnirSubscriber`, which sets the sender and the projection from the
+  proof, not from the envelope. Do not add another direct consumer of mesh events
+  without it.
 
 ### Exception: Ed25519 node-request signing (`niuu join`)
 
@@ -317,25 +470,45 @@ and Forge never tries another.
 
 Limits of this exception, enforced together:
 
-- **The endpoint only ever answers for the session currently bound to one slot
-  of the allocation.** Authentication yields an allocation, never a session or
+- **The endpoint only ever answers for the unit currently bound to one slot of
+  the allocation: the bound session and, when it is a workflow run's unit, the
+  members of that run.** Authentication yields an allocation, never a session or
   a slot. The request body names the slot (`{"allocation_id": ..., "slot": n}`);
   it may be omitted only on a single-slot allocation, and a missing, non-integer
   or out-of-range `slot` is a 400 after authentication. The machine must be in
   the configured pool and `ready` or `idle`, and the slot must hold a `starting`
   or `busy` binding with no stop requested; the credentials come from that
-  session's own launch payload. Anything else is a 409 with the reason (after
-  authentication) or the identical 401. A released or draining machine, or a slot
-  with no bound session, gets nothing, and the Forge session credential carries
-  the session's *current* launch id, so a restart revokes what the previous
-  launch held. An allocation's identity vouches for every slot of the machine, so
-  a process that holds it can ask for any slot: more than one slot per machine
-  needs a runtime that keeps that identity out of the slots' reach (own user,
-  network namespace and credential files per slot; the identity mounted into the
-  slot's guest agent only). A runtime declares that with
+  session's own launch payload. Without more, the answer is the bound session's.
+  A guest agent of a run's unit adds `"session_id"`: a **member session** of the
+  unit, and the answer is that member's Forge session credential alone (the
+  unit's ServiceAccount tokens stay the bound session's). A member answers only
+  when the *unit's own launch payload* lists it (`members`, written by Forge
+  when it started the unit, so the members are fixed at that point): a session
+  that is not listed, belongs to another run or is bound to another slot gets
+  the same 409 as an unbound slot, and a malformed `session_id` is a 400. The
+  members of one run share its slot's one Unix user (workflow-mesh-handoff
+  decision 2): they can read each other's files and credentials, which is
+  accepted for now within one run of one owner, and a Unix user per member is
+  future work. Between slots nothing changes: a member is only ever reachable
+  through the slot its unit is bound to. Anything else is a 409 with the reason
+  (after authentication) or the identical 401. A released or draining machine, or
+  a slot with no bound session, gets nothing, and the Forge session credential
+  carries the session's (member's) *current* launch id, so a restart revokes what
+  the previous launch held. An allocation's identity vouches for every slot of
+  the machine, so a process that holds it can ask for any slot: more than one
+  slot per machine needs a runtime that keeps that identity out of the slots'
+  reach (own user, network namespace and credential files per slot; the identity
+  mounted into the slot's guest agent only). A runtime declares that with
   `VmRuntime.supports_slots`; `SshContainerVmRuntime` does only with
   `slot_isolation` and a credential delivery that serves slots. Forge refuses
   more than one slot per machine unless every configured runtime declares it.
+  The one sanctioned exception is a Mac with shared slots
+  (`SshDarwinHostRuntime(shared_slots=True)`, `computeHosts.darwin.sharedSlots`):
+  the operator decides that slot users alone are boundary enough. The identity
+  (the Mac's sshd host key) stays root-only, but the slots share the Mac's
+  network, so a session can reach another slot's guest agent and read that
+  slot's credentials. Do not turn it on for a Mac whose sessions belong to
+  different people, and never extend it to Linux, which has the real boundary.
 - **Exactly one route.** Do not extend either identity to another route without
   adding it to the same enforcement points this one touches: the router, the
   Volundr chart's Envoy `jwt_authn` bypass and Cedar `ext_authz` skip

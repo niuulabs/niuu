@@ -44,6 +44,7 @@ from ting.domain.campaign_stages import (
     workflow_stages,
 )
 from ting.domain.models import (
+    TERMINAL_CAMPAIGN_STATUSES,
     CampaignStageState,
     WorkflowCampaign,
     WorkflowCampaignStatus,
@@ -623,7 +624,7 @@ async def _durable_research_launch(
     the ``research/campaigns/<slug>/`` Mímir prefix the workflow writes to and the
     campaign slug callers address, is unchanged.
     """
-    parent_node_id = durable_parent_node_id(workflow, workflow_snapshot)
+    parent_node_id = durable_parent_node_id(workflow)
     if parent_node_id is None:
         return None
     if execution_repo is None:
@@ -740,7 +741,15 @@ async def _resolve_research_workflow(
     for workflow in workflows:
         if workflow.name == _DEFAULT_RESEARCH_WORKFLOW_NAME:
             return await _selected_version(repo, workflow, workflow_version)
-    raise HTTPException(status_code=404, detail="Research Campaign workflow not found")
+    raise HTTPException(
+        status_code=404,
+        detail=(
+            f"No research workflow is available: no workflow is tagged 'research' and "
+            f"{_DEFAULT_RESEARCH_WORKFLOW_NAME!r} is no longer bundled (archived, see "
+            "archive/README.md). Create a workflow tagged 'research', or restore the "
+            "archived one."
+        ),
+    )
 
 
 async def _selected_version(
@@ -952,9 +961,7 @@ async def _refresh_campaign_runtime(
     return saved
 
 
-_TERMINAL_CAMPAIGN_STATUSES = frozenset(
-    {WorkflowCampaignStatus.COMPLETED, WorkflowCampaignStatus.FAILED}
-)
+_TERMINAL_CAMPAIGN_STATUSES = TERMINAL_CAMPAIGN_STATUSES
 
 
 async def _resolve_campaign_volundr_adapter(
@@ -1172,9 +1179,7 @@ def _same_mimir_mount(left: MimirPort, right: MimirPort) -> bool:
         return left_url == right_url and getattr(left, "_mount", None) == getattr(
             right, "_mount", None
         )
-    left_root = left.filesystem_root()
-    right_root = right.filesystem_root()
-    return left_root is not None and left_root == right_root
+    return left is right
 
 
 def _summarize_campaign_pages(

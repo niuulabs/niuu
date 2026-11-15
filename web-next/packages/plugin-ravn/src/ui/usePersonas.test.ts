@@ -7,7 +7,6 @@ import { wrapWithServices } from '../testing/wrapWithRavn';
 const samplePersona: PersonaSummary = {
   name: 'coder',
   permissionMode: 'workspace-write',
-  allowedTools: ['file', 'git'],
   iterationBudget: 40,
   isBuiltin: true,
   hasOverride: false,

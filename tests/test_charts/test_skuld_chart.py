@@ -19,7 +19,6 @@ PERSONA_DOCUMENT = {
     "definition": {
         "name": "reviewer",
         "system_prompt_template": 'Review "carefully".\n\nNever <edit> & never push.',
-        "allowed_tools": ["file_read", "git_read"],
         "permission_mode": "read_only",
     },
 }
@@ -67,7 +66,34 @@ def test_no_persona_key_is_rendered_without_a_persona(chart):
 
 @pytest.mark.skipif(shutil.which("helm") is None, reason="Helm is required")
 def test_workflow_steps_are_off_unless_forge_marks_the_session_a_step_host():
-    assert _rendered_skuld_config("skuld")["workflow_steps"] == {"enabled": False}
+    from skuld.config import SkuldSettings
+
+    config = _rendered_skuld_config("skuld")
+
+    assert config["workflow_steps"] == {
+        "enabled": False,
+        "root": False,
+        "run_id": "",
+        "member": "",
+        "persona_alias": "",
+        "orchestrator_peer_id": "",
+        "event_filters": {},
+        "topics": [],
+    }
+    steps = SkuldSettings(**config).workflow_steps
+    assert not steps.enabled and not steps.root
+
+
+STEP_MEMBER_VALUES = {
+    "enabled": True,
+    "runId": "run-1",
+    "member": "reviewer",
+    "personaAlias": "reviewer-alias",
+    "orchestratorPeerId": "root-session-1",
+    "eventFilters": {"language": "python"},
+    "topics": ["code.changed", "review.requested"],
+    "orchestration": "session",
+}
 
 
 @pytest.mark.skipif(shutil.which("helm") is None, reason="Helm is required")
@@ -75,19 +101,83 @@ def test_a_step_host_session_reaches_runtime_configuration():
     from skuld.config import SkuldSettings
 
     config = _rendered_skuld_config(
-        "skuld", "--set-json", "workflowSteps=" + json.dumps({"enabled": True})
+        "skuld", "--set-json", "workflowSteps=" + json.dumps(STEP_MEMBER_VALUES)
     )
 
-    assert config["workflow_steps"] == {"enabled": True}
-    assert SkuldSettings(**config).workflow_steps.enabled is True
+    assert config["workflow_steps"] == {
+        "enabled": True,
+        "root": False,
+        "run_id": "run-1",
+        "member": "reviewer",
+        "persona_alias": "reviewer-alias",
+        "orchestrator_peer_id": "root-session-1",
+        "event_filters": {"language": "python"},
+        "topics": ["code.changed", "review.requested"],
+        "orchestration": "session",
+    }
+    steps = SkuldSettings(**config).workflow_steps
+    assert steps.topics == ["code.changed", "review.requested"]
+    assert steps.enabled is True
+    assert steps.run_id == "run-1"
+    assert steps.member == "reviewer"
+    assert steps.persona_alias == "reviewer-alias"
+    assert steps.orchestrator_peer_id == "root-session-1"
+    assert steps.event_filters == {"language": "python"}
+    assert steps.orchestration == "session"
+
+
+@pytest.mark.skipif(shutil.which("helm") is None, reason="Helm is required")
+def test_a_run_root_reaches_runtime_configuration():
+    from skuld.config import SkuldSettings
+
+    config = _rendered_skuld_config(
+        "skuld",
+        "--set-json",
+        "workflowSteps=" + json.dumps({"root": True, "runId": "run-1", "orchestration": "engine"}),
+    )
+
+    steps = SkuldSettings(**config).workflow_steps
+    assert steps.root is True
+    assert steps.enabled is False
+    assert steps.run_id == "run-1"
+    assert steps.orchestration == "engine"
+
+
+@pytest.mark.skipif(shutil.which("helm") is None, reason="Helm is required")
+def test_a_step_host_missing_a_field_is_refused_when_skuld_reads_its_configuration():
+    from skuld.config import SkuldSettings
+
+    config = _rendered_skuld_config(
+        "skuld", "--set-json", "workflowSteps=" + json.dumps({"enabled": True, "runId": "run-1"})
+    )
+
+    with pytest.raises(ValueError, match="orchestrator_peer_id"):
+        SkuldSettings(**config)
 
 
 def test_step_host_flag_survives_the_environment_a_local_broker_is_started_with(monkeypatch):
     from skuld.config import SkuldSettings
 
-    monkeypatch.setenv("SKULD__WORKFLOW_STEPS__ENABLED", "true")
+    for name, value in {
+        "ENABLED": "true",
+        "RUN_ID": "run-1",
+        "MEMBER": "reviewer",
+        "PERSONA_ALIAS": "reviewer-alias",
+        "ORCHESTRATOR_PEER_ID": "root-session-1",
+        "EVENT_FILTERS": json.dumps({"language": "python"}),
+        "ORCHESTRATION": "session",
+    }.items():
+        monkeypatch.setenv(f"SKULD__WORKFLOW_STEPS__{name}", value)
 
-    assert SkuldSettings().workflow_steps.enabled is True
+    steps = SkuldSettings().workflow_steps
+
+    assert steps.enabled is True
+    assert steps.run_id == "run-1"
+    assert steps.member == "reviewer"
+    assert steps.persona_alias == "reviewer-alias"
+    assert steps.orchestrator_peer_id == "root-session-1"
+    assert steps.event_filters == {"language": "python"}
+    assert steps.orchestration == "session"
 
 
 def test_persona_document_survives_the_environment_a_local_broker_is_started_with(monkeypatch):
@@ -283,8 +373,11 @@ class TestConfigMapTemplate:
 
     @pytest.fixture
     def configmap_yaml(self) -> str:
-        template_path = CHART_DIR / "templates" / "skuld-configmap.yaml"
-        return template_path.read_text()
+        # The broker's config.yaml is a named template, so a member of a unit renders it too.
+        templates = CHART_DIR / "templates"
+        return (templates / "skuld-configmap.yaml").read_text() + (
+            templates / "_skuld-config.tpl"
+        ).read_text()
 
     def test_configmap_has_transport_adapter(self, configmap_yaml):
         """Test configmap includes transport_adapter field."""
@@ -329,8 +422,12 @@ class TestDeploymentTemplate:
     @pytest.fixture
     def deployment_yaml(self) -> str:
         """Load deployment.yaml template."""
-        template_path = CHART_DIR / "templates" / "deployment.yaml"
-        return template_path.read_text()
+        # The broker container is a named template, so each member of a unit renders it too.
+        templates = CHART_DIR / "templates"
+        return "".join(
+            (templates / name).read_text()
+            for name in ("deployment.yaml", "_broker-container.tpl", "_git-clone.tpl")
+        )
 
     def test_contains_skuld_container(self, deployment_yaml):
         """Test deployment contains skuld container."""
@@ -396,7 +493,8 @@ class TestDeploymentTemplate:
 
     def test_broker_port_is_8081(self, deployment_yaml):
         """Test broker runs on port 8081 (nginx is entry at 8080)."""
-        assert "containerPort: 8081" in deployment_yaml
+        assert "containerPort: {{ .Values.brokerPort | default 8081 }}" in deployment_yaml
+        assert "brokerPort: 8081" in (CHART_DIR / "values.yaml").read_text()
 
     def test_deployment_uses_env_secrets_range_loop(self, deployment_yaml):
         """Test deployment injects secrets via generic range loop, not per-provider."""
@@ -866,6 +964,29 @@ def test_websocket_auth_configuration_reaches_broker(enabled):
 
 
 @pytest.mark.skipif(shutil.which("helm") is None, reason="Helm is required")
+def test_the_gateway_strips_the_headers_only_forge_may_stamp():
+    """A browser reaching the pod straight through the Gateway can't claim a room role, pose
+    as a room member session or put another person's name on its messages: those headers
+    are removed before the broker sees them."""
+    command = ["helm", "template", "test", str(CHART_DIR), "--set", "gateway.enabled=true"]
+    docs = list(yaml.safe_load_all(subprocess.check_output(command)))
+    route = next(d for d in docs if d and d["kind"] == "HTTPRoute")
+    removed = {
+        header
+        for rule in route["spec"]["rules"]
+        for item in rule.get("filters", [])
+        if item["type"] == "RequestHeaderModifier"
+        for header in item["requestHeaderModifier"].get("remove", [])
+    }
+
+    assert {
+        "x-niuu-room-role",
+        "x-niuu-room-caller-session",
+        "x-auth-display-name",
+    } <= removed
+
+
+@pytest.mark.skipif(shutil.which("helm") is None, reason="Helm is required")
 def test_room_role_source_defaults_to_deployment_with_no_remote_adapter():
     """Existing clusters must render byte-identical wsAuth until they opt in."""
     from skuld.config import SkuldSettings
@@ -1090,3 +1211,1050 @@ def test_secret_request_knobs_reach_runtime_configuration():
     too_long = _skuld_config("--set", "secretRequests.waitMaxS=300")
     with pytest.raises(ValidationError, match="secret_requests.wait_max_s"):
         SkuldSettings(**too_long)
+
+
+@pytest.mark.skipif(shutil.which("helm") is None, reason="Helm is required")
+def test_ask_knobs_reach_runtime_configuration():
+    from pydantic import ValidationError
+
+    from skuld.config import SkuldSettings
+
+    defaults = _skuld_config()
+    assert defaults["ask"] == {"poll_interval_s": 2, "wait_max_s": 50}
+    assert SkuldSettings(**defaults).ask.wait_max_s == 50
+
+    tuned = _skuld_config(
+        "--set",
+        "ask.waitMaxS=300,ask.pollIntervalS=5",
+        "--set",
+        "forgeMcp.brokerRequestTimeoutS=400,forgeMcp.toolTimeoutS=500",
+    )
+    settings = SkuldSettings(**tuned)
+    assert (settings.ask.poll_interval_s, settings.ask.wait_max_s) == (5, 300)
+
+    with pytest.raises(ValidationError, match="ask.wait_max_s"):
+        SkuldSettings(**_skuld_config("--set", "ask.waitMaxS=300"))
+
+
+MESH_VALUES = {
+    "enabled": True,
+    "transport": "nats",
+    "peerId": "reviewer-1",
+    "realmId": "flock-a",
+    "displayName": "reviewer",
+    "persona": "reviewer",
+    "role": "reviewer",
+    "description": "Reviews pull requests.",
+    "capabilities": ["review", "git"],
+    "tools": ["codex"],
+    "consumesEventTypes": ["review.requested"],
+    "publishEventTypes": ["review.done"],
+    "publishedEventUrgency": 0.4,
+    "shareWork": True,
+    "nng": {"pubSubAddress": "tcp://0.0.0.0:7001", "reqRepAddress": "tcp://0.0.0.0:7002"},
+    "adapters": [{"adapter": "nats"}],
+    "discoveryAdapters": [{"adapter": "event_bus", "heartbeat_interval_s": 5}],
+    "nats": {"servers": ["nats://nats:4222"], "stream_name": "flock"},
+    "rpcTimeoutS": 20,
+    "rpcReplyCacheSize": 64,
+    "diffMaxBytes": 4096,
+    "diffTimeoutS": 7,
+    "attestation": {
+        "required": False,
+        "renewFraction": 0.4,
+        "retryFraction": 0.2,
+        "clockSkewS": 60,
+        "eventMaxAgeS": 120,
+    },
+}
+
+#: Each chart value and the key of Skuld's `mesh` settings it renders to.
+MESH_KEYS = {
+    "enabled": "enabled",
+    "transport": "transport",
+    "peerId": "peer_id",
+    "realmId": "realm_id",
+    "displayName": "display_name",
+    "persona": "persona",
+    "role": "role",
+    "description": "description",
+    "capabilities": "capabilities",
+    "tools": "tools",
+    "consumesEventTypes": "consumes_event_types",
+    "publishEventTypes": "publish_event_types",
+    "publishedEventUrgency": "published_event_urgency",
+    "shareWork": "share_work",
+    "nng": "nng",
+    "adapters": "adapters",
+    "discoveryAdapters": "discovery_adapters",
+    "nats": "nats",
+    "rpcTimeoutS": "rpc_timeout_s",
+    "rpcReplyCacheSize": "rpc_reply_cache_size",
+    "diffMaxBytes": "diff_max_bytes",
+    "diffTimeoutS": "diff_timeout_s",
+    "attestation": "attestation",
+}
+
+
+MESH_CHARTS = ["skuld", "skuld-planner"]
+
+
+def _mesh_config(chart: str, **values) -> dict:
+    args: list[str] = []
+    for key, value in values.items():
+        args += ["--set-json", f"mesh.{key}={json.dumps(value)}"]
+    return _rendered_skuld_config(chart, *args)["mesh"]
+
+
+@pytest.mark.skipif(shutil.which("helm") is None, reason="Helm is required")
+@pytest.mark.parametrize("mesh_chart", MESH_CHARTS)
+class TestMeshValues:
+    def test_a_chart_that_sets_nothing_renders_what_skuld_defaults_to(self, mesh_chart):
+        from skuld.config import MeshConfig, SkuldSettings
+
+        config = _rendered_skuld_config(mesh_chart)
+
+        assert config["mesh"] == {"enabled": False, "transport": "nng"}
+        assert SkuldSettings(**config).mesh == MeshConfig()
+
+    @pytest.mark.parametrize(("value_key", "config_key"), sorted(MESH_KEYS.items()))
+    def test_each_value_renders_into_the_config_key_it_names(
+        self, mesh_chart, value_key, config_key
+    ):
+        mesh = _mesh_config(mesh_chart, **{value_key: MESH_VALUES[value_key]})
+
+        expected = MESH_VALUES[value_key]
+        if value_key == "nng":
+            expected = {
+                "pub_sub_address": "tcp://0.0.0.0:7001",
+                "req_rep_address": "tcp://0.0.0.0:7002",
+            }
+        if value_key == "attestation":
+            expected = {
+                "required": False,
+                "renew_fraction": 0.4,
+                "retry_fraction": 0.2,
+                "clock_skew_s": 60,
+                "event_max_age_s": 120,
+            }
+        assert mesh[config_key] == expected
+
+    def test_every_value_together_is_accepted_by_skuld(self, mesh_chart):
+        from skuld.config import SkuldSettings
+
+        config = _rendered_skuld_config(
+            mesh_chart,
+            "--set-json",
+            "mesh=" + json.dumps(MESH_VALUES),
+        )
+
+        mesh = SkuldSettings(**config).mesh
+        assert mesh.enabled is True and mesh.transport == "nats"
+        assert (mesh.peer_id, mesh.realm_id, mesh.persona) == ("reviewer-1", "flock-a", "reviewer")
+        assert (mesh.role, mesh.description) == ("reviewer", "Reviews pull requests.")
+        assert mesh.capabilities == ["review", "git"] and mesh.tools == ["codex"]
+        assert mesh.consumes_event_types == ["review.requested"]
+        assert mesh.publish_event_types == ["review.done"]
+        assert mesh.published_event_urgency == 0.4
+        assert mesh.nng.pub_sub_address == "tcp://0.0.0.0:7001"
+        assert mesh.adapters == [{"adapter": "nats"}]
+        assert mesh.discovery_adapters[0]["adapter"] == "event_bus"
+        assert mesh.nats.servers == ["nats://nats:4222"] and mesh.nats.stream_name == "flock"
+        assert (mesh.rpc_timeout_s, mesh.rpc_reply_cache_size) == (20, 64)
+        assert (mesh.diff_max_bytes, mesh.diff_timeout_s) == (4096, 7)
+
+    def test_the_chart_covers_every_setting_skuld_has_so_a_new_one_cannot_be_forgotten(
+        self, mesh_chart
+    ):
+        from skuld.config import MeshConfig
+
+        assert set(MESH_KEYS.values()) == set(MeshConfig.model_fields)
+
+    def test_an_empty_string_or_null_keeps_skuld_s_default(self, mesh_chart):
+        mesh = _mesh_config(
+            mesh_chart, peerId="", realmId="", role="", capabilities=None, rpcTimeoutS=None
+        )
+
+        assert mesh == {"enabled": False, "transport": "nng"}
+
+    def test_a_values_file_that_never_set_mesh_values_still_renders(self, mesh_chart):
+        # Pre-existing releases only ever set `enabled`, `transport` and `peerPorts`.
+        mesh = _mesh_config(
+            mesh_chart, peerPorts=[{"name": "mesh", "containerPort": 7001}], enabled=True
+        )
+
+        # Naming no discovery on nng is the cluster default (TestMeshOnNngInACluster).
+        assert mesh["enabled"] is True and mesh["transport"] == "nng"
+        assert mesh["discovery_adapters"][0]["adapter"] == "k8s"
+
+
+@pytest.mark.skipif(shutil.which("helm") is None, reason="Helm is required")
+@pytest.mark.parametrize("mesh_chart", MESH_CHARTS)
+def test_mesh_attestation_renders_nothing_by_default_and_only_what_is_set(mesh_chart):
+    from skuld.config import SkuldSettings
+
+    default = _rendered_skuld_config(mesh_chart)
+    assert "attestation" not in default["mesh"]
+
+    config = _rendered_skuld_config(
+        mesh_chart,
+        "--set",
+        "mesh.attestation.required=false",
+        "--set",
+        "mesh.attestation.clockSkewS=60",
+    )
+
+    assert config["mesh"]["attestation"] == {"required": False, "clock_skew_s": 60}
+    settings = SkuldSettings(**config)
+    assert settings.mesh.attestation.required is False
+    assert settings.mesh.attestation.clock_skew_s == 60
+    assert settings.mesh.attestation.event_max_age_s == 3600
+
+
+class TestThePlannerSharesTheSkuldMeshChart:
+    """The planner renders the mesh settings with the very same template, and has the same
+    values, so a setting added to one cannot be missing from the other."""
+
+    def test_the_planner_uses_the_skuld_charts_template_file(self):
+        skuld = CHART_DIR / "templates" / "_mesh-config.tpl"
+        planner = CHART_DIR.parent / "skuld-planner" / "templates" / "_mesh-config.tpl"
+
+        assert planner.is_symlink() and planner.resolve() == skuld.resolve()
+
+    def test_the_planner_has_exactly_the_skuld_charts_mesh_values(self):
+        skuld = yaml.safe_load((CHART_DIR / "values.yaml").read_text())["mesh"]
+        planner = yaml.safe_load((CHART_DIR.parent / "skuld-planner" / "values.yaml").read_text())[
+            "mesh"
+        ]
+
+        assert planner == skuld
+
+    @pytest.mark.skipif(shutil.which("helm") is None, reason="Helm is required")
+    def test_both_charts_render_the_same_mesh_section_for_the_same_values(self):
+        values = [
+            arg
+            for k, v in MESH_VALUES.items()
+            for arg in ("--set-json", f"mesh.{k}={json.dumps(v)}")
+        ]
+
+        skuld = _rendered_skuld_config("skuld", *values)["mesh"]
+        planner = _rendered_skuld_config("skuld-planner", *values)["mesh"]
+
+        assert planner == skuld and set(skuld) == set(MESH_KEYS.values())
+
+
+@pytest.mark.skipif(shutil.which("helm") is None, reason="Helm is required")
+class TestMeshOnNngInACluster:
+    """`mesh.enabled: true` alone runs a cluster mesh on nng: discovery, address, labels."""
+
+    def _docs(self, *extra: str) -> list[dict]:
+        command = [
+            "helm",
+            "template",
+            "mesh-test",
+            str(CHART_DIR),
+            "--namespace",
+            "sessions",
+            "--set",
+            "session.id=11111111-2222-3333-4444-555555555555",
+            "--set",
+            "networkPolicy.enabled=true",
+            *extra,
+        ]
+        return [d for d in yaml.safe_load_all(subprocess.check_output(command)) if d]
+
+    def _kind(self, docs: list[dict], kind: str) -> dict:
+        return next(d for d in docs if d["kind"] == kind)
+
+    def test_the_session_config_names_k8s_discovery_and_a_wildcard_bind(self):
+        from skuld.config import SkuldSettings
+
+        docs = self._docs("--set", "mesh.enabled=true", "--set", "mesh.realmId=flock-a")
+        config = next(
+            yaml.safe_load(d["data"]["config.yaml"])
+            for d in docs
+            if d["kind"] == "ConfigMap" and "config.yaml" in d.get("data", {})
+        )
+        mesh = SkuldSettings(**config).mesh
+
+        assert mesh.nng.pub_sub_address == "tcp://0.0.0.0:7480"
+        assert mesh.discovery_adapters == [
+            {"adapter": "k8s", "namespace": "sessions", "nng_port": 7480}
+        ]
+
+    def test_the_pod_announces_itself_as_a_skuld_session_by_its_name(self):
+        docs = self._docs("--set", "mesh.enabled=true", "--set", "session.name=wf-probe-coder")
+        annotations = self._kind(docs, "Deployment")["spec"]["template"]["metadata"]["annotations"]
+
+        assert annotations["ravn.niuu.world/participant-type"] == "skuld"
+        assert annotations["ravn.niuu.world/display-name"] == "wf-probe-coder"
+
+    def test_the_pod_announces_its_persona_and_topics_to_pod_discovery(self):
+        docs = self._docs(
+            "--set",
+            "mesh.enabled=true",
+            "--set",
+            "mesh.announce.persona=reviewer",
+            "--set-json",
+            'mesh.announce.consumes=["code.changed"]',
+            "--set-json",
+            'mesh.announce.emits=["code.changed","review.passed"]',
+        )
+        annotations = self._kind(docs, "Deployment")["spec"]["template"]["metadata"]["annotations"]
+
+        assert annotations["ravn.niuu.world/persona"] == "reviewer"
+        assert annotations["ravn.niuu.world/consumes"] == "code.changed"
+        assert annotations["ravn.niuu.world/emits"] == "code.changed,review.passed"
+
+    def test_the_pod_gets_its_ip_its_realm_label_and_its_peer_id(self):
+        docs = self._docs("--set", "mesh.enabled=true", "--set", "mesh.realmId=flock-a")
+        pod = self._kind(docs, "Deployment")["spec"]["template"]
+        skuld = next(c for c in pod["spec"]["containers"] if c["name"] == "skuld")
+        env = {e["name"]: e for e in skuld["env"]}
+
+        assert pod["metadata"]["labels"]["ravn.niuu.world/realm"] == "flock-a"
+        assert pod["metadata"]["labels"]["ravn.niuu.world/role"] == "agent"
+        assert pod["metadata"]["annotations"]["ravn.niuu.world/peer-id"] == (
+            "11111111-2222-3333-4444-555555555555"
+        )
+        assert env["POD_IP"]["valueFrom"]["fieldRef"]["fieldPath"] == "status.podIP"
+        assert env["SKULD__MESH__NNG__ADVERTISE_HOST"]["value"] == "$(POD_IP)"
+        names = [e["name"] for e in skuld["env"]]
+        assert names.index("POD_IP") < names.index("SKULD__MESH__NNG__ADVERTISE_HOST")
+        assert {"name": "mesh-pub", "containerPort": 7480, "protocol": "TCP"} in skuld["ports"]
+
+    def test_the_network_policy_lets_the_realms_pods_reach_the_pub_socket(self):
+        docs = self._docs("--set", "mesh.enabled=true", "--set", "mesh.realmId=flock-a")
+        rules = self._kind(docs, "NetworkPolicy")["spec"]["ingress"]
+        [mesh_rule] = [r for r in rules if r["ports"] == [{"protocol": "TCP", "port": 7480}]]
+        assert mesh_rule["from"] == [
+            {
+                "podSelector": {
+                    "matchLabels": {
+                        "ravn.niuu.world/realm": "flock-a",
+                        "ravn.niuu.world/role": "agent",
+                    }
+                }
+            }
+        ]
+
+    def test_the_port_and_the_interval_are_values(self):
+        docs = self._docs(
+            "--set",
+            "mesh.enabled=true",
+            "--set",
+            "mesh.nng.port=9000",
+            "--set",
+            "mesh.nng.rediscoverIntervalS=2",
+        )
+        config = next(
+            yaml.safe_load(d["data"]["config.yaml"])
+            for d in docs
+            if d["kind"] == "ConfigMap" and "config.yaml" in d.get("data", {})
+        )
+        assert config["mesh"]["nng"] == {
+            "pub_sub_address": "tcp://0.0.0.0:9000",
+            "rediscover_interval_s": 2,
+        }
+        assert config["mesh"]["discovery_adapters"][0]["nng_port"] == 9000
+
+    @pytest.mark.parametrize(
+        "extra",
+        [
+            ["--set-json", 'mesh.discoveryAdapters=[{"adapter":"static","peers":[]}]'],
+            ["--set", "mesh.discoverPods=false"],
+            ["--set", "mesh.transport=nats"],
+        ],
+        ids=["operator-discovery", "switched-off", "other-transport"],
+    )
+    def test_naming_discovery_or_another_transport_leaves_the_pod_alone(self, extra):
+        docs = self._docs("--set", "mesh.enabled=true", *extra)
+        pod = self._kind(docs, "Deployment")["spec"]["template"]
+        skuld = next(c for c in pod["spec"]["containers"] if c["name"] == "skuld")
+
+        assert "ravn.niuu.world/realm" not in pod["metadata"]["labels"]
+        assert "POD_IP" not in [e["name"] for e in skuld["env"]]
+        assert not any(
+            "k8s" in json.dumps(r.get("from", []))
+            for r in self._kind(docs, "NetworkPolicy")["spec"]["ingress"]
+        )
+
+    def test_the_planner_chart_gets_the_same_default(self):
+        command = ["helm", "template", "p", str(CHART_DIR.parent / "skuld-planner")]
+        command += ["--set", "mesh.enabled=true", "--namespace", "sessions"]
+        docs = [d for d in yaml.safe_load_all(subprocess.check_output(command)) if d]
+        config = next(
+            yaml.safe_load(d["data"]["config.yaml"])
+            for d in docs
+            if d["kind"] == "ConfigMap" and "config.yaml" in d.get("data", {})
+        )
+        pod = next(d for d in docs if d["kind"] == "Deployment")["spec"]["template"]
+        skuld = next(c for c in pod["spec"]["containers"] if c["name"] == "skuld")
+
+        assert config["mesh"]["discovery_adapters"][0]["adapter"] == "k8s"
+        assert pod["metadata"]["labels"]["ravn.niuu.world/role"] == "agent"
+        assert "ravn.niuu.world/peer-id" in pod["metadata"]["annotations"]
+        assert pod["metadata"]["annotations"]["ravn.niuu.world/participant-type"] == "skuld"
+        assert "POD_IP" in [e["name"] for e in skuld["env"]]
+
+
+@pytest.mark.skipif(shutil.which("helm") is None, reason="Helm is required")
+class TestMeshDiscoveryRbac:
+    """Listing pods needs a namespaced Role; the chart creates it only when the mesh does."""
+
+    @staticmethod
+    def _docs(chart: str = "skuld", *extra: str) -> list[dict]:
+        command = [
+            "helm",
+            "template",
+            "rbac-test",
+            str(CHART_DIR.parent / chart),
+            "--namespace",
+            "sessions",
+            *extra,
+        ]
+        return [d for d in yaml.safe_load_all(subprocess.check_output(command)) if d]
+
+    @staticmethod
+    def _rbac(docs: list[dict]) -> list[dict]:
+        return [
+            d
+            for d in docs
+            if d["kind"] in ("Role", "RoleBinding", "ClusterRole", "ClusterRoleBinding")
+        ]
+
+    @pytest.mark.parametrize("chart", MESH_CHARTS)
+    def test_the_cluster_default_gets_a_role_that_reads_pods_and_nothing_else(self, chart):
+        rbac = self._rbac(self._docs(chart, "--set", "mesh.enabled=true"))
+
+        assert sorted(d["kind"] for d in rbac) == ["Role", "RoleBinding"]
+        role = next(d for d in rbac if d["kind"] == "Role")
+        binding = next(d for d in rbac if d["kind"] == "RoleBinding")
+        assert role["metadata"]["namespace"] == "sessions"
+        assert role["rules"] == [
+            {"apiGroups": [""], "resources": ["pods"], "verbs": ["get", "list", "watch"]}
+        ]
+        assert binding["roleRef"] == {
+            "apiGroup": "rbac.authorization.k8s.io",
+            "kind": "Role",
+            "name": role["metadata"]["name"],
+        }
+        assert binding["subjects"] == [
+            {"kind": "ServiceAccount", "name": "default", "namespace": "sessions"}
+        ]
+
+    def test_the_binding_follows_the_service_account_a_contributor_set(self):
+        rbac = self._rbac(
+            self._docs(
+                "skuld", "--set", "mesh.enabled=true", "--set", "serviceAccountName=openbao-s1"
+            )
+        )
+        binding = next(d for d in rbac if d["kind"] == "RoleBinding")
+        assert binding["subjects"][0]["name"] == "openbao-s1"
+
+    def test_an_operator_k8s_entry_for_this_namespace_gets_the_same_role(self):
+        rbac = self._rbac(
+            self._docs(
+                "skuld",
+                "--set",
+                "mesh.enabled=true",
+                "--set-json",
+                'mesh.discoveryAdapters=[{"adapter":"k8s","namespace":"sessions"}]',
+            )
+        )
+        assert sorted(d["kind"] for d in rbac) == ["Role", "RoleBinding"]
+
+    @pytest.mark.parametrize(
+        "extra",
+        [
+            [],
+            ["--set", "mesh.enabled=true", "--set", "mesh.rbac.create=false"],
+            ["--set", "mesh.enabled=true", "--set", "mesh.discoverPods=false"],
+            ["--set", "mesh.enabled=true", "--set", "mesh.transport=nats"],
+            [
+                "--set",
+                "mesh.enabled=true",
+                "--set-json",
+                'mesh.discoveryAdapters=[{"adapter":"static","peers":[]}]',
+            ],
+            [
+                "--set",
+                "mesh.enabled=true",
+                "--set-json",
+                'mesh.discoveryAdapters=[{"adapter":"k8s","namespace":"elsewhere"}]',
+            ],
+            [
+                "--set",
+                "mesh.enabled=true",
+                "--set-json",
+                'mesh.discoveryAdapters=[{"adapter":"k8s"}]',
+            ],
+        ],
+        ids=[
+            "mesh-off",
+            "rbac-switched-off",
+            "pods-not-discovered",
+            "nats",
+            "static-discovery",
+            "k8s-for-another-namespace",
+            "k8s-for-every-namespace",
+        ],
+    )
+    @pytest.mark.parametrize("chart", MESH_CHARTS)
+    def test_no_role_unless_the_mesh_lists_pods_of_this_namespace(self, chart, extra):
+        assert self._rbac(self._docs(chart, *extra)) == []
+
+    def test_nothing_is_ever_cluster_wide(self):
+        for extra in (
+            ["--set", "mesh.enabled=true"],
+            [
+                "--set-json",
+                'mesh.discoveryAdapters=[{"adapter":"k8s"}]',
+                "--set",
+                "mesh.enabled=true",
+            ],
+        ):
+            kinds = {d["kind"] for d in self._rbac(self._docs("skuld", *extra))}
+            assert not kinds & {"ClusterRole", "ClusterRoleBinding"}
+
+
+@pytest.mark.skipif(shutil.which("helm") is None, reason="Helm is required")
+def test_an_ordinary_session_hosts_no_room():
+    assert "room" not in _rendered_skuld_config("skuld")
+
+
+@pytest.mark.skipif(shutil.which("helm") is None, reason="Helm is required")
+def test_a_runs_first_session_hosts_its_realms_room_and_keeps_its_agent():
+    from skuld.config import SkuldSettings
+
+    config = _rendered_skuld_config(
+        "skuld",
+        "--set",
+        "mesh.enabled=true",
+        "--set",
+        "mesh.realmId=workflow-run-1",
+        "--set",
+        "room.enabled=true",
+        "--set",
+        "room.realmRoom=true",
+    )
+
+    room = SkuldSettings(**config).room
+    assert (room.enabled, room.environment_id, room.realm_room) == (
+        True,
+        "workflow-run-1",
+        True,
+    )
+    # The host keeps its own agent: chat is not routed into the room.
+    assert (room.routed, room.default_target_peer_id) == (False, "")
+
+
+@pytest.mark.skipif(shutil.which("helm") is None, reason="Helm is required")
+def test_a_runs_room_session_runs_no_agent_of_its_own():
+    from skuld.config import SkuldSettings
+
+    config = _rendered_skuld_config(
+        "skuld",
+        "--set",
+        "mesh.enabled=true",
+        "--set",
+        "mesh.realmId=workflow-run-1",
+        "--set",
+        "room.enabled=true",
+        "--set",
+        "room.realmRoom=true",
+        "--set",
+        "room.routed=true",
+    )
+
+    assert SkuldSettings(**config).room.routed is True
+
+
+@pytest.mark.skipif(shutil.which("helm") is None, reason="Helm is required")
+def test_a_teams_agent_is_rendered_conversational():
+    from skuld.config import SkuldSettings
+
+    agent = _rendered_skuld_config("skuld", "--set", "team.conversational=true")
+    ordinary = _rendered_skuld_config("skuld")
+
+    assert SkuldSettings(**agent).session.conversational is True
+    assert SkuldSettings(**ordinary).session.conversational is False
+
+
+@pytest.mark.skipif(shutil.which("helm") is None, reason="Helm is required")
+def test_a_session_is_seated_in_the_rooms_it_is_given_without_hosting_one():
+    from skuld.config import SkuldSettings
+
+    config = _rendered_skuld_config(
+        "skuld",
+        "--set",
+        "roomSeats[0].roomId=team-1",
+        "--set",
+        "roomSeats[0].hostSessionId=root-1",
+    )
+
+    room = SkuldSettings(**config).room
+    assert room.enabled is False
+    assert [(seat.room_id, seat.host_session_id) for seat in room.seats] == [("team-1", "root-1")]
+    assert "room" not in _rendered_skuld_config("skuld")
+
+
+@pytest.mark.skipif(shutil.which("helm") is None, reason="Helm is required")
+def test_a_rooms_untargeted_delivery_is_rendered_and_refuse_by_default():
+    from skuld.config import SkuldSettings
+
+    room = (
+        "--set",
+        "mesh.enabled=true",
+        "--set",
+        "mesh.realmId=team-1",
+        "--set",
+        "room.enabled=true",
+    )
+    everyone = _rendered_skuld_config(
+        "skuld", *room, "--set", "room.routed=true", "--set", "room.untargetedDelivery=everyone"
+    )
+    ordinary = _rendered_skuld_config("skuld", *room)
+
+    assert SkuldSettings(**everyone).room.untargeted_delivery == "everyone"
+    assert SkuldSettings(**ordinary).room.untargeted_delivery == "refuse"
+
+
+@pytest.mark.skipif(shutil.which("helm") is None, reason="Helm is required")
+def test_a_run_member_shares_its_work_with_the_runs_room():
+    from skuld.config import SkuldSettings
+
+    shared = _rendered_skuld_config(
+        "skuld", "--set", "mesh.enabled=true", "--set", "mesh.shareWork=true"
+    )
+    ordinary = _rendered_skuld_config("skuld", "--set", "mesh.enabled=true")
+
+    assert SkuldSettings(**shared).mesh.share_work is True
+    assert SkuldSettings(**ordinary).mesh.share_work is False
+
+
+# -- A unit: one pod hosting a workflow run's root and every member ---------------------------
+
+ROOT_ID = "11111111-1111-1111-1111-111111111111"
+CODER_ID = "22222222-2222-2222-2222-222222222222"
+REVIEWER_ID = "33333333-3333-3333-3333-333333333333"
+MESH_DIR = "/tmp/niuu-mesh"
+REGISTRY = [{"adapter": "registry", "path": f"{MESH_DIR}/peers.json"}]
+
+
+def _unit_members(**overrides) -> list[dict]:
+    """The members as Forge's Flux pod manager writes them: complete values each."""
+
+    def member(member_id: str, port: int, name: str, **extra) -> dict:
+        values = {
+            "session": {"name": name, "ownerId": "user-1", "tenantId": "tenant-1"},
+            "mesh": {
+                "enabled": True,
+                "realmId": "run-1",
+                "discoveryAdapters": REGISTRY,
+                "nng": {"pubSubAddress": "tcp://127.0.0.1:0", "reqRepAddress": "tcp://127.0.0.1:0"},
+            },
+            "forgeMcp": {"tokenFile": "/var/run/secrets/niuu-forge-session/token"},
+            "extraVolumeMounts": [
+                {
+                    "name": f"member-{port - 8082}-forge-session-credential",
+                    "mountPath": "/var/run/secrets/niuu-forge-session",
+                    "readOnly": True,
+                }
+            ],
+            "envVars": [{"name": "MEMBER_NAME", "value": name}],
+            **extra,
+        }
+        return {"id": member_id, "port": port, "values": values}
+
+    coder = member(CODER_ID, 8082, "coder", **overrides.get("coder", {}))
+    reviewer = member(REVIEWER_ID, 8083, "reviewer", **overrides.get("reviewer", {}))
+    return [coder, reviewer]
+
+
+def _unit_values(tmp_path: Path, **overrides) -> Path:
+    values = {
+        "session": {"id": ROOT_ID, "name": "run-root", "ownerId": "user-1", "tenantId": "tenant-1"},
+        "unit": {"meshDir": MESH_DIR},
+        "ingress": {"enabled": False},
+        "mesh": {"enabled": True, "realmId": "run-1", "discoveryAdapters": REGISTRY},
+        "extraVolumes": [
+            {
+                "name": f"member-{index}-forge-session-credential",
+                "secret": {"secretName": f"forge-session-{index}"},
+            }
+            for index in range(2)
+        ],
+        "members": _unit_members(**overrides.pop("members_overrides", {})),
+    }
+    values.update(overrides)
+    # The pod's volumes are the pod's: every member was launched with the root's.
+    for key in ("persistence", "homeVolume"):
+        if key in overrides:
+            for member in values["members"]:
+                member["values"][key] = overrides[key]
+    path = tmp_path / "unit-values.yaml"
+    path.write_text(yaml.safe_dump(values))
+    return path
+
+
+def _render_unit(tmp_path: Path, *extra: str, **overrides) -> list[dict]:
+    values = _unit_values(tmp_path, **overrides)
+    output = subprocess.check_output(
+        ["helm", "template", "run", str(CHART_DIR), "-f", str(values), *extra],
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    return [doc for doc in yaml.safe_load_all(output) if doc]
+
+
+def _of_kind(docs: list[dict], kind: str) -> list[dict]:
+    return [doc for doc in docs if doc["kind"] == kind]
+
+
+def _pod(docs: list[dict]) -> dict:
+    return _of_kind(docs, "Deployment")[0]["spec"]["template"]["spec"]
+
+
+def _env(container: dict) -> dict:
+    return {entry["name"]: entry.get("value") for entry in container.get("env", [])}
+
+
+def _mounts(container: dict) -> dict:
+    return {mount["mountPath"]: mount for mount in container.get("volumeMounts", [])}
+
+
+@pytest.mark.skipif(shutil.which("helm") is None, reason="Helm is required")
+class TestUnitMembers:
+    """The root's release renders one Skuld container per member, all started with the pod."""
+
+    def test_one_container_per_member_beside_the_roots_own(self, tmp_path):
+        containers = {c["name"]: c for c in _pod(_render_unit(tmp_path))["containers"]}
+
+        assert {"nginx", "skuld", "member-0", "member-1"} <= set(containers)
+        assert containers["skuld"]["ports"][0]["containerPort"] == 8081
+        assert containers["member-0"]["ports"][0]["containerPort"] == 8082
+        assert containers["member-1"]["ports"][0]["containerPort"] == 8083
+        assert _env(containers["member-0"])["MEMBER_NAME"] == "coder"
+        assert _env(containers["member-1"])["MEMBER_NAME"] == "reviewer"
+
+    def test_the_roots_secret_injection_reaches_every_member_container(self, tmp_path):
+        """The injector renders into the containers it is told about; members are in the pod."""
+        annotations = {
+            "vault.hashicorp.com/agent-inject": "true",
+            "vault.hashicorp.com/agent-inject-containers": "skuld,devrunner",
+        }
+
+        pod = _of_kind(_render_unit(tmp_path, podAnnotations=annotations), "Deployment")[0]["spec"][
+            "template"
+        ]["metadata"]["annotations"]
+
+        assert pod["vault.hashicorp.com/agent-inject-containers"].split(",") == [
+            "skuld",
+            "devrunner",
+            "member-0",
+            "member-1",
+        ]
+
+    def test_a_pod_without_injection_gets_no_injector_annotations(self, tmp_path):
+        pod = _of_kind(_render_unit(tmp_path), "Deployment")[0]["spec"]["template"]["metadata"]
+
+        assert "vault.hashicorp.com/agent-inject-containers" not in pod.get("annotations", {})
+
+    def test_each_member_has_its_own_configuration_that_skuld_accepts(self, tmp_path):
+        from skuld.config import SkuldSettings
+
+        docs = _render_unit(tmp_path)
+        members = next(
+            d for d in _of_kind(docs, "ConfigMap") if d["metadata"]["name"].endswith("-members")
+        )
+        assert set(members["data"]) == {f"{CODER_ID}.yaml", f"{REVIEWER_ID}.yaml"}
+        coder = yaml.safe_load(members["data"][f"{CODER_ID}.yaml"])
+        reviewer = yaml.safe_load(members["data"][f"{REVIEWER_ID}.yaml"])
+
+        assert (coder["session"]["id"], coder["session"]["name"], coder["port"]) == (
+            CODER_ID,
+            "coder",
+            8082,
+        )
+        assert (reviewer["session"]["id"], reviewer["port"]) == (REVIEWER_ID, 8083)
+        for config in (coder, reviewer):
+            # The credential file is mounted into the container, not present while rendering.
+            assert config.pop("forge_mcp")["token_file"].endswith("/token")
+            settings = SkuldSettings(**config)
+            assert settings.mesh.enabled is True
+            assert config["mesh"]["discovery_adapters"] == REGISTRY
+        # The root's own configuration keeps its own session and port.
+        roots = next(
+            d for d in _of_kind(docs, "ConfigMap") if d["metadata"]["name"].endswith("-config")
+        )
+        root_config = yaml.safe_load(roots["data"]["config.yaml"])
+        assert (root_config["session"]["id"], root_config["port"]) == (ROOT_ID, 8081)
+
+    def test_each_member_mounts_only_its_own_configuration_and_credential(self, tmp_path):
+        pod = _pod(_render_unit(tmp_path))
+        containers = {c["name"]: c for c in pod["containers"]}
+
+        coder = _mounts(containers["member-0"])
+        reviewer = _mounts(containers["member-1"])
+        assert coder["/etc/skuld/config.yaml"]["subPath"] == f"{CODER_ID}.yaml"
+        assert reviewer["/etc/skuld/config.yaml"]["subPath"] == f"{REVIEWER_ID}.yaml"
+        assert coder["/etc/skuld/config.yaml"]["name"] == "skuld-members"
+        credential = "/var/run/secrets/niuu-forge-session"
+        assert coder[credential]["name"] == "member-0-forge-session-credential"
+        assert reviewer[credential]["name"] == "member-1-forge-session-credential"
+        for other in ("skuld", "nginx"):
+            assert credential not in _mounts(containers[other])
+        volumes = {v["name"] for v in pod["volumes"]}
+        assert {"member-0-forge-session-credential", "member-1-forge-session-credential"} <= volumes
+
+    def test_every_skuld_of_the_pod_shares_one_mesh_directory(self, tmp_path):
+        pod = _pod(_render_unit(tmp_path))
+
+        assert {"name": "mesh", "emptyDir": {}} in pod["volumes"]
+        for container in pod["containers"]:
+            if container["name"] in {"skuld", "member-0", "member-1"}:
+                assert _mounts(container)[MESH_DIR]["name"] == "mesh"
+            else:
+                assert MESH_DIR not in _mounts(container)
+
+    def test_the_mesh_is_local_to_the_pod(self, tmp_path):
+        docs = _render_unit(tmp_path)
+        pod_template = _of_kind(docs, "Deployment")[0]["spec"]["template"]
+
+        # Registry discovery is explicit, so the pod is not labelled for listing by other pods.
+        assert "ravn.niuu.world/realm" not in pod_template["metadata"]["labels"]
+        assert "ravn.niuu.world/peer-id" not in (pod_template["metadata"].get("annotations") or {})
+        members = next(
+            d for d in _of_kind(docs, "ConfigMap") if d["metadata"]["name"].endswith("-members")
+        )
+        for text in members["data"].values():
+            mesh = yaml.safe_load(text)["mesh"]
+            assert mesh["nng"]["pub_sub_address"] == "tcp://127.0.0.1:0"
+
+    def test_members_share_the_roots_workspace_and_keep_their_own_state(self, tmp_path):
+        containers = {
+            c["name"]: c
+            for c in _pod(
+                _render_unit(
+                    tmp_path,
+                    persistence={
+                        "enabled": True,
+                        "emptyDir": True,
+                        "mountPath": "/volundr/sessions",
+                    },
+                    homeVolume={"enabled": True, "existingClaim": "home", "persistentTmp": True},
+                )
+            )["containers"]
+        }
+
+        workspace = f"/volundr/sessions/{ROOT_ID}/workspace"
+        for name in ("skuld", "member-0", "member-1"):
+            assert _env(containers[name])["SKULD__SESSION__WORKSPACE_DIR"] == workspace
+        assert _env(containers["member-0"])["CODEX_HOME"] == (
+            f"/volundr/sessions/{ROOT_ID}/members/{CODER_ID}/.codex"
+        )
+        assert _env(containers["member-1"])["CODEX_HOME"] == (
+            f"/volundr/sessions/{ROOT_ID}/members/{REVIEWER_ID}/.codex"
+        )
+        assert _env(containers["skuld"])["CODEX_HOME"] == f"{workspace}/.codex"
+        # Scratch is per container, under the root's directory, which is where it is created.
+        scratch = {
+            name: _mounts(containers[name])["/tmp"]["subPath"]
+            for name in ("skuld", "member-0", "member-1")
+        }
+        assert scratch == {
+            "skuld": f"tmp/sessions/{ROOT_ID}/skuld",
+            "member-0": f"tmp/sessions/{ROOT_ID}/member-0",
+            "member-1": f"tmp/sessions/{ROOT_ID}/member-1",
+        }
+
+    def test_the_pod_seeds_each_members_codex_home(self, tmp_path):
+        docs = _render_unit(
+            tmp_path,
+            homeVolume={
+                "enabled": True,
+                "existingClaim": "home",
+                "credentialFiles": {"destDir": ".codex"},
+            },
+        )
+        init = {c["name"]: c for c in _pod(docs)["initContainers"]}
+        script = init["home-setup"]["args"][0]
+
+        assert f"/volundr/sessions/{ROOT_ID}/members/{CODER_ID}/.codex" in script
+        assert f"/volundr/sessions/{ROOT_ID}/members/{REVIEWER_ID}/.codex" in script
+
+    def test_the_unit_has_one_checkout_cloned_from_the_member_that_names_it(self, tmp_path):
+        git = {"repoUrl": "https://github.com/org/repo.git", "branch": "feat/x"}
+        docs = _render_unit(
+            tmp_path,
+            unit={"meshDir": MESH_DIR, "checkoutFrom": CODER_ID},
+            members_overrides={"coder": {"git": git}, "reviewer": {"git": git}},
+            persistence={"enabled": True, "emptyDir": True, "mountPath": "/volundr/sessions"},
+        )
+        clones = [c for c in _pod(docs)["initContainers"] if c["name"] == "git-clone"]
+
+        assert len(clones) == 1
+        script = clones[0]["args"][0]
+        assert f'WORKSPACE="/volundr/sessions/{ROOT_ID}/workspace"' in script
+        assert "https://github.com/org/repo.git" in script
+        assert "feat/x" in script
+
+    def test_a_root_that_names_a_repository_clones_it_itself(self, tmp_path):
+        docs = _render_unit(
+            tmp_path,
+            git={"repoUrl": "https://github.com/org/root.git", "branch": "main"},
+            persistence={"enabled": True, "emptyDir": True, "mountPath": "/volundr/sessions"},
+        )
+
+        clones = [c for c in _pod(docs)["initContainers"] if c["name"] == "git-clone"]
+        assert len(clones) == 1
+        assert "https://github.com/org/root.git" in clones[0]["args"][0]
+
+    def test_without_a_repository_nothing_is_cloned(self, tmp_path):
+        docs = _render_unit(tmp_path)
+
+        assert "initContainers" not in _pod(docs) or all(
+            c["name"] != "git-clone" for c in _pod(docs)["initContainers"]
+        )
+
+    def test_nginx_sends_each_members_path_to_its_own_broker(self, tmp_path):
+        docs = _render_unit(tmp_path)
+        nginx = next(
+            d for d in _of_kind(docs, "ConfigMap") if d["metadata"]["name"].endswith("-nginx")
+        )
+        conf = " ".join(nginx["data"]["nginx.conf"].split())
+
+        assert "server 127.0.0.1:8082;" in conf
+        assert "server 127.0.0.1:8083;" in conf
+        assert f"location /m/{CODER_ID}/ {{ proxy_pass http://member_0/;" in conf
+        assert f"location /m/{REVIEWER_ID}/ {{ proxy_pass http://member_1/;" in conf
+        assert "server 127.0.0.1:8081;" in conf
+
+    def test_each_member_has_its_own_gateway_address_onto_the_units_service(self, tmp_path):
+        docs = _render_unit(tmp_path, "--set", "gateway.enabled=true", "--set", "gateway.name=gw")
+
+        routes = {d["metadata"]["name"]: d for d in _of_kind(docs, "HTTPRoute")}
+        assert set(routes) == {
+            f"session-{ROOT_ID}",
+            f"session-{CODER_ID}",
+            f"session-{REVIEWER_ID}",
+        }
+        service = _of_kind(docs, "Service")[0]["metadata"]["name"]
+        coder = routes[f"session-{CODER_ID}"]["spec"]["rules"][0]
+        assert coder["matches"][0]["path"]["value"] == f"/s/{CODER_ID}"
+        assert coder["filters"][0]["urlRewrite"]["path"]["replacePrefixMatch"] == f"/m/{CODER_ID}"
+        assert coder["backendRefs"][0]["name"] == service
+        policies = {d["spec"]["targetRef"]["name"] for d in _of_kind(docs, "SecurityPolicy")}
+        assert policies == set(routes)
+        assert (
+            routes[f"session-{ROOT_ID}"]["spec"]["rules"][0]["filters"][0]["urlRewrite"]["path"][
+                "replacePrefixMatch"
+            ]
+            == "/"
+        )
+
+    def test_without_members_the_chart_renders_no_unit(self):
+        docs = [
+            d
+            for d in yaml.safe_load_all(
+                subprocess.check_output(
+                    ["helm", "template", "solo", str(CHART_DIR), "--set", f"session.id={ROOT_ID}"],
+                    text=True,
+                )
+            )
+            if d
+        ]
+        names = {c["name"] for c in _pod(docs)["containers"]}
+
+        assert not any(name.startswith("member-") for name in names)
+        assert {"skuld-members", "mesh"}.isdisjoint({v["name"] for v in _pod(docs)["volumes"]})
+        assert not [d for d in docs if d["metadata"]["name"].endswith("-members")]
+
+    @pytest.mark.parametrize(
+        ("overrides", "message"),
+        [
+            ({"unit": {}}, "unit.meshDir"),
+            ({"unit": {"meshDir": MESH_DIR, "checkoutFrom": "nope"}}, "not one of the members"),
+            ({"ingress": {"enabled": True}}, "gateway.enabled"),
+        ],
+    )
+    def test_a_unit_that_cannot_be_rendered_says_why(self, tmp_path, overrides, message):
+        with pytest.raises(subprocess.CalledProcessError) as raised:
+            _render_unit(tmp_path, **overrides)
+
+        assert message in raised.value.stderr
+
+    def test_two_members_cannot_share_a_port(self, tmp_path):
+        members = _unit_members()
+        members[1]["port"] = members[0]["port"]
+        values = tmp_path / "v.yaml"
+        values.write_text(
+            yaml.safe_dump(
+                {"session": {"id": ROOT_ID}, "unit": {"meshDir": MESH_DIR}, "members": members}
+            )
+        )
+
+        with pytest.raises(subprocess.CalledProcessError) as raised:
+            subprocess.check_output(
+                ["helm", "template", "run", str(CHART_DIR), "-f", str(values)],
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+
+        assert "already taken" in raised.value.stderr
+
+    def test_a_member_cannot_take_the_brokers_port(self, tmp_path):
+        members = _unit_members()
+        members[0]["port"] = 8081
+        values = tmp_path / "v.yaml"
+        values.write_text(
+            yaml.safe_dump(
+                {"session": {"id": ROOT_ID}, "unit": {"meshDir": MESH_DIR}, "members": members}
+            )
+        )
+
+        with pytest.raises(subprocess.CalledProcessError) as raised:
+            subprocess.check_output(
+                ["helm", "template", "run", str(CHART_DIR), "-f", str(values)],
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+
+        assert "pod's own" in raised.value.stderr
+
+    def test_member_defaults_are_the_charts_own_values(self):
+        defaults = CHART_DIR / "files" / "defaults.yaml"
+
+        assert defaults.is_symlink()
+        assert defaults.resolve() == (CHART_DIR / "values.yaml").resolve()
+
+
+@pytest.mark.skipif(shutil.which("helm") is None, reason="Helm is required")
+class TestVoiceTuning:
+    """voice: the session voice channel's tuning; Forge turns the channel on per launch."""
+
+    def test_unset_renders_no_voice_section(self):
+        assert "voice_channel" not in _skuld_config()
+
+    def test_set_values_reach_the_broker_settings(self):
+        from skuld.config import VoiceConfig
+
+        config = _skuld_config(
+            "--set",
+            "voice.timeZone=Europe/Amsterdam",
+            "--set",
+            "voice.cardRecentTurns=4",
+            "--set",
+            "voice.sendConfirmSeconds=10",
+            "--set",
+            "voice.models.grok=grok-voice-3.0",
+            "--set",
+            "voice.models.gpt-realtime=gpt-realtime-2.1",
+        )
+        voice = VoiceConfig.model_validate(config["voice_channel"])
+        assert voice.enabled is False
+        assert voice.time_zone == "Europe/Amsterdam"
+        assert voice.card_recent_turns == 4
+        assert voice.send_confirm_seconds == 10
+        assert voice.models["grok"] == "grok-voice-3.0"

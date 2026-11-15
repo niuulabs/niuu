@@ -21,7 +21,6 @@ from personas.domain.persona_document import (
 _VOICE_PERSONA = """
 name: speaker
 system_prompt_template: You speak.
-allowed_tools: [web_fetch]
 iteration_budget: 4
 voice:
   voices:

@@ -7,8 +7,9 @@ from contextlib import suppress
 from datetime import UTC, datetime
 from typing import Any
 
+from niuu.adapters.discovery._failures import DiscoveryError, notify, refuse_message, report_failure
 from niuu.mesh import mesh_event_prefix
-from niuu.mesh.identity import MeshCandidate, MeshPeer
+from niuu.mesh.identity import MeshCandidate, MeshPeer, unannounced_facts
 from niuu.ports.discovery import PeerCallback
 from sleipnir.domain.events import SleipnirEvent
 from sleipnir.ports.events import SleipnirPublisher, SleipnirSubscriber, Subscription
@@ -18,6 +19,8 @@ class EventBusDiscoveryAdapter:
     """Discover flock peers using whichever transport backs Sleipnir."""
 
     requires_sleipnir_transport = True
+    #: ``build_discovery_adapters`` passes ``attestor`` to adapters that set this.
+    signs_announcements = True
 
     def __init__(
         self,
@@ -28,7 +31,9 @@ class EventBusDiscoveryAdapter:
         heartbeat_interval_s: float = 30.0,
         peer_ttl_s: float = 90.0,
         manage_transport_lifecycle: bool = True,
+        attestor: Any | None = None,
     ) -> None:
+        self._attestor = attestor
         self._identity = own_identity
         self._publisher = publisher
         self._subscriber = subscriber
@@ -63,7 +68,11 @@ class EventBusDiscoveryAdapter:
         )
 
     async def stop(self) -> None:
-        await self._publish("leave")
+        try:
+            await self._publish("leave")
+        except DiscoveryError as exc:
+            # Stopping goes on; peers learn this session left when its heartbeats stop.
+            report_failure("event_bus", "leave", str(exc))
         if self._heartbeat_task is not None:
             self._heartbeat_task.cancel()
             with suppress(asyncio.CancelledError):
@@ -104,8 +113,16 @@ class EventBusDiscoveryAdapter:
     async def _heartbeat_loop(self) -> None:
         while True:
             await asyncio.sleep(self._heartbeat_interval_s)
-            await self._publish("heartbeat")
+            await self._heartbeat()
             self._evict_stale()
+
+    async def _heartbeat(self) -> None:
+        """One heartbeat. A failed one is reported and the next interval tries again: until a
+        heartbeat is published, peers age this session out of their tables."""
+        try:
+            await self._publish("heartbeat")
+        except DiscoveryError as exc:
+            report_failure("event_bus", "heartbeat", str(exc))
 
     async def _publish(self, action: str) -> None:
         identity = {
@@ -125,38 +142,64 @@ class EventBusDiscoveryAdapter:
                 "sleipnir_routing_key",
                 "consumes_event_types",
                 "emits_event_types",
+                "role",
+                "description",
+                "activity_state",
             )
         }
-        await self._publisher.publish(
-            SleipnirEvent(
-                event_type=self._announce_event_type,
-                source=f"ravn:{self._identity.peer_id}",
-                payload={"identity": identity, "action": action, "status": "idle", "task_count": 0},
-                summary=f"Flock peer {action}: {self._identity.peer_id}",
-                domain="code",
-                urgency=0.3,
-                timestamp=datetime.now(UTC),
-            )
+        busy = bool(getattr(self._identity, "busy", False))
+        announcement: dict[str, Any] = {
+            "identity": identity,
+            "action": action,
+            "status": "busy" if busy else "idle",
+            "task_count": 0,
+        }
+        if self._attestor is not None:
+            announcement = self._attestor.sign(announcement)
+        event = SleipnirEvent(
+            event_type=self._announce_event_type,
+            source=f"ravn:{self._identity.peer_id}",
+            payload=announcement,
+            summary=f"Flock peer {action}: {self._identity.peer_id}",
+            domain="code",
+            urgency=0.3,
+            timestamp=datetime.now(UTC),
         )
+        try:
+            await self._publisher.publish(event)
+        except Exception as exc:  # the one publish; peers stop seeing this session without it
+            raise DiscoveryError(
+                f"the {action} announce was not published ({type(exc).__name__}: {exc}); "
+                "until one is, peers do not see this session"
+            ) from exc
 
     async def _handle_announce(self, event: SleipnirEvent) -> None:
         payload = event.payload
         identity = payload.get("identity")
         if not isinstance(identity, dict):
+            refuse_message("event_bus", "malformed", event.source, "no identity object")
             return
         peer_id = str(identity.get("peer_id") or "")
-        if not peer_id or peer_id == self._identity.peer_id:
+        if not peer_id:
+            refuse_message("event_bus", "malformed", event.source, "the identity has no peer_id")
+            return
+        if peer_id == self._identity.peer_id:
+            return  # our own announcement, echoed back
+        if self._attestor is not None and not self._attestor.accept(payload):
+            # Refused, counted and logged by the attestor: an announcement nobody can
+            # vouch for neither adds, updates nor removes a peer.
             return
         if str(identity.get("realm_id") or "") != self._identity.realm_id:
             return
         if payload.get("action") == "leave":
             peer = self._peers.pop(peer_id, None)
             if peer is not None:
-                for callback in self._on_leave:
-                    with suppress(Exception):
-                        callback(peer)
+                notify("event_bus", "leave", self._on_leave, peer)
             return
         now = datetime.now(UTC)
+        # A peer's busy flag travels with its activity state; an older peer announced a
+        # constant "idle" status, which says nothing about it.
+        not_announced = unannounced_facts(identity, keys={"busy": "activity_state"})
         peer = self._peers.get(peer_id)
         if peer is not None:
             peer.persona = str(identity.get("persona") or "")
@@ -167,6 +210,10 @@ class EventBusDiscoveryAdapter:
             peer.version = str(identity.get("version") or "")
             peer.consumes_event_types = list(identity.get("consumes_event_types") or [])
             peer.emits_event_types = list(identity.get("emits_event_types") or [])
+            peer.role = str(identity.get("role") or "")
+            peer.description = str(identity.get("description") or "")
+            peer.activity_state = str(identity.get("activity_state") or "")
+            peer.not_announced = not_announced
             peer.last_seen = now
             peer.last_heartbeat = now
             peer.status = str(payload.get("status") or "idle")  # type: ignore[assignment]
@@ -189,6 +236,10 @@ class EventBusDiscoveryAdapter:
             sleipnir_routing_key=identity.get("sleipnir_routing_key"),
             consumes_event_types=list(identity.get("consumes_event_types") or []),
             emits_event_types=list(identity.get("emits_event_types") or []),
+            role=str(identity.get("role") or ""),
+            description=str(identity.get("description") or ""),
+            activity_state=str(identity.get("activity_state") or ""),
+            not_announced=not_announced,
             trust_level="verified",
             first_seen=now,
             last_seen=now,
@@ -197,11 +248,9 @@ class EventBusDiscoveryAdapter:
             task_count=int(payload.get("task_count") or 0),
         )
         self._peers[peer_id] = peer
-        for callback in self._on_join:
-            with suppress(Exception):
-                callback(peer)
+        notify("event_bus", "join", self._on_join, peer)
         if payload.get("action") == "join":
-            await self._publish("heartbeat")
+            await self._heartbeat()
 
     def _evict_stale(self) -> None:
         now = datetime.now(UTC)
@@ -212,6 +261,4 @@ class EventBusDiscoveryAdapter:
         ]
         for peer_id in stale:
             peer = self._peers.pop(peer_id)
-            for callback in self._on_leave:
-                with suppress(Exception):
-                    callback(peer)
+            notify("event_bus", "leave", self._on_leave, peer)

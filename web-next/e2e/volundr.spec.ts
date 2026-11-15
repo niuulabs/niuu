@@ -98,7 +98,7 @@ test('clicking a session in sidebar shows its detail inline', async ({ page }) =
 // ---------------------------------------------------------------------------
 
 test('session detail page renders the live diff surface', async ({ page }) => {
-  await page.goto('/volundr/session/ds-1');
+  await page.goto('/volundr/sessions/ds-1');
   await expect(page.getByTestId('live-session-detail-page')).toBeVisible({ timeout: 8_000 });
   // Chat opens first; Diff is one of the default session tabs.
   await expect(page.locator('#tab-chat')).toHaveAttribute('aria-selected', 'true');
@@ -110,7 +110,7 @@ test('session detail page renders the live diff surface', async ({ page }) => {
 test('session id copy chip is available in header details', async ({ page }) => {
   // "Show session details" is a remembered sidebar preference.
   await page.addInitScript(() => localStorage.setItem('niuu.forge.details', '1'));
-  await page.goto('/volundr/session/ds-1');
+  await page.goto('/volundr/sessions/ds-1');
   await expect(page.getByTestId('session-id-label')).toHaveAttribute(
     'title',
     /^ds-1 · click to copy$/,
@@ -119,7 +119,7 @@ test('session id copy chip is available in header details', async ({ page }) => 
 });
 
 test('session detail shows the default diff viewer state', async ({ page }) => {
-  await page.goto('/volundr/session/ds-1');
+  await page.goto('/volundr/sessions/ds-1');
   await expect(page.getByTestId('live-session-detail-page')).toBeVisible({ timeout: 8_000 });
   await page.locator('#tab-diffs').click();
   await expect(page.locator('#tab-diffs')).toHaveAttribute('aria-selected', 'true');

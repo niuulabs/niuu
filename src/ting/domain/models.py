@@ -50,6 +50,18 @@ class WorkflowCampaignStatus(StrEnum):
     BLOCKED = "blocked"
     COMPLETED = "completed"
     FAILED = "failed"
+    #: An operator aborted the run: its own ending, not a failure.
+    CANCELED = "canceled"
+
+
+#: The statuses a campaign ends in; nothing moves it out of one.
+TERMINAL_CAMPAIGN_STATUSES = frozenset(
+    {
+        WorkflowCampaignStatus.COMPLETED,
+        WorkflowCampaignStatus.FAILED,
+        WorkflowCampaignStatus.CANCELED,
+    }
+)
 
 
 # ---------------------------------------------------------------------------

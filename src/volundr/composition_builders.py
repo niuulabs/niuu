@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import inspect
 import logging
+import socket
 import typing
+import uuid
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Any
@@ -14,9 +17,15 @@ from niuu.adapters.workload_identity.key_file import (
 )
 from niuu.config_models import WorkloadIdentityConfig
 from niuu.domain.services.forge_session_token import ForgeSessionTokenService
+from niuu.domain.services.mesh_certificate import MeshCertificateIssuer
 from niuu.domain.services.workload_identity import WorkloadIdentityService
+from niuu.mesh.attestation import KIND_AUTHORITY, MeshSigner
+from niuu.mesh.config import MeshAttestationConfig
+from niuu.mesh.platform_events import SigningBus
+from niuu.mesh.platform_identity import start_platform_signer
 from niuu.ports.credentials import CredentialRefreshLockPort
 from niuu.ports.http_auth import HttpAuthPort
+from niuu.ports.workload_identity import WorkloadTokenIssuer
 from niuu.utils import import_class, resolve_secret_kwargs
 from volundr.adapters.inbound.host_join_listener import (
     HostJoinListenerError,
@@ -26,7 +35,10 @@ from volundr.adapters.inbound.host_join_listener import (
 from volundr.adapters.outbound.contributors.workflow_execution_credentials import (
     WorkflowExecutionCredentialContributor,
 )
+from volundr.adapters.outbound.mesh_revocation import MeshRevocationPublisher
+from volundr.adapters.outbound.mesh_settings import parse_mesh_settings
 from volundr.config import ALLOW_ALL_IDENTITY_ADAPTERS, Settings
+from volundr.domain.mesh_peer_claims import MeshPeerClaims
 from volundr.domain.ports import (
     ArchiveStorePort,
     AuthorizationPort,
@@ -44,16 +56,31 @@ from volundr.domain.ports import (
     SessionContributor,
 )
 from volundr.domain.presented_files import PresentedFileStore
+from volundr.domain.project_memory import (
+    MemoryMountDirectory,
+    ProjectMemoryRepository,
+    ProjectMemoryResolver,
+)
+from volundr.domain.services.client_credentials import ClientCredentialsMinter
 from volundr.domain.services.integration_registry import IntegrationRegistry
+from volundr.domain.services.mesh_identity import ForgeMeshCertificateSource
 from volundr.domain.services.oauth_clients import (
     SOURCE_CONFIGURED,
     OAuthClient,
     OAuthClientRegistry,
 )
-from volundr.domain.services.oauth_token_refresh import OAuthTokenRefreshService
+from volundr.domain.services.oauth_token_refresh import (
+    DEFAULT_REQUEST_TIMEOUT_SECONDS,
+    OAuthTokenRefreshService,
+)
+from volundr.domain.services.session_voice import (
+    SessionVoiceCredentialService,
+    VoiceProviderBinding,
+)
 from volundr.domain.services.workflow_execution_credentials import (
     WorkflowExecutionCredentialService,
 )
+from volundr.ports.realtime_voice import RealtimeCredentialMinterPort
 from volundr.ports.workflow_execution_credentials import ExecutionCredentialProjectionPort
 
 logger = logging.getLogger(__name__)
@@ -66,12 +93,47 @@ class ForgeSessionCredentialsUnavailableError(RuntimeError):
     """Forge session credentials are enabled but no signing key is usable."""
 
 
+class SessionVoiceUnavailableError(RuntimeError):
+    """Session voice is enabled but Forge cannot mint credentials for it."""
+
+
+class MeshIdentityUnavailableError(RuntimeError):
+    """Mesh identities are enabled but the session-credential signer cannot sign them."""
+
+
 class HostPairingSignerUnavailableError(RuntimeError):
     """Registered hosts are configured but nothing can sign a usable pairing code."""
 
 
 #: Issuer and kid of pairing codes signed with ``compute.hosts.pairing_signing_key_file``.
 HOST_PAIRING_ISSUER = "niuu-forge-host-pairing"
+
+
+def create_project_memory(
+    settings: Settings, pool: Any, token_issuer: WorkloadTokenIssuer | None = None
+) -> tuple[ProjectMemoryRepository | None, ProjectMemoryResolver | None]:
+    """The store of the Mimir mounts projects own and the resolver launches use.
+
+    ``(None, None)`` when projects are off. An adapter that is not of its port's type, or a
+    directory that cannot be built, is fatal here, at startup, rather than at a launch.
+    """
+    if not settings.projects.enabled:
+        return None, None
+    config = settings.projects.memory
+    repository = import_class(config.repository_adapter)(pool=pool, **config.repository_kwargs)
+    if not isinstance(repository, ProjectMemoryRepository):
+        raise TypeError("projects.memory.repository_adapter must implement ProjectMemoryRepository")
+    directory_class = import_class(config.directory_adapter)
+    kwargs = dict(config.directory_kwargs)
+    if "token_issuer" in inspect.signature(directory_class).parameters:
+        # The directory asks the hosted Mimir with a workload token Forge mints.
+        kwargs["token_issuer"] = token_issuer
+    directory = directory_class(**kwargs)
+    if not isinstance(directory, MemoryMountDirectory):
+        raise TypeError("projects.memory.directory_adapter must implement MemoryMountDirectory")
+    return repository, ProjectMemoryResolver(
+        repository, directory, gateway_holds_limits=bool(settings.memory.gateway_url)
+    )
 
 
 def _create_forge_session_tokens(
@@ -122,6 +184,122 @@ def _create_forge_session_tokens(
         ttl_seconds=cfg.ttl_seconds,
         key_source=KEY_SOURCE_KEY_FILE,
     )
+
+
+def create_session_voice_service(
+    settings: Settings,
+    credential_store: CredentialStorePort,
+) -> SessionVoiceCredentialService | None:
+    """The minter of session voice credentials, or ``None`` when voice is disabled.
+
+    Disabled (``voice.enabled: false``) is the operator's decision to run without voice.
+    Enabled, every configured provider must build: the broker mints through Forge with
+    its session credential, so session credentials must be on, and each provider's
+    ``adapter`` must be a :class:`RealtimeCredentialMinterPort`. Anything else is fatal
+    at startup rather than a voice channel that fails on the first call.
+    """
+    cfg = settings.voice
+    if not cfg.enabled:
+        logger.info("Session voice: disabled (voice.enabled)")
+        return None
+    if not settings.forge_mcp.session_tokens.enabled:
+        raise SessionVoiceUnavailableError(
+            "voice.enabled is true but forge_mcp.session_tokens.enabled is false: the "
+            "session's broker mints its voice credentials through Forge with its session "
+            "credential. Enable forge_mcp.session_tokens, or set voice.enabled: false."
+        )
+    providers: dict[str, VoiceProviderBinding] = {}
+    for name, provider in cfg.providers.items():
+        minter = import_class(provider.adapter)(**provider.kwargs)
+        if not isinstance(minter, RealtimeCredentialMinterPort):
+            raise TypeError(
+                f"voice.providers.{name}.adapter {provider.adapter!r} is not a "
+                "RealtimeCredentialMinterPort; use "
+                "volundr.adapters.outbound.realtime_voice.OpenAIRealtimeMinter or "
+                "XaiRealtimeMinter, or a class implementing the port"
+            )
+        providers[name] = VoiceProviderBinding(
+            minter=minter,
+            credential_name=provider.credential_name,
+            credential_key=provider.credential_key,
+        )
+    logger.info("Session voice: minting credentials for %s", ", ".join(sorted(providers)))
+    return SessionVoiceCredentialService(credential_store, providers)
+
+
+def _create_mesh_certificate_issuer(
+    settings: Settings,
+    session_tokens: ForgeSessionTokenService | None,
+) -> MeshCertificateIssuer | None:
+    """The issuer of mesh certificates, or ``None`` when Forge runs without a mesh identity.
+
+    It signs with the issuer that signs the session credentials, so the same key serves
+    both (the workload-identity key, or Forge's own key file in local mini mode) and the
+    certificates verify against a JWKS the peers can fetch from Forge. No session
+    credentials means no mesh identity. With them enabled the signer must be able to sign
+    mesh certificates; one that cannot is fatal, never "no mesh identity".
+    """
+    cfg = settings.forge_mcp.mesh_identity
+    if not settings.mesh.attestation.required:
+        logger.info("Mesh identity: not issued (mesh.attestation.required is false)")
+        return None
+    if session_tokens is None:
+        logger.info(
+            "Mesh identity: off because Forge session credentials are disabled "
+            "(forge_mcp.session_tokens.enabled)"
+        )
+        return None
+    signing = session_tokens.signing_issuer
+    if not callable(getattr(signing, "sign_claims", None)) or not callable(
+        getattr(signing, "jwks", None)
+    ):
+        raise MeshIdentityUnavailableError(
+            "mesh.attestation.required is true but the session-credential signer "
+            f"({type(signing).__name__}) cannot sign mesh certificates; use a workload "
+            "identity issuer, or set mesh.attestation.required: false."
+        )
+    logger.info("Mesh identity: certificates valid for %ss", cfg.ttl_seconds)
+    return MeshCertificateIssuer(signing, ttl_seconds=cfg.ttl_seconds)
+
+
+def _forge_authority_peer_id(settings: Settings) -> str:
+    """The mesh peer id of this Forge: ``forge:<instance id>``, else its host name."""
+    return f"forge:{settings.projects.instance_id or socket.gethostname()}"
+
+
+async def _create_mesh_revocation_publisher(
+    settings: Settings,
+    issuer: MeshCertificateIssuer,
+    claims: MeshPeerClaims,
+    bus: typing.Any,
+    attestation: MeshAttestationConfig | None = None,
+) -> MeshRevocationPublisher:
+    """Forge's authority peer: a key generated now, certified by Forge itself.
+
+    Raises when the authority certificate cannot be had (for instance another Forge
+    already holds this peer id): a Forge that was asked to publish revocations and cannot
+    must not start as if it did.
+    """
+    attestation = attestation or MeshAttestationConfig()
+    peer_id = _forge_authority_peer_id(settings)
+    source = ForgeMeshCertificateSource(
+        issuer,
+        claims,
+        holder=f"authority:{peer_id}",
+        kind=KIND_AUTHORITY,
+        launch_id=uuid.uuid4().hex,
+        memberships=(),
+    )
+    signer = MeshSigner(
+        source,
+        peer_id,
+        renew_fraction=attestation.renew_fraction,
+        retry_fraction=attestation.retry_fraction,
+    )
+    publisher = MeshRevocationPublisher(bus, signer, attestation=attestation)
+    await publisher.start()
+    logger.info("Mesh revocations: published as %s on the Sleipnir bus", peer_id)
+    return publisher
 
 
 def _create_host_pairing_signer(
@@ -269,6 +447,46 @@ def require_presented_file_uploads(
     )
 
 
+def require_memory_credentials(settings: Settings, *, delivers_session_credential: bool) -> None:
+    """Refuse a memory gateway that no session broker could authenticate to.
+
+    A session's memory server calls the gateway with the session's own Forge credential
+    (scope ``forge:memory``), which the gateway checks with Forge. Sessions that hold no
+    credential would start a memory server that every call of fails, so the combination is
+    refused at startup. So is a Forge that verifies its callers but cannot tell which one is
+    the gateway (``memory.gateway_service_subject``): the retention sweep would be refused.
+    """
+    if not settings.memory.gateway_url:
+        return
+    if (
+        settings.identity.adapter not in ALLOW_ALL_IDENTITY_ADAPTERS
+        and not settings.memory.gateway_service_subject
+    ):
+        raise RuntimeError(
+            "memory.gateway_url is set, but memory.gateway_service_subject is empty: only "
+            "the memory gateway's own service credential may tell Forge when run and session "
+            "layers ended (POST /api/v1/forge/memory/ended), and Forge cannot tell which "
+            "caller that is. Set it to the gateway's workload subject (for example "
+            "system:serviceaccount:niuu:mimir), or clear memory.gateway_url to run sessions "
+            "without a memory server"
+        )
+    if not settings.forge_mcp.session_tokens.enabled:
+        raise RuntimeError(
+            "memory.gateway_url is set, but forge_mcp.session_tokens.enabled is false: the "
+            "memory server authenticates to the gateway with the session's Forge credential. "
+            "Enable forge_mcp.session_tokens, or clear memory.gateway_url to run sessions "
+            "without a memory server"
+        )
+    if delivers_session_credential:
+        return
+    raise RuntimeError(
+        "memory.gateway_url is set, but this pod manager does not hand session brokers "
+        "their Forge credential. For pod managers that do not deliver it themselves (Flux, "
+        "Kubernetes) set forge_mcp.session_tokens.projection_adapter, or clear "
+        "memory.gateway_url to run sessions without a memory server"
+    )
+
+
 def _create_workflow_execution_credential_service(
     settings: Settings,
     *,
@@ -409,6 +627,9 @@ def create_oauth_token_refresh_service(
         integration_registry=integration_registry,
         credential_store=credential_store,
         clients=oauth_clients,
+        client_credentials_minter=ClientCredentialsMinter(
+            request_timeout=DEFAULT_REQUEST_TIMEOUT_SECONDS
+        ),
     )
 
 
@@ -462,10 +683,69 @@ def _nested_pod_manager_parameters(cls: type, kwargs: dict[str, Any]) -> set[str
     }
 
 
+def _mesh_mapping(raw: Any, where: str) -> dict[str, Any]:
+    return parse_mesh_settings(raw, where)
+
+
+def _apply_mesh_decision(
+    cls: type, kwargs: dict[str, Any], settings: Settings, *, covered: bool
+) -> None:
+    """Carry ``mesh.attestation.required`` into the sessions this pod manager launches.
+
+    It is one decision for everything Forge runs, so every pod manager that starts Skuld
+    takes Skuld's ``mesh`` settings (the ``mesh`` kwarg; ``session_defaults.mesh`` for Flux)
+    and hands them to its sessions. Forge writes the decision there, and a different value
+    set there is refused at startup rather than letting a session disagree with Forge.
+    Signing is Skuld's default, so only the operator's ``false`` has to be written. A pod
+    manager that cannot carry it is refused while signing is off, never left to disagree.
+    ``covered`` is a pod manager that only wraps others (placement), each built on its own.
+    """
+    required = settings.mesh.attestation.required
+    if getattr(cls, "carries_mesh_setting", False):
+        mesh = _mesh_mapping(kwargs.get("mesh"), "pod_manager.kwargs.mesh")
+        holder, key, where = mesh, "mesh", "pod_manager.kwargs.mesh"
+        target = mesh
+    elif "session_defaults" in inspect.signature(cls.__init__).parameters:
+        defaults = _mesh_mapping(
+            kwargs.get("session_defaults"), "pod_manager.kwargs.session_defaults"
+        )
+        mesh = _mesh_mapping(defaults.get("mesh"), "pod_manager.kwargs.session_defaults.mesh")
+        defaults["mesh"] = mesh
+        holder, key, where = (
+            defaults,
+            "session_defaults",
+            "pod_manager.kwargs.session_defaults.mesh",
+        )
+        target = mesh
+    else:
+        if required or covered:
+            return
+        raise ValueError(
+            f"mesh.attestation.required is false, but {cls.__name__} has no setting for the "
+            "Skuld mesh configuration of its sessions, so they would keep signing on and "
+            "disagree. Give the pod manager a `mesh` setting (carries_mesh_setting), or "
+            "set mesh.attestation.required: true"
+        )
+    attestation = _mesh_mapping(target.get("attestation"), f"{where}.attestation")
+    explicit = attestation.get("required")
+    if explicit is not None and bool(explicit) != required:
+        raise ValueError(
+            f"{where}.attestation.required is {explicit} but mesh.attestation.required is "
+            f"{required}: mesh signing is one decision, set only mesh.attestation.required"
+        )
+    if required:
+        return
+    attestation["required"] = False
+    target["attestation"] = attestation
+    kwargs[key] = holder
+
+
 def _build_pod_manager(settings: Settings, adapter: str, kwargs: dict[str, Any]) -> PodManager:
     cls = import_class(adapter)
     kwargs = dict(kwargs)
-    for name in _nested_pod_manager_parameters(cls, kwargs):
+    # Found before the nested configs are replaced by the managers built from them.
+    nested_names = _nested_pod_manager_parameters(cls, kwargs)
+    for name in nested_names:
         nested = kwargs[name]
         unknown = set(nested) - {"adapter", "kwargs", "secret_kwargs_env"}
         if unknown:
@@ -480,6 +760,7 @@ def _build_pod_manager(settings: Settings, adapter: str, kwargs: dict[str, Any])
                 dict(nested.get("kwargs") or {}), dict(nested.get("secret_kwargs_env") or {})
             ),
         )
+    _apply_mesh_decision(cls, kwargs, settings, covered=bool(nested_names))
     kwargs.setdefault("server_public_host", settings.server_public_host)
     kwargs.setdefault("server_host", settings.server_host)
     kwargs.setdefault("server_port", settings.server_port)
@@ -796,6 +1077,33 @@ def _create_contributors(
         )
         logger.info("Session contributor: model_gateway (auto-wired)")
 
+    # Every session runs Skuld's memory server when Forge is given the memory gateway.
+    if not _has_contributor("memory_server") and settings.memory.gateway_url:
+        from volundr.adapters.outbound.contributors.memory_server import (
+            MemoryServerContributor,
+        )
+
+        contributors.append(MemoryServerContributor(gateway_url=settings.memory.gateway_url))
+        logger.info("Session contributor: memory_server (auto-wired)")
+
+    # Every session runs Skuld's voice channel when the operator turns voice on. A missing
+    # default persona or persona catalog is fatal here, never a session without voice.
+    if not _has_contributor("session_voice") and settings.voice.enabled:
+        from volundr.adapters.outbound.contributors.session_voice import (
+            SessionVoiceContributor,
+        )
+
+        contributors.append(
+            SessionVoiceContributor(
+                default_persona=settings.voice.default_persona,
+                persona_provider=ports.get("persona_provider"),
+            )
+        )
+        logger.info(
+            "Session contributor: session_voice (auto-wired, default persona %s)",
+            settings.voice.default_persona,
+        )
+
     # Auto-wire LocalMountContributor from local_mounts config
     lm = settings.local_mounts
     local_mount_contributor = LocalMountContributor(
@@ -827,12 +1135,81 @@ def _create_contributors(
         contributors.append(WorkflowStepHostContributor())
         logger.info("Session contributor: workflow_step_host (auto-wired)")
 
+    configured_room = next((c for c in contributors if c.name == "team_room"), None)
+    if (
+        configured_room is not None
+        and settings.voice.enabled
+        and not getattr(configured_room, "voice_enabled", False)
+    ):
+        raise RuntimeError(
+            "voice.enabled is true but the configured team_room contributor was built "
+            "without voice_enabled: true, so a team's room host would not know its agents' "
+            "voices. Add voice_enabled: true to its kwargs, or remove it from "
+            "session_contributors to have it wired automatically"
+        )
+    if not _has_contributor("team_room"):
+        from volundr.adapters.outbound.contributors.team_room import TeamRoomContributor
+
+        contributors.append(TeamRoomContributor(voice_enabled=settings.voice.enabled))
+        logger.info("Session contributor: team_room (auto-wired)")
+
     contributors.append(PromptContributor())
 
     from volundr.adapters.outbound.contributors.session_mcp import SessionMCPContributor
 
     if not _has_contributor("session_mcp"):
-        contributors.append(SessionMCPContributor(**ports))
+        contributors.append(
+            SessionMCPContributor(memory_gateway_url=settings.memory.gateway_url, **ports)
+        )
         logger.info("Session contributor: session_mcp (auto-wired)")
 
     return contributors
+
+
+async def _start_sleipnir_bus(settings: Settings) -> Any | None:
+    """Start the configured Sleipnir bus, or ``None`` when ``sleipnir.enabled`` is false.
+
+    Enabled but unable to start is fatal: Forge running on without its bus would silently
+    stop events, audit and mesh revocations.
+    """
+    if not settings.sleipnir.enabled:
+        return None
+    try:
+        bus_class = import_class(settings.sleipnir.adapter)
+        bus = bus_class(
+            **resolve_secret_kwargs(settings.sleipnir.kwargs, settings.sleipnir.secret_kwargs_env)
+        )
+        if hasattr(bus, "start"):
+            await bus.start()
+    except Exception as exc:
+        raise RuntimeError(
+            f"sleipnir.enabled is true but the bus {settings.sleipnir.adapter!r} could not "
+            f"start: {exc!r}. Fix sleipnir.adapter / sleipnir.kwargs, or set "
+            "sleipnir.enabled: false to run without a bus"
+        ) from exc
+    logger.info(
+        "Sleipnir integration enabled: adapter=%s", settings.sleipnir.adapter.rsplit(".", 1)[-1]
+    )
+    return bus
+
+
+async def _sign_forge_platform_events(
+    settings: Settings, bus: Any | None, revocations: Any | None
+) -> Any | None:
+    """Forge's bus with its platform events signed, or the bus untouched while signing is off.
+
+    Forge signs with its ``authority`` certificate (the revocation publisher's); without one,
+    as a platform service of its own. Mesh events keep the signatures their peers give them.
+    """
+    if bus is None or not settings.mesh.attestation.required:
+        return bus
+    signer = (
+        revocations.signer
+        if revocations is not None
+        else await start_platform_signer(
+            "forge", settings.mesh.attestation, workload_identity=settings.workload_identity
+        )
+    )
+    if signer is None:
+        return bus
+    return SigningBus(bus, signer)

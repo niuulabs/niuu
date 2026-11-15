@@ -41,7 +41,11 @@ class TestHealthEndpoint:
     def test_health_returns_ok(self, client: TestClient) -> None:
         response = client.get("/health")
         assert response.status_code == 200
-        assert response.json() == {"status": "ok"}
+        body = response.json()
+        assert body["status"] == "ok"
+        # Ting signs its step offers whether or not it has a Sleipnir bus.
+        assert body["mesh_attestation"] == {"required": True, "state": "signed"}
+        assert body["caps"]["cap_hits_total"] >= 0
 
     def test_health_has_correlation_id(self, client: TestClient) -> None:
         response = client.get("/health")
@@ -50,3 +54,18 @@ class TestHealthEndpoint:
     def test_health_preserves_correlation_id(self, client: TestClient) -> None:
         response = client.get("/health", headers={"X-Correlation-ID": "test-123"})
         assert response.headers["x-correlation-id"] == "test-123"
+
+
+class TestMeshSigningReport:
+    def test_signing_on_is_signed(self) -> None:
+        from ting.main import mesh_signing_report
+
+        assert mesh_signing_report(required=True) == {"required": True, "state": "signed"}
+
+    def test_signing_off_is_unauthenticated(self) -> None:
+        from ting.main import mesh_signing_report
+
+        assert mesh_signing_report(required=False) == {
+            "required": False,
+            "state": "unauthenticated",
+        }

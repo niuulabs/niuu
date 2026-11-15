@@ -1,6 +1,6 @@
 """Mímir MCP (Model Context Protocol) server.
 
-Exposes seven tools over the MCP JSON-RPC 2.0 protocol, allowing Claude Code,
+Exposes its tools over the MCP JSON-RPC 2.0 protocol, allowing Claude Code,
 Codex, Cursor, and other MCP-capable agents to query and update the Mímir
 knowledge base.
 
@@ -9,15 +9,15 @@ Transports
 HTTP (served via FastAPI ``/mcp`` endpoint)::
 
     from mimir.mcp import MimirMcpServer
-    from mimir.adapters.markdown import MarkdownMimirAdapter
+    from mimir.adapters.gbrain import GBrainMimirAdapter
 
-    adapter = MarkdownMimirAdapter(root="~/.ravn/mimir")
+    adapter = GBrainMimirAdapter(mcp_url="http://localhost:3131/mcp")
     mcp_server = MimirMcpServer(adapter=adapter)
     app.include_router(mcp_server.router(), prefix="/mcp")
 
 stdio (for local development — no running service required)::
 
-    python -m mimir mcp --path ~/.ravn/mimir
+    RAVN_CONFIG=~/.ravn/config.yaml python -m mimir mcp
 
 Tools
 -----
@@ -26,7 +26,6 @@ Tools
 - ``mimir_write``   — create or update a page
 - ``mimir_ingest``  — ingest a raw document
 - ``mimir_read_source`` — read an immutable raw source by source_id
-- ``mimir_lint``    — run the knowledge-base linter
 - ``mimir_stats``   — page count, categories, health status
 """
 
@@ -43,16 +42,26 @@ import yaml
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 
+from mimir.exceptions import MimirWriteRefusedError
+from mimir.fact_tools import FACT_TOOLS, run_fact_tool
+from mimir.facts import FactCallerResolver, FactService
 from mimir.live_activity import LiveActivityRecorder
 from mimir.router import WRITE_ROLES
-from niuu.domain.mimir import MimirSource, compute_content_hash
+from niuu.domain.mimir import (
+    MimirSource,
+    compute_content_hash,
+    refuse_operational_source_type,
+)
+from niuu.domain.mimir_facts import FactCaller, FactError, TrustError
 from niuu.domain.tenancy import DEFAULT_PLATFORM_TENANT_ID
 from niuu.ports.identity import HeaderAuthenticationPort, InvalidTokenError
 from niuu.ports.mimir import MimirPort
 
 #: Tool names that mutate the knowledge base — the same routes
 #: MimirRouter._require_write_auth gates on the REST side.
-_WRITE_TOOLS = frozenset({"mimir_write", "mimir_ingest"})
+_WRITE_TOOLS = frozenset(
+    {"mimir_write", "mimir_ingest"} | {name for name, spec in FACT_TOOLS.items() if spec.write}
+)
 
 logger = logging.getLogger(__name__)
 
@@ -173,7 +182,8 @@ _TOOLS: list[dict[str, Any]] = [
                     "type": "string",
                     "description": (
                         "Source kind: 'document', 'url', 'conversation', or 'code' "
-                        "(default: 'document')"
+                        "(default: 'document'). 'tool_output' and 'diagnostic' are refused: "
+                        "Mímir holds knowledge, not records of your own activity"
                     ),
                     "default": "document",
                 },
@@ -205,25 +215,6 @@ _TOOLS: list[dict[str, Any]] = [
         },
     },
     {
-        "name": "mimir_lint",
-        "description": (
-            "Run the Mímir knowledge-base linter and return a health report. "
-            "Reports orphaned pages (no inbound links), contradictions, stale entries, "
-            "and knowledge gaps. "
-            "Use this to assess quality before or after making bulk changes."
-        ),
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "fix": {
-                    "type": "boolean",
-                    "description": "Automatically fix fixable issues (default: false)",
-                    "default": False,
-                },
-            },
-        },
-    },
-    {
         "name": "mimir_stats",
         "description": (
             "Return a summary of the Mímir knowledge base: "
@@ -233,34 +224,6 @@ _TOOLS: list[dict[str, Any]] = [
         "inputSchema": {
             "type": "object",
             "properties": {},
-        },
-    },
-    {
-        "name": "mimir_related",
-        "description": (
-            "Traverse the wikilink graph from a page and return related pages "
-            "up to N hops away. Use this for relationship questions ('what is "
-            "connected to X?') instead of keyword search. Optionally filter by "
-            "typed relationship (rel), e.g. works_at."
-        ),
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "path": {
-                    "type": "string",
-                    "description": "Wiki page path to start from, e.g. entities/alice.md",
-                },
-                "depth": {
-                    "type": "integer",
-                    "description": "Hops to traverse (1-3, default 1)",
-                    "default": 1,
-                },
-                "rel": {
-                    "type": "string",
-                    "description": "Only follow edges with this relationship type",
-                },
-            },
-            "required": ["path"],
         },
     },
 ]
@@ -311,7 +274,13 @@ class MimirMcpServer:
         auth_mode: str = "envoy",
         live_activity: LiveActivityRecorder | None = None,
         platform_tenant_id: str = DEFAULT_PLATFORM_TENANT_ID,
+        facts: FactService | None = None,
+        fact_callers: FactCallerResolver | None = None,
     ) -> None:
+        if (facts is None) != (fact_callers is None):
+            raise ValueError("facts and fact_callers must be configured together")
+        self._facts = facts
+        self._fact_callers = fact_callers
         self._adapter = adapter
         self._name = name
         self._auth = auth
@@ -537,17 +506,55 @@ class MimirMcpServer:
                     "serverInfo": {"name": self._name, "version": "1.0.0"},
                 }
             case "tools/list":
-                return {"tools": _TOOLS}
+                return {"tools": [*_TOOLS, *self._fact_tool_definitions()]}
             case "tools/call":
                 name = params.get("name", "")
                 arguments = params.get("arguments") or {}
-                content = await self._call_tool(name, arguments, request)
+                if name in FACT_TOOLS:
+                    return await self._call_fact_tool(name, arguments, request)
+                try:
+                    content = await self._call_tool(name, arguments, request)
+                except MimirWriteRefusedError as exc:
+                    logger.warning("write refused: %s", _sanitize_log(exc))
+                    return {"content": [{"type": "text", "text": str(exc)}], "isError": True}
                 return {"content": content}
             case "ping":
                 return {}
             case _:
                 raise _MethodNotFoundError(f"Method not found: {method}")
         raise AssertionError("Unreachable _dispatch fallthrough")
+
+    def _fact_tool_definitions(self) -> list[dict[str, Any]]:
+        if self._facts is None:
+            return []
+        return [
+            {"name": name, "description": spec.description, "inputSchema": spec.schema}
+            for name, spec in FACT_TOOLS.items()
+        ]
+
+    async def _fact_caller(self, request: Request | None) -> FactCaller | None:
+        """The platform's view of the caller, from the verified principal only."""
+        if request is None or self._auth is None or self._fact_callers is None:
+            return None
+        try:
+            principal = await self._auth.validate_headers(dict(request.headers))
+        except InvalidTokenError as exc:
+            raise TrustError("the request carries no valid credential") from exc
+        return self._fact_callers.resolve(principal)
+
+    async def _call_fact_tool(
+        self, name: str, arguments: dict[str, Any], request: Request | None
+    ) -> dict[str, Any]:
+        """Run a fact tool. A refusal is a tool error the model can read, never a silent miss."""
+        if self._facts is None:
+            raise ValueError("Typed facts are not configured on this Mímir (set `facts`)")
+        try:
+            caller = await self._fact_caller(request) if FACT_TOOLS[name].write else None
+            result = await run_fact_tool(self._facts, caller, name, arguments)
+        except FactError as exc:
+            logger.warning("fact tool %s refused: %s", _sanitize_log(name), _sanitize_log(exc))
+            return {"content": [{"type": "text", "text": str(exc)}], "isError": True}
+        return {"content": [{"type": "text", "text": json.dumps(result, indent=2)}]}
 
     async def _call_tool(
         self, name: str, arguments: dict[str, Any], request: Request | None = None
@@ -563,12 +570,8 @@ class MimirMcpServer:
                 return await self._tool_ingest(arguments)
             case "mimir_read_source":
                 return await self._tool_read_source(arguments)
-            case "mimir_lint":
-                return await self._tool_lint(arguments)
             case "mimir_stats":
                 return await self._tool_stats(arguments)
-            case "mimir_related":
-                return await self._tool_related(arguments)
             case _:
                 raise ValueError(f"Unknown tool: {name}")
         raise AssertionError("Unreachable _call_tool fallthrough")
@@ -591,17 +594,6 @@ class MimirMcpServer:
             for p in pages[:limit]
         ]
         return [{"type": "text", "text": json.dumps(results, indent=2)}]
-
-    async def _tool_related(self, args: dict[str, Any]) -> list[dict[str, Any]]:
-        related_fn = getattr(self._adapter, "related_pages", None)
-        if related_fn is None:
-            raise ValueError("This Mímir adapter does not expose a link graph")
-        items = related_fn(
-            args["path"],
-            depth=int(args.get("depth") or 1),
-            rel=args.get("rel"),
-        )
-        return [{"type": "text", "text": json.dumps(items, indent=2)}]
 
     async def _record_activity(
         self, request: Request | None, kind: Literal["read", "write"], path: str
@@ -687,6 +679,11 @@ class MimirMcpServer:
         )
         source_type: str = args.get("source_type") or "document"
         origin_url: str | None = args.get("origin_url")
+        try:
+            refuse_operational_source_type(source_type)
+        except ValueError as exc:
+            # A tool error the model reads, the same refusal REST answers with 422.
+            raise MimirWriteRefusedError(str(exc)) from exc
 
         content_hash = compute_content_hash(content)
         source_id = "src_" + content_hash[:16]
@@ -722,26 +719,6 @@ class MimirMcpServer:
             "content_hash": source.content_hash,
             "ingested_at": source.ingested_at.isoformat(),
             "content": source.content,
-        }
-        return [{"type": "text", "text": json.dumps(result, indent=2)}]
-
-    async def _tool_lint(self, args: dict[str, Any]) -> list[dict[str, Any]]:
-        fix: bool = bool(args.get("fix", False))
-        report = await self._adapter.lint(fix=fix)
-        result = {
-            "issues": [
-                {
-                    "id": issue.id,
-                    "severity": issue.severity,
-                    "message": issue.message,
-                    "page_path": issue.page_path,
-                    "auto_fixable": issue.auto_fixable,
-                }
-                for issue in report.issues
-            ],
-            "pages_checked": report.pages_checked,
-            "issues_found": report.issues_found,
-            "summary": report.summary,
         }
         return [{"type": "text", "text": json.dumps(result, indent=2)}]
 

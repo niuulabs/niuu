@@ -38,9 +38,10 @@ import fcntl
 import json
 import logging
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +64,8 @@ class ServiceEntry:
     pid: int
     socket: str
     started: str  # ISO 8601 UTC
+    #: What the service says about itself (a mesh peer's identity); empty for a plain socket.
+    info: dict[str, Any] = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
@@ -144,8 +147,8 @@ class ServiceRegistry:
     # Public API
     # ------------------------------------------------------------------
 
-    def register(self, service_id: str, socket: str) -> None:
-        """Register *service_id* at *socket* in the registry.
+    def register(self, service_id: str, socket: str, info: dict[str, Any] | None = None) -> None:
+        """Register *service_id* at *socket* in the registry, with what it says about itself.
 
         Stale entries (dead PIDs) are removed first.  If *service_id* is
         already present (restart scenario), the old entry is replaced.
@@ -161,6 +164,7 @@ class ServiceRegistry:
                     "pid": os.getpid(),
                     "socket": socket,
                     "started": datetime.now(UTC).isoformat(),
+                    "info": dict(info or {}),
                 }
             )
             data["services"] = live
@@ -192,7 +196,13 @@ class ServiceRegistry:
         with _LockedFile(self._path, write=False) as f:
             data = self._read(f)
         return [
-            ServiceEntry(id=s["id"], pid=s["pid"], socket=s["socket"], started=s["started"])
+            ServiceEntry(
+                id=s["id"],
+                pid=s["pid"],
+                socket=s["socket"],
+                started=s["started"],
+                info=dict(s.get("info") or {}),
+            )
             for s in data["services"]
             if _is_alive(s["pid"])
         ]

@@ -8,6 +8,8 @@ import sys
 import uuid
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
+from typing import Any
 
 from fastapi import Depends, FastAPI, Request, Response
 from starlette.responses import JSONResponse
@@ -16,12 +18,21 @@ from identity.ports import AuthorizationDeniedError, AuthorizationEvaluationErro
 from niuu.adapters.http_integrations import HTTPIntegrationRepository
 from niuu.adapters.notifications.integrations import NotificationChannelFactory
 from niuu.adapters.pat_revocation_middleware import PATRevocationMiddleware
+from niuu.adapters.postgres_integration_usage import PostgresIntegrationUsageLog
 from niuu.adapters.postgres_integrations import PostgresIntegrationRepository
+from niuu.cap_telemetry import health_counts
 from niuu.cors import apply_cors_middleware
 from niuu.domain.models import Principal
+from niuu.mesh.attestation import MeshSigner
+from niuu.mesh.platform_events import SigningBus
+from niuu.mesh.platform_identity import (
+    platform_event_verifier,
+    start_platform_signer,
+    verifier_for,
+)
 from niuu.observability import enable_trace_log_correlation
 from niuu.ports.delivery import EvidenceAuthenticator
-from niuu.ports.integrations import IntegrationRepository
+from niuu.ports.integrations import IntegrationRepository, IntegrationUsageLog
 from niuu.ports.workload_identity import WorkloadTokenIssuer
 from niuu.review_widgets import load_review_widgets
 from niuu.service_runtime import (
@@ -41,6 +52,10 @@ from ting.adapters.guild_instances import GuildInstanceRegistryClient
 from ting.adapters.inbound.rest_integrations import create_telegram_setup_router
 from ting.adapters.inbound.rest_pats import create_pats_router
 from ting.adapters.inbound.rest_telegram_webhook import create_telegram_webhook_router
+from ting.adapters.memory_compile_launcher import WorkflowCompileLauncher
+from ting.adapters.memory_gateway_http import HttpMemorySourceGateway
+from ting.adapters.memory_import_worker import MemoryImportWorker
+from ting.adapters.offer_signing import MeshOfferSigner
 from ting.adapters.plain_child_gates import (
     SchemaOnlyChildResultVerifier,
     UndeclaredReviewAttestor,
@@ -48,6 +63,7 @@ from ting.adapters.plain_child_gates import (
 from ting.adapters.postgres_a2a_launches import PostgresA2ALaunchReservationRepository
 from ting.adapters.postgres_a2a_push import PostgresA2APushConfigRepository
 from ting.adapters.postgres_dispatcher import PostgresDispatcherRepository
+from ting.adapters.postgres_memory_imports import PostgresMemoryImportRepository
 from ting.adapters.postgres_notification_subscriptions import (
     PostgresNotificationSubscriptionRepository,
 )
@@ -74,6 +90,7 @@ from ting.api.dispatcher import create_dispatcher_router, resolve_dispatcher_rep
 from ting.api.dispatcher import resolve_event_bus as dispatcher_resolve_event_bus
 from ting.api.events import create_events_router, resolve_event_bus
 from ting.api.health import create_health_router
+from ting.api.memory_imports import create_memory_imports_router
 from ting.api.phases import create_saga_phases_router
 from ting.api.research import create_research_router, resolve_workflow_campaign_repo
 from ting.api.run_recovery import create_run_recovery_router
@@ -124,6 +141,8 @@ from ting.domain.services.dispatch_service import (
 from ting.domain.services.dispatch_service import (
     DispatchService,
 )
+from ting.domain.services.gate_notifications import GateNotifier
+from ting.domain.services.memory_imports import MemoryImportService
 from ting.domain.services.notification import NotificationService
 from ting.domain.services.resource_authorization import (
     AuthorizedCampaignRepository,
@@ -131,6 +150,7 @@ from ting.domain.services.resource_authorization import (
     AuthorizedWorkflowRepository,
 )
 from ting.domain.services.review_engine import ReviewEngine
+from ting.domain.services.run_room_notices import RunRoomNotifier
 from ting.domain.services.ticket_advance import TicketAdvancer
 from ting.domain.services.ticket_coordinator import TicketCoordinatorService
 from ting.domain.services.workflow_campaign_projector import WorkflowCampaignProjector
@@ -552,6 +572,16 @@ async def _seed_linear_integration(
     await integration_repo.save_connection(connection)
 
 
+@dataclass(frozen=True)
+class IntegrationStores:
+    """The integration repository and, when it has a database, the team usage log."""
+
+    repository: IntegrationRepository
+    #: ``None`` when integrations are read over HTTP: there is no database to record
+    #: team uses in, so team trackers are refused (``teamUsageUnrecorded``).
+    usage_log: IntegrationUsageLog | None
+
+
 @asynccontextmanager
 async def _integration_repository(settings: Settings, pool):
     config = settings.shared_integrations
@@ -560,7 +590,10 @@ async def _integration_repository(settings: Settings, pool):
     if config.database_name:
         database = settings.database.model_copy(update={"name": config.database_name})
         async with database_pool(database) as shared_pool:
-            yield PostgresIntegrationRepository(shared_pool)
+            yield IntegrationStores(
+                PostgresIntegrationRepository(shared_pool),
+                PostgresIntegrationUsageLog(shared_pool),
+            )
         return
     if config.base_url:
         if not settings.auth.allow_anonymous_dev and config.auth.adapter.endswith(
@@ -576,11 +609,33 @@ async def _integration_repository(settings: Settings, pool):
             auth_kwargs=resolve_secret_kwargs(config.auth.kwargs, config.auth.secret_kwargs_env),
         )
         try:
-            yield repository
+            yield IntegrationStores(repository, None)
         finally:
             await repository.close()
         return
-    yield PostgresIntegrationRepository(pool)
+    yield IntegrationStores(PostgresIntegrationRepository(pool), PostgresIntegrationUsageLog(pool))
+
+
+def mesh_signing_report(*, required: bool) -> dict[str, Any]:
+    """What Ting's ``/health`` says about signing its platform events and step offers."""
+    if not required:
+        return {"required": False, "state": "unauthenticated"}
+    return {"required": True, "state": "signed"}
+
+
+async def start_ting_platform_signer(settings: Settings) -> MeshSigner | None:
+    """Ting's platform signer, or ``None`` when ``mesh.attestation.required`` is false.
+
+    Ting signs every workflow step offer it hands a run's root, and the members accept an
+    engine run's offers only signed by ``service:ting``, so Ting needs its signer whether or
+    not it has a Sleipnir bus. A Ting that must sign and has no key fails to start, naming
+    the key to give it.
+    """
+    return await start_platform_signer(
+        "ting",
+        settings.mesh.attestation,
+        workload_identity=settings.workload_identity,
+    )
 
 
 def create_app(
@@ -671,6 +726,8 @@ def create_app(
     app.include_router(create_agent_card_router(settings.a2a))
     app.include_router(create_a2a_router())
     app.include_router(create_research_router())
+    if settings.memory_imports.enabled:
+        app.include_router(create_memory_imports_router())
     if settings.workflow_execution.enabled:
         app.include_router(create_workflow_executions_router())
         if settings.workflow_execution.delivery.enabled:
@@ -697,8 +754,9 @@ def create_app(
 
         async with (
             database_pool(settings.database) as pool,
-            _integration_repository(settings, pool) as integration_repo,
+            _integration_repository(settings, pool) as integration_stores,
         ):
+            integration_repo = integration_stores.repository
             app.state.pool = pool
 
             # Wire shared credential/integration infrastructure
@@ -743,18 +801,23 @@ def create_app(
                     allow_unauthenticated=settings.auth.allow_anonymous_dev,
                     target_auth=_create_http_auth_adapter(settings.volundr.auth),
                 )
-            # Default Volundr adapter for code paths that don't have a per-owner
-            # context (e.g. the Telegram webhook router's _get_volundr). In
-            # mini/anonymous-dev mode the factory always returns the same
-            # singleton; in multi-owner production the per-owner factory
-            # lookup is the right path and this default is a fallback.
-            app.state.volundr = (
-                await app.state.volundr_factory.primary_for_owner("dev-user")
-                if settings.auth.allow_anonymous_dev
-                else None
-            )
+            volundr_factory = app.state.volundr_factory
+
+            async def member_projects(owner_id: str) -> list[str]:
+                primary = await volundr_factory.primary_for_owner(owner_id)
+                if primary is None:
+                    raise LookupError(
+                        f"owner {owner_id} has no Forge connection, so their project "
+                        "memberships cannot be read; connect a Forge for this owner"
+                    )
+                return await primary.list_member_project_ids()
+
             app.state.tracker_factory = TrackerAdapterFactory(
-                integration_repo, credential_store, pool=pool
+                integration_repo,
+                credential_store,
+                pool=pool,
+                member_projects=member_projects,
+                usage_log=integration_stores.usage_log,
             )
 
             # Seed Linear integration from config so the tracker factory
@@ -853,6 +916,23 @@ def create_app(
             if settings.sleipnir.enabled:
                 sl_cls = import_class(settings.sleipnir.adapter)
                 sleipnir_bus = sl_cls(**settings.sleipnir.kwargs)
+            # Platform events and workflow step offers are signed as service:ting; the same
+            # signer's keys verify the events Ting acts on. With mesh.attestation.required
+            # false both are off (logged).
+            platform_signer = await start_ting_platform_signer(settings)
+            app.state.mesh_signing = mesh_signing_report(
+                required=settings.mesh.attestation.required
+            )
+            platform_verifier = (
+                platform_event_verifier(
+                    verifier_for(platform_signer, settings.mesh.attestation),
+                    settings.mesh.attestation,
+                )
+                if platform_signer is not None
+                else None
+            )
+            if sleipnir_bus is not None and platform_signer is not None:
+                sleipnir_bus = SigningBus(sleipnir_bus, platform_signer)
 
             persona_source: PersonaPort | None = FilesystemPersonaAdapter()
             app.state.persona_source = persona_source
@@ -900,6 +980,7 @@ def create_app(
             app.dependency_overrides[resolve_a2a_launch_repo] = _resolve_a2a_launch_repo
 
             workflow_execution_worker = None
+            memory_import_worker: MemoryImportWorker | None = None
             attested_review_projector = None
             # Work history is read-only and remains available when execution
             # workers are disabled. The base ledger is migrated independently
@@ -1333,14 +1414,19 @@ def create_app(
                     **step_sessions_config.kwargs,
                     "volundr_factory": app.state.volundr_factory,
                     "campaigns": workflow_campaign_repo,
+                    "sagas": app.state.saga_repo,
                 }
             )
+            step_definitions = CampaignStepRunDefinitions(workflow_campaign_repo)
             step_engine = WorkflowStepEngine(
                 repository=workflow_step_repo,
                 sessions=step_sessions,
-                definitions=CampaignStepRunDefinitions(workflow_campaign_repo),
+                offers=MeshOfferSigner(
+                    signer=platform_signer, required=settings.mesh.attestation.required
+                ),
+                definitions=step_definitions,
                 settings=EngineSettings(
-                    step_deadline_seconds=settings.workflow_steps.step_deadline_seconds
+                    step_deadline_seconds=settings.workflow_steps.step_deadline_seconds,
                 ),
             )
             workflow_runs = WorkflowRuns(
@@ -1349,13 +1435,52 @@ def create_app(
                 campaigns=workflow_campaign_repo,
                 sink=workflow_campaign_projector,
                 volundr_factory=app.state.volundr_factory,
+                gate_notifier=GateNotifier(
+                    volundr_factory=app.state.volundr_factory,
+                    public_origin=settings.notification.public_origin,
+                ),
+                room_notifier=RunRoomNotifier(volundr_factory=app.state.volundr_factory),
+                catch_up_page_size=settings.workflow_steps.catch_up_page_size,
             )
             workflow_campaign_projector.bind_runs(workflow_runs)
             dispatch_svc.bind_workflow_runs(workflow_runs, workflow_campaign_repo)
             app.state.workflow_runs = workflow_runs
+            await workflow_runs.cancel_runs_open_before_mesh()
             app.state.workflow_step_repo = workflow_step_repo
             app.state.workflow_campaign_projector = workflow_campaign_projector
             await workflow_campaign_projector.start()
+
+            if settings.memory_imports.enabled:
+                memory_imports = settings.memory_imports
+                # Configured-but-impossible is fatal: HttpMemorySourceGateway refuses an empty
+                # gateway_url, and the credential adapter is built here, not on first use.
+                memory_import_service = MemoryImportService(
+                    repository=PostgresMemoryImportRepository(pool),
+                    connections=app.state.tracker_factory,
+                    gateway=HttpMemorySourceGateway(
+                        base_url=memory_imports.gateway_url,
+                        auth=_create_http_auth_adapter(memory_imports.gateway_auth),
+                        timeout_seconds=memory_imports.gateway_timeout_seconds,
+                    ),
+                    compiler=WorkflowCompileLauncher(
+                        workflows=workflow_repo,
+                        campaigns=workflow_campaign_repo,
+                        runs=lambda: app.state.workflow_runs,
+                        volundr_factory=app.state.volundr_factory,
+                        persona_source=persona_source,
+                    ),
+                )
+                app.state.memory_import_service = memory_import_service
+                memory_import_worker = MemoryImportWorker(
+                    service=memory_import_service,
+                    interval_seconds=memory_imports.poll_seconds,
+                )
+                await memory_import_worker.start()
+                logger.info(
+                    "Memory imports: running every %.0fs against %s",
+                    memory_imports.poll_seconds,
+                    memory_imports.gateway_url,
+                )
 
             # Wire Sleipnir bridge (sleipnir_bus already created above; bridge needs event_bus)
             ting_sleipnir_bridge = None
@@ -1512,8 +1637,11 @@ def create_app(
                     steps=workflow_step_repo,
                     campaigns=workflow_campaign_repo,
                     sessions=step_sessions,
+                    definitions=step_definitions,
                     event_bus=event_bus,
-                    settings=StuckSettings(start_grace_seconds=stuck_cfg.start_grace_seconds),
+                    settings=StuckSettings(
+                        pickup_grace_seconds=settings.workflow_steps.pickup_grace_seconds
+                    ),
                     interval_seconds=stuck_cfg.sweep_interval_seconds,
                 )
                 await stuck_sweeper.start()
@@ -1537,6 +1665,7 @@ def create_app(
                         volundr_factory=app.state.volundr_factory,
                         event_bus=event_bus,
                         config=et_cfg,
+                        platform_verifier=platform_verifier,
                     )
                     await event_trigger_adapter.start()
                     app.state.event_trigger_adapter = event_trigger_adapter
@@ -1551,12 +1680,16 @@ def create_app(
             # Lifecycle cleanup
             if event_trigger_adapter is not None:
                 await event_trigger_adapter.stop()
+            if platform_signer is not None:
+                await platform_signer.stop()
             if stuck_sweeper is not None:
                 await stuck_sweeper.stop()
             await subscriber.stop()
             if ting_sleipnir_bridge is not None:
                 await ting_sleipnir_bridge.stop()
             await workflow_campaign_projector.stop()
+            if memory_import_worker is not None:
+                await memory_import_worker.stop()
             if a2a_push_dispatcher is not None:
                 await a2a_push_dispatcher.stop()
             if workflow_execution_worker is not None:
@@ -1594,8 +1727,12 @@ def create_app(
 
     @app.get("/health")
     @app.get("/api/v1/ting/health", include_in_schema=False)
-    async def health() -> dict[str, str]:
-        return {"status": "ok"}
+    async def health(request: Request) -> dict[str, Any]:
+        body: dict[str, Any] = {"status": "ok", "caps": health_counts()}
+        signing = getattr(request.app.state, "mesh_signing", None)
+        if signing is not None:
+            body["mesh_attestation"] = signing
+        return body
 
     return app
 

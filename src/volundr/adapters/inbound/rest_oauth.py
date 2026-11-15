@@ -8,7 +8,7 @@ import time
 from dataclasses import replace
 from datetime import UTC, datetime
 from typing import Any
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from fastapi.responses import HTMLResponse
@@ -17,12 +17,14 @@ from pydantic import BaseModel, Field
 from niuu.http_compat import LegacyRouteNotice, warn_on_legacy_route
 from niuu.ports.credentials import CredentialRefreshLockPort
 from volundr.adapters.inbound.auth import extract_principal
+from volundr.adapters.inbound.rest_project_integrations import team_http_errors
 from volundr.adapters.outbound.oauth2_provider import OAuth2Provider
 from volundr.config import OAuthConfig
 from volundr.domain.models import (
     IntegrationConnection,
     Principal,
     SecretType,
+    TeamInstallMethod,
 )
 from volundr.domain.ports import CredentialStorePort, IntegrationRepository
 from volundr.domain.services.integration_registry import IntegrationRegistry
@@ -32,6 +34,7 @@ from volundr.domain.services.oauth_clients import (
     OAuthClientRegistry,
     app_key,
 )
+from volundr.domain.services.project_integrations import ProjectIntegrationService
 
 logger = logging.getLogger(__name__)
 
@@ -66,10 +69,41 @@ class AuthorizeRequest(BaseModel):
     config: dict[str, Any] = Field(default_factory=dict)
 
 
+class TeamAuthorizeRequest(BaseModel):
+    """Start a provider's app install for a project team (project owners only)."""
+
+    slug: str = Field(pattern=r"^[a-z0-9][a-z0-9-]{0,62}$", description="Catalog integration")
+    project_id: UUID
+    oauth_app: str = Field(default="", max_length=64)
+    config: dict[str, Any] = Field(default_factory=dict)
+
+
 class DisconnectRequest(BaseModel):
     """Select one account when a provider has multiple connections."""
 
     connection_id: str = Field(default="", max_length=100)
+
+
+def _connected_page(name: str, completion_key: str) -> str:
+    """The callback page: says it connected, tells the opener, and closes itself."""
+    body_style = (
+        "font-family:system-ui;display:flex;align-items:center;"
+        "justify-content:center;height:100vh;margin:0;"
+        "background:#071019;color:#edf4f7;"
+    )
+    return (
+        "<!DOCTYPE html>"
+        "<html><head><title>Connected</title></head>"
+        f'<body style="{body_style}">'
+        '<div style="text-align:center;">'
+        f"<h2>Connected to {name}</h2>"
+        "<p>This window will close automatically.</p>"
+        "<script>try {"
+        f"localStorage.setItem('niuu:provider-connected', {completion_key});"
+        "localStorage.removeItem('niuu:provider-connected');"
+        "} catch (_) {} setTimeout(function(){window.close()},2000)"
+        "</script></div></body></html>"
+    )
 
 
 def _build_oauth_router(
@@ -82,6 +116,7 @@ def _build_oauth_router(
     prefix: str,
     deprecated: bool = False,
     canonical_prefix: str | None = None,
+    team_integrations: ProjectIntegrationService | None = None,
 ) -> APIRouter:
     """Create FastAPI router for OAuth2 integration flows."""
     router = APIRouter(
@@ -117,7 +152,7 @@ def _build_oauth_router(
             source="configured",
         )
 
-    def _provider(slug: str, app: str = DEFAULT_APP) -> OAuth2Provider:
+    def _provider(slug: str, app: str = DEFAULT_APP, *, team: bool = False) -> OAuth2Provider:
         defn = integration_registry.get_definition(slug)
         if defn is None or defn.oauth is None:
             raise HTTPException(
@@ -141,6 +176,22 @@ def _build_oauth_router(
             token_url=client.endpoint(defn.oauth.token_url),
             revoke_url=(client.endpoint(defn.oauth.revoke_url) if defn.oauth.revoke_url else ""),
         )
+        if team:
+            # A team install acts as the provider's app or bot, never the installer.
+            team_spec = defn.team_install
+            if team_spec is None or team_spec.method is not TeamInstallMethod.OAUTH:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                    detail=f"{defn.name} is not installed for a team through OAuth",
+                )
+            spec = replace(
+                spec,
+                scopes=team_spec.scopes or spec.scopes,
+                extra_authorize_params={
+                    **spec.extra_authorize_params,
+                    **team_spec.authorize_params,
+                },
+            )
         return OAuth2Provider(
             spec=spec,
             client_id=client.client_id,
@@ -172,6 +223,7 @@ def _build_oauth_router(
         oauth_app: str = "",
         config: dict[str, Any] | None = None,
         request_base_url: str = "",
+        team: dict[str, Any] | None = None,
     ) -> AuthorizeResponse:
         defn = integration_registry.get_definition(slug)
         if defn is None or defn.oauth is None:
@@ -180,7 +232,7 @@ def _build_oauth_router(
                 detail=f"No OAuth configuration for integration: {slug}",
             )
         app = app_key(oauth_app)
-        provider = _provider(slug, app)
+        provider = _provider(slug, app, team=team is not None)
         connection_config = dict(config or {})
         _validate_config(slug, connection_config)
         default_credential_name = (
@@ -206,6 +258,7 @@ def _build_oauth_router(
             "credential_name": resolved_credential_name,
             "oauth_app": app,
             "config": connection_config,
+            "team": team,
             "expires_at": time.monotonic() + STATE_TTL_SECONDS,
         }
         return AuthorizeResponse(
@@ -261,6 +314,38 @@ def _build_oauth_router(
             request_base_url=str(request.base_url),
         )
 
+    async def authorize_team(
+        data: TeamAuthorizeRequest,
+        request: Request,
+        principal: Principal = Depends(extract_principal),
+    ) -> AuthorizeResponse:
+        """Start a provider's app install for a project's team; project owners only."""
+        assert team_integrations is not None
+        with team_http_errors():
+            await team_integrations.owner_project(data.project_id, principal)
+            team_integrations.definition(data.slug)
+        return _start_authorization(
+            slug=data.slug,
+            user_id=principal.user_id,
+            tenant_id=principal.tenant_id,
+            oauth_app=data.oauth_app,
+            config=data.config,
+            request_base_url=str(request.base_url),
+            team={
+                "project_id": str(data.project_id),
+                "email": principal.email,
+                "roles": list(principal.roles),
+            },
+        )
+
+    if team_integrations is not None:
+        router.add_api_route(
+            "/authorize-team",
+            authorize_team,
+            methods=["POST"],
+            response_model=AuthorizeResponse,
+        )
+
     @router.get("/callback")
     async def oauth_callback(
         request: Request,
@@ -291,9 +376,15 @@ def _build_oauth_router(
                 detail=f"Integration definition not found: {slug}",
             )
 
-        provider = _provider(slug, oauth_app)
+        team = pending.get("team")
+        provider = _provider(slug, oauth_app, team=team is not None)
 
         credentials = await provider.exchange_code(code, redirect_uri)
+
+        if team is not None:
+            return await _complete_team_install(
+                request, pending, team, defn, credentials, connection_config, oauth_app
+            )
 
         existing_connections = await integration_repo.list_connections(user_id)
         collision = next(
@@ -361,26 +452,8 @@ def _build_oauth_router(
             user_id,
         )
 
-        body_style = (
-            "font-family:system-ui;display:flex;align-items:center;"
-            "justify-content:center;height:100vh;margin:0;"
-            "background:#071019;color:#edf4f7;"
-        )
         completion_key = json.dumps(f"{slug}:{credential_name}").replace("<", "\\u003c")
-        html = (
-            "<!DOCTYPE html>"
-            "<html><head><title>Connected</title></head>"
-            f'<body style="{body_style}">'
-            '<div style="text-align:center;">'
-            f"<h2>Connected to {defn.name}</h2>"
-            "<p>This window will close automatically.</p>"
-            "<script>try {"
-            f"localStorage.setItem('niuu:provider-connected', {completion_key});"
-            "localStorage.removeItem('niuu:provider-connected');"
-            "} catch (_) {} setTimeout(function(){window.close()},2000)"
-            "</script></div></body></html>"
-        )
-        response = HTMLResponse(content=html)
+        response = HTMLResponse(content=_connected_page(defn.name, completion_key))
         if deprecated and canonical_prefix is not None:
             warn_on_legacy_route(
                 request=request,
@@ -391,6 +464,51 @@ def _build_oauth_router(
                 ),
             )
         return response
+
+    async def _complete_team_install(
+        request: Request,
+        pending: dict[str, Any],
+        team: dict[str, Any],
+        defn: Any,
+        credentials: dict[str, str],
+        connection_config: dict[str, Any],
+        oauth_app: str,
+    ) -> HTMLResponse:
+        """Store a team's app install under its project, if the installer still owns it."""
+        assert team_integrations is not None
+        installer = Principal(
+            user_id=pending["user_id"],
+            email=str(team.get("email") or ""),
+            tenant_id=pending["tenant_id"],
+            roles=list(team.get("roles") or []),
+        )
+        with team_http_errors():
+            project = await team_integrations.owner_project(UUID(team["project_id"]), installer)
+            metadata = {
+                "source": "oauth2",
+                "integration": defn.slug,
+                "auth_state": "active",
+                "tenant_id": pending["tenant_id"],
+                "oauth_app": oauth_app,
+                "oauth_token_field": next(
+                    (k for k, v in defn.oauth.token_field_mapping.items() if v == "access_token"),
+                    "access_token",
+                ),
+            }
+            if credentials.get("expires_at"):
+                metadata["auth_expires_at"] = credentials["expires_at"]
+            await team_integrations.save(
+                project,
+                team_integrations.definition(defn.slug),
+                connected_by=installer.user_id,
+                credential=credentials,
+                config={**connection_config, "oauth_app": oauth_app},
+                secret_type=SecretType.OAUTH_TOKEN,
+                metadata=metadata,
+            )
+        logger.info("Team OAuth install: slug=%s project=%s", defn.slug, project.id)
+        completion_key = json.dumps(f"team:{project.id}:{defn.slug}").replace("<", "\\u003c")
+        return HTMLResponse(content=_connected_page(defn.name, completion_key))
 
     @router.post("/{slug}/disconnect", status_code=status.HTTP_204_NO_CONTENT)
     async def disconnect(
@@ -477,6 +595,31 @@ def create_oauth_router(
         create_mcp_oauth_router(oauth_config, credential_store, integration_repo, credential_lock)
     )
     return router
+
+
+#: Where Forge runs a project team's app installs: Forge owns projects, so a team install
+#: starts and returns here whichever host serves the shared OAuth routes.
+TEAM_OAUTH_PREFIX = "/api/v1/forge/integrations/oauth"
+
+
+def create_team_oauth_router(
+    oauth_config: OAuthConfig,
+    integration_registry: IntegrationRegistry,
+    credential_store: CredentialStorePort,
+    integration_repo: IntegrationRepository,
+    team_integrations: ProjectIntegrationService,
+    oauth_clients: OAuthClientRegistry | None = None,
+) -> APIRouter:
+    """Forge's OAuth routes for team installs (``authorize-team`` and ``callback``)."""
+    return _build_oauth_router(
+        oauth_config,
+        integration_registry,
+        credential_store,
+        integration_repo,
+        oauth_clients=oauth_clients,
+        prefix=TEAM_OAUTH_PREFIX,
+        team_integrations=team_integrations,
+    )
 
 
 def create_canonical_oauth_router(

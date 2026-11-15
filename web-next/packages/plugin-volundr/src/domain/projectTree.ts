@@ -1,4 +1,4 @@
-import type { Session } from './session';
+import type { Session, SessionState } from './session';
 import type { ForgeProject } from '../models/volundr.model';
 
 export interface SessionTreeNode {
@@ -9,6 +9,18 @@ export interface ProjectSessionGroup {
   id: string;
   label: string;
   sessions: Session[];
+}
+
+/** Label for sessions in a project the viewer cannot read (someone invited them into one chat). */
+export const UNREADABLE_PROJECT_LABEL = 'Shared with you';
+
+/**
+ * A group's label: the project's name; for a project the viewer is not on (only one of its
+ * chats was shared with them) a plain label, never the project's raw id.
+ */
+function groupLabel(id: string, projects: ForgeProject[]): string {
+  if (!id) return 'Independent sessions';
+  return projects.find((project) => project.id === id)?.name ?? UNREADABLE_PROJECT_LABEL;
 }
 
 /**
@@ -31,7 +43,7 @@ export function groupByProject(
     const id = session.coordination?.projectId ?? '';
     const group = groups.get(id) ?? {
       id,
-      label: projects.find((project) => project.id === id)?.name ?? (id || 'Independent sessions'),
+      label: groupLabel(id, projects),
       sessions: [],
     };
     group.sessions.push(session);
@@ -42,12 +54,29 @@ export function groupByProject(
   );
 }
 
+/** The session a session sits under, and the host that holds it when the session knows it. */
+interface ParentRef {
+  sessionId: string;
+  instanceId: string;
+}
+
+/**
+ * The session a session runs under: the coordinator that leads it, else the unit root that
+ * hosts it (a team's root, a workflow run's root). A hosted session runs on its root's host.
+ */
+function parentRef(session: Session): ParentRef | null {
+  const led = session.coordination?.parent;
+  if (led) return led;
+  if (!session.hostedBy) return null;
+  return { sessionId: session.hostedBy, instanceId: session.clusterId };
+}
+
 /** Missing/filtered parents and malformed cycles must never hide sessions. */
 export function buildSessionTree(sessions: Session[]): SessionTreeNode[] {
   const nodes = sessions.map((session) => ({ session, children: [] as SessionTreeNode[] }));
   const parents = new Map<SessionTreeNode, SessionTreeNode>();
   for (const node of nodes) {
-    const ref = node.session.coordination?.parent;
+    const ref = parentRef(node.session);
     if (!ref) continue;
     const candidates = nodes.filter(
       (candidate) => candidate !== node && candidate.session.id === ref.sessionId,
@@ -156,6 +185,41 @@ export function nestSessions(
   return { roots, subtree, contextIds, workerCounts };
 }
 
+/**
+ * Whether a session's nesting reads as coordination: a coordinator and its workers, or a
+ * session with no project role. Any other role (a workflow run's member, nested under the
+ * run's first session) is named by its role instead.
+ */
+export function coordinatesNesting(session: Session): boolean {
+  return isCoordinationRole(session.coordination?.role);
+}
+
+/** The project roles whose nesting is coordination; no role reads the same way. */
+export function isCoordinationRole(role: string | undefined): boolean {
+  return !role || role === 'coordinator' || role === 'worker';
+}
+
+/** How a session that leads others is tagged: Coordinator, or its own role. */
+export function leaderTag(role: string | undefined): string {
+  return isCoordinationRole(role) ? 'Coordinator' : roleLabel(role!);
+}
+
+/** A project role as a label: `reviewer` reads as Reviewer. */
+export function roleLabel(role: string): string {
+  return role.charAt(0).toUpperCase() + role.slice(1);
+}
+
+/** What a session that leads others says about them on its row. */
+export function leadLabel(session: Session, count: number): string {
+  if (coordinatesNesting(session)) {
+    if (count === 0) return 'Coordinator';
+    return `Coordinator · ${count} ${count === 1 ? 'worker' : 'workers'}`;
+  }
+  const role = roleLabel(session.coordination!.role);
+  if (count === 0) return role;
+  return `${role} · ${count} ${count === 1 ? 'session' : 'sessions'}`;
+}
+
 /** A session that leads others: it says so, or workers name it as their coordinator. */
 export function isCoordinator(
   session: Session,
@@ -185,4 +249,46 @@ export function coordinationOf(sessions: Session[], sessionId: string): SessionC
   };
   visit(buildSessionTree(sessions), null);
   return found;
+}
+
+/** A lead's own states in which its workers' activity is its own: it is up and not busy. */
+const QUIET_LEAD_STATES: ReadonlySet<SessionState> = new Set(['ready', 'idle', 'running']);
+
+/**
+ * The state a session that leads others shows: its workers' when they are busier. A run's
+ * root runs no agent and sits idle while its members work, so it reads as working while one
+ * does, and as needing you while one does. A lead that stopped or failed shows its own.
+ */
+export function leadState(lead: Session, sessions: readonly Session[]): SessionState {
+  if (!QUIET_LEAD_STATES.has(lead.state)) return lead.state;
+  const workers = sessions.filter((session) => parentRef(session)?.sessionId === lead.id);
+  if (workers.some((worker) => worker.state === 'awaiting_input')) return 'awaiting_input';
+  if (workers.some((worker) => worker.state === 'running')) return 'running';
+  return lead.state;
+}
+
+/** What a session's row says about the unit it hosts: its agents and the people in its room. */
+export interface UnitSummary {
+  /** Null when the session leads other sessions: whether it is an agent itself is its own role. */
+  agents: number | null;
+  people: number;
+}
+
+/**
+ * The unit a session hosts, when it is one: a team's root, or any session with more than
+ * its owner in the room. A solo session with nobody else in it has none and reads as today.
+ * `memberCount` is how many member sessions the host knows under it.
+ */
+export function unitSummary(session: Session, memberCount: number): UnitSummary | null {
+  const people = session.peopleCount ?? 1;
+  if (!session.team && people <= 1) return null;
+  if (session.team) return { agents: memberCount, people };
+  return { agents: memberCount === 0 ? 1 : null, people };
+}
+
+/** "3 agents · 2 people", or "4 agents · you" when the owner is the only person in the room. */
+export function unitSummaryLabel(summary: UnitSummary, viewerOwns: boolean): string {
+  const people = summary.people > 1 ? `${summary.people} people` : viewerOwns ? 'you' : '1 person';
+  if (summary.agents === null) return people;
+  return `${summary.agents} ${summary.agents === 1 ? 'agent' : 'agents'} \u00b7 ${people}`;
 }

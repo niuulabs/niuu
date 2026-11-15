@@ -214,3 +214,54 @@ def test_supervisor_and_stop_specs_name_the_same_slot():
         "slot_label": "compute.niuu.io/slot=2",
     }
     assert layout.relocate(SESSION_LAUNCH) == "/var/lib/niuu/slots/2/etc/session-launch.json"
+
+
+def test_a_units_members_are_placed_in_the_slot_like_the_session_itself():
+    layout = _layout(2)
+    member = "6b0e7a5c-0000-4000-8000-000000000001"
+    payload = {
+        "directories": [
+            {"path": "/run/niuu/session/mesh", "mode": "0777"},
+            {"path": f"/etc/niuu/forge-sessions/{member}", "mode": "0755"},
+        ],
+        "secret_mounts": [],
+        "volume_mounts": [{"source": "/run/niuu/session/mesh", "target": "/run/niuu/mesh"}],
+        "init_containers": [],
+        "sidecars": [],
+        "environment": {"SKULD__VOLUNDR_API_URL": "http://127.0.0.1:18080", "SKULD__PORT": "8081"},
+        "members": [
+            {
+                "id": member,
+                "port": 8082,
+                "environment": {
+                    "SKULD__VOLUNDR_API_URL": "http://127.0.0.1:18080",
+                    "SKULD__HOST": "127.0.0.1",
+                    "SKULD__PORT": "8082",
+                },
+                "volume_mounts": [
+                    {
+                        "source": f"/etc/niuu/forge-sessions/{member}",
+                        "target": "/var/run/niuu/forge-session",
+                    },
+                    {"source": "/run/niuu/session/mesh", "target": "/run/niuu/mesh"},
+                ],
+            }
+        ],
+    }
+
+    placed = layout.launch(payload, platform_port=18080)
+
+    [entry] = placed["members"]
+    assert entry["environment"]["SKULD__HOST"] == "0.0.0.0"
+    assert entry["environment"]["SKULD__PORT"] == "8082"
+    assert entry["environment"]["SKULD__VOLUNDR_API_URL"] == "http://10.249.0.9:18080"
+    assert [m["source"] for m in entry["volume_mounts"]] == [
+        f"/var/lib/niuu/slots/2/etc/forge-sessions/{member}",
+        "/run/niuu/slots/2/mesh",
+    ]
+    assert {d["path"] for d in placed["directories"]} == {
+        "/run/niuu/slots/2/mesh",
+        f"/var/lib/niuu/slots/2/etc/forge-sessions/{member}",
+    }
+    # The unplaced payload is untouched.
+    assert payload["members"][0]["volume_mounts"][1]["source"] == "/run/niuu/session/mesh"

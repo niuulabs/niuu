@@ -10,12 +10,14 @@ import pytest
 
 from tests.test_ting.step_support import (
     STEP_DEADLINE_SECONDS,
+    FixedDefinitions,
     Recorder,
     Run,
     bundled,
     make_run,
 )
-from ting.domain.step_engine import GATE_FEEDBACK_KEY
+from ting.domain.services.workflow_step_engine import WorkflowStepEngine
+from ting.domain.step_engine import GATE_FEEDBACK_KEY, EngineSettings
 from ting.domain.workflow_steps import (
     ActorKind,
     Ending,
@@ -65,22 +67,28 @@ def workstream() -> Run:
 # --- developer-workstream: build, parallel reviews, rework, end ----------------
 
 
-async def test_launch_activates_the_first_step_and_records_the_trigger(workstream: Run) -> None:
+async def test_launch_starts_the_unit_and_offers_the_first_step(workstream: Run) -> None:
     state = await workstream.launch({"objective": "add a flag"})
 
     first = workstream.current("workstream-code")
     assert (first.member, first.attempt, first.generation) == ("developer-coder", 1, 0)
     assert first.session_id == "session-developer-coder"
-    assert first.deadline_at == first.activated_at + timedelta(seconds=STEP_DEADLINE_SECONDS)
-    assert [event.event_type for event in state.events[:2]] == [
+    # The pickup keeps the deadline its offer was stamped with when it was made.
+    (offer_row,) = workstream.offer_rows("workstream-code")
+    assert first.deadline_at == offer_row.activated_at + timedelta(seconds=STEP_DEADLINE_SECONDS)
+    assert [event.event_type for event in state.events[:3]] == [
         "engine.run.launched",
+        "engine.unit.launched",
         "developer.workstream.requested",
     ]
-    assert state.events[1].payload["outcome"] == {"objective": "add a flag"}
-    delivered = workstream.sessions.delivered[0]
-    assert delivered.member == "developer-coder"
-    assert delivered.inputs[0].event_type == "developer.workstream.requested"
-    assert "ready" in delivered.valid_verdicts
+    assert state.events[2].payload["outcome"] == {"objective": "add a flag"}
+    # One unit for the whole run: the root and every member, launched once.
+    assert len(workstream.sessions.launches) == 1
+    (offer,) = [o for o in workstream.offers if o["node_id"] == "workstream-code"]
+    assert workstream.addressed(offer) == ["developer-coder"]
+    assert offer["inputs"][0]["event_type"] == "developer.workstream.requested"
+    assert "ready" in offer["contracts"][0]["valid_verdicts"]
+    assert first.offer_id == offer["offer_id"]
 
 
 async def test_a_run_is_launched_once(workstream: Run) -> None:
@@ -129,9 +137,7 @@ async def test_failed_review_reworks_then_a_clean_rereview_ends_the_run(workstre
     ]
     coder_again = workstream.current("workstream-code")
     assert (coder_again.attempt, coder_again.generation) == (2, 1)
-    assert workstream.sessions.sessions[(workstream.run_id, "developer-coder")] == (
-        coder_again.session_id
-    )
+    assert coder_again.session_id == "session-developer-coder"
 
     await drive_to_reviews(workstream, 2)
     reviewers = {step.member: step for step in workstream.state.open_steps()}
@@ -156,8 +162,8 @@ async def test_failed_review_reworks_then_a_clean_rereview_ends_the_run(workstre
     assert (end.kind, end.state) == (StepKind.END, StepState.DONE)
     assert "developer.workstream.completed" in workstream.event_types()
     assert workstream.sessions.stopped == [workstream.run_id]
-    # One session per (run, member), reused across attempts.
-    assert len(workstream.sessions.created) == len(set(workstream.sessions.created))
+    # One unit per run: the members are never launched again for a rework.
+    assert len(workstream.sessions.launches) == 1
 
 
 async def test_a_review_of_another_revision_never_passes(workstream: Run) -> None:
@@ -271,8 +277,9 @@ async def test_a_step_that_already_closed_cannot_be_closed_again(workstream: Run
     coder = workstream.current("workstream-code")
     await workstream.close(coder, "ready")
 
+    # The same close again is a repeat (see below); another ending is fenced.
     with pytest.raises(StepFencingError, match="is done"):
-        await workstream.close(coder, "ready")
+        await workstream.close(coder, "blocked")
 
 
 async def test_a_stale_step_cannot_close() -> None:
@@ -415,34 +422,145 @@ async def test_cancel_needs_a_launched_run_and_a_reason(workstream: Run) -> None
         await workstream.engine.cancel(workstream.run_id, "  ")
 
 
-async def test_a_step_that_cannot_reach_a_session_fails_loudly(
+async def test_a_unit_that_cannot_be_launched_fails_the_launch_and_records_nothing() -> None:
+    run = make_run(bundled("Developer Workstream"))
+    run.sessions.fail_launch = True
+
+    with pytest.raises(RuntimeError, match="no capacity for the run's unit"):
+        await run.launch()
+
+    assert run.state.events == ()
+    assert run.state.steps == ()
+    assert run.sessions.offers == []
+
+
+# --- the same report delivered more than once -----------------------------------
+
+
+async def test_a_close_delivered_again_is_accepted_once_and_records_no_rejection(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     recorder = Recorder()
     run = make_run(bundled("Developer Workstream"), monkeypatch=monkeypatch, recorder=recorder)
-    run.sessions.fail_ensure.add("developer-coder")
-
     await run.launch()
+    coder = run.current("workstream-code")
+    await run.close(coder, "ready")
+    after_first = run.state
 
-    coder = run.steps("workstream-code")[0]
-    assert coder.state is StepState.FAILED
-    assert "no capacity for developer-coder" in coder.note
-    assert run.finished_with() == "engine.run.failed"
-    assert recorder.total("ting_workflow_step_start_failures_total") == 1
+    for _ in range(3):  # two workers x two owner streams saw the same close
+        await run.close(coder, "ready")
+
+    assert run.state == after_first
+    assert "engine.close.rejected" not in run.event_types()
+    assert recorder.counted("ting_workflow_step_reports_repeated_total", report="closed") == 3
+    assert recorder.total("ting_workflow_step_close_rejections_total") == 0
 
 
-async def test_a_step_that_cannot_be_delivered_fails_loudly(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+async def test_a_different_ending_after_a_close_is_still_fenced() -> None:
     run = make_run(bundled("Developer Workstream"))
-    run.sessions.fail_deliver.add("developer-coder")
+    await run.launch()
+    coder = run.current("workstream-code")
+    await run.close(coder, "ready")
+
+    with pytest.raises(StepFencingError, match="not active or waiting"):
+        await run.fail(coder, "changed my mind")
+
+
+async def test_an_unclosed_turn_reported_again_is_recorded_once() -> None:
+    run = make_run(bundled("Developer Workstream"))
+    await run.launch()
+    coder = run.current("workstream-code")
+
+    for turn in (1, 1, 1, 2):
+        await run.engine.note_unclosed(coder.id, coder.session_id, coder.attempt, turn)
+    await run.engine.note_unclosed(coder.id, coder.session_id, coder.attempt)
+
+    unclosed = [e for e in run.state.events if e.event_type == "engine.step.unclosed"]
+    assert [e.payload.get("turn") for e in unclosed] == [1, 2, None]
+
+
+# --- a member that is still starting ----------------------------------------------
+
+CODER = "developer-coder"
+
+
+async def test_an_offer_waits_for_a_member_that_is_not_listening_yet() -> None:
+    run = make_run(bundled("Developer Workstream"))
+    run.deaf.add(CODER)
 
     await run.launch()
 
-    coder = run.steps("workstream-code")[0]
-    assert coder.state is StepState.FAILED
-    assert "developer-coder is unreachable" in coder.note
+    (offer,) = run.offer_rows("workstream-code")
+    assert offer.state is StepState.ACTIVE
+    assert run.sessions.offers == []
+    assert run.steps("workstream-code") == []
+    assert run.finished_with() is None
+
+    await run.listen(CODER)
+    run.deaf.clear()
+    await run.pump()
+
+    assert [o["node_id"] for o in run.offers] == ["workstream-code"]
+    assert run.current("workstream-code").state is StepState.ACTIVE
+
+
+async def test_an_offer_whose_member_never_comes_up_is_failed_naming_why_and_ends_the_run() -> None:
+    run = make_run(bundled("Developer Workstream"))
+    run.deaf.add(CODER)
+    await run.launch()
+    (offer,) = run.offer_rows("workstream-code")
+
+    failed = await run.engine.fail_step(
+        run.run_id, offer.id, f"session session-{CODER} ended before it listened"
+    )
+
+    assert failed is True
+    assert run.offer_rows("workstream-code")[0].state is StepState.FAILED
     assert run.finished_with() == "engine.run.failed"
+    assert "ended before it listened" in run.failure_reason()
+    assert run.sessions.offers == []
+
+
+async def test_a_restarted_ting_publishes_the_offers_that_waited_exactly_once() -> None:
+    run = make_run(bundled("Developer Workstream"))
+    run.sessions.fail_publish = 1  # the root's broker is not up when the member reports
+    run.auto = False
+    await run.launch()
+    await run.listen(CODER)
+    assert run.sessions.offers == []
+    assert run.offer_rows("workstream-code")[0].state is StepState.ACTIVE
+
+    restarted = second_worker(run)
+    assert await restarted.publish_ready_offers(run.run_id) == 1
+    assert await second_worker(run).publish_ready_offers(run.run_id) == 0
+
+    assert [o["node_id"] for o in run.offers] == ["workstream-code"]
+
+
+def second_worker(run: Run) -> WorkflowStepEngine:
+    """Another Ting process over the same ledger and sessions (a restart, or worker 2)."""
+    return WorkflowStepEngine(
+        repository=run.repository,
+        sessions=run.sessions,
+        offers=run.signer,
+        definitions=FixedDefinitions(run.definition),
+        settings=EngineSettings(step_deadline_seconds=STEP_DEADLINE_SECONDS),
+    )
+
+
+async def test_an_offer_that_waited_for_its_member_is_not_published_once_the_run_is_canceled() -> (
+    None
+):
+    run = make_run(bundled("Developer Workstream"))
+    run.deaf.add(CODER)
+    await run.launch()
+
+    await run.engine.cancel(run.run_id, "operator aborted")
+    await run.listen(CODER)
+
+    assert run.offer_rows("workstream-code")[0].state is StepState.CANCELED
+    assert run.sessions.offers == []
+    assert await run.engine.publish_ready_offers(run.run_id) == 0
 
 
 # --- a workflow with gates --------------------------------------------------------
@@ -510,6 +628,7 @@ async def test_requesting_changes_sends_the_work_back_and_the_gate_reopens(
         person(),
         "cover the empty case",
     )
+    await ticket_work.pump()
 
     # The request for changes is the gate's own declared event, and it took the rework edge.
     assert "ticket.work.changes_requested" in ticket_work.event_types()
@@ -518,8 +637,15 @@ async def test_requesting_changes_sends_the_work_back_and_the_gate_reopens(
     worker = ticket_work.current("ticket-work")
     assert (worker.attempt, worker.generation) == (2, 1)
     assert ticket_work.finished_with() is None
-    redelivered = ticket_work.sessions.delivered[-1]
-    assert redelivered.inputs[0].payload["outcome"] == {GATE_FEEDBACK_KEY: "cover the empty case"}
+    reoffered = ticket_work.offers[-1]
+    assert (reoffered["node_id"], reoffered["attempt"], reoffered["generation"]) == (
+        "ticket-work",
+        2,
+        1,
+    )
+    assert reoffered["inputs"][0]["payload"]["outcome"] == {
+        GATE_FEEDBACK_KEY: "cover the empty case"
+    }
 
     await ticket_work.close(worker, "done")
     reopened = ticket_work.current("result-review-gate")
@@ -527,6 +653,7 @@ async def test_requesting_changes_sends_the_work_back_and_the_gate_reopens(
     await ticket_work.engine.resolve_gate(
         ticket_work.run_id, "result-review-gate", GateDecision.APPROVE, person(), ""
     )
+    await ticket_work.pump()
     assert ticket_work.finished_with() == "engine.run.completed"
     assert ticket_work.states("result-review-gate") == ["done", "done"]
 
@@ -596,6 +723,7 @@ async def test_a_blocked_worker_reaches_the_blocked_gate_and_a_person_unblocks_i
     await ticket_work.engine.resolve_gate(
         ticket_work.run_id, "work-blocked", GateDecision.APPROVE, person(), "ticket fixed"
     )
+    await ticket_work.pump()
 
     # Both decisions of a blocked gate send the worker back to try again.
     assert ticket_work.current("ticket-work").attempt == 2
@@ -604,17 +732,34 @@ async def test_a_blocked_worker_reaches_the_blocked_gate_and_a_person_unblocks_i
 # --- other semantics ---------------------------------------------------------------
 
 
-async def test_a_unique_activation_id_is_derived_from_run_node_member_and_attempt(
+async def test_a_pickups_id_is_the_members_own_activation_and_differs_between_runs(
     workstream: Run,
 ) -> None:
     await workstream.launch()
     coder = workstream.current("workstream-code")
+    (offer,) = [o for o in workstream.offers if o["node_id"] == "workstream-code"]
 
     other = make_run(bundled("Developer Workstream"))
     await other.launch()
 
+    assert coder.id == workstream.activation_id(offer, "developer-coder")
     assert other.current("workstream-code").id != coder.id
-    assert coder.id == workstream.steps("workstream-code")[0].id
+
+
+async def test_one_offer_reaches_the_three_reviewers_and_each_pickup_is_a_step(
+    workstream: Run,
+) -> None:
+    await workstream.launch()
+    await drive_to_reviews(workstream, 1)
+
+    (offer_row,) = workstream.offer_rows("workstream-reviews")
+    (offer,) = [o for o in workstream.offers if o["node_id"] == "workstream-reviews"]
+    assert sorted(workstream.addressed(offer)) == sorted(REVIEWERS)
+    assert offer_row.state is StepState.DONE
+    pickups = workstream.steps("workstream-reviews")
+    assert {step.member for step in pickups} == set(REVIEWERS)
+    assert {step.offer_id for step in pickups} == {offer["offer_id"]}
+    assert len({step.id for step in pickups}) == 3
 
 
 # --- the largest shipped workflow, end to end -------------------------------------------
@@ -643,6 +788,7 @@ async def test_developer_delivery_runs_from_the_request_to_the_published_change(
         "subworkflow:delivery-workstreams"
     )
     await run.engine.record_close(children.id, None, 1, Ending.with_verdict("joined"))
+    await run.pump()
 
     await run.close(run.current("delivery-integrate"), "integrate")
     await run.close(run.current("delivery-integration-tests"), "verify_integration")
@@ -653,6 +799,7 @@ async def test_developer_delivery_runs_from_the_request_to_the_published_change(
     checks = run.current("delivery-publication-wait")
     assert checks.waiting_on is not None and checks.waiting_on.kind is WaitingOnKind.EVENT
     await run.engine.record_close(checks.id, None, 1, Ending.with_verdict("observed"))
+    await run.pump()
     resumed = run.current("delivery-publish")
     assert (resumed.attempt, resumed.generation) == (2, 2)
     await run.close(resumed, "publish")

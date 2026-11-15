@@ -21,7 +21,7 @@ native-steering inbound path end to end:
 All are @pytest.mark.integration (the default pytest addopts deselect them) and
 skip when tmux is unavailable. Run them on the real-tmux tier:
 
-    SKULD__TMUX_REMOTE_CONTROL=0 uv run pytest -m integration \
+    uv run pytest -m integration \
         tests/test_skuld/test_forge_steering.py -p no:cacheprovider -q -rs
 """
 

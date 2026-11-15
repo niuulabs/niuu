@@ -10,6 +10,7 @@ from volundr.domain.models import (
     Principal,
     Session,
     SessionActivityState,
+    SessionStatus,
 )
 from volundr.domain.services import SessionService
 from volundr.domain.services.session import SessionNotFoundError
@@ -69,6 +70,60 @@ class TestUpdateActivity:
 
         assert updated.activity_state == SessionActivityState.ERROR
         assert updated.error == "refresh token was already used"
+
+    async def _session_in(self, service, repository, status: SessionStatus) -> Session:
+        session = await service.create_session(
+            name="Test",
+            model="gpt-5.6-terra",
+            source=GitSource(repo="https://github.com/test/repo", branch="main"),
+        )
+        return await repository.update(session.with_status(status))
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("status", [SessionStatus.PROVISIONING, SessionStatus.STARTING])
+    async def test_a_broker_that_cannot_start_fails_a_session_coming_up(
+        self, service, repository, broadcaster, status
+    ):
+        session = await self._session_in(service, repository, status)
+        refusal = "PersonaProjectionError: Persona 'security-auditor' cannot run on codex"
+
+        updated = await service.update_activity(
+            session.id,
+            SessionActivityState.ERROR,
+            {"error": refusal, "startup_failed": True},
+        )
+
+        assert updated.status is SessionStatus.FAILED
+        assert updated.error == refusal
+        stored = await repository.get(session.id)
+        assert stored is not None and stored.status is SessionStatus.FAILED
+        assert [s.status for s in broadcaster._session_updated_events] == [SessionStatus.FAILED]
+
+    @pytest.mark.asyncio
+    async def test_a_startup_failure_report_does_not_fail_a_session_already_running(
+        self, service, repository, broadcaster
+    ):
+        session = await self._session_in(service, repository, SessionStatus.RUNNING)
+
+        updated = await service.update_activity(
+            session.id, SessionActivityState.ERROR, {"error": "late", "startup_failed": True}
+        )
+
+        assert updated.status is SessionStatus.RUNNING
+        assert broadcaster._session_updated_events == []
+
+    @pytest.mark.asyncio
+    async def test_an_error_that_is_no_startup_failure_leaves_a_starting_session_starting(
+        self, service, repository
+    ):
+        session = await self._session_in(service, repository, SessionStatus.PROVISIONING)
+
+        updated = await service.update_activity(
+            session.id, SessionActivityState.ERROR, {"error": "turn failed"}
+        )
+
+        assert updated.status is SessionStatus.PROVISIONING
+        assert updated.error == "turn failed"
 
     @pytest.mark.asyncio
     async def test_update_activity_clears_stale_liveness_error(self, service, repository):

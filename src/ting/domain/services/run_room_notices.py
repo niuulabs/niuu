@@ -1,0 +1,256 @@
+"""A workflow run's request, gates and end, as its Coordinator's notices in the run's room.
+
+A run's room is the session of the run's root (a Skuld with no agent) that every member of the
+run is hosted by. What members do on the run's mesh (an offer, each pickup and pass, each
+outcome) reaches the room as ``workflow`` events the root stores and shows, so Ting no longer
+posts step notices: the mesh events replace them. What the mesh does not carry is the part of
+the run Ting holds on its own, what the run was asked to do, a gate opening and being decided
+and the run ending, and Ting posts those. A notice is shown in the room and sent to no one: it
+goes through Forge's room ``notice`` operation.
+
+Each notice is keyed by its step and phase. Forge's room shows a notice posted again once, and
+this process posts each key once; a notice Forge could not post is logged at error, counted,
+and posted again on the run's next change. A run in no project has no room, so it posts none.
+
+A room whose root failed or stopped is down: nothing hosts it, so a post would only be refused
+and, once the run is finished, never retried. The notice is then recorded on the root's own
+record in Forge's notification feed, where the run's thread is still shown, so it reaches the
+owner.
+"""
+
+from __future__ import annotations
+
+import logging
+from collections.abc import Mapping
+from dataclasses import dataclass
+from typing import Any
+
+from niuu.cap_telemetry import record_truncation
+from niuu.domain.notifications import MAX_TITLE_CHARS
+from niuu.observability import get_observability
+from ting.domain.campaign_run_projection import run_gates
+from ting.domain.models import WorkflowCampaign, WorkflowCampaignStatus
+from ting.domain.workflow_board import GATE_STATUS_APPROVED, GATE_STATUS_PENDING
+from ting.domain.workflow_steps import RunState, StepKind, StepState, WorkflowStep
+from ting.ports.volundr import VolundrFactory, VolundrPort, VolundrSession
+
+logger = logging.getLogger(__name__)
+
+_ENDED = {
+    WorkflowCampaignStatus.COMPLETED: "The run completed.",
+    WorkflowCampaignStatus.FAILED: "The run failed.",
+    WorkflowCampaignStatus.CANCELED: "The run was canceled.",
+}
+
+
+#: Statuses of a root whose Skuld no longer hosts the room (a root still being created or
+#: started is not down: its room comes up and a refused post is retried).
+_ROOM_DOWN_STATUSES = frozenset({"failed", "stopped", "stopping", "archived"})
+_ELLIPSIS = "…"
+
+
+@dataclass(frozen=True)
+class RoomNotice:
+    """One notice: its key (step and phase), what the room shows, and where to act on it."""
+
+    id: str
+    text: str
+    #: A page where the person acts on the notice, as (label, path): the room shows it as a
+    #: link after the text; a notice recorded in the feed carries it as the feed's own link.
+    action: tuple[str, str] | None = None
+
+    def room_text(self) -> str:
+        if self.action is None:
+            return self.text
+        label, path = self.action
+        return f"{self.text} [{label}]({path})"
+
+
+def run_notices(
+    campaign: WorkflowCampaign, state: RunState, status: WorkflowCampaignStatus
+) -> list[RoomNotice]:
+    """What the run's room should show of the run so far, oldest first."""
+    labels = _node_labels(campaign)
+    gates = {gate["activation_id"]: gate for gate in run_gates(campaign, state)}
+    notices: list[RoomNotice] = _request_notice(campaign)
+    for step in sorted(state.steps, key=lambda item: item.created_at):
+        label = labels.get(step.node_id) or step.node_id
+        if step.kind is StepKind.GATE:
+            notices.extend(_gate_notices(campaign, step, label, gates.get(str(step.id)) or {}))
+    ended = _ENDED.get(status)
+    if ended:
+        notices.append(RoomNotice(id=f"{campaign.id}:{status.value}", text=ended))
+    return notices
+
+
+def _request_notice(campaign: WorkflowCampaign) -> list[RoomNotice]:
+    """What the run was asked to do, first in its room: the members' work answers it."""
+    prompt = str(campaign.metadata.get("prompt") or "").strip()
+    if not prompt:
+        return []
+    return [
+        RoomNotice(
+            id=f"{campaign.id}:request",
+            text=f"{campaign.workflow_name} started on this request:\n\n{prompt}",
+        )
+    ]
+
+
+def _gate_notices(
+    campaign: WorkflowCampaign, step: WorkflowStep, label: str, gate: Mapping[str, Any]
+) -> list[RoomNotice]:
+    if step.state not in (StepState.WAITING, StepState.DONE):
+        return []
+    notices = [
+        RoomNotice(
+            id=f"{step.id}:open",
+            text=f"{label} is waiting for a decision.",
+            # The room says where to decide: a waiting gate is only answered on its review.
+            action=("Review and decide", f"/ting/review/run/{campaign.slug}"),
+        )
+    ]
+    status = str(gate.get("status") or "")
+    if step.state is StepState.DONE and status != GATE_STATUS_PENDING:
+        who = str(gate.get("decided_by") or "")
+        by = f" by {who}" if who else ""
+        decided = "approved" if status == GATE_STATUS_APPROVED else "sent back"
+        notices.append(RoomNotice(id=f"{step.id}:decided", text=f"{label} {decided}{by}."))
+    return notices
+
+
+def _node_labels(campaign: WorkflowCampaign) -> dict[str, str]:
+    graph = campaign.workflow_snapshot.get("graph")
+    nodes = graph.get("nodes") if isinstance(graph, Mapping) else None
+    return {
+        str(node.get("id") or ""): str(node.get("label") or "")
+        for node in nodes or []
+        if isinstance(node, Mapping)
+    }
+
+
+def run_room_of(
+    sessions: list[VolundrSession], campaign: WorkflowCampaign
+) -> VolundrSession | None:
+    """The run's room: its session in a project that is nested under none."""
+    tag = f"workflow:{campaign.slug}"
+    for session in sessions:
+        if session.tracker_issue_id == tag and session.project_id and not session.parent_session_id:
+            return session
+    return None
+
+
+def room_is_down(room: VolundrSession) -> bool:
+    """Whether the room's root is failed or ending: no Skuld hosts the room to take a post."""
+    return room.status.strip().lower() in _ROOM_DOWN_STATUSES
+
+
+class RunRoomNotifier:
+    """Posts a run's steps, gates and end in the run's room, each once."""
+
+    def __init__(self, *, volundr_factory: VolundrFactory) -> None:
+        self._factory = volundr_factory
+        #: Notice keys posted, or being posted, by this process.
+        self._done: set[str] = set()
+
+    async def sync(
+        self, campaign: WorkflowCampaign, state: RunState, status: WorkflowCampaignStatus
+    ) -> None:
+        pending = [
+            notice for notice in run_notices(campaign, state, status) if notice.id not in self._done
+        ]
+        if not pending:
+            return
+        forge = await self._forge(campaign)
+        room = run_room_of(await forge.list_sessions(), campaign)
+        if room is None:
+            # No room yet (its first member is still being created), or the run is in no
+            # project and has none: nothing is kept, so a later change posts these.
+            return
+        for notice in pending:
+            self._done.add(notice.id)
+            try:
+                if room_is_down(room):
+                    await self._record_on_root(forge, campaign, room, notice)
+                    continue
+                await forge.post_room_notice(room.id, notice.room_text(), notice_id=notice.id)
+            except Exception as exc:
+                self._done.discard(notice.id)
+                logger.error(
+                    "Could not post %s in the room of run %s: %s: %s",
+                    notice.id,
+                    campaign.slug,
+                    type(exc).__name__,
+                    exc,
+                    exc_info=True,
+                )
+                get_observability().count(
+                    "ting_run_room_notice_failures_total",
+                    description=(
+                        "Run notices Forge could not post in the run's room; posted again on "
+                        "the run's next change."
+                    ),
+                )
+                return
+
+    async def _record_on_root(
+        self,
+        forge: VolundrPort,
+        campaign: WorkflowCampaign,
+        room: VolundrSession,
+        notice: RoomNotice,
+    ) -> None:
+        """Record a notice on the root's record in Forge's feed, because its room is down.
+
+        The room is the root's Skuld; once the root failed or stopped nothing hosts the room
+        and a post would only be refused. The root's record is where the run's thread is
+        still shown, so the notice goes to the owner's notification feed on it. Forge's
+        refusal is raised like a refused post and retried on the run's next change.
+        """
+        title = notice.text
+        if len(title) > MAX_TITLE_CHARS:
+            title = title[: MAX_TITLE_CHARS - len(_ELLIPSIS)] + _ELLIPSIS
+            record_truncation(
+                f"forge notification title limit ({MAX_TITLE_CHARS} characters)",
+                what="a workflow run notice title",
+                kept=len(title),
+                total=len(notice.text),
+                remedy="the full text is on the run's review page",
+            )
+        key = f"workflow-run-notice:{notice.id}"
+        await forge.submit_session_notification(
+            room.id,
+            {
+                "kind": "info",
+                "severity": "info",
+                "title": title,
+                "body": f"{campaign.name}: {notice.text} The run's room is {room.status}.",
+                "links": [
+                    {
+                        "label": "Open the run",
+                        "url": f"/ting/review/run/{campaign.slug}",
+                        "kind": "url",
+                    }
+                ],
+                "correlation_id": key,
+            },
+            idempotency_key=key,
+        )
+        logger.warning(
+            "The room of run %s is %s, so notice %s was recorded on its root %s instead",
+            campaign.slug,
+            room.status,
+            notice.id,
+            room.id,
+        )
+
+    async def _forge(self, campaign: WorkflowCampaign) -> VolundrPort:
+        if campaign.connection_id:
+            forge = await self._factory.for_connection(campaign.owner_id, campaign.connection_id)
+        else:
+            forge = await self._factory.primary_for_owner(campaign.owner_id)
+        if forge is None:
+            raise LookupError(f"no Forge connection resolves for run {campaign.slug}")
+        return forge
+
+
+__all__ = ["RoomNotice", "RunRoomNotifier", "room_is_down", "run_notices", "run_room_of"]

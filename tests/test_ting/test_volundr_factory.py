@@ -7,6 +7,8 @@ from dataclasses import replace
 from datetime import UTC, datetime
 
 import pytest
+import respx
+from httpx import Response
 
 from niuu.domain.models import InstanceKind, InstanceVisibility, Principal, RegisteredInstance
 from tests.test_ting.conftest import StubCredentialStore
@@ -482,9 +484,26 @@ async def test_for_principal_with_unresolved_counts_a_skipped_credentialless_ins
     assert unresolved == 1
 
 
+LOCAL_FORGE_ID = "f547d606-da6f-4cdc-9397-75e289a43f15"
+
+
+def _guild_registers_the_local_forge() -> respx.Route:
+    return respx.get("http://127.0.0.1:8000/api/v1/niuu/instances").mock(
+        return_value=Response(
+            200,
+            json=[
+                {"id": LOCAL_FORGE_ID, "slug": "local", "kind": "volundr"},
+                {"id": "c547cadb-283c-4353-8537-f96515300c69", "slug": "local-memory"},
+            ],
+        )
+    )
+
+
 @pytest.mark.asyncio
+@respx.mock
 async def test_local_factory_reports_nothing_unresolved_for_a_principal() -> None:
-    factory = LocalVolundrAdapterFactory("http://local:8000")
+    _guild_registers_the_local_forge()
+    factory = LocalVolundrAdapterFactory("http://127.0.0.1:8000")
     principal = Principal(user_id="owner-1", email="", tenant_id="tenant-1", roles=[])
 
     adapters, unresolved = await factory.for_principal_with_unresolved(principal)
@@ -536,8 +555,10 @@ async def test_registry_error_raises_instead_of_looking_like_no_connections() ->
 
 
 @pytest.mark.asyncio
+@respx.mock
 async def test_local_factory_reuses_single_adapter_for_all_entrypoints() -> None:
-    factory = LocalVolundrAdapterFactory("http://local:8000")
+    lookup = _guild_registers_the_local_forge()
+    factory = LocalVolundrAdapterFactory("http://127.0.0.1:8000")
     principal = Principal(
         user_id="owner-1",
         email="owner-1@example.com",
@@ -553,6 +574,8 @@ async def test_local_factory_reuses_single_adapter_for_all_entrypoints() -> None
     assert isinstance(owner_adapters[0], VolundrHTTPAdapter)
     assert owner_adapters[0] is owner_primary
     assert principal_adapters[0] is owner_primary
+    # Looked up once, however many callers ask.
+    assert lookup.call_count == 1
     assert principal_primary is owner_primary
 
 
@@ -589,3 +612,27 @@ async def test_for_principal_carries_the_instances_config_into_the_adapter() -> 
     )
 
     assert result[0].config == {"tls_fingerprint": "a" * 64}
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_a_local_run_is_addressed_by_the_embedded_forges_guild_instance_id() -> None:
+    """As on a cluster: the UI reads a run's sessions and files through the root facade by it."""
+    _guild_registers_the_local_forge()
+
+    adapter = await LocalVolundrAdapterFactory("http://127.0.0.1:8000").primary_for_owner("o")
+
+    assert adapter is not None
+    assert adapter.target_id == LOCAL_FORGE_ID
+    assert adapter.name == "local"
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_a_local_forge_guild_does_not_know_is_refused_by_name() -> None:
+    respx.get("http://127.0.0.1:8000/api/v1/niuu/instances").mock(
+        return_value=Response(200, json=[])
+    )
+
+    with pytest.raises(LookupError, match="registered in Guild as 'local'"):
+        await LocalVolundrAdapterFactory("http://127.0.0.1:8000").primary_for_owner("o")

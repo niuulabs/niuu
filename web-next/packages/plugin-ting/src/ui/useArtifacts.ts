@@ -1,20 +1,25 @@
 import { useMemo } from 'react';
 import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useService } from '@niuulabs/plugin-sdk';
-import type { IRunLogService, IWorkflowService, ProjectSessions } from '../ports';
+import type { IRunLogService, IWorkService, IWorkflowService, ProjectSessions } from '../ports';
+import type { ReviewRunSession } from '../domain/review';
 import {
   artifactsFromPublications,
   isReadable,
   newestFirst,
   runRef,
   runWaits,
+  runWithSessions,
   sessionArtifacts,
   type Artifact,
   type ArtifactVersion,
   type Publication,
   type RunRef,
+  type RunSession,
   type SessionRef,
+  RUN_ENDED,
 } from '../domain/artifacts';
+import type { WorkSummary } from '../domain/work';
 import { mergeWorkPages, useReviews, useWorkCollection } from './useWork';
 
 /** A running session may present again; what was presented is read again on this cadence. */
@@ -40,7 +45,7 @@ function message(error: unknown): string {
 }
 
 function runIsSettled(run: RunRef): boolean {
-  return run.condition === 'completed' || run.condition === 'failed';
+  return RUN_ENDED.has(run.condition);
 }
 
 function useWaitingSlugs(): ReadonlySet<string> {
@@ -104,13 +109,24 @@ export function useArtifacts(projectId?: string) {
     queryKey: ['ting', 'artifacts', 'hosts'],
     queryFn: () => runLog.hosts(),
   });
-  const allRuns = useMemo(() => {
+  // Every run Work lists, by slug. A step-engine run has no session of its own: it is
+  // listed with none, and each member session that presented files is joined to it below.
+  const summaries = useMemo(() => {
     const merged = mergeWorkPages(work.data?.pages);
-    if (!merged) return [];
-    return [...merged.campaigns, ...merged.executions]
-      .map(runRef)
-      .filter((run): run is RunRef => run !== null);
+    if (!merged) return new Map<string, WorkSummary>();
+    return new Map(
+      [...merged.campaigns, ...merged.executions].flatMap((item) =>
+        item.campaignSlug ? [[item.campaignSlug, item] as const] : [],
+      ),
+    );
   }, [work.data]);
+  const allRuns = useMemo(
+    () =>
+      [...summaries.values()]
+        .map((item) => runRef(item) ?? runWithSessions(item, []))
+        .filter((run): run is RunRef => run !== null),
+    [summaries],
+  );
   const inProject = useMemo(() => {
     if (!projectId) return null;
     return new Set(
@@ -119,7 +135,12 @@ export function useArtifacts(projectId?: string) {
   }, [projectId, projects.data]);
   const ready = !projectId || Boolean(projects.data);
   const runs = useMemo(
-    () => (ready ? allRuns.filter((run) => !inProject || inProject.has(run.sessionId)) : []),
+    () =>
+      ready
+        ? allRuns.filter(
+            (run) => !inProject || (run.sessionId !== '' && inProject.has(run.sessionId)),
+          )
+        : [],
     [allRuns, inProject, ready],
   );
   const hosts = useMemo(
@@ -177,12 +198,26 @@ export function useArtifacts(projectId?: string) {
       const lookup = sessions[index];
       if (!lookup || lookup.data === undefined) return;
       const session = lookup.data ?? goneSession(item.sessionId, item.host);
-      for (const artifact of sessionArtifacts(session, byHost.get(item.host) ?? [])) {
-        all.push({ ...artifact, project: sessionProjects.get(item.sessionId) ?? null });
-      }
+      const published = byHost.get(item.host) ?? [];
+      const project = sessionProjects.get(item.sessionId) ?? null;
+      // A member session of a run Work lists presents for that run.
+      const summary = session.runSlug ? summaries.get(session.runSlug) : undefined;
+      const run = summary
+        ? runWithSessions(summary, [
+            {
+              sessionId: session.sessionId,
+              instanceId: session.instanceId,
+              member: session.member ?? '',
+            },
+          ])
+        : null;
+      const artifacts = run
+        ? artifactsFromPublications(run, published, waiting)
+        : sessionArtifacts(session, published);
+      for (const artifact of artifacts) all.push({ ...artifact, project });
     });
     return newestFirst(all);
-  }, [runs, byHost, waiting, sessionProjects, others, sessions]);
+  }, [runs, byHost, waiting, sessionProjects, others, sessions, summaries]);
 
   const waitingRuns = useMemo((): WaitingRun[] => {
     const presented = new Set(rows.flatMap((row) => (row.run ? [row.run.slug] : [])));
@@ -218,9 +253,37 @@ export function useArtifacts(projectId?: string) {
 /** Where a session's files are read from. */
 type SessionAt = Pick<SessionRef, 'sessionId' | 'instanceId'>;
 
-/** What one run presented, for its review page. */
+/** What one run presented, in every session it worked in, for its review page. */
 export function useRunPublications(run: RunRef | null) {
-  return useSessionPublications(run, run !== null && !runIsSettled(run));
+  const runLog = useService<IRunLogService>('ting.runLog');
+  const live = run !== null && !runIsSettled(run);
+  const sessions = run?.sessions ?? [];
+  const reads = useQueries({
+    queries: sessions.map((session) => ({
+      queryKey: [
+        'ting',
+        'artifacts',
+        'session-publications',
+        session.instanceId,
+        session.sessionId,
+      ],
+      queryFn: ({ signal }: { signal: AbortSignal }) =>
+        runLog.publications(session.instanceId, { sessionId: session.sessionId, signal }),
+      refetchInterval: live ? LIVE_REFRESH_MS : (false as const),
+    })),
+  });
+  const data = useMemo(
+    () =>
+      reads.every((read) => read.data !== undefined)
+        ? reads.flatMap((read) => read.data ?? [])
+        : undefined,
+    [reads],
+  );
+  return {
+    data,
+    isLoading: reads.some((read) => read.isPending),
+    error: reads.find((read) => read.error)?.error ?? null,
+  };
 }
 
 /** What one session presented, for its review page; re-read while it may present more. */
@@ -252,29 +315,31 @@ export function useArtifactSession(sessionId: string, instanceId: string | null)
 }
 
 /**
- * The text of every readable version, by revision id. A presented file never changes
- * under its id, so each is read once.
+ * The text of every readable version, by revision id, read from the session that
+ * presented it. A presented file never changes under its id, so each is read once.
  */
-export function useArtifactTexts(run: SessionAt | null, artifacts: readonly Artifact[]) {
+export function useArtifactTexts(artifacts: readonly Artifact[]) {
   const runLog = useService<IRunLogService>('ting.runLog');
-  const versions: ArtifactVersion[] = artifacts
-    .flatMap((artifact) => artifact.versions)
-    .filter(isReadable);
+  const versions: { version: ArtifactVersion; session: SessionAt }[] = artifacts.flatMap(
+    (artifact) =>
+      artifact.versions
+        .filter(isReadable)
+        .map((version) => ({ version, session: artifact.session })),
+  );
   const texts = useQueries({
-    queries: versions.map((version) => ({
-      queryKey: ['ting', 'artifacts', 'text', run?.sessionId ?? null, version.revisionId],
+    queries: versions.map(({ version, session }) => ({
+      queryKey: ['ting', 'artifacts', 'text', session.sessionId, version.revisionId],
       queryFn: ({ signal }: { signal: AbortSignal }) =>
-        runLog.presentedText(run!.sessionId, run!.instanceId, version.fileId, signal),
-      enabled: run !== null,
+        runLog.presentedText(session.sessionId, session.instanceId, version.fileId, signal),
       staleTime: Infinity,
     })),
   });
   const map = new Map<string, string>();
-  versions.forEach((version, index) => {
+  versions.forEach(({ version }, index) => {
     const data = texts[index]?.data;
     if (typeof data === 'string') map.set(version.revisionId, data);
   });
-  const failed = versions.flatMap((version, index) => {
+  const failed = versions.flatMap(({ version }, index) => {
     const error = texts[index]?.error;
     return error
       ? [{ version, reason: error instanceof Error ? error.message : String(error) }]
@@ -283,30 +348,41 @@ export function useArtifactTexts(run: SessionAt | null, artifacts: readonly Arti
   return { texts: map, failed, reading: texts.some((query) => query.isPending) };
 }
 
-/** The run behind a slug, from the runs Work already lists. */
-export function useRun(slug: string): { run: RunRef | null; loading: boolean; error: unknown } {
-  const work = useWorkCollection();
+/**
+ * The run behind a slug, read by its slug whatever page of Work it is on, with the
+ * sessions its review lists.
+ */
+export function useRun(
+  slug: string,
+  sessions: readonly ReviewRunSession[] | undefined,
+): { run: RunRef | null; loading: boolean; error: unknown } {
+  const work = useService<IWorkService>('ting.work');
+  const detail = useQuery({
+    queryKey: ['ting', 'work', 'run', slug],
+    queryFn: () => work.run(slug),
+  });
   const run = useMemo(() => {
-    const merged = mergeWorkPages(work.data?.pages);
-    const item = [...(merged?.campaigns ?? []), ...(merged?.executions ?? [])].find(
-      (summary) => summary.campaignSlug === slug,
-    );
-    return item ? runRef(item) : null;
-  }, [work.data, slug]);
-  return { run, loading: work.isPending, error: work.error };
+    if (!detail.data) return null;
+    const listed: RunSession[] = (sessions ?? []).map((session) => ({
+      sessionId: session.sessionId,
+      instanceId: session.connectionId,
+      member: session.member,
+    }));
+    return runWithSessions(detail.data.item, listed);
+  }, [detail.data, sessions]);
+  return { run, loading: detail.isPending, error: detail.error };
 }
 
 export function useWaiting(): ReadonlySet<string> {
   return useWaitingSlugs();
 }
 
-export function useSendToRun(run: SessionAt | null) {
+/** Notes on an artifact, sent as a chat message to the session that presented it. */
+export function useSendToRun() {
   const runLog = useService<IRunLogService>('ting.runLog');
   return useMutation({
-    mutationFn: (content: string) => {
-      if (!run) throw new Error('This session is not loaded.');
-      return runLog.sendMessage(run.sessionId, run.instanceId, content);
-    },
+    mutationFn: ({ session, content }: { session: SessionAt; content: string }) =>
+      runLog.sendMessage(session.sessionId, session.instanceId, content),
   });
 }
 

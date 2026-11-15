@@ -23,6 +23,7 @@ import jwt
 import pytest
 
 from niuu.ports.workload_identity import IssuedWorkloadToken
+from tests.support.workflow_steps import MEMBER_STEPS_ENV, MEMBER_STEPS_VALUES
 from volundr.adapters.outbound.hermes_gateway import (
     HERMES_CREDENTIAL_NAME,
     HERMES_LEGACY_CREDENTIAL_NAME,
@@ -1023,7 +1024,7 @@ async def test_start_uses_gateway_client_without_host_cli(
                 "systemPrompt": initial_prompt,
                 **({"persona": persona} if initial_prompt else {}),
             },
-            **({"workflowSteps": {"enabled": True}} if initial_prompt else {}),
+            **({"workflowSteps": MEMBER_STEPS_VALUES} if initial_prompt else {}),
             "env": {"CUSTOM_ENV": "yes"},
             "resources": {
                 "requests": {"cpu": "500m", "memory": "1Gi"},
@@ -1096,7 +1097,7 @@ async def test_start_uses_gateway_client_without_host_cli(
                     f"SKULD__SESSION__INITIAL_PROMPT={initial_prompt}",
                     f"SKULD__SESSION__SYSTEM_PROMPT={initial_prompt}",
                     "SKULD__SESSION__PERSONA=" + json.dumps(persona, separators=(",", ":")),
-                    "SKULD__WORKFLOW_STEPS__ENABLED=true",
+                    *(f"{name}={value}" for name, value in MEMBER_STEPS_ENV.items()),
                     "skuld",
                     "serve",
                 ]
@@ -3603,6 +3604,35 @@ def test_claude_subscription_uses_bearer_provider_route():
     assert api_key["header_name"] == "x-api-key"
 
 
+def test_claude_providers_admit_the_native_binary_the_cli_really_runs():
+    """OpenShell matches the executable a process runs. Claude Code's npm package runs
+    @anthropic-ai/claude-code/bin/claude.exe behind the /usr/local/bin/claude symlink;
+    on noatun (dev.586) every model call from it was denied (transparent_tcp_policy_denied)."""
+    import fnmatch
+
+    from volundr.adapters.outbound.openshell_gateway import _provider_target
+
+    native = "/opt/skuld-tools/node_modules/@anthropic-ai/claude-code/bin/claude.exe"
+    sdk_bundled = "/opt/venv/lib/python3.14/site-packages/claude_agent_sdk/_bundled/claude"
+    for env_name in ("CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY", "CLAUDE_API_KEY"):
+        binaries = _provider_target(env_name)["binaries"]
+        for path in (native, sdk_bundled):
+            assert any(fnmatch.fnmatch(path, pattern) for pattern in binaries), (env_name, path)
+
+
+def test_codex_api_key_provider_admits_codex_native_binary():
+    import fnmatch
+
+    from volundr.adapters.outbound.openshell_gateway import _provider_target
+
+    native = (
+        "/opt/skuld-tools/node_modules/@openai/codex-linux-x64/vendor/"
+        "x86_64-unknown-linux-musl/codex/codex"
+    )
+    binaries = _provider_target("OPENAI_API_KEY")["binaries"]
+    assert any(fnmatch.fnmatch(native, pattern) for pattern in binaries)
+
+
 def test_gitlab_token_uses_bearer_provider_route():
     from volundr.adapters.outbound.openshell_gateway import _provider_target
 
@@ -4816,3 +4846,23 @@ def test_a_phase_the_gateway_has_no_name_for_is_reported_by_its_number(
     assert adapter._phase_name(99) == "phase 99"
     assert adapter._last_line("one\n\nWorkspace ready\n  \n") == "Workspace ready"
     assert adapter._last_line("") is None
+
+
+@pytest.mark.asyncio
+async def test_start_hands_the_mesh_setting_to_the_sandbox(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = _import_adapter(monkeypatch)
+    session = _session()
+    client = _FakeOpenShellGatewayClient(adapter)
+    manager = adapter.OpenShellGatewayPodManager(
+        client=client,
+        ready_timeout=0.1,
+        volundr_api_url="http://niuu-volundr.volundr.svc.cluster.local",
+        mesh={"attestation": {"required": False}},
+    )
+    manager.set_workload_token_issuer(_FakeWorkloadTokenIssuer())
+
+    await manager.start(session, SessionSpec(values={}, pod_spec=PodSpecAdditions()))
+
+    assert client.created["env"]["SKULD__MESH__ATTESTATION__REQUIRED"] == "false"

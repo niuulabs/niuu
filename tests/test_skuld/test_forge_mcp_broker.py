@@ -103,7 +103,6 @@ def _broker(tmp_path, forge: FakeForge | None, **forge_mcp: Any) -> Broker:
         broker._http_client = httpx.AsyncClient(
             base_url=FORGE, transport=httpx.MockTransport(forge.handler), headers=headers
         )
-        broker._http_client_jwt = broker._user_jwt
         broker._http_client_auth_header = headers.get("Authorization", "")
     return broker
 
@@ -385,9 +384,18 @@ class TestEnvironment:
 
 
 class TestForgeProxy:
-    async def test_scoped_token_is_used_for_mcp_calls_only(self, flushing, forge) -> None:
+    async def test_scoped_token_carries_mcp_calls_and_the_sessions_own_log(
+        self, flushing, forge, monkeypatch
+    ) -> None:
         flushing._settings.forge_mcp.token = MESSAGE_TOKEN
         flushing._forge_mcp_toolbox_cache = None
+        real_client = httpx.AsyncClient
+
+        def to_forge(*args, **kwargs):
+            kwargs.setdefault("transport", httpx.MockTransport(forge.handler))
+            return real_client(*args, **kwargs)
+
+        monkeypatch.setattr("skuld.event_log.httpx.AsyncClient", to_forge)
         forge.routes[("GET", "/api/v1/forge/sessions")] = lambda _r: httpx.Response(200, json=[])
 
         await _call(flushing, "list_sessions", {"scope": "local"})
@@ -397,7 +405,7 @@ class TestForgeProxy:
         assert listed.headers["authorization"] == f"Bearer {MESSAGE_TOKEN}"
         assert listed.url.params["scope"] == "local"
         log_post = next(r for r in forge.requests if r.url.path == LOG_PATH)
-        assert log_post.headers["authorization"] == f"Bearer {SERVICE_TOKEN}"
+        assert log_post.headers["authorization"] == f"Bearer {MESSAGE_TOKEN}"
 
     async def test_broker_credential_without_scoped_token(self, tmp_path, forge) -> None:
         forge.routes[("GET", f"/api/v1/forge/sessions/{PEER_ID}")] = lambda _r: httpx.Response(
@@ -492,3 +500,42 @@ class TestHttpForgeClientShapes:
             await forge_client.stop_session(PEER_ID, instance_id=None)
         assert excinfo.value.status == 500 and excinfo.value.detail == "boom"
         assert await forge_client.start_session(PEER_ID, instance_id=None) == {}
+
+
+class TestPeerMessageClientShapes:
+    async def test_send_message_and_room_post_bodies(self) -> None:
+        seen: list[tuple[str, str, dict]] = []
+
+        def respond(request: httpx.Request) -> httpx.Response:
+            seen.append((request.method, request.url.path, json.loads(request.content)))
+            return httpx.Response(200, json={"status": "delivered"})
+
+        client = httpx.AsyncClient(base_url=FORGE, transport=httpx.MockTransport(respond))
+
+        async def provider() -> httpx.AsyncClient:
+            return client
+
+        forge_client = HttpForgeClient(http_client=provider, token="t", timeout_s=1.0)
+        await forge_client.send_message(PEER_ID, content="a", request_id="r1", instance_id=None)
+        await forge_client.send_message(
+            PEER_ID, content="b", request_id="r2", instance_id=None, in_reply_to="m-1", urgent=True
+        )
+        await forge_client.post_room_message(PEER_ID, room_id="huddle-1", content="c")
+
+        assert seen == [
+            (
+                "POST",
+                f"/api/v1/forge/sessions/{PEER_ID}/messages",
+                {"content": "a", "request_id": "r1"},
+            ),
+            (
+                "POST",
+                f"/api/v1/forge/sessions/{PEER_ID}/messages",
+                {"content": "b", "request_id": "r2", "in_reply_to": "m-1", "urgent": True},
+            ),
+            (
+                "POST",
+                f"/api/v1/forge/sessions/{PEER_ID}/room/session-message",
+                {"room_id": "huddle-1", "content": "c"},
+            ),
+        ]

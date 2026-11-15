@@ -43,6 +43,7 @@ from volundr.domain.guest_credentials import (
 )
 from volundr.domain.service_account_tokens import ServiceAccountToken
 from volundr.domain.services.guest_metadata import (
+    BAD_BODY,
     LAUNCH_PAYLOAD_PATH,
     GuestMetadataService,
     GuestRequestError,
@@ -144,9 +145,7 @@ def test_an_unreadable_authenticated_body_is_a_400_without_the_exception_text():
     )
 
     assert response.status_code == 400
-    assert response.json() == {
-        "error": 'The request body must be {"allocation_id": "<uuid>", "slot": <index>}'
-    }
+    assert response.json() == {"error": BAD_BODY}
 
 
 def test_a_body_over_64_kib_is_refused_before_authentication():

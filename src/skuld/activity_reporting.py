@@ -36,7 +36,11 @@ class ActivityReportingMixin:
     """Broker behavior for activity transitions and attention state."""
 
     _RUNNING_RAW_STATES = ("active", "tool_executing")
+    _BLOCKED_RAW_STATES = ("awaiting_input",)
     _TURN_END_RAW_STATES = ("idle", "stopped", "error")
+
+    #: This session's announced mesh identity, once the mesh has started (set by the broker).
+    _mesh_identity: Any = None
 
     async def _report_session_start(self) -> None:
         """Report the session start timeline event (once)."""
@@ -85,6 +89,11 @@ class ActivityReportingMixin:
         self._activity_state = state
         if new_bucket != old_bucket:
             self._activity_state_since = time.time()
+        mesh_identity = self._mesh_identity
+        if mesh_identity is not None:
+            # The next mesh heartbeat announces it, so a peer choosing whom to ask can see it.
+            mesh_identity.activity_state = state
+            mesh_identity.busy = new_bucket == "running"
 
     @staticmethod
     def _state_since_iso(epoch_seconds: float) -> str:
@@ -161,9 +170,10 @@ class ActivityReportingMixin:
         # event can advance the broker while credentials or the HTTP request waits.
         payload = self._build_activity_payload(state, extra_metadata)
 
-        # A turn starting or ending is what a workflow step host keys on: it hands over the
-        # step's instructions at a boundary and reports a turn that ended with its step open.
-        await self._observe_workflow_step_activity(state)
+        # A turn starting or ending is what the inbound paths key on: a workflow step host
+        # reports a turn that ended with its step open, and whatever waits (the step's
+        # instructions, then peer messages) is handed to the harness when it goes idle.
+        await self._observe_turn_boundary(state)
 
         if not self.volundr_api_url or not self._settings.activity_reporting_enabled:
             return False
@@ -198,6 +208,12 @@ class ActivityReportingMixin:
         if extra_metadata:
             metadata.update(extra_metadata)
         metadata["open_controls"] = self._open_controls(state)
+        peer_status = self.peer_message_status()
+        if peer_status["pairs"]:
+            metadata["peer_messages"] = peer_status
+        attestation = self.mesh_attestation_status()
+        if attestation is not None:
+            metadata["mesh_attestation"] = attestation
         return {
             "state": state,
             "state_since": self._state_since_iso(self._activity_state_since),
@@ -214,7 +230,7 @@ class ActivityReportingMixin:
 
         try:
             async with self._activity_report_lock:
-                client = await self._get_http_client()
+                client = await self._get_session_http_client()
                 resp = await client.post(
                     f"{FORGE_SESSIONS_PATH}/{self.session_id}/activity",
                     json=payload,
@@ -242,13 +258,15 @@ class ActivityReportingMixin:
             return False
 
     async def _report_workflow_step(self, report: dict[str, Any]) -> None:
-        """Report a workflow step's close, or a turn that ended with it open, to Ting.
+        """Report one of this session's workflow acts to Forge, for Ting to record.
 
-        The report rides session activity as ``metadata.workflow_step``, which Forge relays on
-        its activity stream. It is stamped with the broker's *current* state and anchors each
-        time it is sent, because Forge ignores a report older than the state it already holds.
-        It never touches the remembered activity detail, so a heartbeat does not repeat it.
-        Reports are kept and sent in order until Forge acknowledges each one.
+        The report rides session activity as ``metadata.workflow_step`` (``listening``,
+        ``offer_published``, ``picked_up``, ``passed``, ``offer_refused``, ``closed``,
+        ``unclosed``; see ``skuld.workflow_steps``), which Forge relays on its activity stream.
+        Each session reports only its own acts. A report is stamped with the broker's *current*
+        state and anchors each time it is sent, because Forge ignores a report older than the
+        state it already holds. It never touches the remembered activity detail, so a heartbeat
+        does not repeat it. Reports are kept and sent in order until Forge acknowledges each one.
         """
         self._pending_step_reports.append(report)
         await self._flush_workflow_step_reports()
@@ -260,7 +278,8 @@ class ActivityReportingMixin:
                 logger.error(
                     "workflow step report cannot be sent: activity reporting is off "
                     "(volundr_api_url / activity_reporting_enabled), so Ting would never learn "
-                    "of it; it is held, and Ting can read the step from GET /api/workflow/steps"
+                    "of it; it is held until activity reporting is on, and the step's state is "
+                    "in this session's durable event log"
                 )
                 return
             report = self._pending_step_reports[0]
@@ -352,6 +371,18 @@ class ActivityReportingMixin:
             return
         if is_work_row(kind, data):
             self._prompt_work_seen = True
+
+    def _turn_boundary_open(self) -> bool:
+        """Whether the harness is between turns, so handing it input interrupts nothing.
+
+        The one gate everything that waits for a turn boundary shares (a workflow step's
+        instructions, peer messages). A turn in flight, a question or approval waiting on a
+        person, or a transport that says its turn is active all mean no. The check is
+        repeated at every turn end.
+        """
+        if self._activity_state in (*self._RUNNING_RAW_STATES, *self._BLOCKED_RAW_STATES):
+            return False
+        return not (self._transport_tracks_turns() and self._transport_turn_active())
 
     def _transport_turn_active(self) -> bool:
         return getattr(self._transport, "is_turn_active", False) is True

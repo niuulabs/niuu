@@ -204,6 +204,46 @@ class TestConfigMapTemplate:
         assert settings.workflow_execution.enabled is False
         assert settings.workflow_execution.delivery.enabled is False
 
+    def test_memory_imports_are_off_by_default_and_render_from_values(self, tmp_path):
+        default = Settings(**_config_from_rendered(_render_ting_chart(tmp_path, {})))
+        configured = Settings(
+            **_config_from_rendered(
+                _render_ting_chart(
+                    tmp_path,
+                    {
+                        "memoryImports": {
+                            "enabled": True,
+                            "gatewayUrl": "http://mimir:8080/api/v1/mimir",
+                            "gatewayTimeoutSeconds": 12,
+                            "pollSeconds": 90,
+                        }
+                    },
+                )
+            )
+        )
+
+        assert default.memory_imports.enabled is False
+        assert configured.memory_imports.enabled is True
+        assert configured.memory_imports.gateway_url == "http://mimir:8080/api/v1/mimir"
+        assert configured.memory_imports.gateway_timeout_seconds == 12.0
+        assert configured.memory_imports.poll_seconds == 90.0
+
+    def test_enabled_memory_imports_without_a_gateway_fail_the_render(self, tmp_path):
+        helm = shutil.which("helm")
+        if not helm:
+            pytest.skip("helm is not installed")
+        values_file = tmp_path / "values.yaml"
+        values_file.write_text(yaml.safe_dump({"memoryImports": {"enabled": True}}))
+
+        result = subprocess.run(
+            [helm, "template", "ting-test", str(CHART_DIR), "-f", str(values_file)],
+            capture_output=True,
+            text=True,
+        )
+
+        assert result.returncode != 0
+        assert "memoryImports.gatewayUrl" in result.stderr
+
     def test_step_deadline_renders_from_values_into_settings(self, tmp_path):
         default = Settings(**_config_from_rendered(_render_ting_chart(tmp_path, {})))
         tightened = Settings(
@@ -226,7 +266,6 @@ class TestConfigMapTemplate:
                             "stuckDetection": {
                                 "enabled": False,
                                 "sweepIntervalSeconds": 45,
-                                "startGraceSeconds": 90,
                             }
                         }
                     },
@@ -236,10 +275,31 @@ class TestConfigMapTemplate:
 
         assert default.workflow_steps.stuck.enabled is True
         assert default.workflow_steps.stuck.sweep_interval_seconds == 120.0
-        assert default.workflow_steps.stuck.start_grace_seconds == 600.0
         assert tuned.workflow_steps.stuck.enabled is False
         assert tuned.workflow_steps.stuck.sweep_interval_seconds == 45.0
-        assert tuned.workflow_steps.stuck.start_grace_seconds == 90.0
+
+    def test_offer_pickup_renders_from_values_into_settings(self, tmp_path):
+        default = Settings(**_config_from_rendered(_render_ting_chart(tmp_path, {})))
+        tuned = Settings(
+            **_config_from_rendered(
+                _render_ting_chart(
+                    tmp_path,
+                    {"workflowSteps": {"pickupGraceSeconds": 45, "catchUpPageSize": 25}},
+                )
+            )
+        )
+
+        assert default.workflow_steps.pickup_grace_seconds == 300.0
+        assert default.workflow_steps.catch_up_page_size == 200
+        assert tuned.workflow_steps.pickup_grace_seconds == 45.0
+        assert tuned.workflow_steps.catch_up_page_size == 25
+
+    def test_the_removed_session_and_start_settings_are_not_rendered(self, tmp_path):
+        """Ting rejects a removed key loudly, so the chart must never write one."""
+        config = _config_from_rendered(_render_ting_chart(tmp_path, {}))
+
+        assert "session_poll_seconds" not in config["workflow_steps"]
+        assert "start_grace_seconds" not in config["workflow_steps"]["stuck"]
 
     def test_default_values_render_the_documented_watcher_defaults(self, tmp_path):
         settings = Settings(**_config_from_rendered(_render_ting_chart(tmp_path, {})))
@@ -308,7 +368,19 @@ class TestConfigMapTemplate:
 
     def test_delivery_is_enabled_explicitly_on_top_of_the_generic_blocks(self, tmp_path):
         rendered = _render_ting_chart(
-            tmp_path, {"workflowExecution": {"enabled": True, "delivery": {"enabled": True}}}
+            tmp_path,
+            {
+                "workflowExecution": {
+                    "enabled": True,
+                    "delivery": {
+                        "enabled": True,
+                        "reviewProducers": {"code": "code-reviewer"},
+                        "integrationReviewProducer": "integration-verifier",
+                        "evidencePolicyId": "delivery-evidence",
+                        "integrationPolicyId": "delivery-integration",
+                    },
+                }
+            },
         )
         workflow_execution = _config_from_rendered(rendered)["workflow_execution"]
 
@@ -318,7 +390,7 @@ class TestConfigMapTemplate:
             entry["condition_type"] for entry in workflow_execution["wait_observers"]
         }
         assert condition_types == {"timer", "forge.checks", "forge.merge"}
-        assert workflow_execution["delivery"]["evidence_policy_id"] == "developer-workstream"
+        assert workflow_execution["delivery"]["evidence_policy_id"] == "delivery-evidence"
 
     def test_delivery_disabled_renders_generic_execution_with_no_forge_observers(self, tmp_path):
         """A deployment can run only the generic fan-out/join/wait pack.
@@ -661,3 +733,48 @@ def test_ting_chart_ships_no_flock_flow_resources(tmp_path: Path) -> None:
 
     assert "flock-flows" not in rendered
     assert "flockFlows" not in (CHART_DIR / "values.yaml").read_text(encoding="utf-8")
+
+
+def test_mesh_signing_is_off_unless_turned_on(tmp_path):
+    default = _config_from_rendered(_render_ting_chart(tmp_path, {}))
+    assert default["mesh"] == {"attestation": {"required": False}}
+    assert Settings(**default).mesh.attestation.required is False
+
+    unset = _config_from_rendered(
+        _render_ting_chart(tmp_path, {"mesh": {"attestation": {"required": None}}})
+    )
+    assert Settings(**unset).mesh.attestation.required is False
+
+
+def test_mesh_signing_on_renders_with_the_workload_identity_key(tmp_path):
+    on = _config_from_rendered(
+        _render_ting_chart(
+            tmp_path,
+            {
+                "mesh": {"attestation": {"required": True}},
+                "workloadIdentity": {
+                    "enabled": True,
+                    "signingKey": {"existingSecret": "forge-signing-key"},
+                },
+            },
+        )
+    )
+    assert on["mesh"] == {"attestation": {"required": True}}
+    assert Settings(**on).mesh.attestation.required is True
+
+
+@pytest.mark.parametrize(
+    "workload_identity",
+    [
+        {},
+        {"enabled": True},
+        {"enabled": False, "signingKey": {"existingSecret": "forge-signing-key"}},
+    ],
+)
+def test_mesh_signing_on_without_a_signing_key_refuses_to_render(tmp_path, workload_identity):
+    error = _render_ting_chart_expect_failure(
+        tmp_path,
+        {"mesh": {"attestation": {"required": True}}, "workloadIdentity": workload_identity},
+    )
+    assert "mesh.attestation.required: true needs a key Ting signs with" in error
+    assert "signingKey.existingSecret" in error

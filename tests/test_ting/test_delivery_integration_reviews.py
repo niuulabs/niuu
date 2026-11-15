@@ -6,7 +6,7 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 
 from niuu.adapters.evidence_signing import RsaEvidenceAuthenticator
 from niuu.domain.delivery import ReviewReceipt, evidence_payload
-from personas.adapters.loader import FilesystemPersonaAdapter
+from tests.support.full_catalogue import full_catalogue_personas
 from tests.test_ting.test_delivery_execution import MemoryRepository, _execution
 from ting.delivery.integration_reviews import TrustedIntegrationReviewProjector
 from ting.domain.workflow_execution import ExecutionState, WorkflowExecutionError
@@ -190,9 +190,7 @@ async def test_integration_projector_requires_literal_validation_before_signing(
 
 
 def test_real_integration_persona_contract_names_the_exact_allocation_id() -> None:
-    persona = FilesystemPersonaAdapter(persona_dirs=[], include_builtin=True).load(
-        "developer-integration-verifier"
-    )
+    persona = full_catalogue_personas().load("developer-integration-verifier")
     assert persona is not None
     assert "attempt_id" in persona.produces.schema
     assert "integration allocation ID" in persona.produces.schema["attempt_id"].description

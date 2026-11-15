@@ -12,6 +12,8 @@ interface FileConversationResource {
   path: string;
   name: string;
   mime?: string;
+  /** For a presented file another session presented: the session it opens from. */
+  sessionId?: string;
 }
 
 export interface ToolImageResource {

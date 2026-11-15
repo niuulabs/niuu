@@ -15,9 +15,9 @@ Environment variable override format:
 import json
 import os
 from pathlib import Path
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, Self
 
-from pydantic import AliasChoices, BaseModel, Field, field_validator, model_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator, model_validator
 from pydantic_settings import (
     BaseSettings,
     NoDecode,
@@ -30,7 +30,9 @@ from identity.authz_config import AuthorizationAdapterConfig
 from niuu.config import DynamicAdapterConfig
 from niuu.domain.observability import ObservabilityConfig
 from niuu.forge_mcp.models import ForgeMcpGrant
-from niuu.mesh.config import DEFAULT_RPC_REPLY_CACHE_SIZE, MeshNatsConfig
+from niuu.mesh.config import DEFAULT_RPC_REPLY_CACHE_SIZE, MeshAttestationConfig, MeshNatsConfig
+from personas.archived import reject_archived_persona
+from skuld.claude_auth import ClaudeAuthMode
 from skuld.claude_permission import DEFAULT_CLAUDE_PERMISSION_MODE
 
 
@@ -84,8 +86,33 @@ _DEFAULT_MESH_TOOLS = [
 class NngConfig(BaseModel):
     """NNG transport addresses for mesh communication."""
 
-    pub_sub_address: str = Field(default="tcp://127.0.0.1:0")
+    pub_sub_address: str = Field(
+        default="tcp://127.0.0.1:0",
+        description=(
+            "Where this session's PUB socket listens. Port 0 takes a free port, announced as "
+            "the port it got. Loopback reaches the sessions on the same machine; a session "
+            "other machines must reach listens on every interface (`tcp://0.0.0.0:7480`) and "
+            "sets `advertise_host`."
+        ),
+    )
     req_rep_address: str = Field(default="tcp://127.0.0.1:0")
+    advertise_host: str = Field(
+        default="",
+        description=(
+            "The host or IP other machines dial this session at. Needed when "
+            "`pub_sub_address` listens on every interface, which has no address of its own to "
+            "announce; empty announces the listen address as it is."
+        ),
+    )
+    rediscover_interval_s: float = Field(
+        default=1.0,
+        gt=0,
+        description=(
+            "Seconds between re-reads of the peers discovery found, to dial the ones that "
+            "joined and hang up on the ones that left. A discovery join or leave refreshes "
+            "at once; this is the backstop, and bounds how long a new peer can be unheard."
+        ),
+    )
 
 
 class MeshConfig(BaseModel):
@@ -97,24 +124,100 @@ class MeshConfig(BaseModel):
     """
 
     enabled: bool = Field(default=False)
-    peer_id: str = Field(default="")
+    peer_id: str = Field(
+        default="",
+        description=(
+            "This session's one mesh peer id (transport, discovery, signing certificate and "
+            "reply routes). Empty uses the session id; a session with neither does not start "
+            "its mesh."
+        ),
+    )
     realm_id: str = Field(default="")
+    display_name: str = Field(
+        default="",
+        description=(
+            "What this session is called on the mesh and in its room: the name peers address "
+            "it by and people see it speak under. Empty uses the session's name. A team's "
+            "agents go by their role (their persona), not their session's name."
+        ),
+    )
     capabilities: list[str] = Field(default_factory=lambda: list(_DEFAULT_MESH_CAPABILITIES))
     tools: list[str] = Field(default_factory=lambda: list(_DEFAULT_MESH_TOOLS))
     persona: str = Field(default="coder")
     transport: str = Field(default="nng")
+
+    @field_validator("persona")
+    @classmethod
+    def _persona_is_not_archived(cls, value: str) -> str:
+        return reject_archived_persona(value, where="mesh.persona")
+
     nng: NngConfig = Field(default_factory=NngConfig)
     adapters: list[dict[str, Any]] = Field(default_factory=list)
     discovery_adapters: list[dict[str, Any]] = Field(default_factory=list)
     nats: MeshNatsConfig = Field(default_factory=MeshNatsConfig)
+    attestation: MeshAttestationConfig = Field(default_factory=MeshAttestationConfig)
     rpc_timeout_s: float = Field(default=10.0)
     rpc_reply_cache_size: int = Field(default=DEFAULT_RPC_REPLY_CACHE_SIZE, ge=1)
-    default_work_timeout_s: float = Field(default=120.0)
-    default_response_urgency: float = Field(default=0.3)
     diff_max_bytes: int = Field(default=8192)
     diff_timeout_s: float = Field(default=10.0)
     consumes_event_types: list[str] = Field(
         default_factory=lambda: ["code.requested"],
+        description=(
+            "Topics this session subscribes to. A pinned persona's declared "
+            "``consumes.event_types`` are subscribed in addition (``skuld.mesh_topics``)."
+        ),
+    )
+    role: str = Field(
+        default="",
+        description=(
+            "What this session is for, announced to its peers so they can choose whom to talk "
+            "to (e.g. 'reviewer'). Empty announces the pinned persona's id as the role, or no "
+            "role when there is no persona."
+        ),
+    )
+    description: str = Field(
+        default="",
+        description=(
+            "One or two sentences on what this session does, announced to its peers. The "
+            "pinned persona's own ``description`` is announced when it has one; this is used "
+            "when it has none."
+        ),
+    )
+    publish_event_types: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Topics this session's ``mesh_publish`` tool may publish, in addition to the "
+            "ones its pinned persona declares in ``produces``. A topic in neither list is "
+            "refused loudly, so a mistyped topic is never published to nobody."
+        ),
+    )
+    share_work: bool = Field(
+        default=False,
+        description=(
+            "Share this session's work with its realm: each reply, tool call and result, and "
+            "each workflow step close is published on the session's own activity topic, "
+            "which no member subscribes to, so only the realm's room keeps it (a workflow "
+            "run's room shows it as this member's turns). Off by default."
+        ),
+    )
+    published_event_urgency: float = Field(
+        default=0.8,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "The attention hint (0.0-1.0) stamped on events the ``mesh_publish`` tool publishes; "
+            "the same as the events the browser publishes. It orders attention, it limits nothing."
+        ),
+    )
+
+
+class RoomSeat(BaseModel):
+    """A room this session sits in, hosted by another session."""
+
+    room_id: str = Field(min_length=1, description="The room's id (what room_post takes).")
+    host_session_id: str = Field(min_length=1, description="The session that hosts the room.")
+    host_node: str = Field(
+        default="", description="The Forge node of the host, when it is on another node."
     )
 
 
@@ -161,6 +264,19 @@ class RoomConfig(BaseModel):
             "competes with the room's ravns for the same chat frames."
         ),
     )
+    untargeted_delivery: Literal["refuse", "everyone"] = Field(
+        default="refuse",
+        description=(
+            "What a declared-routed room (``routed``) does with a browser message that names "
+            "no participant when ``default_target_peer_id`` is unset. ``refuse``: it goes to "
+            "the room's sole ravn, and with two or more ravns it is refused with an error "
+            "telling the sender to address one. ``everyone``: it is delivered as a directed "
+            "message to every agent in the room (every participant that is neither a person, "
+            "a workflow, nor this host itself, so the harness sessions of a team count); a "
+            "room with no agent refuses it with an error. Has no effect on a room that is "
+            "not ``routed``."
+        ),
+    )
     presence_sweep_interval_s: float = Field(
         default=30.0,
         description=(
@@ -169,6 +285,53 @@ class RoomConfig(BaseModel):
             "disables the check."
         ),
     )
+    agent_heartbeat_ttl_s: float = Field(
+        default=90.0,
+        ge=0,
+        description=(
+            "Seconds an agent registered in the room may go without a heartbeat (and "
+            "without a live WebSocket) before the presence sweep shows it as away. "
+            "Bounded by how often agents heartbeat. 0 never marks agents away."
+        ),
+    )
+    peer_heartbeat_ttl_s: float = Field(
+        default=90.0,
+        ge=0,
+        description=(
+            "Seconds a participant discovered over the mesh may go without a heartbeat "
+            "before it is shown as away. 0 never marks them away."
+        ),
+    )
+    join_heartbeat_ttl_s: float = Field(
+        default=300.0,
+        ge=0,
+        description=(
+            "Seconds a person, or an agent of another session, that joined the room may "
+            "go without a heartbeat before it is shown as away. Longer than the agent "
+            "TTL because a browser tab heartbeats less often. 0 never marks them away."
+        ),
+    )
+    seats: list[RoomSeat] = Field(
+        default_factory=list,
+        description=(
+            "Rooms this session sits in from the start, hosted by other sessions, so it can "
+            "speak in them (room_post) before anything was said to it there. A team's members "
+            "are given their team's room. Any other room is learned from what is said in it."
+        ),
+    )
+    realm_room: bool = Field(
+        default=False,
+        description=(
+            "The room is its mesh realm's room: it shows what every member of the realm "
+            "publishes, not only what is tagged with this session. A workflow run's first "
+            "session hosts one for the run's members (its realm is the run's own), so "
+            "opening it shows every member as a worker of the run. The host keeps its own "
+            "agent: its replies stay its own turns and are not copied into the room."
+        ),
+    )
+
+
+TelegramTopicMode = Literal["shared_chat", "fixed_topic", "topic_per_session"]
 
 
 class TelegramConfig(BaseModel):
@@ -198,8 +361,25 @@ class TelegramConfig(BaseModel):
         default_factory=lambda: {"base_dir": "~/.niuu/credentials"}
     )
     notify_only: bool = Field(default=False)
-    topic_mode: str = Field(default="topic_per_session")
+    topic_mode: TelegramTopicMode = Field(
+        default="topic_per_session",
+        description=(
+            "Where messages go: shared_chat (the whole chat), fixed_topic (the topic named by "
+            "message_thread_id, which is then required) or topic_per_session (a forum topic "
+            "created for the session; the bot must be able to manage topics). The mode is "
+            "never replaced by another when it cannot be honoured: the session fails to start."
+        ),
+    )
     message_thread_id: int | None = Field(default=None)
+
+    @model_validator(mode="after")
+    def _fixed_topic_needs_thread(self) -> Self:
+        if self.enabled and self.topic_mode == "fixed_topic" and self.message_thread_id is None:
+            raise ValueError(
+                "telegram.topic_mode is 'fixed_topic' but telegram.message_thread_id is not "
+                "set; set telegram.message_thread_id, or set telegram.topic_mode: shared_chat"
+            )
+        return self
 
 
 class SkuldSessionConfig(BaseModel):
@@ -251,6 +431,16 @@ class SkuldSessionConfig(BaseModel):
         ),
     )
     initial_prompt: str = Field(default="")
+    conversational: bool = Field(
+        default=False,
+        description=(
+            "The session talks in its room and hands back no structured outcome: its "
+            "persona's outcome contract (the outcome block its produces.schema asks for) is "
+            "left out of its instructions, and it publishes no outcome event after a turn. A "
+            "team's agents are conversational; a workflow member or a session working to a "
+            "contract is not."
+        ),
+    )
     saga_id: str | None = Field(default=None)
     run_id: str | None = Field(default=None)
     resume_session_id: str = Field(
@@ -316,6 +506,17 @@ class WsAuthConfig(BaseModel):
     user_id_header: str = "x-auth-user-id"
     tenant_header: str = "x-auth-tenant"
     roles_header: str = "x-auth-roles"
+    display_name_header: str = Field(
+        default="x-auth-display-name",
+        description=(
+            "Header the session proxy (niuu.session_proxy) stamps with the "
+            "caller's display name (percent-encoded UTF-8), recorded with the "
+            "user id as the author of every human message sent over the "
+            "connection. Only the proxy-stamped value is read, like "
+            "room_role_header: a browser-supplied copy never reaches the "
+            "broker. Must match the proxy's own header name."
+        ),
+    )
     room_role_header: str = Field(
         default="x-niuu-room-role",
         description=(
@@ -349,7 +550,11 @@ class WsAuthConfig(BaseModel):
             "participants are not supported on these backends (invites are "
             "refused with 409 before this ever matters), so a missing "
             "header simply means owner — identical to this pod's behavior "
-            "before session_participants existed. 'proxy' (rendered only "
+            "before session_participants existed. A VM broker keeps this "
+            "default although VM invites are allowed: every browser request "
+            "reaches it through Forge's session proxy, which always stamps "
+            "the header, and only Forge's own tunnel and the guest itself "
+            "can reach it without one. 'proxy' (rendered only "
             "for the process backend, by the local process launcher): the "
             "session proxy (niuu.session_proxy) resolves and stamps the "
             "header itself from session_participants grants, so trust it — "
@@ -517,7 +722,10 @@ class DeliveryConfig(BaseModel):
         gt=0,
         description=(
             "Per-attempt timeout for a single transport send/redirect. A wedged "
-            "send-lock that never returns is bounded by this and retried."
+            "send-lock that never returns is bounded by this and retried. Does not apply to a "
+            "transport whose send returns only when the turn is over "
+            "(capabilities.send_runs_turn): the turn takes as long as it takes, and the "
+            "transport's own turn timeout bounds it."
         ),
     )
     initial_backoff_seconds: float = Field(
@@ -549,8 +757,10 @@ class WorkloadIdentityConfig(BaseModel):
     token_file: str = Field(
         default="/var/run/secrets/niuu-workload/token",
         description=(
-            "Projected workload identity token file. Token exchange is "
-            "skipped when the file does not exist (dev/local sessions)."
+            "Projected workload identity token file. Where it exists, the broker "
+            "exchanges it for its own Forge credential and a failed exchange is an "
+            "error, never a different credential; where it does not, no workload "
+            "identity is configured for this session."
         ),
     )
     exchange_url: str = Field(
@@ -677,8 +887,9 @@ class ForgeMcpConfig(BaseModel):
         default="",
         description=(
             "Scoped session-bound Forge token (SKULD__FORGE_MCP__TOKEN), minted by Forge "
-            "at launch. The bearer for MCP-proxied Forge calls and durable presented-file "
-            "uploads; empty uses the broker's own credential (and offers no grants)."
+            "at launch. The bearer for MCP-proxied Forge calls, durable presented-file "
+            "uploads and the session's own record (log, activity, usage, message claims); "
+            "empty uses the broker's own credential (and offers no grants)."
         ),
     )
     token_file: str = Field(
@@ -772,6 +983,120 @@ class ForgeMcpConfig(BaseModel):
         return self
 
 
+class MemoryConfig(BaseModel):
+    """The built-in ``memory`` MCP server: one server over every memory layer.
+
+    The engine spawns the same stdio process as for ``forge`` (``--server memory``);
+    it forwards each call to this broker's loopback ``/api/memory-mcp/*`` routes,
+    and the broker calls the memory gateway with the session's Forge credential
+    (``forge_mcp.token``). The credential never reaches the model, and the gateway,
+    not Skuld, enforces which layers a session may read and write.
+    """
+
+    enabled: bool = Field(
+        default=False,
+        description=(
+            "Inject the built-in memory MCP server (SKULD__MEMORY__ENABLED=true). Needs "
+            "gateway_url and the session's Forge credential (forge_mcp.token or "
+            "forge_mcp.token_file); startup fails without them."
+        ),
+    )
+    gateway_url: str = Field(
+        default="",
+        description=(
+            "The memory gateway's API base, e.g. http://127.0.0.1:8080/api/v1/mimir "
+            "(SKULD__MEMORY__GATEWAY_URL). The broker calls <gateway_url>/memory/tools. "
+            "Required when enabled; Forge delivers it to every session."
+        ),
+    )
+    server_name: str = Field(
+        default="memory",
+        min_length=1,
+        pattern=r"^[A-Za-z0-9_-]+$",
+        description="MCP server name; tools appear to Claude as mcp__<name>__<tool>.",
+    )
+    gateway_request_timeout_s: float = Field(
+        default=120.0,
+        gt=0,
+        description=(
+            "Timeout for one broker -> gateway call (a memory tool such as memory_search "
+            "or memory_read). A call that exceeds it fails the tool call naming the "
+            "gateway URL. Must be shorter than broker_request_timeout_s."
+        ),
+    )
+    broker_request_timeout_s: float = Field(
+        default=150.0,
+        gt=0,
+        description=(
+            "Timeout for one stdio-server -> broker call. Must exceed "
+            "gateway_request_timeout_s (so the gateway's own failure reaches the model "
+            "first) and be shorter than tool_timeout_s."
+        ),
+    )
+    stdio_max_concurrency: int = Field(
+        default=4, ge=1, description="Memory tool calls the stdio server runs in parallel."
+    )
+    context_pack_timeout_s: float = Field(
+        default=30.0,
+        gt=0,
+        description=(
+            "Timeout for the one broker -> gateway call that fetches the session's context "
+            "pack (GET <gateway_url>/memory/context-pack) at broker startup. The gateway "
+            "assembles the pack from entity lookups across the session's layers, not from a "
+            "model call. Exceeding it stops startup naming the gateway URL; raise it if the "
+            "gateway is slow to build packs for large projects."
+        ),
+    )
+    startup_timeout_s: float = Field(
+        default=20.0,
+        gt=0,
+        description=(
+            "Engine-side MCP server startup timeout (Codex). The handshake fetches the "
+            "gateway's instructions, so this covers one gateway listing call."
+        ),
+    )
+    tool_timeout_s: float = Field(
+        default=180.0,
+        gt=0,
+        description=(
+            "Engine-side MCP tool call timeout (Codex). Must exceed broker_request_timeout_s "
+            "or the engine ends every slow call before the broker can report its failure."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _validate(self) -> "MemoryConfig":
+        if not self.enabled:
+            return self
+        if not self.gateway_url.strip():
+            raise ValueError(
+                "memory.enabled is true but memory.gateway_url is empty: set "
+                "SKULD__MEMORY__GATEWAY_URL to the memory gateway's API base "
+                "(e.g. http://127.0.0.1:8080/api/v1/mimir), or set "
+                "SKULD__MEMORY__ENABLED=false"
+            )
+        if not self.gateway_url.startswith(("http://", "https://")):
+            raise ValueError(
+                f"memory.gateway_url {self.gateway_url!r} must be an http(s) URL "
+                "(SKULD__MEMORY__GATEWAY_URL)"
+            )
+        if not self.gateway_request_timeout_s < self.broker_request_timeout_s:
+            raise ValueError(
+                f"memory.gateway_request_timeout_s ({self.gateway_request_timeout_s}) must be "
+                f"shorter than memory.broker_request_timeout_s ({self.broker_request_timeout_s}), "
+                "or the stdio server gives up before the gateway's failure can be reported. "
+                "Lower gateway_request_timeout_s or raise broker_request_timeout_s"
+            )
+        if not self.broker_request_timeout_s < self.tool_timeout_s:
+            raise ValueError(
+                f"memory.broker_request_timeout_s ({self.broker_request_timeout_s}) must be "
+                f"shorter than memory.tool_timeout_s ({self.tool_timeout_s}), or the engine "
+                "ends every slow call first. Lower broker_request_timeout_s or raise "
+                "tool_timeout_s"
+            )
+        return self
+
+
 class SecretRequestsConfig(BaseModel):
     """How the ``request_secret`` tool waits for the user to type a secret into the chat card."""
 
@@ -792,6 +1117,38 @@ class SecretRequestsConfig(BaseModel):
             "forge_mcp.tool_timeout_s, or the engine kills the call first (startup fails "
             "otherwise). When it passes the call fails loudly and the request stays open in "
             "the chat; the agent calls request_secret again with the same name to keep waiting."
+        ),
+    )
+
+
+class AskConfig(BaseModel):
+    """How the ``ask`` tool waits for another session's answer."""
+
+    poll_interval_s: float = Field(
+        default=2.0,
+        gt=0,
+        description=(
+            "How often ask checks Forge for the recipient's state (blocked on a person, stopped, "
+            "failed or deleted). The answer itself is not polled: it wakes the wait the moment it "
+            "reaches this session's inbox. The state has no event to wait on, so this trades "
+            "how fast a blocked or gone recipient is noticed against Forge load."
+        ),
+    )
+    wait_max_s: float = Field(
+        default=50.0,
+        gt=0,
+        description=(
+            "Longest one ask call waits, and the ceiling for the `deadline_s` a caller passes "
+            "(a larger one is refused with this knob named). Bounded by the engine's MCP call "
+            "timeouts: it must be shorter than forge_mcp.broker_request_timeout_s (the stdio "
+            "server's wait on this broker, default 60) and forge_mcp.tool_timeout_s (the "
+            "tool_timeout_sec Skuld sets for the engine, default 120), or the engine ends the "
+            "call before it can answer (startup fails otherwise). Codex's own default for "
+            "tool_timeout_sec is 60; Claude Code's MCP_TOOL_TIMEOUT defaults to about 28 hours "
+            "(30 minutes without progress for a stdio server). When the wait passes without an "
+            "answer the call returns `deadline` (or `not_started` / `delivery_unknown`), the "
+            "message stays sent, and a later answer is delivered at the turn boundary as usual; "
+            "ask again with the same request_id to keep waiting."
         ),
     )
 
@@ -987,24 +1344,268 @@ class TraceContextConfig(BaseSettings):
 
 
 class WorkflowStepsConfig(BaseModel):
-    """Hosting workflow steps: this session runs the steps of a workflow run.
+    """A session's part in a workflow run's mesh: a member that takes offers, or the run's root.
 
-    Forge sets ``enabled`` for a session a workflow run created as a step host. Skuld then
-    serves ``POST /api/workflow/steps`` and ``GET /api/workflow/steps/{activation_id}``,
-    holds the open step durably in the session's event log, injects its instructions at a
-    turn boundary and lists the ``workflow_step_close`` tool for the whole session. An
-    ordinary session leaves it off and pays for none of it.
+    A run is one unit: its root (a Skuld with no agent) and every member start together and
+    share a local mesh. Forge sets this when it launches each of them.
+
+    * A **member** (``enabled``) listens for the offers of the topics its pinned persona
+      consumes, takes the ones that are its own, holds the step durably in the session's
+      event log, injects its instructions at a turn boundary, lists the
+      ``workflow_step_close`` tool for the whole session, and publishes ``step.picked_up``,
+      ``step.passed`` and ``step.outcome`` on the run's mesh.
+    * The **root** (``root``) publishes the offers Ting posts to its ``room/offer`` operation.
+
+    An ordinary session leaves both off and pays for none of it.
     """
 
     enabled: bool = Field(
         default=False,
         description=(
-            "Serve the workflow step API and the workflow_step_close tool. Requires the "
-            "durable event log and history hydration (event_log_enabled and "
-            "history_hydration_enabled, with volundr_api_url): a step is restored from the log "
-            "after a restart, so enabling without them is fatal at startup."
+            "This session is a member of a workflow run: it takes the run's offers and serves "
+            "the workflow_step_close tool. Needs the durable event log and history hydration "
+            "(event_log_enabled and history_hydration_enabled, with volundr_api_url): a held "
+            "step is restored from the log after a restart. Also needs the mesh (mesh.enabled), "
+            "a pinned persona (session.persona), run_id, member, persona_alias and "
+            "orchestrator_peer_id. Enabling without any of them is fatal at startup."
         ),
     )
+    root: bool = Field(
+        default=False,
+        description=(
+            "This session is the root of a workflow run: Ting hands it offers through "
+            "POST /api/room/offer and it publishes them on the run's mesh. Needs the mesh "
+            "(mesh.enabled) and run_id. Exclusive with enabled: a coordinator that also did "
+            "work would take its own offers."
+        ),
+    )
+    run_id: str = Field(
+        default="",
+        description=(
+            "The workflow run this session belongs to. Offers of any other run are refused."
+        ),
+    )
+    orchestration: Literal["engine", "session"] = Field(
+        default="engine",
+        description=(
+            "Who decides the run's next step. engine: Ting's engine, whose offers carry its "
+            "signature (offer_signer) on top of the root's. session: the root's coordinator "
+            "agent, whose offers carry the root's signature only."
+        ),
+    )
+    orchestrator_peer_id: str = Field(
+        default="",
+        description=(
+            "The mesh peer id of the run's root. A member takes offers published by this peer "
+            "and no other."
+        ),
+    )
+    offer_signer: str = Field(
+        default="service:ting",
+        description=(
+            "Engine mode: the platform service peer id whose signature an offer must carry "
+            "(Ting's, service:ting). Ignored in session mode."
+        ),
+    )
+    member: str = Field(
+        default="",
+        description="This member's name in the workflow stage (shown in the room and the ledger).",
+    )
+    persona_alias: str = Field(
+        default="",
+        description=(
+            "The alias the workflow gives this member's pinned persona. The offer carries one "
+            "contract per alias; the member finds its own by this and checks it against its "
+            "own persona document."
+        ),
+    )
+    event_filters: dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "The member's eventFilters from the workflow: each key must equal the value found "
+            "in the offered inputs' payload (a list: contain it), else the member passes the "
+            "offer and says which filter did not match. Empty takes every offer of its topics."
+        ),
+    )
+    topics: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Every topic the workflow routes to this member (its stages' consumesEventTypes). "
+            "The member subscribes to them on top of its persona's own topics: the engine "
+            "offers a stage to the members its stage names on that topic, which need not be "
+            "one the persona declares (the merge stage gives the coder merge.approved)."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _coherent(self) -> Self:
+        if self.enabled and self.root:
+            raise ValueError(
+                "workflow_steps.enabled and workflow_steps.root are exclusive: a session is a "
+                "member of the run or its root"
+            )
+        if not (self.enabled or self.root):
+            return self
+        needed = {"run_id": self.run_id}
+        if self.enabled:
+            needed |= {
+                "member": self.member,
+                "persona_alias": self.persona_alias,
+                "orchestrator_peer_id": self.orchestrator_peer_id,
+            }
+        missing = [f"workflow_steps.{name}" for name, value in needed.items() if not value.strip()]
+        if missing:
+            role = "enabled" if self.enabled else "root"
+            raise ValueError(f"workflow_steps.{role} needs {', '.join(missing)}")
+        return self
+
+
+class PeerInboxConfig(BaseModel):
+    """The inbox through which other agents' messages reach this session's harness.
+
+    Every message from another agent (a session, a room, a mesh peer) is held durably in the
+    session's event log and handed to the harness at a turn boundary. The inbox has no
+    capacity: loops between agents are made visible through the per-pair counts in the
+    session status and the ``skuld.peer.messages`` counter, never capped.
+    """
+
+    enabled: bool = Field(
+        default=True,
+        description=(
+            "Accept peer messages. A session that turns this off refuses every one with that "
+            "reason. Accepting needs the durable event log (event_log_enabled and "
+            "volundr_api_url): without it a message is refused loudly, never held in memory "
+            "only."
+        ),
+    )
+
+
+class VoiceMemberConfig(BaseModel):
+    """One agent of a team's room, as a team call speaks it (``voice.members``)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    persona: str = Field(default="", description="The persona the agent plays; empty for none.")
+    lead: bool = Field(default=False, description="True for the one agent that leads the team.")
+    voices: dict[str, str] = Field(
+        description=(
+            "The agent's voice per persona voice key (grok-voice, openai-realtime): its "
+            "persona's voice.voices with the team launch's override applied. A call on a "
+            "provider the agent has no voice for speaks its lines in the host's voice and says so."
+        ),
+    )
+
+
+class VoiceConfig(BaseModel):
+    """The session voice channel: a realtime voice call with the session's owner.
+
+    The broker serves the Lexi app's agent-service wire (``lexi-agent-service-v1``) at
+    ``/voice`` (WebSocket) and ``/voice/api`` (REST), bound to this one session
+    (``skuld.voice``). The phone runs the realtime model and talks to the provider
+    directly; the broker gives it the voice persona, the call's instructions grounded in
+    this session, a short-lived provider credential Forge mints from the owner's key
+    (``forge:session:voice``), tools that act on this session, and the call record, which
+    goes into the session's own durable event log. Forge turns it on for every launch when
+    its ``voice.enabled`` is set. Only the session's owner is served.
+    """
+
+    #: A misspelt knob (SKULD__VOICE_CHANNEL__…) is an error, not a setting that does nothing.
+    #: Its own name (not ``voice``) because mini mode's services share one config file, and
+    #: Forge's ``voice:`` section there is Forge's.
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = Field(
+        default=False,
+        description="Serve the voice channel (SKULD__VOICE_CHANNEL__ENABLED; Forge sets it).",
+    )
+    default_persona: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "Portable persona document (schema_version, id, revision, definition) whose "
+            "voice: section the call uses when the session's own persona has none, or the "
+            "session plays no persona. Forge resolves it from its voice.default_persona at "
+            "launch (SKULD__VOICE_CHANNEL__DEFAULT_PERSONA, JSON). Enabled with neither is fatal."
+        ),
+    )
+    display_name: str = Field(
+        default="",
+        description="Name the voice introduces itself by; empty uses the persona's name.",
+    )
+    members: dict[str, VoiceMemberConfig] = Field(
+        default_factory=dict,
+        description=(
+            "On a team's room host: each agent by its name in the room, with its voices "
+            "(SKULD__VOICE_CHANNEL__MEMBERS, JSON; Forge renders it at the team's launch). "
+            "Empty on every other session."
+        ),
+    )
+    time_zone: str = Field(
+        default="UTC", description="IANA time zone for the date and time in the call's prompt."
+    )
+    models: dict[str, str] = Field(
+        default_factory=lambda: {"grok": "grok-voice-3.0", "gpt-realtime": "gpt-realtime-2.1"},
+        description="Realtime model per prompt provider (grok, gpt-realtime).",
+    )
+    mint_timeout_seconds: float = Field(
+        default=20.0,
+        gt=0,
+        description=(
+            "Timeout for one credential mint through Forge (Forge's own call to the "
+            "provider included). A timeout answers the phone with the error."
+        ),
+    )
+    send_confirm_seconds: float = Field(
+        default=15.0,
+        gt=0,
+        description=(
+            "How long send_to_this_session waits for the agent to take a message before "
+            "it answers 'queued': the message stays accepted and is delivered when the "
+            "agent is free. Bounded by how long the caller can wait on the line."
+        ),
+    )
+    tool_timeout_seconds: float = Field(
+        default=60.0,
+        gt=0,
+        description=(
+            "The time limit each voice tool advertises to the phone (timeoutMs). Must "
+            "exceed send_confirm_seconds, or a send would be cut off by the phone first."
+        ),
+    )
+    card_recent_turns: int = Field(
+        default=6,
+        ge=1,
+        description=(
+            "Most recent turns the call's instructions open with. The card says how many "
+            "earlier turns it leaves out; read_this_session_in_full reads them."
+        ),
+    )
+    card_turn_max_chars: int = Field(
+        default=1500,
+        ge=1,
+        description=(
+            "Characters of one turn the instructions carry, bounded by the realtime "
+            "model's instruction budget. A longer turn is cut, marked in the text, and "
+            "counted (cap telemetry voice.card_turn_max_chars)."
+        ),
+    )
+    full_read_max_chars: int = Field(
+        default=65536,
+        ge=1024,
+        description=(
+            "Characters one tool result may carry: the realtime client clamps a tool "
+            "result at 64 KiB. A full read that does not fit keeps the newest turns, says "
+            "how many it left out, and is counted (voice.full_read_max_chars)."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _send_fits_tool_limit(self) -> "VoiceConfig":
+        if self.send_confirm_seconds >= self.tool_timeout_seconds:
+            raise ValueError(
+                "voice.send_confirm_seconds must be below voice.tool_timeout_seconds, or the "
+                "phone gives up on send_to_this_session before it can answer"
+            )
+        return self
 
 
 class SkuldSettings(BaseSettings):
@@ -1058,6 +1659,33 @@ class SkuldSettings(BaseSettings):
         description=(
             "Claude Code --permission-mode used when skip_permissions is on "
             "(auto, bypassPermissions or acceptEdits)."
+        ),
+    )
+    claude_auth: ClaudeAuthMode = Field(
+        default="subscription",
+        description=(
+            "How Claude sessions sign in: 'subscription' uses the host's claude.ai login and "
+            "strips ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN from the child env; 'api_key' "
+            "keeps the platform API key. Any other value is refused at startup. Deploys "
+            "override it with SKULD__CLAUDE_AUTH."
+        ),
+    )
+    claude_oauth_token_file: str | None = Field(
+        default=None,
+        description=(
+            "Absolute path of an owner-only 0400 file holding a Claude OAuth token for direct "
+            "subscription inference. Requires claude_auth 'subscription', no model gateway "
+            "and no ambient Anthropic credentials; a conflict or an invalid file refuses the "
+            "launch. Deploys override it with SKULD__CLAUDE_OAUTH_TOKEN_FILE."
+        ),
+    )
+    tmux_remote_control: bool = Field(
+        default=True,
+        description=(
+            "Claude tmux sessions also register with the host's claude.ai login (Remote "
+            "Control) so the Anthropic apps can drive them in parallel. Always off under "
+            "claude_auth 'api_key', which cannot register a session. Deploys override it with "
+            "SKULD__TMUX_REMOTE_CONTROL."
         ),
     )
     # Default ON: Claude tmux sessions launch with agent teams (--teammate-mode
@@ -1150,7 +1778,16 @@ class SkuldSettings(BaseSettings):
     )
     event_log_batch_size: int = Field(default=100)
     event_log_flush_interval_ms: int = Field(default=500)
-    event_log_max_buffer: int = Field(default=50_000)
+    event_log_max_buffer: int = Field(
+        default=50_000,
+        gt=0,
+        description=(
+            "Most unflushed event-log frames the broker holds in memory while Forge "
+            "does not accept a flush. Bounded by the broker's memory. Past it the oldest "
+            "frames are dropped, replaced by one log_gap row, and the hit is counted "
+            "(cap_hits.event_log_max_buffer on /health)."
+        ),
+    )
     # Native-session recovery restores the durable transcript before the CLI
     # starts, so reconnect snapshots include the imported conversation prefix.
     history_hydration_enabled: bool = Field(default=True)
@@ -1265,14 +1902,18 @@ class SkuldSettings(BaseSettings):
     acp_prompt_timeout_s: float = Field(default=300.0)  # ACP/MSP (Grok Build, Muse) turn timeout
     mcp_servers: list[dict[str, Any]] = Field(default_factory=list)
     forge_mcp: ForgeMcpConfig = Field(default_factory=ForgeMcpConfig)
+    memory: MemoryConfig = Field(default_factory=MemoryConfig)
+    voice_channel: VoiceConfig = Field(default_factory=VoiceConfig)
     preview: PreviewConfig = Field(default_factory=PreviewConfig)
     secret_requests: SecretRequestsConfig = Field(default_factory=SecretRequestsConfig)
+    ask: AskConfig = Field(default_factory=AskConfig)
     reflex: ReflexConfig = Field(default_factory=ReflexConfig)
     observability: SkuldObservabilityConfig = Field(default_factory=SkuldObservabilityConfig)
     telegram: TelegramConfig = Field(default_factory=TelegramConfig)
     room: RoomConfig = Field(default_factory=RoomConfig)
     mesh: MeshConfig = Field(default_factory=MeshConfig)
     workflow_steps: WorkflowStepsConfig = Field(default_factory=WorkflowStepsConfig)
+    peer_inbox: PeerInboxConfig = Field(default_factory=PeerInboxConfig)
 
     @model_validator(mode="after")
     def _resolve_transport_adapter(self) -> "SkuldSettings":
@@ -1315,21 +1956,80 @@ class SkuldSettings(BaseSettings):
         return self
 
     @model_validator(mode="after")
-    def _secret_wait_fits_engine_call(self) -> "SkuldSettings":
+    def _memory_can_authenticate(self) -> "SkuldSettings":
+        """The memory server calls the gateway as the session: it needs the credential."""
+        if not self.memory.enabled:
+            return self
+        if not self.forge_mcp.token:
+            raise ValueError(
+                "memory.enabled is true but this session has no Forge credential to "
+                "authenticate to the memory gateway: set SKULD__FORGE_MCP__TOKEN (or "
+                "forge_mcp.token_file / SKULD__FORGE_MCP__TOKEN_FILE), which Forge mints "
+                "for every launch, or set SKULD__MEMORY__ENABLED=false"
+            )
+        if self.forge_mcp.enabled and self.memory.server_name == self.forge_mcp.server_name:
+            raise ValueError(
+                f"memory.server_name and forge_mcp.server_name are both "
+                f"{self.memory.server_name!r}; give them different names"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _voice_can_serve(self) -> "SkuldSettings":
+        """The voice channel mints through Forge as the session and records into its log."""
+        if not self.voice_channel.enabled:
+            return self
+        missing = [
+            remedy
+            for absent, remedy in (
+                (
+                    not self.forge_mcp.token,
+                    "a Forge session credential (SKULD__FORGE_MCP__TOKEN or "
+                    "forge_mcp.token_file), which Forge mints for every launch",
+                ),
+                (not self.volundr_api_url, "volundr_api_url (where Forge is)"),
+                (
+                    not self.session.owner_id.strip(),
+                    "session.owner_id (only the owner is served)",
+                ),
+                (
+                    not self.event_log_enabled,
+                    "event_log_enabled: true (the call record is the session's event log)",
+                ),
+                (
+                    not self.history_hydration_enabled,
+                    "history_hydration_enabled: true (the call list is restored from it)",
+                ),
+            )
+            if absent
+        ]
+        if missing:
+            raise ValueError(
+                "voice_channel.enabled is true but the voice channel cannot serve without "
+                + "; ".join(missing)
+                + ". Fix these, or set SKULD__VOICE_CHANNEL__ENABLED=false"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _waits_fit_engine_call(self) -> "SkuldSettings":
         """A wait the engine cuts off mid-call would read as a failure, not as "still open"."""
         if not self.forge_mcp.enabled:
             return self
-        wait = self.secret_requests.wait_max_s
-        for knob, bound in (
-            ("forge_mcp.broker_request_timeout_s", self.forge_mcp.broker_request_timeout_s),
-            ("forge_mcp.tool_timeout_s", self.forge_mcp.tool_timeout_s),
+        for name, wait in (
+            ("secret_requests.wait_max_s", self.secret_requests.wait_max_s),
+            ("ask.wait_max_s", self.ask.wait_max_s),
         ):
-            if wait >= bound:
-                raise ValueError(
-                    f"secret_requests.wait_max_s ({wait}) must be shorter than {knob} ({bound}), "
-                    "or the engine ends every long request_secret call before it can answer. "
-                    f"Lower secret_requests.wait_max_s or raise {knob}"
-                )
+            for knob, bound in (
+                ("forge_mcp.broker_request_timeout_s", self.forge_mcp.broker_request_timeout_s),
+                ("forge_mcp.tool_timeout_s", self.forge_mcp.tool_timeout_s),
+            ):
+                if wait >= bound:
+                    raise ValueError(
+                        f"{name} ({wait}) must be shorter than {knob} ({bound}), "
+                        f"or the engine ends every long call before it can answer. "
+                        f"Lower {name} or raise {knob}"
+                    )
         return self
 
     @property

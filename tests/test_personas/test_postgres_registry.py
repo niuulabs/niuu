@@ -25,7 +25,11 @@ from personas.adapters.postgres_registry import (
     _payload_to_config,
 )
 from personas.domain.persona import PersonaConfig, PersonaProduces
-from personas.domain.persona_document import portable_persona_from_config
+from personas.domain.persona_document import (
+    PersonaDocumentError,
+    persona_definition_from_mapping,
+    portable_persona_from_config,
+)
 
 
 def _mock_row(**overrides):
@@ -39,8 +43,6 @@ def _mock_row(**overrides):
             "summary": "Custom agent",
             "description": "Custom agent description",
             "system_prompt_template": "You are custom.",
-            "allowed_tools": ["file_read"],
-            "forbidden_tools": [],
             "permission_mode": "default",
             "iteration_budget": 7,
             "llm_primary_alias": "balanced",
@@ -67,7 +69,6 @@ class _BuiltinLoader:
             "coder": PersonaConfig(
                 name="coder",
                 system_prompt_template="Builtin coder.",
-                allowed_tools=["file_read"],
                 permission_mode="workspace-write",
                 iteration_budget=40,
             )
@@ -138,6 +139,19 @@ class TestPortablePersonas:
         with pytest.raises(ValueError, match="declares an 'executor' block.*Remove"):
             await registry.get_current_portable_persona("user-1", "custom-agent")
 
+    @pytest.mark.parametrize("key", ["allowed_tools", "forbidden_tools"])
+    async def test_stored_persona_still_carrying_a_tool_restriction_is_refused(self, key):
+        registry, pool = _make_registry()
+        row = _mock_row()
+        row["config_json"][key] = ["file_read"]
+        pool.fetch.return_value = [row]
+
+        with pytest.raises(
+            ValueError,
+            match=rf"persona custom-agent: {key} is not supported: per-harness tool restrictions",
+        ):
+            await registry.get_current_portable_persona("user-1", "custom-agent")
+
 
 class TestListPersonas:
     async def test_merges_builtin_and_user_personas(self):
@@ -188,8 +202,6 @@ class TestGetPersona:
                     "summary": "Overridden coder",
                     "description": "Overridden coder",
                     "system_prompt_template": "Override prompt.",
-                    "allowed_tools": ["file_read", "file_write"],
-                    "forbidden_tools": [],
                     "permission_mode": "default",
                     "iteration_budget": 11,
                     "llm_primary_alias": "balanced",
@@ -238,8 +250,6 @@ class TestSavePersona:
             "summary": "Custom agent",
             "description": "Custom agent description",
             "system_prompt_template": "You are custom.",
-            "allowed_tools": ["file_read"],
-            "forbidden_tools": [],
             "permission_mode": "safe",
             "iteration_budget": 7,
             "llm_primary_alias": "balanced",
@@ -272,6 +282,18 @@ class TestSavePersona:
 
         pool.execute.assert_not_awaited()
 
+    @pytest.mark.parametrize("key", ["allowed_tools", "forbidden_tools"])
+    async def test_refuses_a_payload_that_carries_a_tool_restriction(self, key):
+        registry, pool = _make_registry()
+
+        with pytest.raises(
+            ValueError,
+            match=rf"persona custom-agent: {key} is not supported.*remove allowed_tools",
+        ):
+            await registry.save_persona("user-1", {"name": "custom-agent", key: []})
+
+        pool.execute.assert_not_awaited()
+
 
 class TestDeletePersona:
     async def test_returns_true_when_row_deleted(self):
@@ -298,8 +320,6 @@ class TestParsePayload:
                         "summary": "Custom agent",
                         "description": "Custom agent",
                         "system_prompt_template": "You are custom.",
-                        "allowed_tools": [],
-                        "forbidden_tools": [],
                         "permission_mode": "default",
                         "iteration_budget": 0,
                         "llm_primary_alias": "",
@@ -356,8 +376,6 @@ class TestHelperNormalization:
             {
                 "name": "coder",
                 "letter": "zebra",
-                "allowed_tools": ["file_read", ""],
-                "forbidden_tools": ["rm"],
                 "permission_mode": "workspace-write",
                 "iteration_budget": "9",
                 "llm_primary_alias": "fast",
@@ -410,6 +428,7 @@ class TestHelperNormalization:
                     "pass": "review.passed",
                     "needs_changes": "review.changes_requested",
                 },
+                when={"pass": "The change is ready to merge."},
             ),
         )
 
@@ -418,3 +437,70 @@ class TestHelperNormalization:
 
         assert payload["produces_event_map"] == config.produces.event_type_map
         assert restored.produces.event_type_map == config.produces.event_type_map
+        assert restored.produces.when == {"pass": "The change is ready to merge."}
+
+
+class TestSavePersonaDocument:
+    async def test_a_payload_whose_document_is_not_a_mapping_is_refused(self):
+        registry, pool = _make_registry()
+
+        with pytest.raises(PersonaDocumentError, match="document must be a mapping"):
+            await registry.save_persona("user-1", {"name": "odd", "document": ["name", "odd"]})
+
+        pool.execute.assert_not_awaited()
+
+    async def test_a_document_is_stored_whole_and_read_back_as_written(self):
+        registry, pool = _make_registry()
+        definition = {
+            "name": "checker",
+            "description": "Checks things.",
+            "produces": {
+                "event_type_map": {"ok": "checker.ok"},
+                "when": {"ok": "Everything checks out."},
+            },
+        }
+
+        await registry.save_persona_document("user-1", persona_definition_from_mapping(definition))
+
+        stored = json.loads(pool.execute.await_args.args[3])
+        assert json.loads(stored["document_json"]) == definition
+        assert stored["summary"] == "Checks things."
+        pool.fetch.return_value = [_mock_row(name="checker", config_json=stored)]
+        view = await registry.get_persona("user-1", "checker")
+        assert view is not None
+        assert view.config.produces.when == {"ok": "Everything checks out."}
+        portable = await registry.get_current_portable_persona("user-1", "checker")
+        assert portable is not None
+        assert portable.definition == definition
+
+    async def test_the_document_keeps_the_order_its_author_wrote(self):
+        registry, pool = _make_registry()
+        definition = {
+            "name": "checker",
+            "produces": {
+                "event_type_map": {"pass": "c.pass", "needs_changes": "c.nc", "fail": "c.f"}
+            },
+        }
+        await registry.save_persona_document("user-1", persona_definition_from_mapping(definition))
+        stored = json.loads(pool.execute.await_args.args[3])
+        # Postgres jsonb sorts object keys; the stored document is text, so it does not.
+        reordered = json.loads(json.dumps(stored, sort_keys=True))
+        pool.fetch.return_value = [_mock_row(name="checker", config_json=reordered)]
+
+        portable = await registry.get_current_portable_persona("user-1", "checker")
+
+        assert portable is not None
+        assert list(portable.definition["produces"]["event_type_map"]) == [
+            "pass",
+            "needs_changes",
+            "fail",
+        ]
+
+    @pytest.mark.parametrize("stored", [{"name": "x"}, "[1, 2]"])
+    async def test_a_stored_document_that_is_not_json_text_of_a_mapping_is_refused(self, stored):
+        registry, pool = _make_registry()
+        payload = {**_mock_row()["config_json"], "name": "x", "document_json": stored}
+        pool.fetch.return_value = [_mock_row(name="x", config_json=payload)]
+
+        with pytest.raises(PersonaDocumentError, match="Stored persona 'x'"):
+            await registry.get_persona("user-1", "x")

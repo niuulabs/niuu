@@ -41,8 +41,15 @@ data:
 
         # Upstream definitions - static backends
         upstream broker {
-            server 127.0.0.1:8081;
+            server 127.0.0.1:{{ .Values.brokerPort | default 8081 }};
         }
+        {{- range $i, $m := .Values.members }}
+
+        # Member {{ $i }} of the unit: its own Skuld, in this pod.
+        upstream member_{{ $i }} {
+            server 127.0.0.1:{{ int $m.port }};
+        }
+        {{- end }}
 
         server {
             listen {{ if and .Values.wsAuth.enforce_ownership .Values.envoy.enabled }}127.0.0.1:{{ end }}8080;
@@ -147,6 +154,38 @@ data:
             location /svc/ {
                 default_type application/json;
                 return 200 '{"services":[],"hint":"use svc start to add services","postgres":"postgresql://127.0.0.1:5432/postgres"}';
+            }
+            {{- end }}
+
+            {{- range $i, $m := .Values.members }}
+            {{- if not (regexMatch "^[A-Za-z0-9][A-Za-z0-9-]*$" (toString $m.id)) }}
+            {{- fail (printf "member %d: id %q is not a session id (letters, digits and dashes)" $i (toString $m.id)) }}
+            {{- end }}
+
+            # A member of the unit, reached at /m/<its session id>/ (the gateway maps /s/<id>
+            # here): its broker, with the same WebSocket upgrade as the session's own.
+            location = /m/{{ $m.id }} {
+                proxy_pass http://member_{{ $i }}/;
+                proxy_http_version 1.1;
+                proxy_set_header Upgrade $http_upgrade;
+                proxy_set_header Connection "upgrade";
+                proxy_set_header Host $host;
+                proxy_set_header X-Real-IP $remote_addr;
+                proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                proxy_set_header X-Forwarded-Proto $scheme;
+            }
+            location /m/{{ $m.id }}/ {
+                proxy_pass http://member_{{ $i }}/;
+                proxy_http_version 1.1;
+                proxy_set_header Upgrade $http_upgrade;
+                proxy_set_header Connection "upgrade";
+                proxy_set_header Host $host;
+                proxy_set_header X-Real-IP $remote_addr;
+                proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                proxy_set_header X-Forwarded-Proto $scheme;
+                proxy_buffering off;
+                proxy_request_buffering off;
+                client_max_body_size 100m;
             }
             {{- end }}
 

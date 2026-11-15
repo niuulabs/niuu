@@ -354,7 +354,7 @@ def create_specs_router() -> APIRouter:
                 campaign,
                 _gate_node_id(gate),
                 decision,
-                by=GateActor(ActorKind.PERSON, principal.user_id),
+                by=GateActor(ActorKind.PERSON, principal.user_id, principal.email),
                 note=body.notes.strip(),
             )
         except (GateRefusedError, RunStateError) as exc:
@@ -427,7 +427,15 @@ async def _resolve_spec_workflow(
     for workflow in workflows:
         if workflow.name == _DEFAULT_SPEC_WORKFLOW_NAME:
             return await _selected_version(repo, workflow, workflow_version)
-    raise HTTPException(status_code=404, detail="Specification Stack workflow not found")
+    raise HTTPException(
+        status_code=404,
+        detail=(
+            f"No specification workflow is available: no workflow is tagged 'specification' "
+            f"and {_DEFAULT_SPEC_WORKFLOW_NAME!r} is no longer bundled (archived, see "
+            "archive/README.md). Create a workflow tagged 'specification', or restore the "
+            "archived one."
+        ),
+    )
 
 
 async def _selected_version(
@@ -741,6 +749,8 @@ def _derive_spec_stage_state(
             current_status = "blocked"
         elif status == WorkflowCampaignStatus.FAILED:
             current_status = "failed"
+        elif status == WorkflowCampaignStatus.CANCELED:
+            current_status = "canceled"
         derived[first_incomplete] = CampaignStageState(
             stage_id=current.stage_id,
             label=current.label,

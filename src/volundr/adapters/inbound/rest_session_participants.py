@@ -27,6 +27,7 @@ from volundr.domain.session_participants import (
     InviteeNotFoundError,
     OwnerInviteError,
     ParticipantAlreadyActiveError,
+    ParticipantCandidate,
     ParticipantNotFoundError,
     ParticipantRole,
     ParticipantStateError,
@@ -61,8 +62,16 @@ _ROOM_ROLE_SCOPE = "forge:session:room-role"
 _SESSION_SERVICE_ACCOUNT_PREFIX = "openbao-session-"
 
 
-def _require_session_scoped_workload_credential(request: Request, session_id: UUID) -> None:
+def _require_session_scoped_workload_credential(
+    request: Request, session_id: UUID, unit_id: UUID | None = None
+) -> None:
     """Refuse anything but a workload credential scoped to THIS session.
+
+    ``unit_id`` is the unit root the session is hosted by, when it is a member of a unit. A
+    member is a container of its unit's pod and runs as the pod's one ServiceAccount, the
+    root's, so that pod's credential also names its members: it may ask about the root and
+    about the sessions the root hosts, the unit that already shares the pod, and nothing
+    else.
 
     Unlike every other route on this router (gated by extract_principal's
     ordinary Cedar-backed access checks), this endpoint discloses "does user
@@ -89,8 +98,12 @@ def _require_session_scoped_workload_credential(request: Request, session_id: UU
             f"Token is missing the required scope: {_ROOM_ROLE_SCOPE}",
         )
     workload_sub = str(claims.get("workload_sub", ""))
-    session_marker = f"{_SESSION_SERVICE_ACCOUNT_PREFIX}{session_id}"
-    if session_marker not in workload_sub and str(session_id) not in workload_sub:
+    scoped_ids = [session_id] if unit_id is None else [session_id, unit_id]
+    if not any(
+        f"{_SESSION_SERVICE_ACCOUNT_PREFIX}{scoped_id}" in workload_sub
+        or str(scoped_id) in workload_sub
+        for scoped_id in scoped_ids
+    ):
         raise HTTPException(
             status.HTTP_403_FORBIDDEN,
             "This workload credential is not scoped to this session — a session's "
@@ -166,6 +179,9 @@ class ParticipantResponse(BaseModel):
 
     session_id: UUID
     user_id: str
+    display_name: str = Field(
+        default="", description="The person's name where the directory has one (listings only)"
+    )
     tenant_id: str
     role: str
     status: str
@@ -175,10 +191,13 @@ class ParticipantResponse(BaseModel):
     expires_at: datetime | None = None
 
     @classmethod
-    def from_participant(cls, participant: SessionParticipant) -> ParticipantResponse:
+    def from_participant(
+        cls, participant: SessionParticipant, display_name: str = ""
+    ) -> ParticipantResponse:
         return cls(
             session_id=participant.session_id,
             user_id=participant.user_id,
+            display_name=display_name,
             tenant_id=participant.tenant_id,
             role=participant.role.value,
             status=participant.status.value,
@@ -189,17 +208,37 @@ class ParticipantResponse(BaseModel):
         )
 
 
+class MyParticipationResponse(BaseModel):
+    """What the caller is to a session: their room role and their own grant, if any."""
+
+    session_id: UUID
+    user_id: str
+    room_role: str | None = Field(
+        default=None,
+        description="owner/approver/viewer; null while an invitation is still unanswered",
+    )
+    grant: ParticipantResponse | None = None
+
+
 class EffectiveRoomRoleResponse(BaseModel):
     """A target principal's Cedar-derived room role, or None (no grant)."""
 
     role: str | None = None
 
 
-# Runtime backends whose pod-level attach authorization ALWAYS consults
-# session_participants grants. Mini-mode's session proxy
-# (niuu.session_proxy.SkuldPortRegistry) resolves the room role from these
-# grants itself (see niuu.room_access), so "process" is safe unconditionally.
-GRANT_HONORING_RUNTIME_BACKENDS = frozenset({"process"})
+# Runtime backends whose browser traffic reaches a session ONLY through Forge's
+# session proxy (niuu.session_proxy.SkuldPortRegistry), which admits a caller
+# by the "attach" decision over session_participants grants and stamps the
+# resolved room role on every request it forwards (see niuu.room_access), so a
+# grant is honoured unconditionally:
+#
+# - "process": the broker listens on the host's loopback, reached through the
+#   proxy (mini mode).
+# - "vm": the guest broker listens on the guest's loopback, or on its slot's
+#   private address, and Forge reaches it only over its own SSH tunnel to the
+#   machine (VmPodManager.session_proxy_target); the chat endpoint it hands the
+#   browser is Forge's /s/{id}/session (VmPodManager.initial_chat_endpoint).
+GRANT_HONORING_RUNTIME_BACKENDS = frozenset({"process", "vm"})
 
 # Runtime backends whose pods route attach through the Kubernetes Gateway's
 # Envoy ext_authz check (charts/skuld/templates/securitypolicy.yaml +
@@ -217,12 +256,43 @@ GRANT_HONORING_RUNTIME_BACKENDS = frozenset({"process"})
 # Limited to "kubernetes" only: it is the sole backend independently verified
 # end-to-end, and the only one WorkloadIdentityContributor projects a
 # niuu-workload service-account token onto — RemoteAuthorizationAdapter has
-# no credential to exchange on "openshell" (owns its own workload identity)
-# or "vm" (no Kubernetes token issuer or projected-volume implementation at
-# all), so including them here would let an invite succeed with no way for
-# the pod to ever honour it. "docker" is excluded for the same underlying
-# reason (not routed through the session proxy, no remote-adapter path).
+# no credential to exchange on "openshell" (owns its own workload identity),
+# so including it here would let an invite succeed with no way for the pod to
+# ever honour it. "docker" is excluded for the same underlying reason (not
+# routed through the session proxy, no remote-adapter path). "vm" needs
+# neither: it is proxied (above).
 REMOTE_CAPABLE_RUNTIME_BACKENDS = frozenset({"kubernetes"})
+
+
+def _invites_unsupported(runtime_backend: str) -> str:
+    """Why this Forge refuses chat invites, and what would make them work."""
+    proxied = ", ".join(sorted(GRANT_HONORING_RUNTIME_BACKENDS))
+    if runtime_backend in REMOTE_CAPABLE_RUNTIME_BACKENDS:
+        return (
+            f"This Forge's {runtime_backend} session pods authorize attach by ownership "
+            "only (Kubernetes Gateway ext_authz), so a participant grant could never be "
+            "used to attach. Set pod_manager.room_role_source: remote (volundr/config.py's "
+            "PodManagerConfig) to deploy its session pods with ws_auth.room_role_source: "
+            f"remote, or run sessions on a proxied backend ({proxied})."
+        )
+    return (
+        f"This Forge's {runtime_backend!r} sessions are not reached through Forge's "
+        "session proxy, so a participant grant could never be used to attach. Chat "
+        f"invites need a proxied session backend ({proxied})."
+    )
+
+
+def invitations_refused(runtime_backend: str, room_role_source: str) -> str | None:
+    """Why this Forge's sessions cannot be attached to by an invited person, or ``None``.
+
+    ``None`` means a participant grant can be used: the backend is reached through Forge's
+    session proxy, or authorizes attach by grant (``room_role_source: remote``).
+    """
+    if runtime_backend in GRANT_HONORING_RUNTIME_BACKENDS or (
+        runtime_backend in REMOTE_CAPABLE_RUNTIME_BACKENDS and room_role_source == "remote"
+    ):
+        return None
+    return _invites_unsupported(runtime_backend)
 
 
 def create_session_participants_router(
@@ -235,9 +305,7 @@ def create_session_participants_router(
     identity_header_names: dict[str, str] | None = None,
 ) -> APIRouter:
     router = APIRouter(prefix=prefix, tags=["Sessions"])
-    grants_are_attachable = runtime_backend in GRANT_HONORING_RUNTIME_BACKENDS or (
-        runtime_backend in REMOTE_CAPABLE_RUNTIME_BACKENDS and room_role_source == "remote"
-    )
+    grants_are_attachable = invitations_refused(runtime_backend, room_role_source) is None
 
     async def _get_session(session_id: UUID):
         session = await session_service.get_session(session_id)
@@ -267,23 +335,7 @@ def create_session_participants_router(
         principal = await extract_principal(request)
         session = await _get_session(session_id)
         if not grants_are_attachable:
-            remedy = (
-                f"session backend whose pod authorization consults "
-                f"session_participants grants (currently: "
-                f"{', '.join(sorted(GRANT_HONORING_RUNTIME_BACKENDS))})"
-            )
-            if runtime_backend in REMOTE_CAPABLE_RUNTIME_BACKENDS:
-                remedy += (
-                    ", or set pod_manager.room_role_source: remote (volundr/config.py's "
-                    "PodManagerConfig) to deploy this backend's session pods with "
-                    "ws_auth.room_role_source: remote"
-                )
-            raise HTTPException(
-                status.HTTP_409_CONFLICT,
-                "This deployment's session pods authorize attach by ownership "
-                "only (Kubernetes Gateway ext_authz), so a participant grant "
-                f"could never be used to attach. Participant invites require a {remedy}.",
-            )
+            raise HTTPException(status.HTTP_409_CONFLICT, _invites_unsupported(runtime_backend))
         try:
             participant = await service.invite(
                 session,
@@ -305,6 +357,62 @@ def create_session_participants_router(
         except ParticipantAlreadyActiveError as exc:
             raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
         return ParticipantResponse.from_participant(participant)
+
+    @router.get("/participant-candidates", response_model=list[ParticipantCandidate])
+    async def people_candidates(request: Request, q: str = Query("")) -> list[ParticipantCandidate]:
+        """Active people of the caller's org, other than the caller, matching ``q``.
+
+        For choosing who to invite before a session exists (a team being set up). Any
+        member of the org may ask: the same people the session-scoped search offers an
+        owner, without the session's own grants to leave out."""
+        principal = await extract_principal(request)
+        try:
+            return await service.find_people(principal, q)
+        except PermissionError as exc:
+            raise HTTPException(status.HTTP_401_UNAUTHORIZED, str(exc)) from exc
+
+    @router.get(
+        "/sessions/{session_id}/participant-candidates",
+        response_model=list[ParticipantCandidate],
+    )
+    async def participant_candidates(
+        request: Request, session_id: UUID, q: str = Query("")
+    ) -> list[ParticipantCandidate]:
+        """Active people of the session's org who could be invited into its chat.
+
+        For the owner and admins. Not the owner, and not anyone already invited or in the
+        chat; someone removed earlier can be invited again."""
+        principal = await extract_principal(request)
+        session = await _get_session(session_id)
+        try:
+            return await service.candidates(session, principal, q)
+        except SessionAccessDeniedError:
+            raise HTTPException(
+                status.HTTP_403_FORBIDDEN, "Not authorized to invite participants"
+            ) from None
+
+    @router.get(
+        "/sessions/{session_id}/participants/me",
+        response_model=MyParticipationResponse,
+    )
+    async def my_participation(request: Request, session_id: UUID) -> MyParticipationResponse:
+        """The caller's own standing in the session: room role and grant.
+
+        Answers anyone with any relation to the session, an invitee who has not accepted
+        yet included, and nobody else (the same 404 as a session that does not exist). It
+        is how a gateway finds the node that holds the session for a person who cannot
+        read it yet, and how a client learns whether an invitation is still open."""
+        principal = await extract_principal(request)
+        session = await _get_session(session_id)
+        role, grant = await service.participation(session, principal)
+        if role is None and grant is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "Session not found")
+        return MyParticipationResponse(
+            session_id=session.id,
+            user_id=principal.user_id,
+            room_role=role,
+            grant=ParticipantResponse.from_participant(grant) if grant is not None else None,
+        )
 
     @router.post(
         "/sessions/{session_id}/participants/accept",
@@ -355,7 +463,10 @@ def create_session_participants_router(
             raise HTTPException(
                 status.HTTP_403_FORBIDDEN, "Not authorized to list participants"
             ) from None
-        return [ParticipantResponse.from_participant(p) for p in participants]
+        names = await service.display_names({p.user_id for p in participants})
+        return [
+            ParticipantResponse.from_participant(p, names.get(p.user_id, "")) for p in participants
+        ]
 
     if room_role_source == "remote":
 
@@ -404,7 +515,10 @@ def create_session_participants_router(
                session: session pods use the ``openbao-session-{id}``
                service account (``OpenBaoAgentInjectionAdapter
                ._service_account_name``), so a token minted for session A's
-               pod can never be used to probe session B's participants.
+               pod can never be used to probe session B's participants. The
+               one pod of a workflow run's unit runs as its root's service
+               account and also hosts the root's members, so that credential
+               may ask about the root and the sessions it hosts.
 
             ``user_id``/``tenant_id``/``roles`` name the TARGET principal
             whose role is being asked about — already verified upstream by
@@ -436,8 +550,14 @@ def create_session_participants_router(
             reached without Envoy in front (or directly via the app port).
             """
             await extract_principal(request)
-            _require_session_scoped_workload_credential(request, session_id)
-            session = await _get_session(session_id)
+            # A member's pod is its unit root's, so the unit is part of what the credential
+            # may name. A missing session reads as an unscoped credential (403), never 404.
+            session = await session_service.get_session(session_id)
+            _require_session_scoped_workload_credential(
+                request, session_id, session.hosted_by if session is not None else None
+            )
+            if session is None:
+                raise HTTPException(status.HTTP_404_NOT_FOUND, "Session not found")
             target = await _resolve_target_principal(
                 request,
                 user_id=user_id,

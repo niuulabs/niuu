@@ -786,6 +786,8 @@ class SshOpenShellVmRuntime(SshContainerVmRuntime):
 
     # Each session is an OpenShell sandbox, whose policy is its boundary.
     _separates_slots = False
+    # The OpenShell gateway authenticates the clone with its own credential provider.
+    _clones_with_integration_token = False
 
     @property
     def session_runtime(self) -> SessionRuntimeKind | None:

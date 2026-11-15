@@ -317,6 +317,7 @@ export function createMockComputeHosts(
       const list = [...hosts.values()];
       const overview: ComputeHostsOverview = {
         poolId: `${MOCK_INSTANCE}-hosts`,
+        canManage: true,
         hosts: list,
         summary: summarize(list),
         connectors: [

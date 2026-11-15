@@ -2,13 +2,13 @@
  * URL search-param shape for `/mimir` (the Memory Explore view), so Explore
  * / Focus / Ask / Replay all deep-link.
  *
- *   mount?  — scope the graph to one mount instance
+ *   mount?  — scope Ask to one mount instance
  *   focus?  — node id — presence switches to the Focus inspector
  *   depth?  — 1 | 2 | 3 — Focus panel's Links depth control
  *   q?      — question text — presence switches to Ask mode
  *   asOf?   — ISO date — presence switches to Replay mode
  *   view?   — '3d' | '2d' — scene render mode
- *   colour? — 'type' | 'proof' | 'age' — "Colour by" panel selection
+ *   show?   — 'people' | 'decisions' | 'tickets' — the kind filter (absent: everything)
  */
 export interface MemoryViewSearch {
   mount?: string;
@@ -17,12 +17,12 @@ export interface MemoryViewSearch {
   q?: string;
   asOf?: string;
   view?: '3d' | '2d';
-  colour?: 'type' | 'proof' | 'age';
+  show?: 'people' | 'decisions' | 'tickets';
 }
 
 const VALID_DEPTHS = new Set([1, 2, 3]);
 const VALID_VIEWS = new Set(['3d', '2d']);
-const VALID_COLOURS = new Set(['type', 'proof', 'age']);
+const VALID_SHOWS = new Set(['people', 'decisions', 'tickets']);
 
 function str(value: unknown): string | undefined {
   return typeof value === 'string' && value.length > 0 ? value : undefined;
@@ -36,7 +36,7 @@ function str(value: unknown): string | undefined {
 export function validateMemoryViewSearch(search: Record<string, unknown>): MemoryViewSearch {
   const rawDepth = Number(search.depth);
   const rawView = str(search.view);
-  const rawColour = str(search.colour);
+  const rawShow = str(search.show);
 
   return {
     mount: str(search.mount),
@@ -45,9 +45,9 @@ export function validateMemoryViewSearch(search: Record<string, unknown>): Memor
     q: str(search.q),
     asOf: str(search.asOf),
     view: rawView && VALID_VIEWS.has(rawView) ? (rawView as '3d' | '2d') : undefined,
-    colour:
-      rawColour && VALID_COLOURS.has(rawColour)
-        ? (rawColour as 'type' | 'proof' | 'age')
+    show:
+      rawShow && VALID_SHOWS.has(rawShow)
+        ? (rawShow as 'people' | 'decisions' | 'tickets')
         : undefined,
   };
 }

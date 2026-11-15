@@ -12,6 +12,7 @@ import {
 import { errorText } from '../errorText';
 import { useMinuteClock } from '../sessions/timeFact';
 import { AddHostFlow } from './AddHostFlow';
+import { EditSlotsDialog } from './EditSlotsDialog';
 import { HostRemovalDialog, type RemovalMode } from './HostRemovalDialog';
 import { HostSummaryCards } from './HostSummaryCards';
 import { HostTable } from './HostTable';
@@ -52,6 +53,7 @@ export function ComputeHostsPanel({ instanceId }: { instanceId: string }) {
   const [tags, setTags] = useState<string[]>([]);
   const [match, setMatch] = useState<TagMatch>('all');
   const [removal, setRemoval] = useState<{ host: ComputeHost; mode: RemovalMode } | null>(null);
+  const [resizing, setResizing] = useState<ComputeHost | null>(null);
   const [busy, setBusy] = useState<ReadonlySet<string>>(new Set());
   const [failure, setFailure] = useState<string | null>(null);
 
@@ -92,6 +94,10 @@ export function ComputeHostsPanel({ instanceId }: { instanceId: string }) {
       setScreen({ kind: 'add', followHostId: host.id });
       return;
     }
+    if (action === 'edit_slots') {
+      setResizing(host);
+      return;
+    }
     if (action === 'check') {
       void holding(host.id, () => actions.check.mutateAsync(host.id));
       return;
@@ -110,7 +116,7 @@ export function ComputeHostsPanel({ instanceId }: { instanceId: string }) {
 
   const visible = filterHosts(overview.hosts, tags, match);
 
-  if (screen.kind === 'add') {
+  if (screen.kind === 'add' && overview.canManage) {
     return (
       <div className="niuu:space-y-4">
         <div className="niuu:flex niuu:items-center niuu:justify-between niuu:gap-3">
@@ -131,6 +137,15 @@ export function ComputeHostsPanel({ instanceId }: { instanceId: string }) {
 
   return (
     <div className="niuu:space-y-4">
+      {overview.canManage ? null : (
+        <p
+          data-testid="hosts-read-only-note"
+          className="niuu:rounded-lg niuu:border niuu:border-border-subtle niuu:bg-bg-secondary niuu:px-3 niuu:py-2 niuu:text-sm niuu:text-text-secondary"
+        >
+          You can see these hosts and your sessions can run on them. Only an admin of this Forge can
+          add or change them.
+        </p>
+      )}
       <HostSummaryCards summary={overview.summary} />
 
       <div className="niuu:flex niuu:flex-wrap niuu:items-center niuu:justify-between niuu:gap-3">
@@ -150,23 +165,25 @@ export function ComputeHostsPanel({ instanceId }: { instanceId: string }) {
             />
           </TagChipInput>
         </div>
-        <div className="niuu:flex niuu:gap-2">
-          <button
-            type="button"
-            className={BUTTON}
-            disabled={visible.length === 0}
-            onClick={() =>
-              visible.forEach(
-                (host) => void holding(host.id, () => actions.check.mutateAsync(host.id)),
-              )
-            }
-          >
-            Check all
-          </button>
-          <button type="button" className={PRIMARY} onClick={() => setScreen({ kind: 'add' })}>
-            Add host
-          </button>
-        </div>
+        {overview.canManage ? (
+          <div className="niuu:flex niuu:gap-2">
+            <button
+              type="button"
+              className={BUTTON}
+              disabled={visible.length === 0}
+              onClick={() =>
+                visible.forEach(
+                  (host) => void holding(host.id, () => actions.check.mutateAsync(host.id)),
+                )
+              }
+            >
+              Check all
+            </button>
+            <button type="button" className={PRIMARY} onClick={() => setScreen({ kind: 'add' })}>
+              Add host
+            </button>
+          </div>
+        ) : null}
       </div>
 
       {failure ? (
@@ -182,6 +199,7 @@ export function ComputeHostsPanel({ instanceId }: { instanceId: string }) {
         hosts={visible}
         now={now}
         busy={busy}
+        readOnly={!overview.canManage}
         onAction={onAction}
         onTagsChange={(host, next) =>
           void holding(host.id, () =>
@@ -201,6 +219,16 @@ export function ComputeHostsPanel({ instanceId }: { instanceId: string }) {
           </span>
         ))}
       </div>
+
+      {resizing ? (
+        <EditSlotsDialog
+          host={resizing}
+          onSave={(slots) =>
+            actions.update.mutateAsync({ hostId: resizing.id, changes: { slots } })
+          }
+          onClose={() => setResizing(null)}
+        />
+      ) : null}
 
       {removal ? (
         <HostRemovalDialog

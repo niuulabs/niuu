@@ -36,9 +36,57 @@ class TestWorkflowStepsConfig:
     def test_the_description_says_what_bounds_it_and_what_a_hit_does(self) -> None:
         description = WorkflowStepsConfig.model_fields["step_deadline_seconds"].description or ""
 
-        assert "bound" in description
-        assert "never acts on it" in description
-        assert "NIU-1181" in description
+        assert "Real bound" in description
+        assert "hard stop" in description
+        assert "naming this setting" in description
+
+    def test_pickup_grace_defaults_to_five_minutes(self) -> None:
+        assert WorkflowStepsConfig().pickup_grace_seconds == 300.0
+        assert Settings().workflow_steps.pickup_grace_seconds == 300.0
+
+    def test_pickup_grace_is_set_from_config(self) -> None:
+        config = Settings(workflow_steps={"pickup_grace_seconds": 45})
+
+        assert config.workflow_steps.pickup_grace_seconds == 45.0
+
+    @pytest.mark.parametrize("value", [0, -1])
+    def test_pickup_grace_must_be_positive(self, value: float) -> None:
+        with pytest.raises(ValueError, match="greater than 0"):
+            WorkflowStepsConfig(pickup_grace_seconds=value)
+
+    def test_pickup_grace_says_what_bounds_it_and_that_it_is_not_a_cap(self) -> None:
+        description = WorkflowStepsConfig.model_fields["pickup_grace_seconds"].description or ""
+
+        assert "Real bound" in description
+        assert "never a cap" in description
+        assert "step_deadline_seconds" in description
+
+    def test_catch_up_page_size_defaults_to_two_hundred_frames(self) -> None:
+        assert WorkflowStepsConfig().catch_up_page_size == 200
+        assert Settings().workflow_steps.catch_up_page_size == 200
+
+    def test_catch_up_page_size_is_set_from_config(self) -> None:
+        config = Settings(workflow_steps={"catch_up_page_size": 25})
+
+        assert config.workflow_steps.catch_up_page_size == 25
+
+    @pytest.mark.parametrize("value", [0, -3])
+    def test_catch_up_page_size_must_be_at_least_one(self, value: int) -> None:
+        with pytest.raises(ValueError, match="greater than or equal to 1"):
+            WorkflowStepsConfig(catch_up_page_size=value)
+
+    def test_catch_up_page_size_says_it_bounds_nothing(self) -> None:
+        description = WorkflowStepsConfig.model_fields["catch_up_page_size"].description or ""
+
+        assert "bounds nothing" in description
+
+    def test_session_poll_seconds_was_removed_and_is_rejected_loudly(self) -> None:
+        with pytest.raises(ValueError, match=r"workflow_steps\.session_poll_seconds was removed"):
+            Settings(workflow_steps={"session_poll_seconds": 5})
+
+    def test_the_rejection_of_a_removed_key_names_the_remedy(self) -> None:
+        with pytest.raises(ValueError, match="Remove session_poll_seconds"):
+            WorkflowStepsConfig(session_poll_seconds=5)
 
 
 class TestStuckDetectionConfig:
@@ -47,32 +95,36 @@ class TestStuckDetectionConfig:
 
         assert stuck.enabled is True
         assert stuck.sweep_interval_seconds == 120.0
-        assert stuck.start_grace_seconds == 600.0
 
     def test_it_is_set_from_config(self) -> None:
         config = Settings(
-            workflow_steps={
-                "stuck": {"enabled": False, "sweep_interval_seconds": 30, "start_grace_seconds": 45}
-            }
+            workflow_steps={"stuck": {"enabled": False, "sweep_interval_seconds": 30}}
         )
 
         assert config.workflow_steps.stuck.enabled is False
         assert config.workflow_steps.stuck.sweep_interval_seconds == 30.0
-        assert config.workflow_steps.stuck.start_grace_seconds == 45.0
 
-    @pytest.mark.parametrize("field", ["sweep_interval_seconds", "start_grace_seconds"])
     @pytest.mark.parametrize("value", [0, -5])
-    def test_the_intervals_must_be_positive(self, field: str, value: float) -> None:
+    def test_the_sweep_interval_must_be_positive(self, value: float) -> None:
         with pytest.raises(ValueError, match="greater than 0"):
-            Settings(workflow_steps={"stuck": {field: value}})
+            Settings(workflow_steps={"stuck": {"sweep_interval_seconds": value}})
 
-    @pytest.mark.parametrize("field", ["sweep_interval_seconds", "start_grace_seconds"])
-    def test_each_interval_says_what_bounds_it(self, field: str) -> None:
+    def test_the_sweep_interval_says_what_bounds_it(self) -> None:
         from ting.config import StuckDetectionConfig
 
-        description = StuckDetectionConfig.model_fields[field].description or ""
+        description = StuckDetectionConfig.model_fields["sweep_interval_seconds"].description or ""
 
         assert "Bounds" in description or "bound" in description
+
+    def test_start_grace_seconds_was_removed_and_is_rejected_loudly(self) -> None:
+        with pytest.raises(
+            ValueError, match=r"workflow_steps\.stuck\.start_grace_seconds was removed"
+        ):
+            Settings(workflow_steps={"stuck": {"start_grace_seconds": 45}})
+
+    def test_the_rejection_points_at_the_pickup_grace(self) -> None:
+        with pytest.raises(ValueError, match=r"workflow_steps\.pickup_grace_seconds"):
+            Settings(workflow_steps={"stuck": {"start_grace_seconds": 45}})
 
 
 class TestDatabaseConfig:
@@ -129,7 +181,7 @@ class TestSettings:
     def test_server_and_platform_legacy_aliases(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("HOST", "127.0.0.2")
         monkeypatch.setenv("PORT", "8181")
-        monkeypatch.setenv("WORKERS", "2")
+        monkeypatch.setenv("WORKERS", "1")
         monkeypatch.setenv("NIUU_SERVER_HOST", "192.0.2.10")
         monkeypatch.setenv("NIUU_SERVER_PORT", "9090")
 
@@ -137,7 +189,7 @@ class TestSettings:
 
         assert settings.server_host == "127.0.0.2"
         assert settings.server_port == 8181
-        assert settings.server_workers == 2
+        assert settings.server_workers == 1
         assert settings.local_platform_host == "192.0.2.10"
         assert settings.local_platform_port == 9090
 
@@ -147,6 +199,7 @@ class TestSettings:
             ("PORT", "invalid", "server_port"),
             ("PORT", "70000", "server_port"),
             ("WORKERS", "0", "server_workers"),
+            ("WORKERS", "2", "server_workers"),
             ("NIUU_SERVER_PORT", "0", "local_platform_port"),
         ],
     )
@@ -202,10 +255,10 @@ class TestRemovedWorkflowRunnerSettings:
         with pytest.raises(ValueError, match=rf"dispatch\.{key} was removed"):
             DispatchConfig(**{key: value})
 
-    @pytest.mark.parametrize("key", ["model", "ravn_config"])
+    @pytest.mark.parametrize("key", ["model", "ravn_config", "persona"])
     def test_removed_ticket_coordinator_keys_are_fatal(self, key: str) -> None:
         with pytest.raises(ValueError, match=rf"ticket_coordinator\.{key} was removed"):
-            TicketCoordinatorConfig(**{key: "x" if key == "model" else {}})
+            TicketCoordinatorConfig(**{key: {} if key == "ravn_config" else "x"})
 
     @pytest.mark.parametrize("key", ["ravn_decomposer_enabled", "ravn_decomposer_timeout"])
     def test_removed_decomposer_keys_are_fatal(self, key: str) -> None:
@@ -260,8 +313,29 @@ class TestWorkflowExecutionConfig:
             WorkflowExecutionConfig(enabled=False, delivery={"enabled": True})
 
     def test_delivery_enabled_with_workflow_execution_enabled_is_accepted(self) -> None:
-        config = WorkflowExecutionConfig(enabled=True, delivery={"enabled": True})
+        config = WorkflowExecutionConfig(
+            enabled=True,
+            delivery={
+                "enabled": True,
+                "review_producers": {"code": "code-reviewer"},
+                "integration_review_producer": "integration-verifier",
+                "evidence_policy_id": "delivery-evidence",
+                "integration_policy_id": "delivery-integration",
+            },
+        )
         assert config.delivery.enabled is True
+
+    def test_delivery_enabled_without_its_wiring_names_what_is_missing(self) -> None:
+        with pytest.raises(ValueError, match=r"delivery\.evidence_policy_id.*archive/README\.md"):
+            WorkflowExecutionConfig(
+                enabled=True,
+                delivery={
+                    "enabled": True,
+                    "review_producers": {"code": "code-reviewer"},
+                    "integration_review_producer": "integration-verifier",
+                    "integration_policy_id": "delivery-integration",
+                },
+            )
 
     def test_rejects_ting_delivery_wait_observer_while_delivery_is_disabled(self) -> None:
         with pytest.raises(ValueError, match="ting.delivery"):
@@ -279,7 +353,13 @@ class TestWorkflowExecutionConfig:
     def test_accepts_ting_delivery_wait_observer_once_delivery_is_enabled(self) -> None:
         config = WorkflowExecutionConfig(
             enabled=True,
-            delivery={"enabled": True},
+            delivery={
+                "enabled": True,
+                "review_producers": {"code": "code-reviewer"},
+                "integration_review_producer": "integration-verifier",
+                "evidence_policy_id": "delivery-evidence",
+                "integration_policy_id": "delivery-integration",
+            },
             wait_observers=[
                 {
                     "condition_type": "forge.checks",

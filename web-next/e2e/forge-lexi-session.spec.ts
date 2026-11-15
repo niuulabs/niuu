@@ -8,6 +8,15 @@ import { test, expect, type Page, type WebSocketRoute } from '@playwright/test';
 const origin = 'http://forge-lexi.invalid';
 const now = Date.now();
 const iso = (seconds: number) => new Date(now + seconds * 1000).toISOString();
+// Who is looking: the session header asks, to decide who may manage the chat's people.
+const viewer = {
+  userId: 'u1',
+  email: 'dev@niuu.world',
+  tenantId: 't1',
+  roles: ['user'],
+  displayName: 'Dev',
+  status: 'active',
+};
 
 const unreadSession = {
   id: 'gates',
@@ -130,7 +139,7 @@ async function intercept(page: Page, onReadState: (body: unknown) => void = () =
       return route.fulfill({
         json: new URL(request.url()).searchParams.get('status') === 'archived' ? [] : sessions,
       });
-    if (path.includes('/workflow/gates')) return route.fulfill({ json: { gates: [] } });
+    if (path.endsWith('/identity/me')) return route.fulfill({ json: viewer });
     if (path.includes('/stats')) return route.fulfill({ json: {} });
     return route.fulfill({ json: [] });
   });
@@ -179,7 +188,7 @@ test('a live conversation shows tool runs, the plan, a question and a queued mes
     socket = ws;
     ws.onMessage((raw) => fromBrowser.push(JSON.parse(String(raw))));
   });
-  await page.goto('/volundr/session/gates');
+  await page.goto('/volundr/sessions/gates');
   await page.locator('#tab-chat').click();
   await expect.poll(() => Boolean(socket)).toBe(true);
   const send = (frame: object) => socket!.send(JSON.stringify(frame));

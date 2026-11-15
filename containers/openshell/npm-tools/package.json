@@ -2,7 +2,7 @@
   "name": "openshell-inherited-tools",
   "private": true,
   "dependencies": {
-    "@github/copilot": "1.0.105",
+    "@github/copilot": "1.0.107",
     "@hono/node-server": "2.1.6",
     "hono": "4.13.16",
     "tar": "7.5.22"

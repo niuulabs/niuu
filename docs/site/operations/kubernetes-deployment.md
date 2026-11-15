@@ -22,19 +22,19 @@ These commands inspect configuration. They do not create a deployment.
 ## Understand the values hierarchy
 
 `charts/niuu/Chart.yaml` declares the subcharts. Values for each service are nested
-under its dependency name; aliased Mímir dependencies have separate keys.
+under its dependency name; aliased Memory dependencies have separate keys.
 
 | Setting | Scope |
 | --- | --- |
 | `global.image.registry` | Shared image registry |
 | `global.niuu.cluster` | Discovery location label |
-| `volundr.database` | Völundr database connection and secret reference |
-| `guild.database` | Guild database connection and secret reference |
+| `volundr.database` | Forge database connection and secret reference |
+| `guild.database` | Platform database connection and secret reference |
 | `volundr.podManager` | Backend that executes sessions |
 | `ingress.hosts`, `ingress.routeSets`, `ingress.tls` | Umbrella ingress routing |
 | Per-service `enabled` | Whether a dependency is deployed |
 
-The old root-level `database.external.host` example did not configure Völundr's
+The old root-level `database.external.host` example did not configure Forge's
 subchart. Inspect each enabled service's values and templates; one database flag
 is not a platform-wide database configuration.
 

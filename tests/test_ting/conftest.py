@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import pytest
+
 from niuu.domain.models import IntegrationConnection, IntegrationType
 from niuu.ports.credentials import CredentialStorePort
 from niuu.ports.integrations import IntegrationRepository
+from tests.support.full_catalogue import archived_personas_readable
 
 
 class StubIntegrationRepo(IntegrationRepository):
@@ -74,3 +77,30 @@ class StubCredentialStore(CredentialStorePort):
 
     async def health_check(self) -> bool:
         return True
+
+
+#: Modules whose tests resolve workflows against the full catalogue, archived personas included.
+_FULL_CATALOGUE_MODULES = frozenset(
+    {"tests.support.full_catalogue", "tests.test_ting.step_support"}
+)
+
+
+@pytest.fixture(autouse=True)
+def archived_personas_still_load(request: pytest.FixtureRequest):
+    """Let a test that uses the full catalogue read the archived personas as released.
+
+    The archived personas (``archive/``) must stay byte-identical, and the workflows pinned to
+    them pin their digests, so they still carry ``allowed_tools`` / ``forbidden_tools``, which a
+    persona document refuses now that per-harness tool restrictions are gone. A test module that
+    builds on the full catalogue (``tests.support.full_catalogue``) therefore runs with that
+    refusal off; every other test keeps it on.
+    """
+    uses_archive = any(
+        getattr(value, "__module__", None) in _FULL_CATALOGUE_MODULES
+        for value in vars(request.module).values()
+    )
+    if not uses_archive:
+        yield
+        return
+    with archived_personas_readable():
+        yield

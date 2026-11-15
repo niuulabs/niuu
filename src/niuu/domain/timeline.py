@@ -22,7 +22,9 @@ from datetime import UTC, datetime
 #: The heading Mímir pages use for their append-only evidence trail.
 TIMELINE_HEADING = "## Timeline"
 
-_DATED_ENTRY_RE = re.compile(r"^(\d{4}-\d{2}-\d{2}): (.+)")
+# A date, optionally followed by a time of day (automated entries write ISO timestamps,
+# some ending in ", " rather than ": "). Only the date is kept.
+_DATED_ENTRY_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})(?:T[0-9:.+Z-]*)?[:,] (.+)")
 _ZONE_RE_CACHE: dict[str, re.Pattern[str]] = {}
 
 
@@ -67,8 +69,7 @@ def extract_entry_dates(content: str) -> list[datetime]:
     frontmatter YAML never contains a literal ``## Timeline`` line, so the
     zone regex is safe to run against it directly). Entries without a
     ``YYYY-MM-DD:`` prefix carry no date and are skipped; a date-only entry
-    is treated as midnight UTC on that day, matching
-    ``mimir.learning._parse_date``.
+    is treated as midnight UTC on that day.
     """
     zone = extract_zone(content, TIMELINE_HEADING)
     dates: list[datetime] = []

@@ -26,6 +26,7 @@ from niuu.adapters.outbound.git_registry import create_provenance_verifier
 from niuu.adapters.postgres_credential_refresh_lock import PostgresCredentialRefreshLock
 from niuu.adapters.postgres_realms import PostgresRealmRepository
 from niuu.build_identity import build_identity
+from niuu.cap_telemetry import health_counts
 from niuu.config_models import SessionPreviewConfig
 from niuu.cors import apply_cors_middleware
 from niuu.domain.guild_membership import GuildInstance
@@ -70,12 +71,17 @@ from volundr.adapters.inbound.rest_git import create_git_router
 from volundr.adapters.inbound.rest_guild import create_guild_router
 from volundr.adapters.inbound.rest_integrations import create_canonical_integrations_router
 from volundr.adapters.inbound.rest_issues import create_canonical_issues_router
+from volundr.adapters.inbound.rest_memory_context import create_memory_context_router
+from volundr.adapters.inbound.rest_memory_gateway import create_memory_gateway_router
+from volundr.adapters.inbound.rest_memory_proposals import create_memory_proposals_router
+from volundr.adapters.inbound.rest_mesh_identity import create_mesh_identity_router
 from volundr.adapters.inbound.rest_message_delivery import create_message_delivery_router
 from volundr.adapters.inbound.rest_notifications import create_notifications_router
 from volundr.adapters.inbound.rest_oauth import create_canonical_oauth_router
 from volundr.adapters.inbound.rest_openshell_credentials import (
     create_openshell_credentials_router,
 )
+from volundr.adapters.inbound.rest_person_questions import create_person_questions_router
 from volundr.adapters.inbound.rest_presented_files import create_presented_files_router
 from volundr.adapters.inbound.rest_prompts import create_prompts_router
 from volundr.adapters.inbound.rest_push import create_push_router
@@ -88,9 +94,14 @@ from volundr.adapters.inbound.rest_resources import (
 from volundr.adapters.inbound.rest_secret_requests import create_secret_requests_router
 from volundr.adapters.inbound.rest_secrets import create_canonical_secrets_router
 from volundr.adapters.inbound.rest_session_log import create_session_log_router
+from volundr.adapters.inbound.rest_session_members import create_session_members_router
 from volundr.adapters.inbound.rest_session_participants import (
     create_session_participants_router,
+    invitations_refused,
 )
+from volundr.adapters.inbound.rest_session_people import create_session_people_router
+from volundr.adapters.inbound.rest_session_voice import create_session_voice_router
+from volundr.adapters.inbound.rest_teams import create_teams_router
 from volundr.adapters.inbound.rest_trace import create_trace_router
 from volundr.adapters.inbound.rest_tracker import create_canonical_tracker_router
 from volundr.adapters.inbound.rest_user_storage import create_user_storage_router
@@ -107,6 +118,7 @@ from volundr.adapters.outbound.notification_image_fetcher import (
     BrokerTargetLookup,
     SessionLookup,
 )
+from volundr.adapters.outbound.persona_playability import SkuldPersonaPlayability
 from volundr.adapters.outbound.pg_event_sink import PostgresEventSink
 from volundr.adapters.outbound.pg_message_delivery import PostgresMessageDelivery
 from volundr.adapters.outbound.pg_session_event_log import PostgresSessionEventLog
@@ -125,6 +137,7 @@ from volundr.adapters.outbound.postgres_credential_enrollments import (
 from volundr.adapters.outbound.postgres_integrations import PostgresIntegrationRepository
 from volundr.adapters.outbound.postgres_launch_specs import PostgresLaunchSpecRepository
 from volundr.adapters.outbound.postgres_mappings import PostgresMappingRepository
+from volundr.adapters.outbound.postgres_mesh_peer_claims import PostgresMeshPeerClaims
 from volundr.adapters.outbound.postgres_notifications import (
     PostgresNotificationDeliveryRepository,
     PostgresNotificationImageRepository,
@@ -146,7 +159,10 @@ from volundr.adapters.outbound.postgres_timeline import PostgresTimelineReposito
 from volundr.adapters.outbound.postgres_tokens import PostgresTokenTracker
 from volundr.adapters.outbound.postgres_users import PostgresUserRepository
 from volundr.adapters.outbound.pricing import HardcodedPricingProvider
-from volundr.adapters.outbound.resident_flock import ResidentFlockAdapter
+from volundr.adapters.outbound.resident_flock import (
+    ResidentFlockAdapter,
+    ResidentMeshCertificates,
+)
 from volundr.adapters.outbound.skuld_room import SkuldRoomAdapter
 from volundr.app_shell import build_app_shell
 from volundr.artifact_runtime import (
@@ -171,6 +187,8 @@ from volundr.composition_builders import (  # noqa: F401
     _create_host_join_endpoint,
     _create_host_pairing_signer,
     _create_http_auth_adapter,
+    _create_mesh_certificate_issuer,
+    _create_mesh_revocation_publisher,
     _create_pod_manager,
     _create_resident_controllers,
     _create_resident_session_controllers,
@@ -178,14 +196,19 @@ from volundr.composition_builders import (  # noqa: F401
     _create_secret_injection_adapter,
     _create_workflow_execution_credential_service,
     _runtime_backend,
+    _sign_forge_platform_events,
+    _start_sleipnir_bus,
     _validate_remote_room_role_config,
     create_oauth_client_registry,
     create_presented_file_store,
+    create_project_memory,
+    create_session_voice_service,
     integration_database_pool,
+    require_memory_credentials,
     require_presented_file_uploads,
     with_oauth_device_runner,
 )
-from volundr.config import Settings
+from volundr.config import ALLOW_ALL_IDENTITY_ADAPTERS, Settings
 from volundr.domain.models import SessionStatus
 from volundr.domain.notifications import NotificationSinkInfo
 from volundr.domain.ports import OpenShellCredentialGrantPort
@@ -206,6 +229,10 @@ from volundr.domain.services.communication_ingress import CommunicationIngressSe
 from volundr.domain.services.credential import CredentialService
 from volundr.domain.services.credential_enrollment import CredentialEnrollmentService
 from volundr.domain.services.event_ingestion import EventIngestionService
+from volundr.domain.services.forge import ForgeService, catalog_session_definition
+from volundr.domain.services.memory_context import MemoryContextService
+from volundr.domain.services.memory_layers import MemoryLayerService
+from volundr.domain.services.mesh_identity import MeshIdentityService
 from volundr.domain.services.mount_strategies import SecretMountStrategyRegistry
 from volundr.domain.services.notification_images import NotificationImageWorker
 from volundr.domain.services.notifications import NotificationService, engine_resolver_for
@@ -213,9 +240,12 @@ from volundr.domain.services.resident_runtime import (
     ResidentRuntimeNotFoundError,
     ResidentRuntimeService,
 )
+from volundr.domain.services.room_grants import RoomGrantSource
 from volundr.domain.services.secret_requests import SecretRequestService
 from volundr.domain.services.session_events import SessionEventStream
+from volundr.domain.services.session_members import SessionMembersService
 from volundr.domain.services.session_participants import SessionParticipantService
+from volundr.domain.services.team import TeamService
 from volundr.domain.services.telegram_ingress import TelegramIngressService
 from volundr.domain.services.tracker import TrackerService
 from volundr.domain.services.tracker_factory import TrackerFactory
@@ -349,6 +379,7 @@ def _create_notification_service(
     integration_repository: PostgresIntegrationRepository,
     session_lookup: SessionLookup,
     broker_target: BrokerTargetLookup,
+    room_grants: RoomGrantSource,
     guild_instance: GuildInstance | None = None,
 ) -> tuple[NotificationService, NotificationImageWorker] | None:
     """Compose the notification feed, rules, outbox and image worker
@@ -398,6 +429,7 @@ def _create_notification_service(
         engine_resolver=engine_resolver_for(cli_types, settings.default_definition),
         integration_repository=integration_repository,
         guild_instance=guild_instance,
+        room_grants=room_grants,
     )
     return service, image_worker
 
@@ -410,6 +442,7 @@ def _create_notification_delivery(
     integration_repository: Any,
     credential_store: Any,
     device_repository: Any,
+    team: Any = None,
 ) -> NotificationDelivery | None:
     """Compose the outbox dispatcher (``notifications.dispatcher.enabled``).
 
@@ -429,6 +462,7 @@ def _create_notification_delivery(
         credential_store=credential_store,
         device_repository=device_repository,
         push_channel=push_channel,
+        team=team,
     )
 
 
@@ -709,6 +743,51 @@ def _create_otel_providers(otel_cfg):  # pragma: no cover
     return tracer_provider, meter_provider
 
 
+async def _start_audit_subscriber(bus, audit_repository) -> AuditSubscriber:
+    """Start the Sleipnir audit subscriber; a start that fails raises.
+
+    With ``sleipnir.enabled`` the audit trail is part of what Forge promises. A
+    subscriber that cannot start used to be logged, so Forge ran on with no audit
+    records and nothing said so.
+    """
+    subscriber = AuditSubscriber(bus, audit_repository)
+    await subscriber.start()
+    return subscriber
+
+
+async def _connect_rabbitmq_event_sink(rmq_cfg):
+    """Build and connect the RabbitMQ event sink, or raise.
+
+    ``event_pipeline.rabbitmq.enabled: true`` without aio-pika, or with a broker
+    Forge cannot reach, is configured-but-impossible: raise with the remedy
+    rather than run the event pipeline without the sink.
+    """
+    try:
+        import aio_pika  # noqa: F401  (the sink imports it lazily; fail here, at startup)
+
+        from volundr.adapters.outbound.rabbitmq_event_sink import RabbitMQEventSink
+    except ImportError as exc:
+        raise RuntimeError(
+            "event_pipeline.rabbitmq.enabled is true but aio-pika is not installed — "
+            "install the 'rabbitmq' extra (pip install 'volundr[rabbitmq]') or set "
+            "event_pipeline.rabbitmq.enabled: false"
+        ) from exc
+    sink = RabbitMQEventSink(
+        url=rmq_cfg.url,
+        exchange_name=rmq_cfg.exchange_name,
+        exchange_type=rmq_cfg.exchange_type,
+    )
+    try:
+        await sink.connect()
+    except Exception as exc:
+        raise RuntimeError(
+            f"event_pipeline.rabbitmq is enabled but Forge could not connect to the broker "
+            f"({type(exc).__name__}: {exc}); fix event_pipeline.rabbitmq.url or set "
+            "event_pipeline.rabbitmq.enabled: false"
+        ) from exc
+    return sink
+
+
 def _build_otel_event_sink(otel_cfg):
     """Build the OTel GenAI event sink from validated config, or raise.
 
@@ -956,27 +1035,60 @@ def create_app(
             git_registry = create_git_registry(settings.git)
 
             # Sleipnir integration (optional — enabled via sleipnir.enabled config)
-            sleipnir_bus = None
-            if settings.sleipnir.enabled:
-                try:
-                    sl_cls = import_class(settings.sleipnir.adapter)
-                    sleipnir_kwargs = resolve_secret_kwargs(
-                        settings.sleipnir.kwargs,
-                        settings.sleipnir.secret_kwargs_env,
-                    )
-                    sleipnir_bus = sl_cls(**sleipnir_kwargs)
-                    if hasattr(sleipnir_bus, "start"):
-                        await sleipnir_bus.start()
-                    logger.info(
-                        "Sleipnir integration enabled: adapter=%s",
-                        settings.sleipnir.adapter.rsplit(".", 1)[-1],
-                    )
-                except Exception:
-                    logger.exception("Failed to initialise Sleipnir integration")
-                    sleipnir_bus = None
+            sleipnir_bus = await _start_sleipnir_bus(settings)
 
+            # Mesh identity: certificates for session peers and Forge-hosted residents,
+            # signed with the session-credential key. Revocations ride the Sleipnir bus;
+            # without one the certificate lifetime is the only bound.
+            mesh_signing = settings.mesh.attestation.required
+            app.state.mesh_signing = mesh_signing
+            if not mesh_signing:
+                logger.warning(
+                    "mesh.attestation.required is false: the mesh runs unauthenticated. Forge's "
+                    "resident peers and revocation notices are not signed, and the sessions this "
+                    "Forge launches accept any claimed sender on the mesh. This is an operator "
+                    "decision; set mesh.attestation.required: true to prove who sends what"
+                )
+            mesh_certificate_issuer = _create_mesh_certificate_issuer(
+                settings, forge_session_tokens
+            )
+            mesh_peer_claims = PostgresMeshPeerClaims(pool)
+            mesh_revocation_publisher = None
+            if mesh_certificate_issuer is not None and sleipnir_bus is not None and mesh_signing:
+                mesh_revocation_publisher = await _create_mesh_revocation_publisher(
+                    settings,
+                    mesh_certificate_issuer,
+                    mesh_peer_claims,
+                    sleipnir_bus,
+                    settings.mesh.attestation,
+                )
+            elif mesh_certificate_issuer is not None and mesh_signing:
+                logger.warning(
+                    "Mesh revocations are not published: Forge has no Sleipnir bus "
+                    "(sleipnir.enabled); a stopped session's certificate lasts until it "
+                    "expires (forge_mcp.mesh_identity.ttl_seconds)"
+                )
+            sleipnir_bus = await _sign_forge_platform_events(
+                settings, sleipnir_bus, mesh_revocation_publisher
+            )
+            mesh_identity_service = (
+                MeshIdentityService(
+                    mesh_certificate_issuer,
+                    mesh_peer_claims,
+                    repository,
+                    revocations=mesh_revocation_publisher,
+                )
+                if mesh_certificate_issuer is not None
+                else None
+            )
+            app.state.mesh_identity = mesh_identity_service
+
+            # A node whose instance is not recorded yet keeps running: only
+            # GET /guild reports it (503), and its items carry null instance fields.
+            guild_membership = settings.guild.membership()
             broadcaster = InMemoryEventBroadcaster(
                 sleipnir_publisher=sleipnir_bus,
+                guild_instance=guild_membership.instance if guild_membership else None,
             )
 
             # Create services with broadcaster for real-time updates
@@ -993,6 +1105,8 @@ def create_app(
 
             # Credential store (pluggable: memory, Vault, Infisical)
             credential_store = _create_credential_store(settings)
+            # Misconfigured voice is fatal here, not on a session's first call.
+            session_voice_service = create_session_voice_service(settings, credential_store)
             compute_provider = None
             compute_pool = None
             compute_pool_task = None
@@ -1300,6 +1414,12 @@ def create_app(
                     resident_session_controllers,
                     sleipnir_bus,
                     persona_provider=session_persona_provider,
+                    mesh_certificates=(
+                        ResidentMeshCertificates(mesh_certificate_issuer, mesh_peer_claims)
+                        if mesh_certificate_issuer is not None and mesh_signing
+                        else None
+                    ),
+                    attestation=settings.mesh.attestation,
                 )
                 if sleipnir_bus is not None
                 else None
@@ -1358,12 +1478,25 @@ def create_app(
             if moved:
                 logger.info("Push devices: moved %d stored tokens into the credential store", moved)
             mapping_repository = PostgresMappingRepository(pool)
-            # A node whose instance is not recorded yet keeps running: only
-            # GET /guild reports it (503), and its items carry null instance fields.
-            guild_membership = settings.guild.membership()
+            # Who holds a role in a session's room: the participant grants and the people
+            # on projects. Session authorization and the notification feed (who is told that
+            # something needs an approver) read the roles from the same two stores.
+            session_participant_repository = PostgresSessionParticipantRepository(pool)
+            project_member_repository = None
+            if settings.projects.enabled:
+                from volundr.domain.project_ports import ProjectMemberRepository
+
+                project_member_repository = import_class(
+                    settings.projects.member_repository_adapter
+                )(pool=pool, **settings.projects.member_repository_kwargs)
+                if not isinstance(project_member_repository, ProjectMemberRepository):
+                    raise TypeError("Project member adapter must implement ProjectMemberRepository")
             notification_feed = _create_notification_service(
                 settings,
                 pool,
+                room_grants=RoomGrantSource(
+                    session_participant_repository, project_member_repository
+                ),
                 broadcaster=broadcaster,
                 integration_repository=integration_repo,
                 guild_instance=guild_membership.instance if guild_membership else None,
@@ -1373,6 +1506,13 @@ def create_app(
             notification_service, notification_image_worker = notification_feed or (None, None)
             app.state.notification_service = notification_service
             app.state.notification_image_worker = notification_image_worker
+            from niuu.adapters.postgres_integration_usage import PostgresIntegrationUsageLog
+            from volundr.domain.services.notification_dispatcher import TeamDelivery
+
+            async def _recipient_email(user_id: str) -> str | None:
+                user = await user_repository.get(user_id)
+                return user.email if user is not None else None
+
             notification_delivery = _create_notification_delivery(
                 settings,
                 pool,
@@ -1380,6 +1520,10 @@ def create_app(
                 integration_repository=integration_repo,
                 credential_store=credential_store,
                 device_repository=device_repository,
+                team=TeamDelivery(
+                    recipient_email=_recipient_email,
+                    usage=PostgresIntegrationUsageLog(integration_pool),
+                ),
             )
             # The Guild push gateway (push.gateway.enabled): this node pushes for
             # every Guild node's notifications. Configured-but-impossible (an
@@ -1496,6 +1640,10 @@ def create_app(
             )
             app.state.secret_request_service = secret_request_service
 
+            project_memory_repository, project_memory_resolver = create_project_memory(
+                settings, pool, workload_identity_service
+            )
+
             session_service = SessionService(
                 repository,
                 pod_manager,
@@ -1525,11 +1673,20 @@ def create_app(
                 presented_file_store=presented_file_store,
                 forge_session_projection=_create_forge_session_projection(settings),
                 secret_cleanup=secret_request_service,
+                mesh_identity=mesh_identity_service,
+                project_memory=project_memory_resolver,
             )
+            # A workflow run's unit starts its members with it: every pod manager that hosts
+            # one resolves their launches (each member's own spec and credential) from here.
+            pod_manager.configure_hosted_members(session_service.hosted_member_launches)
             if presented_file_store is not None:
                 require_presented_file_uploads(
                     settings, delivers_session_credential=session_service.delivers_forge_session
                 )
+            require_memory_credentials(
+                settings,
+                delivers_session_credential=session_service.delivers_forge_session_somewhere,
+            )
             # Local-process brokers notify the session service when they exit so
             # the DB row is reconciled promptly (pod-status authoritative) rather
             # than waiting for the periodic sweep.
@@ -1691,7 +1848,7 @@ def create_app(
                     # session_participants grant (see
                     # SessionParticipantService.active_grants), unlike "start"
                     # which is owner/admin only.
-                    grants = await session_participant_service.active_grants(resource_id)
+                    grants = await session_participant_service.active_grants(session)
                     resource = SessionService.attributed_resource(
                         session_id,
                         owner_id=session.owner_id,
@@ -1744,6 +1901,16 @@ def create_app(
                 if hasattr(skuld_reg, "set_room_role_resolver"):
                     skuld_reg.set_room_role_resolver(_resolve_room_role)
 
+                if hasattr(skuld_reg, "set_display_name_resolver"):
+
+                    async def _resolve_display_name(user_id: str) -> str | None:
+                        """The provisioned user's display name, stamped on proxied sessions
+                        as the author name of the caller's messages."""
+                        user = await user_repository.get(user_id)
+                        return user.display_name if user is not None else None
+
+                    skuld_reg.set_display_name_resolver(_resolve_display_name)
+
             stats_service = StatsService(stats_repository, session_service)
             token_service = TokenService(
                 token_tracker, repository, pricing_provider, broadcaster=broadcaster
@@ -1765,11 +1932,11 @@ def create_app(
                 broadcaster=broadcaster,
                 timeline_repository=timeline_repository,
             )
-            session_participant_repository = PostgresSessionParticipantRepository(pool)
             session_participant_service = SessionParticipantService(
                 session_participant_repository,
                 session_service,
                 user_repository,
+                project_members=project_member_repository,
             )
             app.state.session_participant_service = session_participant_service
             if skuld_reg is not None and hasattr(skuld_reg, "close_connections"):
@@ -1785,6 +1952,9 @@ def create_app(
                     )
 
                 session_participant_service.set_revocation_notifier(_close_revoked_connections)
+            if notification_service is not None:
+                # An invitation is announced to the invitee and settled when answered.
+                session_participant_service.set_invitation_notices(notification_service)
 
             archive_store = _create_archive_store(settings)
             archive_service = SessionArchiveService(
@@ -1830,6 +2000,8 @@ def create_app(
 
             # Projects add durable coordination metadata to ordinary Forge sessions.
             project_service = None
+            project_integration_service = None
+            project_memory_service = None
             if settings.projects.enabled:
                 from volundr.domain.project_ports import ProjectRepository, ProjectWorkspace
                 from volundr.domain.services.projects import ProjectService
@@ -1856,8 +2028,43 @@ def create_app(
                     project_workspace,
                     session_service,
                     instance_id=project_config.instance_id or settings.server_public_host,
+                    members=project_member_repository,
+                    users=user_repository,
                 )
                 app.state.project_service = project_service
+                from niuu.adapters.postgres_integration_usage import PostgresIntegrationUsageLog
+                from volundr.domain.services.client_credentials import ClientCredentialsMinter
+                from volundr.domain.services.oauth_token_refresh import (
+                    DEFAULT_REQUEST_TIMEOUT_SECONDS,
+                )
+                from volundr.domain.services.project_integrations import (
+                    ProjectIntegrationService,
+                )
+
+                integration_usage_log = PostgresIntegrationUsageLog(integration_pool)
+                project_integration_service = ProjectIntegrationService(
+                    project_service,
+                    integrations=integration_repo,
+                    credentials=credential_store,
+                    registry=integration_registry,
+                    rules=PostgresNotificationRuleRepository(pool),
+                    usage=integration_usage_log,
+                    minter=ClientCredentialsMinter(DEFAULT_REQUEST_TIMEOUT_SECONDS),
+                    usage_page_size=project_config.team_usage_page_size,
+                )
+                app.state.project_integration_service = project_integration_service
+                from volundr.domain.services.project_memory import ProjectMemoryService
+
+                project_memory_service = ProjectMemoryService(
+                    project_service, project_memory_repository, project_memory_resolver
+                )
+                app.state.project_memory_service = project_memory_service
+
+            persona_playability = SkuldPersonaPlayability(
+                definitions=settings.session_definitions,
+                default_definition=settings.default_definition,
+                resolve_definition=partial(catalog_session_definition, pricing_provider),
+            )
 
             # Create and include routers
             forge_router = create_router(
@@ -1884,6 +2091,8 @@ def create_app(
                 preview_min_edge=settings.tool_result_preview.min_edge,
                 preview_edge_limit=settings.tool_result_preview.max_edge,
                 project_service=project_service,
+                project_integration_service=project_integration_service,
+                project_memory_service=project_memory_service,
                 runtime_build=build_identity()
                 if pod_manager.runtime_backend == "process"
                 else None,
@@ -1892,6 +2101,8 @@ def create_app(
                 history_max_bytes=settings.conversation_recent_max_bytes,
                 session_participant_service=session_participant_service,
                 presented_file_store=presented_file_store,
+                guild_membership=guild_membership,
+                persona_playability=persona_playability,
             )
             app.include_router(forge_router)
             app.include_router(
@@ -1999,6 +2210,19 @@ def create_app(
                     credential_lock=PostgresCredentialRefreshLock(pool),
                 )
             )
+            if project_integration_service is not None:
+                from volundr.adapters.inbound.rest_oauth import create_team_oauth_router
+
+                app.include_router(
+                    create_team_oauth_router(
+                        oauth_config=settings.oauth,
+                        integration_registry=integration_registry,
+                        credential_store=credential_store,
+                        integration_repo=integration_repo,
+                        team_integrations=project_integration_service,
+                        oauth_clients=oauth_clients,
+                    )
+                )
             app.include_router(create_canonical_tracker_router(tracker_service=tracker_service))
             app.include_router(create_canonical_issues_router(integration_repo, tracker_factory))
 
@@ -2123,11 +2347,9 @@ def create_app(
 
             audit_repository = PostgresAuditRepository(pool)
             if settings.sleipnir.enabled and sleipnir_bus is not None:
-                try:
-                    audit_subscriber = AuditSubscriber(sleipnir_bus, audit_repository)
-                    await audit_subscriber.start()
-                except Exception:
-                    logger.exception("Failed to start audit subscriber")
+                # sleipnir.enabled with a subscriber that cannot start is fatal: the
+                # audit trail would otherwise stop recording while Forge looked healthy.
+                audit_subscriber = await _start_audit_subscriber(sleipnir_bus, audit_repository)
             app.include_router(create_canonical_audit_router(audit_repository))
             app.include_router(create_audit_router(audit_repository))
 
@@ -2137,27 +2359,9 @@ def create_app(
             # Optional: RabbitMQ sink
             rabbitmq_sink = None
             if settings.event_pipeline.rabbitmq.enabled:
-                try:
-                    from volundr.adapters.outbound.rabbitmq_event_sink import (
-                        RabbitMQEventSink,
-                    )
-
-                    rmq_cfg = settings.event_pipeline.rabbitmq
-                    rabbitmq_sink = RabbitMQEventSink(
-                        url=rmq_cfg.url,
-                        exchange_name=rmq_cfg.exchange_name,
-                        exchange_type=rmq_cfg.exchange_type,
-                    )
-                    await rabbitmq_sink.connect()
-                    event_sinks.append(rabbitmq_sink)
-                    logger.info("RabbitMQ event sink enabled")
-                except ImportError:
-                    logger.warning(
-                        "RabbitMQ sink enabled but aio-pika not installed. "
-                        "Install with: pip install volundr[rabbitmq]"
-                    )
-                except Exception:
-                    logger.exception("Failed to connect RabbitMQ event sink")
+                rabbitmq_sink = await _connect_rabbitmq_event_sink(settings.event_pipeline.rabbitmq)
+                event_sinks.append(rabbitmq_sink)
+                logger.info("RabbitMQ event sink enabled")
 
             # Optional: OTel sink (GenAI semantic conventions)
             otel_sink = None
@@ -2246,6 +2450,44 @@ def create_app(
                 )
             )
             app.include_router(
+                create_mesh_identity_router(mesh_identity_service, prefix="/api/v1/forge")
+            )
+            app.include_router(
+                create_session_voice_router(
+                    session_voice_service, session_service, prefix="/api/v1/forge"
+                )
+            )
+            app.include_router(
+                create_memory_context_router(
+                    MemoryContextService(
+                        project_service.repository if project_service is not None else None,
+                        session_service,
+                    ),
+                    session_service,
+                    prefix="/api/v1/forge",
+                )
+            )
+            app.include_router(
+                create_memory_gateway_router(
+                    MemoryLayerService(session_service),
+                    project_service,
+                    service_subject=settings.memory.gateway_service_subject,
+                    allow_all_identity=settings.identity.adapter in ALLOW_ALL_IDENTITY_ADAPTERS,
+                    prefix="/api/v1/forge",
+                )
+            )
+            if project_service is not None and project_member_repository is not None:
+                # The memory gateway tells a project's deciders that a proposal waits.
+                app.include_router(
+                    create_memory_proposals_router(
+                        session_service,
+                        project_service,
+                        project_member_repository,
+                        notification_service,
+                        prefix="/api/v1/forge",
+                    )
+                )
+            app.include_router(
                 create_message_delivery_router(PostgresMessageDelivery(pool), session_service)
             )
             if push_gateway is not None:
@@ -2260,6 +2502,57 @@ def create_app(
                     runtime_backend=runtime_backend,
                     room_role_source=settings.pod_manager.room_role_source,
                     identity_header_names=settings.identity.kwargs,
+                )
+            )
+            app.include_router(
+                create_teams_router(
+                    TeamService(
+                        ForgeService(
+                            session_service,
+                            stats_service=stats_service,
+                            token_service=token_service,
+                            pricing_provider=pricing_provider,
+                            repo_service=repo_service,
+                            chronicle_service=chronicle_service,
+                            archive_service=archive_service,
+                            project_service=project_service,
+                            session_participant_service=session_participant_service,
+                            persona_playability=persona_playability,
+                        ),
+                        session_participant_service,
+                        runtime_backend=runtime_backend,
+                        invitations_refused=invitations_refused(
+                            runtime_backend, settings.pod_manager.room_role_source
+                        ),
+                        persona_provider=session_persona_provider,
+                        voice_enabled=settings.voice.enabled,
+                        voice_default_persona=settings.voice.default_persona,
+                    ),
+                    session_participant_service,
+                    server_public_host=settings.server_public_host,
+                    instance_fields=(
+                        guild_membership.instance.fields()
+                        if guild_membership is not None and guild_membership.instance is not None
+                        else None
+                    ),
+                )
+            )
+            app.include_router(
+                create_session_members_router(
+                    SessionMembersService(
+                        repository,
+                        session_service,
+                        session_participant_service,
+                        session_room_port,
+                    )
+                )
+            )
+            app.include_router(
+                create_session_people_router(session_participant_service, session_service)
+            )
+            app.include_router(
+                create_person_questions_router(
+                    session_participant_service, session_service, notification_service
                 )
             )
 
@@ -2451,6 +2744,8 @@ def create_app(
                     pass
                 if resident_flock_adapter is not None:
                     await resident_flock_adapter.stop()
+                if mesh_revocation_publisher is not None:
+                    await mesh_revocation_publisher.stop()
                 await resident_runtime_service.close()
                 await event_ingestion.close_all()
                 if settings.compute is None and hasattr(pod_manager, "close"):
@@ -2519,10 +2814,17 @@ def create_app(
     async def health_check() -> dict[str, Any]:
         """Health check endpoint, with presented-file usage when the store is on."""
         health: dict[str, Any] = {"status": "healthy"}
+        signing = getattr(app.state, "mesh_signing", None)
+        if signing is not None:
+            health["mesh_attestation"] = {
+                "required": signing,
+                "state": "signed" if signing else "unauthenticated",
+            }
         quota = getattr(app.state, "presented_file_quota", None)
         store = getattr(app.state, "presented_file_store", None)
         if quota is not None and store is not None:
             health["presented_files"] = await quota.usage(store)
+        health["caps"] = health_counts()
         return health
 
     return app

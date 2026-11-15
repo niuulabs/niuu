@@ -115,6 +115,12 @@ def build(name: str, output: Path) -> Path:
     postgres = site / "niuu/pginstall"
     shutil.copytree(ROOT / "build/pginstall", postgres, symlinks=True)
     relocate_postgres(postgres)
+    # Mini mode's memory runs this gbrain (cli.services.local_memory.BUNDLED_GBRAIN_EXECUTABLE).
+    gbrain = ROOT / "build/gbrain/gbrain"
+    if not gbrain.is_file():
+        raise SystemExit(f"{gbrain} is missing; build it first with `make build-gbrain`")
+    (site / "cli/gbrain").mkdir(parents=True, exist_ok=True)
+    shutil.copy2(gbrain, site / "cli/gbrain/gbrain")
     distribution = source / "distribution.tar.zst"
     uncompressed = source / "distribution.tar"
     with tarfile.open(uncompressed, "w") as archive:

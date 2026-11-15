@@ -85,7 +85,7 @@ def test_push_sink_without_its_dependencies_fails_startup():
 def test_renderer_falls_back_to_the_public_origin():
     config = Settings(notifications={"host_label": "thor"}).notifications
     renderer = notification_renderer(config, "http://10.0.0.5:8080")
-    assert renderer.deep_link("n", "s") == "http://10.0.0.5:8080/volundr/session/s#notification-n"
+    assert renderer.deep_link("n", "s") == "http://10.0.0.5:8080/volundr/sessions/s#notification-n"
     assert renderer._host_label == "thor"  # noqa: SLF001
 
 

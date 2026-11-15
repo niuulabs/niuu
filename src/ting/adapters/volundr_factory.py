@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 
@@ -71,6 +72,10 @@ def _credential_binding(config: dict[str, Any]) -> tuple[str, str]:
     return legacy_name, "user"
 
 
+#: The slug the embedded Forge of mini mode registers itself under in Guild.
+LOCAL_FORGE_SLUG = "local"
+
+
 class LocalVolundrAdapterFactory:
     """Volundr adapter factory for mini/local mode.
 
@@ -78,34 +83,53 @@ class LocalVolundrAdapterFactory:
     server with no PAT required.  Same interface as VolundrAdapterFactory
     so all callers (dispatch, activity subscriber, review engine) work
     without fallback logic.
+
+    The adapter's ``target_id`` (what a run records as its connection, and what the UI
+    addresses the run's sessions and files by through the root facade) is the embedded
+    Forge's Guild instance id, as on a cluster, looked up once by its slug ``local``.
     """
 
     def __init__(self, url: str) -> None:
-        self._adapter = VolundrHTTPAdapter(base_url=url, name="local", config={})
+        self._url = url
+        self._adapter = VolundrHTTPAdapter(base_url=url, name=LOCAL_FORGE_SLUG, config={})
+        self._resolved = False
+        self._lock = asyncio.Lock()
+
+    async def _local(self) -> VolundrHTTPAdapter:
+        if self._resolved:
+            return self._adapter
+        async with self._lock:
+            if not self._resolved:
+                instance_id = await self._adapter.registered_instance_id(LOCAL_FORGE_SLUG)
+                self._adapter = VolundrHTTPAdapter(
+                    base_url=self._url, name=LOCAL_FORGE_SLUG, target_id=instance_id, config={}
+                )
+                self._resolved = True
+        return self._adapter
 
     async def for_owner(self, owner_id: str) -> list[VolundrPort]:
-        return [self._adapter]
+        return [await self._local()]
 
     async def for_owner_with_unresolved(self, owner_id: str) -> tuple[list[VolundrPort], int]:
         """Local mode never silently skips an instance — nothing is ever unresolved."""
-        return [self._adapter], 0
+        return [await self._local()], 0
 
     async def primary_for_owner(self, owner_id: str) -> VolundrPort | None:
-        return self._adapter
+        return await self._local()
 
     async def for_principal(self, principal: Principal) -> list[VolundrPort]:
-        return [self._adapter]
+        return [await self._local()]
 
     async def for_principal_with_unresolved(
         self, principal: Principal
     ) -> tuple[list[VolundrPort], int]:
-        return [self._adapter], 0
+        return [await self._local()], 0
 
     async def primary_for_principal(self, principal: Principal) -> VolundrPort | None:
-        return self._adapter
+        return await self._local()
 
     async def for_connection(self, owner_id: str, connection_id: str) -> VolundrPort | None:
-        return self._adapter
+        return await self._local()
 
 
 class VolundrAdapterFactory:

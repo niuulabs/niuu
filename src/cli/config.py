@@ -25,6 +25,7 @@ from pydantic_settings import (
 
 from bifrost.config import BifrostConfig
 from niuu.domain.observability import ObservabilityConfig
+from niuu.mesh.config import MeshAttestationConfig
 from volundr.compute.config import ComputeConfig
 
 DEFAULT_CONFIG_DIR = Path.home() / ".niuu"
@@ -114,9 +115,15 @@ class PodManagerConfig(BaseModel):
         default="claude",
         description="Path or name of the claude binary (mini mode).",
     )
-    max_concurrent: int = Field(
-        default=4,
-        description="Maximum concurrent sessions.",
+    max_concurrent: int | None = Field(
+        default=None,
+        gt=0,
+        description=(
+            "Most sessions that may run at once on this machine. Unset runs as many as the "
+            "machine takes: the real bounds are its memory and the model subscriptions' own "
+            "concurrency, which refuse on their own. A launch over a limit that is set is "
+            "refused, naming this key."
+        ),
     )
     sdk_port_start: int = Field(
         default=9100,
@@ -133,6 +140,76 @@ class PodManagerConfig(BaseModel):
         data.pop("adapter", None)
         data.pop("runtime_backend", None)
         return data
+
+
+class MeshConfig(BaseModel):
+    """The mesh of the sessions this machine launches, and whether it proves who sends what.
+
+    ``attestation.required`` is the one decision about mesh signing for everything this
+    machine runs (Forge's residents and revocation notices, and every locally launched
+    session). It is on by default and needs no setup: Forge's own key file signs the
+    certificates. ``required: false`` runs the mesh unauthenticated, which is the
+    operator's choice; Forge and each session log that once at startup, and Forge reports it
+    on ``/health``. The other keys are Skuld's own ``mesh`` settings for local sessions;
+    unset keeps Skuld's default. ``enabled: true`` is enough: the mesh runs on nng, and
+    sessions on this machine find each other through a registry file (``discovery_adapters``).
+    """
+
+    model_config = {"extra": "forbid"}
+
+    enabled: bool | None = Field(default=None, description="Skuld mesh.enabled for sessions.")
+    transport: str | None = Field(default=None, description="Skuld mesh.transport.")
+    peer_id: str | None = Field(default=None, description="Skuld mesh.peer_id.")
+    realm_id: str | None = Field(default=None, description="Skuld mesh.realm_id.")
+    nng: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "Skuld mesh.nng (pub_sub_address, advertise_host, rediscover_interval_s). Unset "
+            "keeps a loopback port the OS chooses, announced as the port it got."
+        ),
+    )
+    discovery_adapters: list[dict[str, Any]] | None = Field(
+        default=None,
+        description=(
+            "Skuld mesh.discovery_adapters: how sessions find each other, as `adapter:` plus "
+            "that adapter's settings. Unset, sessions on this machine share one registry file "
+            "(`~/.niuu/mesh/peers.json`); set it to use `static`, `k8s` or `event_bus` instead."
+        ),
+    )
+    nats: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "Skuld mesh.nats, for `transport: nats` (servers and the rest of "
+            "niuu.mesh.config.MeshNatsConfig). NATS is an option, never required."
+        ),
+    )
+    attestation: MeshAttestationConfig = Field(
+        default_factory=MeshAttestationConfig,
+        description="Proof of who sent each mesh message (see the class docstring).",
+    )
+
+    def session_settings(self) -> dict[str, Any]:
+        """Skuld ``mesh`` settings for local sessions (attestation travels as Forge's decision)."""
+        return {
+            key: getattr(self, key)
+            for key in (
+                "enabled",
+                "transport",
+                "peer_id",
+                "realm_id",
+                "nng",
+                "discovery_adapters",
+                "nats",
+            )
+            if getattr(self, key) is not None
+        }
+
+    def forge_env(self) -> dict[str, str]:
+        """Forge's ``mesh.attestation`` settings, for the fields the operator set."""
+        return {
+            f"MESH__ATTESTATION__{name.upper()}": str(getattr(self.attestation, name)).lower()
+            for name in self.attestation.model_fields_set
+        }
 
 
 class DockerVllmConfig(BaseModel):
@@ -613,14 +690,6 @@ class HostsConfig(BaseModel):
         min_length=1,
         description="Provider profile of the hosts; the catalog's execution machine names it.",
     )
-    max_hosts: int = Field(
-        default=16,
-        gt=0,
-        description=(
-            "compute.max_machines: how many hosts the pool may hold at once. A host "
-            "beyond it waits as ready and unclaimed; raise it to use more hosts."
-        ),
-    )
     session_images: HostSessionImagesConfig = Field(
         default_factory=HostSessionImagesConfig,
         description="What Niuu's built-in host execution runs on joined machines.",
@@ -721,7 +790,6 @@ class HostsConfig(BaseModel):
         return ComputeConfig.model_validate(
             {
                 "pool_id": self.pool_id,
-                "max_machines": self.max_hosts,
                 "reuse_policy": "reuse",
                 "provider_binding": self.pool_id,
                 "provider": {
@@ -745,11 +813,114 @@ class HostsConfig(BaseModel):
                     "kwargs": {
                         "profile": self.profile,
                         "pool_id": self.pool_id,
-                        "max_machines": self.max_hosts,
                     },
                 },
             },
         }
+
+
+class LocalGBrainConfig(BaseModel):
+    """The gbrain process mini mode runs for memory (``local_memory.gbrain``)."""
+
+    executable: str = Field(
+        default="",
+        description=(
+            "Path of the gbrain executable. Empty uses the one this niuu carries: the "
+            "release binary's bundled copy, or build/gbrain/gbrain in a source checkout "
+            "(`make build-gbrain`). A configured path that is not an executable file is "
+            "fatal at `niuu platform up`."
+        ),
+    )
+    host: str = Field(
+        default="127.0.0.1",
+        description="Address gbrain listens on. Keep it on loopback: only this host calls it.",
+    )
+    port: int = Field(
+        default=3141,
+        ge=1,
+        le=65535,
+        description=(
+            "Port gbrain listens on. A port another process holds is fatal at start, "
+            "naming this setting."
+        ),
+    )
+    command_timeout_seconds: float = Field(
+        default=300.0,
+        gt=0,
+        description=(
+            "How long the one-off `gbrain init` and `gbrain auth create` of the first start "
+            "may run. Bounded by how long gbrain needs to create its database (a few seconds "
+            "on a laptop); a command that takes longer is stopped and the start fails, "
+            "naming this setting."
+        ),
+    )
+    startup_timeout_seconds: float = Field(
+        default=120.0,
+        gt=0,
+        description=(
+            "How long `gbrain serve` may take to answer /health. A gbrain that does not "
+            "answer in time is stopped and the start fails, naming this setting and gbrain's "
+            "log file."
+        ),
+    )
+    health_poll_interval_seconds: float = Field(
+        default=0.5,
+        gt=0,
+        description="Seconds between /health probes while gbrain starts.",
+    )
+    health_timeout_seconds: float = Field(
+        default=5.0,
+        gt=0,
+        description="Timeout of one /health probe.",
+    )
+    stop_timeout_seconds: float = Field(
+        default=15.0,
+        gt=0,
+        description=(
+            "How long gbrain may take to exit after SIGTERM before it is killed. A kill is "
+            "logged at error, because gbrain's database may then need recovery."
+        ),
+    )
+
+
+class LocalMemoryConfig(BaseModel):
+    """Memory in mini mode (``local_memory``): one database-only gbrain on this machine.
+
+    ``niuu platform up`` starts gbrain with the stack, serves Mímir's store and the memory
+    gateway from it, and points Forge's sessions at the gateway. Named ``local_memory``
+    because Forge reads ``memory`` from this same file for its own gateway settings.
+    """
+
+    enabled: bool = Field(
+        default=True,
+        description=(
+            "Run gbrain and the memory gateway with the stack. False is the explicit choice "
+            "to run without memory (Mímir then needs MIMIR__BACKEND set by the operator). "
+            "True with no gbrain to run is fatal at start, naming the remedy."
+        ),
+    )
+    home: str = Field(
+        default="~/.niuu/memory",
+        description=(
+            "Directory for gbrain's database (gbrain/), its log, and the secrets created on "
+            "first start (0600): gbrain's admin token, Mímir's store token and the memory "
+            "signing key. Back it up: the signing key seals every record."
+        ),
+    )
+    system_name: str = Field(
+        default="local-brain",
+        min_length=1,
+        description="The memory gateway's name for this gbrain (memory.systems[].name).",
+    )
+    tenants: list[str] = Field(
+        default_factory=lambda: ["default"],
+        min_length=1,
+        description=(
+            "Orgs whose layers live in this gbrain (memory.tenants). Without authentication "
+            "every caller is tenant 'default'."
+        ),
+    )
+    gbrain: LocalGBrainConfig = Field(default_factory=LocalGBrainConfig)
 
 
 class ServiceConfig(BaseModel):
@@ -999,7 +1170,7 @@ class GuildConfig(BaseModel):
     means this host has never joined a Guild.
     """
 
-    url: str = Field(default="", description="Base URL of the Guild this host joined.")
+    url: str = Field(default="", description="Base URL of the Platform this host joined.")
     node_id: str = Field(
         default="", description="This host's node id, assigned by Guild at join time."
     )
@@ -1236,6 +1407,7 @@ class CLISettings(BaseSettings):
     host_auth: AuthConfig = Field(default_factory=AuthConfig)
     guild: GuildConfig = Field(default_factory=GuildConfig)
     pod_manager: PodManagerConfig = Field(default_factory=PodManagerConfig)
+    mesh: MeshConfig = Field(default_factory=MeshConfig)
     server: ServerConfig = Field(default_factory=ServerConfig)
     remote: RemoteConfig = Field(default_factory=RemoteConfig)
     residents: ResidentsConfig = Field(default_factory=ResidentsConfig)
@@ -1246,6 +1418,7 @@ class CLISettings(BaseSettings):
     observability: CLIObservabilityConfig = Field(default_factory=CLIObservabilityConfig)
     compute: ComputeConfig | None = None
     hosts: HostsConfig = Field(default_factory=HostsConfig)
+    local_memory: LocalMemoryConfig = Field(default_factory=LocalMemoryConfig)
     service_overrides: dict[str, PerServiceConfig] = Field(
         default_factory=dict,
         description="Per-service enabled/port overrides keyed by service name.",

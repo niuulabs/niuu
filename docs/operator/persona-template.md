@@ -43,10 +43,17 @@ All personas share these communication principles:
 
 ## Persona Structure
 
+`description` is one sentence saying what the persona does and when to talk to it. It is
+never put in a prompt: a session playing the persona announces it to its peers on the mesh
+(`mesh_peers`) so an agent can choose whom to ask. Every built-in persona has one, and a test
+fails if one does not. Changing it changes the persona's digest, so re-pin the bundled
+workflows with `scripts/repin_bundled_workflows.py` and bump their versions.
+
 Every persona should include these sections in its `system_prompt_template`:
 
 ```yaml
 name: persona-name
+description: "One sentence on what the persona does and when to talk to it."
 system_prompt_template: |
   ## Identity
   You are a [role]. Your job is to [primary responsibility].
@@ -79,8 +86,6 @@ system_prompt_template: |
   - [ ] [Check 2]
   - [ ] [Check 3]
 
-allowed_tools: [...]
-forbidden_tools: [...]
 permission_mode: read-only | workspace-write | full-access
 llm:
   primary_alias: balanced | powerful | fast
@@ -96,6 +101,10 @@ consumes:
   event_types: [event.type.one, event.type.two]
   injects: [context_key_one, context_key_two]
 ```
+
+> **Tool restrictions are not supported yet.** A persona has no `allowed_tools` or
+> `forbidden_tools`; a persona that carries either key is refused. Restricting tools per
+> harness is future work. `permission_mode` still applies.
 
 ## Escalation Protocol
 
@@ -228,8 +237,6 @@ system_prompt_template: |
   - [ ] Searched at least 3 sources
   - [ ] Confidence level is calibrated
 
-allowed_tools: [web, file, mimir]
-forbidden_tools: [git, terminal, cascade]
 permission_mode: read-only
 llm:
   primary_alias: balanced
@@ -286,8 +293,6 @@ system_prompt_template: |
   - [ ] All critical findings are truly blocking
   - [ ] Each finding has a file:line reference
 
-allowed_tools: [file, git, web, ravn]
-forbidden_tools: [terminal, cascade]
 permission_mode: read-only
 llm:
   primary_alias: balanced

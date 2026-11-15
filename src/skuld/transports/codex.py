@@ -161,7 +161,6 @@ class CodexSubprocessTransport(CLITransport):
         self._web_search_enabled = web_search_enabled
         self._model = model
         self._mcp_overrides = build_codex_mcp_overrides(mcp_servers or [])
-        self._mcp_servers = list(mcp_servers or [])
         self._skip_permissions = skip_permissions
         self._approval_policy = approval_policy
         self._sandbox = sandbox
@@ -179,7 +178,6 @@ class CodexSubprocessTransport(CLITransport):
     async def start(self) -> None:
         _, shim_env = ensure_codex_tool_shims(
             self.workspace_dir,
-            mcp_servers=self._mcp_servers,
             session_env=self._session_tools.env if self._session_tools else None,
         )
         if shim_env:

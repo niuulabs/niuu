@@ -77,4 +77,18 @@ describe('ChatDisplayControls', () => {
     expect(localStorage.getItem('niuu.compactUx.showMessageActions')).toBe('false');
     expect(localStorage.getItem('niuu.compactUx.copyMode')).toBe('hover');
   });
+
+  it("offers the host's workflow panel only when the host has one", () => {
+    const onToggle = vi.fn();
+    const { rerender } = render(<ChatDisplayControls />);
+    expect(screen.queryByTestId('workflow-panel-toggle')).toBeNull();
+
+    rerender(<ChatDisplayControls workflowPanel={{ shown: true, onToggle }} />);
+    const toggle = screen.getByTestId('workflow-panel-toggle');
+    expect(toggle).toHaveAttribute('aria-pressed', 'true');
+    expect(toggle).toHaveAccessibleName('Hide the workflow');
+
+    fireEvent.click(toggle);
+    expect(onToggle).toHaveBeenCalledTimes(1);
+  });
 });

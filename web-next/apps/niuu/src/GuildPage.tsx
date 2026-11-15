@@ -537,89 +537,102 @@ function InstanceCard({
   const meta = kindMeta(instance.kind);
 
   return (
-    <button
-      type="button"
-      onClick={onClick}
+    <div
       className={cn(
-        'niuu:group niuu:flex niuu:h-full niuu:flex-col niuu:rounded-[18px] niuu:border niuu:bg-bg-secondary niuu:p-4 niuu:text-left niuu:transition-colors',
+        'niuu:flex niuu:h-full niuu:flex-col niuu:rounded-[18px] niuu:border niuu:bg-bg-secondary niuu:transition-colors',
         selected
           ? 'guild-choice--selected niuu:border-brand/45 niuu:bg-[#111b24] niuu:shadow-[0_0_0_1px_rgb(var(--niuu-rgb-signal,83_194_255)/0.12)]'
           : 'niuu:border-border-subtle niuu:hover:border-white/16',
       )}
-      data-testid={`guild-instance-card-${instance.slug}`}
     >
-      <div className="niuu:flex niuu:items-start niuu:gap-3">
-        <div className="niuu:flex niuu:h-10 niuu:w-10 niuu:flex-shrink-0 niuu:items-center niuu:justify-center niuu:rounded-[12px] niuu:border niuu:border-white/10 niuu:bg-bg-tertiary">
-          <KindIcon kind={instance.kind} size={16} className="niuu:text-brand" />
-        </div>
-        <div className="niuu:min-w-0 niuu:flex-1">
-          <div className="niuu:flex niuu:items-center niuu:gap-2">
-            <span className={cn('niuu:h-2 niuu:w-2 niuu:rounded-full', tone.dot)} />
-            <h3 className="niuu:truncate niuu:text-[15px] niuu:font-semibold niuu:text-text-primary">
-              {instance.name}
-            </h3>
-            {instance.isDefault ? (
-              <span className="guild-label niuu:rounded-md niuu:bg-brand/12 niuu:px-1.5 niuu:py-0.5 niuu:font-mono niuu:text-[9px] niuu:uppercase niuu:tracking-[0.16em] niuu:text-brand">
-                default
-              </span>
-            ) : null}
+      <button
+        type="button"
+        onClick={onClick}
+        className="niuu:group niuu:flex niuu:flex-1 niuu:flex-col niuu:rounded-[18px] niuu:p-4 niuu:text-left"
+        data-testid={`guild-instance-card-${instance.slug}`}
+      >
+        <div className="niuu:flex niuu:items-start niuu:gap-3">
+          <div className="niuu:flex niuu:h-10 niuu:w-10 niuu:flex-shrink-0 niuu:items-center niuu:justify-center niuu:rounded-[12px] niuu:border niuu:border-white/10 niuu:bg-bg-tertiary">
+            <KindIcon kind={instance.kind} size={16} className="niuu:text-brand" />
           </div>
-          <div className="niuu:mt-1 niuu:flex niuu:flex-wrap niuu:items-center niuu:gap-1.5 niuu:text-[11px] niuu:text-text-muted">
-            <span>{meta.label}</span>
-            <span>•</span>
-            <span>{formatAge(instance.updatedAt)}</span>
-          </div>
-        </div>
-      </div>
-
-      <div className="niuu:mt-3 niuu:rounded-xl niuu:bg-bg-tertiary niuu:px-3 niuu:py-2 niuu:font-mono niuu:text-[11px] niuu:text-text-secondary">
-        {instance.baseUrl}
-      </div>
-
-      <div className="niuu:mt-3 niuu:flex niuu:flex-wrap niuu:items-center niuu:gap-2">
-        <span
-          className={cn(
-            'niuu:inline-flex niuu:items-center niuu:gap-1.5 niuu:rounded-full niuu:border niuu:px-2 niuu:py-1 niuu:font-mono niuu:text-[10px] niuu:uppercase niuu:tracking-[0.14em]',
-            'guild-label',
-            scope.tone,
-          )}
-        >
-          <ScopeIcon className="niuu:h-3 niuu:w-3" />
-          {scope.label}
-        </span>
-        <span className="niuu:font-mono niuu:text-[10px] niuu:uppercase niuu:tracking-[0.14em] niuu:text-text-faint">
-          {inferRegion(instance)}
-        </span>
-      </div>
-
-      <div className="niuu:mt-3 niuu:grid niuu:grid-cols-2 niuu:gap-x-3 niuu:gap-y-2 niuu:text-[11px]">
-        <div>
-          <div className="niuu:font-mono niuu:uppercase niuu:tracking-[0.14em] niuu:text-text-faint">
-            scope
-          </div>
-          <div className="niuu:mt-1 niuu:text-text-secondary">{scopeSummary(instance)}</div>
-        </div>
-        <div>
-          <div className="niuu:font-mono niuu:uppercase niuu:tracking-[0.14em] niuu:text-text-faint">
-            auth
-          </div>
-          <div className="niuu:mt-1 niuu:truncate niuu:text-text-secondary">
-            {inferAuth(instance)}
+          <div className="niuu:min-w-0 niuu:flex-1">
+            <div className="niuu:flex niuu:items-center niuu:gap-2">
+              <span className={cn('niuu:h-2 niuu:w-2 niuu:rounded-full', tone.dot)} />
+              <h3 className="niuu:truncate niuu:text-[15px] niuu:font-semibold niuu:text-text-primary">
+                {instance.name}
+              </h3>
+              {instance.isDefault ? (
+                <span className="guild-label niuu:rounded-md niuu:bg-brand/12 niuu:px-1.5 niuu:py-0.5 niuu:font-mono niuu:text-[9px] niuu:uppercase niuu:tracking-[0.16em] niuu:text-brand">
+                  default
+                </span>
+              ) : null}
+            </div>
+            <div className="niuu:mt-1 niuu:flex niuu:flex-wrap niuu:items-center niuu:gap-1.5 niuu:text-[11px] niuu:text-text-muted">
+              <span>{meta.label}</span>
+              <span>•</span>
+              <span>{formatAge(instance.updatedAt)}</span>
+            </div>
           </div>
         </div>
-      </div>
 
-      <div className="niuu:mt-3 niuu:flex niuu:flex-wrap niuu:gap-1.5">
-        {inferCapabilities(instance).map((capability) => (
+        <div className="niuu:mt-3 niuu:rounded-xl niuu:bg-bg-tertiary niuu:px-3 niuu:py-2 niuu:font-mono niuu:text-[11px] niuu:text-text-secondary">
+          {instance.baseUrl}
+        </div>
+
+        <div className="niuu:mt-3 niuu:flex niuu:flex-wrap niuu:items-center niuu:gap-2">
           <span
-            key={`${instance.id}-${capability}`}
-            className="guild-label niuu:rounded-md niuu:bg-bg-elevated niuu:px-1.5 niuu:py-1 niuu:font-mono niuu:text-[10px] niuu:text-text-muted"
+            className={cn(
+              'niuu:inline-flex niuu:items-center niuu:gap-1.5 niuu:rounded-full niuu:border niuu:px-2 niuu:py-1 niuu:font-mono niuu:text-[10px] niuu:uppercase niuu:tracking-[0.14em]',
+              'guild-label',
+              scope.tone,
+            )}
           >
-            {capability}
+            <ScopeIcon className="niuu:h-3 niuu:w-3" />
+            {scope.label}
           </span>
-        ))}
-      </div>
-    </button>
+          <span className="niuu:font-mono niuu:text-[10px] niuu:uppercase niuu:tracking-[0.14em] niuu:text-text-faint">
+            {inferRegion(instance)}
+          </span>
+        </div>
+
+        <div className="niuu:mt-3 niuu:grid niuu:grid-cols-2 niuu:gap-x-3 niuu:gap-y-2 niuu:text-[11px]">
+          <div>
+            <div className="niuu:font-mono niuu:uppercase niuu:tracking-[0.14em] niuu:text-text-faint">
+              scope
+            </div>
+            <div className="niuu:mt-1 niuu:text-text-secondary">{scopeSummary(instance)}</div>
+          </div>
+          <div>
+            <div className="niuu:font-mono niuu:uppercase niuu:tracking-[0.14em] niuu:text-text-faint">
+              auth
+            </div>
+            <div className="niuu:mt-1 niuu:truncate niuu:text-text-secondary">
+              {inferAuth(instance)}
+            </div>
+          </div>
+        </div>
+
+        <div className="niuu:mt-3 niuu:flex niuu:flex-wrap niuu:gap-1.5">
+          {inferCapabilities(instance).map((capability) => (
+            <span
+              key={`${instance.id}-${capability}`}
+              className="guild-label niuu:rounded-md niuu:bg-bg-elevated niuu:px-1.5 niuu:py-1 niuu:font-mono niuu:text-[10px] niuu:text-text-muted"
+            >
+              {capability}
+            </span>
+          ))}
+        </div>
+      </button>
+      {instance.kind === 'volundr' ? (
+        <div className="niuu:px-4 niuu:pb-4 niuu:empty:hidden">
+          <ForgeHostsLink
+            instanceId={instance.id}
+            variant="chip"
+            className="guild-label niuu:inline-flex niuu:items-center niuu:gap-1.5 niuu:rounded-full niuu:border niuu:border-border-subtle niuu:bg-bg-elevated niuu:px-2.5 niuu:py-1 niuu:font-mono niuu:text-[11px] niuu:text-text-secondary niuu:hover:border-brand/45 niuu:hover:text-brand"
+          />
+        </div>
+      ) : null}
+    </div>
   );
 }
 

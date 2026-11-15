@@ -8,7 +8,7 @@ import {
 } from '../ChatMessages';
 import { OutcomeSpeakerProvider } from '../OutcomeCard/OutcomeSpeaker';
 import type { ChatMessage } from '../../types';
-import { coordinatorSpeaker, speakerFor, type Speaker } from './speaker';
+import { coordinatorSpeaker, speakerFor, type RoomHost, type Speaker } from './speaker';
 import './RoomMessage.css';
 
 interface RoomMessageProps {
@@ -26,12 +26,18 @@ interface RoomMessageProps {
   workerRoom?: boolean;
   /** Show the speaker header. Consecutive messages from one speaker share the first one's. */
   showHeader?: boolean;
+  /** The session whose room this is; only it speaks as the lead. */
+  host?: RoomHost;
 }
 
-function messageSpeaker(message: ChatMessage, workerRoom: boolean): Speaker | null {
+function messageSpeaker(
+  message: ChatMessage,
+  workerRoom: boolean,
+  host: RoomHost | undefined,
+): Speaker | null {
   const { participant } = message;
-  if (participant) return workerRoom ? speakerFor(participant) : plainSpeaker(participant);
-  if (workerRoom && message.role === 'assistant') return coordinatorSpeaker();
+  if (participant) return workerRoom ? speakerFor(participant, host) : plainSpeaker(participant);
+  if (workerRoom && message.role === 'assistant') return coordinatorSpeaker(host?.label);
   return null;
 }
 
@@ -83,14 +89,28 @@ export function RoomMessage({
   bookmarked,
   workerRoom = false,
   showHeader = true,
+  host,
 }: RoomMessageProps) {
-  const speaker = messageSpeaker(message, workerRoom);
+  const speaker = messageSpeaker(message, workerRoom, host);
+  // An agent of the room that posted into it speaks as itself, not as a person typing here.
+  const agentPost =
+    message.role === 'user' &&
+    message.participant !== undefined &&
+    message.participant.participantType !== 'human';
   const style = speaker ? ({ '--niuu-persona-color': speaker.color } as CSSProperties) : undefined;
   const body = (
     <>
       {message.metadata?.messageType === 'system' && <SystemMessage message={message} />}
-      {message.metadata?.messageType !== 'system' && message.role === 'user' && (
+      {message.metadata?.messageType !== 'system' && message.role === 'user' && !agentPost && (
         <UserMessage message={message} />
+      )}
+      {message.metadata?.messageType !== 'system' && agentPost && (
+        <AssistantMessage
+          message={{ ...message, role: 'assistant' }}
+          onCopy={onCopy}
+          onBookmark={onBookmark}
+          bookmarked={bookmarked}
+        />
       )}
       {message.metadata?.messageType !== 'system' &&
         message.role === 'assistant' &&

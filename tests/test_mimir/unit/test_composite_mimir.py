@@ -5,24 +5,20 @@ Tests cover:
 - Write routing: prefix matching, default fallback, explicit override
 - De-duplication of search/query results across mounts
 - read_page falls through to next mount on FileNotFoundError
-- lint merges results from all mounts
-- ingest fans out to all mounts
+- every write, ingest and delete goes to exactly one mount (never a broadcast)
 """
 
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from mimir.adapters.composite import CompositeMimirAdapter
 from mimir.domain import MimirMount, WriteRouting
-from mimir.exceptions import MimirUnavailableError
+from mimir.exceptions import MimirConfigurationError, MimirUnavailableError
 from niuu.domain.mimir import (
-    LintIssue,
-    MimirLintReport,
     MimirMountSummary,
     MimirPage,
     MimirPageMeta,
@@ -30,6 +26,7 @@ from niuu.domain.mimir import (
     MimirSource,
     compute_content_hash,
 )
+from tests.test_mimir.unit.fakes import InMemoryMimirAdapter
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -53,7 +50,6 @@ def _make_page(path: str) -> MimirPage:
 
 def _mock_port(
     pages: list[MimirPage] | None = None,
-    lint_report: MimirLintReport | None = None,
     read_raises: bool = False,
 ) -> MagicMock:
     port = MagicMock()
@@ -62,11 +58,9 @@ def _mock_port(
     port.search = AsyncMock(return_value=pages)
     port.query = AsyncMock(return_value=MimirQueryResult(question="q", answer="", sources=pages))
     port.list_pages = AsyncMock(return_value=[p.meta for p in pages])
-    port.list_threads = AsyncMock(return_value=pages)
     port.ingest = AsyncMock(return_value=[])
     port.upsert_page = AsyncMock(return_value=None)
-    port.update_thread_weight = AsyncMock(return_value=None)
-    port.lint = AsyncMock(return_value=lint_report or MimirLintReport(issues=[], pages_checked=0))
+    port.delete_page = AsyncMock(return_value=True)
 
     if read_raises:
         port.read_page = AsyncMock(side_effect=FileNotFoundError("not found"))
@@ -91,12 +85,11 @@ def _make_mount(
     priority: int = 0,
     pages: list[MimirPage] | None = None,
     read_raises: bool = False,
-    lint_report: MimirLintReport | None = None,
     categories: list[str] | None = None,
 ) -> MimirMount:
     return MimirMount(
         name=name,
-        port=_mock_port(pages=pages, read_raises=read_raises, lint_report=lint_report),
+        port=_mock_port(pages=pages, read_raises=read_raises),
         role=role,
         categories=categories,
         read_priority=priority,
@@ -148,12 +141,12 @@ def test_write_routing_multi_mount_default() -> None:
     assert routing.resolve("technical/x.md") == ["local", "shared"]
 
 
-def test_ingest_targets_prefers_explicit_or_default_write_routing() -> None:
+def test_ingest_targets_returns_the_explicit_mount_or_the_single_default() -> None:
     local = _make_mount("local")
     shared = _make_mount("shared")
     adapter = CompositeMimirAdapter(
         mounts=[local, shared],
-        write_routing=WriteRouting(default=["shared", "missing"]),
+        write_routing=WriteRouting(default=["shared"]),
     )
 
     assert adapter.ingest_targets("local") == ["local"]
@@ -161,12 +154,25 @@ def test_ingest_targets_prefers_explicit_or_default_write_routing() -> None:
     assert adapter.ingest_targets() == ["shared"]
 
 
-def test_ingest_targets_falls_back_to_all_mounts_when_no_default_is_configured() -> None:
-    local = _make_mount("local")
-    shared = _make_mount("shared")
-    adapter = CompositeMimirAdapter(mounts=[local, shared], write_routing=WriteRouting(default=[]))
+def test_ingest_targets_raises_when_the_default_names_no_mount() -> None:
+    """No default is not "every mount": an ingest never broadcasts."""
+    adapter = CompositeMimirAdapter(
+        mounts=[_make_mount("local"), _make_mount("shared")],
+        write_routing=WriteRouting(default=[]),
+    )
 
-    assert adapter.ingest_targets() == ["local", "shared"]
+    with pytest.raises(MimirConfigurationError, match="exactly one Mímir mount"):
+        adapter.ingest_targets()
+
+
+def test_ingest_targets_raises_when_the_default_names_several_mounts() -> None:
+    adapter = CompositeMimirAdapter(
+        mounts=[_make_mount("local"), _make_mount("shared")],
+        write_routing=WriteRouting(default=["local", "shared"]),
+    )
+
+    with pytest.raises(MimirConfigurationError, match="never copied to several mounts"):
+        adapter.ingest_targets()
 
 
 # ---------------------------------------------------------------------------
@@ -503,8 +509,6 @@ async def test_summarize_aggregates_every_mount() -> None:
             source_count=1,
             categories=["technical"],
             last_write=early,
-            lint_issues=2,
-            lint_checked_at=early,
         )
     )
     shared.port.summarize = AsyncMock(
@@ -513,8 +517,6 @@ async def test_summarize_aggregates_every_mount() -> None:
             source_count=4,
             categories=["research"],
             last_write=late,
-            lint_issues=1,
-            lint_checked_at=late,
         )
     )
     adapter = CompositeMimirAdapter(mounts=[local, shared])
@@ -524,8 +526,6 @@ async def test_summarize_aggregates_every_mount() -> None:
     assert summary.source_count == 5
     assert summary.categories == ["research", "technical"]
     assert summary.last_write == late
-    assert summary.lint_issues == 3
-    assert summary.lint_checked_at == late
 
 
 @pytest.mark.asyncio
@@ -562,7 +562,7 @@ async def test_read_source_excerpt_shares_the_outage_semantics() -> None:
 
 
 @pytest.mark.asyncio
-async def test_summarize_handles_mounts_that_were_never_written_or_linted() -> None:
+async def test_summarize_handles_mounts_that_were_never_written() -> None:
     empty = _make_mount("empty")
     empty.port.summarize = AsyncMock(
         return_value=MimirMountSummary(
@@ -570,8 +570,6 @@ async def test_summarize_handles_mounts_that_were_never_written_or_linted() -> N
             source_count=0,
             categories=[],
             last_write=None,
-            lint_issues=0,
-            lint_checked_at=None,
         )
     )
 
@@ -579,7 +577,6 @@ async def test_summarize_handles_mounts_that_were_never_written_or_linted() -> N
 
     assert summary.page_count == 0
     assert summary.last_write is None
-    assert summary.lint_checked_at is None
 
 
 # ---------------------------------------------------------------------------
@@ -622,7 +619,7 @@ async def test_upsert_explicit_override_bypasses_routing() -> None:
 
 
 @pytest.mark.asyncio
-async def test_upsert_multi_mount_routing() -> None:
+async def test_upsert_routed_to_several_mounts_raises_and_writes_nowhere() -> None:
     local_port = _mock_port()
     shared_port = _mock_port()
 
@@ -635,59 +632,48 @@ async def test_upsert_multi_mount_routing() -> None:
     )
     adapter = CompositeMimirAdapter(mounts=[local, shared], write_routing=routing)
 
-    await adapter.upsert_page("technical/ravn.md", "# Ravn\ncontent")
+    with pytest.raises(MimirConfigurationError, match="exactly one Mímir mount"):
+        await adapter.upsert_page("technical/ravn.md", "# Ravn\ncontent")
 
-    local_port.upsert_page.assert_called_once()
-    shared_port.upsert_page.assert_called_once()
-
-
-# ---------------------------------------------------------------------------
-# CompositeMimirAdapter — lint merge
-# ---------------------------------------------------------------------------
+    local_port.upsert_page.assert_not_called()
+    shared_port.upsert_page.assert_not_called()
 
 
 @pytest.mark.asyncio
-async def test_lint_merges_all_mounts() -> None:
-    report_a = MimirLintReport(
-        issues=[LintIssue(id="L01", severity="warning", message="orphan", page_path="a.md")],
-        pages_checked=5,
-    )
-    report_b = MimirLintReport(
-        issues=[
-            LintIssue(id="L02", severity="error", message="contradiction", page_path="b.md"),
-            LintIssue(id="L04", severity="info", message="concept gap: concept-x", page_path=""),
-        ],
-        pages_checked=3,
+async def test_delete_routed_to_no_mount_raises() -> None:
+    local_port = _mock_port()
+    local = MimirMount(name="local", port=local_port, role="local", read_priority=0)
+    adapter = CompositeMimirAdapter(
+        mounts=[local], write_routing=WriteRouting(rules=[("old/", [])], default=["local"])
     )
 
-    local = _make_mount("local", priority=0, lint_report=report_a)
-    shared = _make_mount("shared", priority=1, role="shared", lint_report=report_b)
+    with pytest.raises(MimirConfigurationError, match="exactly one Mímir mount"):
+        await adapter.delete_page("old/page.md")
 
-    adapter = CompositeMimirAdapter(mounts=[local, shared])
-    merged = await adapter.lint()
-
-    assert any(i.id == "L01" and i.page_path == "a.md" for i in merged.issues)
-    assert any(i.id == "L02" and i.page_path == "b.md" for i in merged.issues)
-    assert any(i.id == "L04" and "concept-x" in i.message for i in merged.issues)
-    assert merged.pages_checked == 8
-
-
-# ---------------------------------------------------------------------------
-# CompositeMimirAdapter — ingest fan-out
-# ---------------------------------------------------------------------------
+    local_port.delete_page.assert_not_called()
 
 
 @pytest.mark.asyncio
-async def test_ingest_fans_out_to_all_mounts() -> None:
+async def test_delete_goes_to_the_one_routed_mount() -> None:
     local_port = _mock_port()
     shared_port = _mock_port()
-
     local = MimirMount(name="local", port=local_port, role="local", read_priority=0)
     shared = MimirMount(name="shared", port=shared_port, role="shared", read_priority=1)
-
     adapter = CompositeMimirAdapter(mounts=[local, shared])
 
-    source = MimirSource(
+    assert await adapter.delete_page("technical/x.md", mimir="shared") is True
+
+    shared_port.delete_page.assert_awaited_once_with("technical/x.md")
+    local_port.delete_page.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# CompositeMimirAdapter — ingest goes to exactly one mount
+# ---------------------------------------------------------------------------
+
+
+def _a_document() -> MimirSource:
+    return MimirSource(
         source_id="src_abc",
         title="Test",
         content="content",
@@ -695,24 +681,78 @@ async def test_ingest_fans_out_to_all_mounts() -> None:
         ingested_at=datetime.now(UTC),
         content_hash=compute_content_hash("content"),
     )
-    await adapter.ingest(source)
 
-    local_port.ingest.assert_called_once()
+
+@pytest.mark.asyncio
+async def test_ingest_goes_only_to_the_default_write_mount() -> None:
+    local_port = _mock_port()
+    shared_port = _mock_port()
+
+    local = MimirMount(name="local", port=local_port, role="local", read_priority=0)
+    shared = MimirMount(name="shared", port=shared_port, role="shared", read_priority=1)
+
+    adapter = CompositeMimirAdapter(
+        mounts=[local, shared], write_routing=WriteRouting(default=["shared"])
+    )
+
+    await adapter.ingest(_a_document())
+
     shared_port.ingest.assert_called_once()
+    local_port.ingest.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_ingest_with_no_chosen_mount_raises_instead_of_broadcasting() -> None:
+    local_port = _mock_port()
+    shared_port = _mock_port()
+    local = MimirMount(name="local", port=local_port, role="local", read_priority=0)
+    shared = MimirMount(name="shared", port=shared_port, role="shared", read_priority=1)
+    adapter = CompositeMimirAdapter(mounts=[local, shared], write_routing=WriteRouting(default=[]))
+
+    with pytest.raises(MimirConfigurationError, match="mimir=") as caught:
+        await adapter.ingest(_a_document())
+
+    assert "write_routing.default" in str(caught.value)
+    local_port.ingest.assert_not_called()
+    shared_port.ingest.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_ingest_with_several_default_mounts_raises_instead_of_broadcasting() -> None:
+    local_port = _mock_port()
+    shared_port = _mock_port()
+    local = MimirMount(name="local", port=local_port, role="local", read_priority=0)
+    shared = MimirMount(name="shared", port=shared_port, role="shared", read_priority=1)
+    adapter = CompositeMimirAdapter(
+        mounts=[local, shared], write_routing=WriteRouting(default=["local", "shared"])
+    )
+
+    with pytest.raises(MimirConfigurationError, match="exactly one Mímir mount"):
+        await adapter.ingest(_a_document())
+
+    local_port.ingest.assert_not_called()
+    shared_port.ingest.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_ingest_into_a_failing_mount_names_it() -> None:
+    bad = MimirMount(name="bad", port=_error_port(), role="local", read_priority=0)
+    adapter = CompositeMimirAdapter(mounts=[bad], write_routing=WriteRouting(default=["bad"]))
+
+    with pytest.raises(MimirUnavailableError, match="'bad'"):
+        await adapter.ingest(_a_document())
 
 
 # ---------------------------------------------------------------------------
-# Integration: two MarkdownMimirAdapters behind CompositeMimirAdapter
+# Integration: two stores behind CompositeMimirAdapter
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_integration_two_markdown_adapters(tmp_path: Path) -> None:
+async def test_integration_two_stores() -> None:
     """Write to local only; merged read returns results from both."""
-    from mimir.adapters.markdown import MarkdownMimirAdapter
-
-    local_adapter = MarkdownMimirAdapter(root=tmp_path / "local")
-    shared_adapter = MarkdownMimirAdapter(root=tmp_path / "shared")
+    local_adapter = InMemoryMimirAdapter()
+    shared_adapter = InMemoryMimirAdapter()
 
     # Write a page to shared directly
     await shared_adapter.upsert_page(
@@ -759,44 +799,24 @@ def _error_port(error: Exception = RuntimeError("mount down")) -> object:
     port.query = AsyncMock(side_effect=error)
     port.search = AsyncMock(side_effect=error)
     port.list_pages = AsyncMock(side_effect=error)
-    port.list_threads = AsyncMock(side_effect=error)
-    port.get_thread_queue = AsyncMock(side_effect=error)
     port.list_sources = AsyncMock(side_effect=error)
-    port.lint = AsyncMock(side_effect=error)
     port.summarize = AsyncMock(side_effect=error)
     port.read_source = AsyncMock(side_effect=error)
     port.read_page = AsyncMock(side_effect=error)
     port.get_page = AsyncMock(side_effect=error)
     port.upsert_page = AsyncMock(side_effect=error)
     port.delete_page = AsyncMock(side_effect=error)
-    port.update_thread_weight = AsyncMock(side_effect=error)
-    port.update_thread_state = AsyncMock(side_effect=error)
     return port
-
-
-def _a_source() -> MimirSource:
-    return MimirSource(
-        source_id="s1",
-        title="T",
-        content="c",
-        source_type="document",
-        ingested_at=datetime.now(UTC),
-        content_hash=compute_content_hash("c"),
-    )
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("operation", "call"),
     [
-        ("ingest", lambda a: a.ingest(_a_source())),
         ("query", lambda a: a.query("test question")),
         ("search", lambda a: a.search("query")),
         ("list_pages", lambda a: a.list_pages()),
         ("list_sources", lambda a: a.list_sources()),
-        ("lint", lambda a: a.lint()),
-        ("list_threads", lambda a: a.list_threads()),
-        ("get_thread_queue", lambda a: a.get_thread_queue()),
         ("summarize", lambda a: a.summarize()),
     ],
 )
@@ -887,86 +907,7 @@ async def test_write_routing_naming_an_unmounted_mimir_is_fatal() -> None:
 @pytest.mark.asyncio
 async def test_a_failed_write_is_never_reported_as_written() -> None:
     bad = MimirMount(name="bad", port=_error_port(), role="local", read_priority=0)
-    adapter = CompositeMimirAdapter(mounts=[bad])
+    adapter = CompositeMimirAdapter(mounts=[bad], write_routing=WriteRouting(default=["bad"]))
 
     with pytest.raises(MimirUnavailableError, match="upsert_page"):
         await adapter.upsert_page("wiki/page.md", "content")
-
-
-# ---------------------------------------------------------------------------
-# CompositeMimirAdapter — list_threads (NIU-559)
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_list_threads_dedup_by_path() -> None:
-    page_a = _make_page("threads/alpha")
-    page_b = _make_page("threads/beta")
-
-    local = _make_mount("local", priority=0, pages=[page_a])
-    shared = _make_mount("shared", priority=1, role="shared", pages=[page_a, page_b])
-
-    adapter = CompositeMimirAdapter(mounts=[local, shared])
-    results = await adapter.list_threads()
-
-    paths = [p.meta.path for p in results]
-    assert paths.count("threads/alpha") == 1
-    assert "threads/beta" in paths
-
-
-@pytest.mark.asyncio
-async def test_list_threads_respects_limit() -> None:
-    pages = [_make_page(f"threads/t{i}") for i in range(5)]
-    local = _make_mount("local", priority=0, pages=pages)
-    adapter = CompositeMimirAdapter(mounts=[local])
-    results = await adapter.list_threads(limit=3)
-    assert len(results) == 3
-
-
-@pytest.mark.asyncio
-async def test_list_threads_does_not_hide_a_broken_mount_behind_a_partial_queue() -> None:
-    """A thread queue missing a mount's threads looks like an idle resident."""
-    bad_port = _error_port()
-    bad_port.list_threads = AsyncMock(side_effect=RuntimeError("down"))
-    good_port = _mock_port(pages=[_make_page("threads/alpha")])
-    bad = MimirMount(name="bad", port=bad_port, role="local", read_priority=0)
-    good = MimirMount(name="good", port=good_port, role="shared", read_priority=1)
-    adapter = CompositeMimirAdapter(mounts=[bad, good])
-
-    with pytest.raises(MimirUnavailableError, match="list_threads"):
-        await adapter.list_threads()
-
-
-# ---------------------------------------------------------------------------
-# CompositeMimirAdapter — update_thread_weight (NIU-559)
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_update_thread_weight_routes_to_default_mount() -> None:
-    local_port = _mock_port()
-    shared_port = _mock_port()
-
-    local = MimirMount(name="local", port=local_port, role="local", read_priority=0)
-    shared = MimirMount(name="shared", port=shared_port, role="shared", read_priority=1)
-
-    routing = WriteRouting(rules=[], default=["local"])
-    adapter = CompositeMimirAdapter(mounts=[local, shared], write_routing=routing)
-
-    await adapter.update_thread_weight("threads/my-thread", 0.75)
-
-    local_port.update_thread_weight.assert_called_once_with("threads/my-thread", 0.75, None)
-    shared_port.update_thread_weight.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_update_thread_weight_passes_signals() -> None:
-    local_port = _mock_port()
-    local = MimirMount(name="local", port=local_port, role="local", read_priority=0)
-    routing = WriteRouting(rules=[], default=["local"])
-    adapter = CompositeMimirAdapter(mounts=[local], write_routing=routing)
-
-    signals = {"age_days": 2.0, "mention_count": 3}
-    await adapter.update_thread_weight("threads/my-thread", 0.8, signals)
-
-    local_port.update_thread_weight.assert_called_once_with("threads/my-thread", 0.8, signals)

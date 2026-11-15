@@ -102,7 +102,51 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 Session workspace path
 */}}
 {{- define "skuld.workspacePath" -}}
-{{- printf "%s/%s/workspace" .Values.persistence.mountPath (include "skuld.sessionId" .) }}
+{{- printf "%s/%s/workspace" .Values.persistence.mountPath (include "skuld.workspaceOwnerId" .) }}
+{{- end }}
+
+{{/*
+The session whose directory holds the workspace: the session itself, or, for a member of a
+unit, the unit's root (a run has one checkout, shared by every member).
+*/}}
+{{- define "skuld.workspaceOwnerId" -}}
+{{- $unit := .Values.unit | default dict -}}
+{{- $unit.sessionId | default (include "skuld.sessionId" .) -}}
+{{- end }}
+
+{{/*
+CODEX_HOME: session-local runtime state (sqlite, logs). A session's is beside its workspace; a
+member of a unit has its own directory under the root's, because the workspace is shared and two
+Codex processes must not write the same state.
+*/}}
+{{- define "skuld.codexHome" -}}
+{{- $unit := .Values.unit | default dict -}}
+{{- if $unit.sessionId -}}
+{{- printf "%s/%s/members/%s/.codex" .Values.persistence.mountPath $unit.sessionId (include "skuld.sessionId" .) -}}
+{{- else -}}
+{{- printf "%s/.codex" (include "skuld.workspacePath" .) -}}
+{{- end -}}
+{{- end }}
+
+{{/*
+The values of member `index` of `.root`: what the member would have been launched with on its
+own (the chart defaults beneath it), told that it is part of the root's unit. Returned as JSON,
+so callers `fromJson` it: `include` returns text.
+*/}}
+{{- define "skuld.memberValues" -}}
+{{- $root := .root -}}
+{{- $member := index $root.Values.members .index -}}
+{{- $values := mergeOverwrite (deepCopy ($root.Files.Get "files/defaults.yaml" | fromYaml)) (deepCopy $member.values) -}}
+{{- $_ := set $values "unit" (dict "sessionId" $root.Values.session.id "meshDir" ($root.Values.unit.meshDir | default "") "checkoutFrom" "") -}}
+{{- $_ := set $values "brokerPort" $member.port -}}
+{{- $_ := set $values "members" (list) -}}
+{{- $_ := set $values "session" (merge (dict "id" $member.id) ($values.session | default dict)) -}}
+{{- $values | toJson -}}
+{{- end }}
+
+{{/* The name of member `index`'s container. */}}
+{{- define "skuld.memberContainerName" -}}
+{{- printf "member-%d" (int .index) -}}
 {{- end }}
 
 {{/*
@@ -177,7 +221,7 @@ imagePullSecrets:
 {{- if and .root.Values.homeVolume.enabled .root.Values.homeVolume.persistentTmp }}
 - name: home
   mountPath: /tmp
-  subPath: {{ printf "tmp/sessions/%s/%s" (include "skuld.sessionId" .root) .container | quote }}
+  subPath: {{ printf "tmp/sessions/%s/%s" (include "skuld.workspaceOwnerId" .root) .container | quote }}
 - name: home
   mountPath: /var/cache/niuu
   subPath: tmp/cache

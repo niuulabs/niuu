@@ -1,90 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import {
-  exceedsDragThreshold,
   includeCardSubtitle,
-  resolveNodeCardVisuals,
   resolveNodeMouseDownAction,
   resourceModeVisuals,
   subworkflowTemplatesSummary,
   triggerCardSubtitle,
   triggerOutputEvent,
   truncateLabel,
-  type NodeCardColors,
 } from './graphViewLogic';
 import type { WorkflowSubworkflowNode } from './workflow';
-
-const colors: NodeCardColors = {
-  defaultBackground: 'default-bg',
-  defaultBorder: 'default-border',
-  errorBackground: 'error-bg',
-  errorBorder: 'error-border',
-  warningBackground: 'warning-bg',
-  warningBorder: 'warning-border',
-  selectedBorder: 'selected-border',
-};
-
-const colorsWithSelectedBackground: NodeCardColors = {
-  ...colors,
-  selectedBackground: 'selected-bg',
-};
-
-describe('resolveNodeCardVisuals', () => {
-  it('uses default background/border and width 1 when unselected with no issue', () => {
-    expect(resolveNodeCardVisuals(false, null, colors)).toEqual({
-      background: 'default-bg',
-      borderColor: 'default-border',
-      borderWidth: 1,
-    });
-  });
-
-  it('prioritizes error over warning for background and border, width 2', () => {
-    expect(resolveNodeCardVisuals(false, 'error', colors)).toEqual({
-      background: 'error-bg',
-      borderColor: 'error-border',
-      borderWidth: 2,
-    });
-  });
-
-  it('uses warning background/border when issue is warning', () => {
-    expect(resolveNodeCardVisuals(false, 'warning', colors)).toEqual({
-      background: 'warning-bg',
-      borderColor: 'warning-border',
-      borderWidth: 2,
-    });
-  });
-
-  it('selection overrides border but not background when no selectedBackground is configured', () => {
-    expect(resolveNodeCardVisuals(true, null, colors)).toEqual({
-      background: 'default-bg',
-      borderColor: 'selected-border',
-      borderWidth: 2,
-    });
-  });
-
-  it('selection still lets an issue drive the background when no selectedBackground is configured', () => {
-    expect(resolveNodeCardVisuals(true, 'error', colors)).toEqual({
-      background: 'error-bg',
-      borderColor: 'selected-border',
-      borderWidth: 2,
-    });
-  });
-
-  it('selection wins the background over any issue when selectedBackground is configured', () => {
-    expect(resolveNodeCardVisuals(true, 'error', colorsWithSelectedBackground)).toEqual({
-      background: 'selected-bg',
-      borderColor: 'selected-border',
-      borderWidth: 2,
-    });
-  });
-
-  it('selection with no issue uses the configured selectedBackground', () => {
-    expect(resolveNodeCardVisuals(true, null, colorsWithSelectedBackground)).toEqual({
-      background: 'selected-bg',
-      borderColor: 'selected-border',
-      borderWidth: 2,
-    });
-  });
-});
 
 describe('truncateLabel', () => {
   it('returns the label unchanged when at or under maxLength', () => {
@@ -199,41 +123,19 @@ describe('resourceModeVisuals', () => {
 
 describe('resolveNodeMouseDownAction', () => {
   it('ignores a non-primary button click', () => {
-    expect(resolveNodeMouseDownAction(1, false, false, false)).toBe('ignore');
+    expect(resolveNodeMouseDownAction(1, false, false)).toBe('ignore');
   });
 
   it('ignores a ctrl-modified primary click even in connecting mode', () => {
-    expect(resolveNodeMouseDownAction(0, true, true, false)).toBe('ignore');
+    expect(resolveNodeMouseDownAction(0, true, true)).toBe('ignore');
   });
 
   it('completes the connection while in connecting mode', () => {
-    expect(resolveNodeMouseDownAction(0, false, true, false)).toBe('complete-connect');
+    expect(resolveNodeMouseDownAction(0, false, true)).toBe('complete-connect');
   });
 
-  it('only selects a read-only card', () => {
-    expect(resolveNodeMouseDownAction(0, false, false, true)).toBe('select-only');
-  });
-
-  it('starts a drag for a plain primary click on an editable card', () => {
-    expect(resolveNodeMouseDownAction(0, false, false, false)).toBe('start-drag');
-  });
-});
-
-describe('exceedsDragThreshold', () => {
-  it('is false within the default 4px threshold on both axes', () => {
-    expect(exceedsDragThreshold(0, 0)).toBe(false);
-    expect(exceedsDragThreshold(4, 4)).toBe(false);
-    expect(exceedsDragThreshold(-4, -4)).toBe(false);
-  });
-
-  it('is true once either axis exceeds the threshold', () => {
-    expect(exceedsDragThreshold(5, 0)).toBe(true);
-    expect(exceedsDragThreshold(0, -5)).toBe(true);
-  });
-
-  it('honors a custom threshold', () => {
-    expect(exceedsDragThreshold(6, 0, 10)).toBe(false);
-    expect(exceedsDragThreshold(11, 0, 10)).toBe(true);
+  it('selects a card on a plain primary click', () => {
+    expect(resolveNodeMouseDownAction(0, false, false)).toBe('select');
   });
 });
 

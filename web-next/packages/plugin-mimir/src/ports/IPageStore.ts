@@ -1,8 +1,7 @@
 import type { PageMeta, Page, SearchResult } from '../domain/page';
 import type { Source, OriginType } from '../domain/source';
-import type { MimirStats, MimirGraph, LiveActivity } from '../domain/api-types';
+import type { MimirStats, MimirGraph, KnowledgeGraph, LiveActivity } from '../domain/api-types';
 import type { EntityKind, EntityMeta } from '../domain/entity';
-import type { FactEvidence, RelatedPage, ReviseRequest } from '../domain/evidence';
 
 export type SearchMode = 'fts' | 'semantic' | 'hybrid';
 
@@ -28,8 +27,7 @@ export interface IPageStore {
   getPage(path: string, mountName?: string): Promise<Page | null>;
 
   /**
-   * Create or update a page at the given path.
-   * The write is routed according to the mount's write-routing rules.
+   * Create or update a page at the given path on `mountName`.
    */
   upsertPage(path: string, content: string, mountName?: string): Promise<void>;
 
@@ -75,35 +73,18 @@ export interface IPageStore {
   getGraph(options?: { mountName?: string }): Promise<MimirGraph>;
 
   /**
+   * The knowledge graph of every memory layer the signed-in person can read
+   * (`GET /memory/graph`): pages and sources as nodes, relations derived from
+   * page text as edges. `layers` narrows it to some of those layers, never
+   * widens it. A layer that cannot be read fails the whole call.
+   */
+  getKnowledgeGraph(options?: { layers?: readonly string[] }): Promise<KnowledgeGraph>;
+
+  /**
    * Page reads and writes served recently, newest first
    * (`GET /activity/live`). `since` (ISO-8601) returns only newer events.
    */
   getLiveActivity(options?: { since?: string }): Promise<LiveActivity[]>;
-
-  /**
-   * Evidence-counted beliefs for a page: every Key Fact with its proof count
-   * and trend.
-   *
-   * The route reads the serving instance's own store and takes no mount, so a
-   * page kept on another mount answers 404. That is an expected absence:
-   * adapters return an empty list rather than raising.
-   */
-  getEvidence(path: string): Promise<FactEvidence[]>;
-
-  /**
-   * Walk the link graph out from a page, up to `depth` hops, optionally
-   * restricted to one typed relationship.
-   *
-   * Like `getEvidence` this takes no mount, and a store without a link graph
-   * answers 501 — both are an empty neighbourhood, not an error.
-   */
-  getRelated(path: string, depth?: number, rel?: string): Promise<RelatedPage[]>;
-
-  /**
-   * Rewrite one Key Fact and append the old → new transition to the page's
-   * timeline. Requires write authority; a rejected write raises.
-   */
-  revisePage(request: ReviseRequest): Promise<Page>;
 
   /**
    * List entity pages, optionally filtered by entity kind.

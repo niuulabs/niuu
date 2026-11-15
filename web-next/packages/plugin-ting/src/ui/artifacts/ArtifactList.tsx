@@ -26,7 +26,13 @@ interface ListRow {
 }
 
 const NO_PROJECT = 'No project';
-const STATUS_ORDER: readonly ArtifactStatus[] = ['waiting', 'inProgress', 'done', 'failed'];
+const STATUS_ORDER: readonly ArtifactStatus[] = [
+  'waiting',
+  'inProgress',
+  'done',
+  'failed',
+  'canceled',
+];
 
 function artifactLine(row: ArtifactRow): ListRow {
   const versions = row.versions.length;

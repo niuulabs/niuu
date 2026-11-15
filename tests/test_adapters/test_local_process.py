@@ -16,10 +16,20 @@ from uuid import uuid4
 
 import pytest
 
+from tests.support.workflow_steps import (
+    MEMBER_MESH_ENV,
+    MEMBER_MESH_VALUES,
+    MEMBER_STEPS_ENV,
+    MEMBER_STEPS_VALUES,
+    ROOT_MESH_VALUES,
+    ROOT_ROOM_ENV,
+    ROOT_ROOM_VALUES,
+    ROOT_STEPS_ENV,
+    ROOT_STEPS_VALUES,
+)
 from volundr.adapters.outbound import local_process as local_process_mod
 from volundr.adapters.outbound.local_process import (
     DEFAULT_CLAUDE_BINARY,
-    DEFAULT_MAX_CONCURRENT,
     DEFAULT_SDK_PORT_START,
     DEFAULT_STOP_TIMEOUT,
     LocalProcessPodManager,
@@ -65,7 +75,7 @@ def manager(tmp_workspaces: Path, tmp_state_file: Path) -> LocalProcessPodManage
     return LocalProcessPodManager(
         workspaces_dir=str(tmp_workspaces),
         claude_binary="/usr/bin/fake-claude",
-        max_concurrent=DEFAULT_MAX_CONCURRENT,
+        max_concurrent=16,
         sdk_port_start=DEFAULT_SDK_PORT_START,
         stop_timeout=DEFAULT_STOP_TIMEOUT,
         state_file=str(tmp_state_file),
@@ -354,33 +364,27 @@ class TestSkuldEnv:
 
         assert "SKULD__SESSION__RESUME_SESSION_ID" not in env
 
-    def test_build_env_includes_localized_mcp_servers(self) -> None:
-        spec = SessionSpec(
-            values={
-                "mcpServers": [
-                    {
-                        "name": "mimir-local",
-                        "type": "stdio",
-                        "command": "python3",
-                        "args": ["-m", "mimir", "mcp", "--path", "/mimir/local", "--name", "local"],
-                    }
-                ]
-            },
-            pod_spec=PodSpecAdditions(),
-        )
+    def test_build_env_passes_mcp_servers_through_unchanged(self) -> None:
+        servers = [
+            {
+                "name": "mimir-local",
+                "type": "stdio",
+                "command": "python3",
+                "args": ["-m", "mimir", "mcp", "--name", "local"],
+            }
+        ]
+        spec = SessionSpec(values={"mcpServers": servers}, pod_spec=PodSpecAdditions())
 
         env = LocalProcessPodManager._build_env(spec, Path("/tmp/ws"))
 
-        servers = json.loads(env["SKULD__MCP_SERVERS"])
-        assert servers[0]["args"] == [
-            "-m",
-            "mimir",
-            "mcp",
-            "--path",
-            "/tmp/ws/.mimir-local",
-            "--name",
-            "local",
-        ]
+        assert json.loads(env["SKULD__MCP_SERVERS"]) == servers
+
+    def test_build_env_without_mcp_servers_sets_no_mcp_env(self) -> None:
+        spec = SessionSpec(values={}, pod_spec=PodSpecAdditions())
+
+        env = LocalProcessPodManager._build_env(spec, Path("/tmp/ws"))
+
+        assert "SKULD__MCP_SERVERS" not in env
 
 
 # ------------------------------------------------------------------
@@ -1182,7 +1186,7 @@ class TestProcessSpawning:
             "schema_version": 1,
             "id": "reviewer",
             "revision": "content-0123456789abcdef",
-            "definition": {"name": "reviewer", "allowed_tools": ["file_read"]},
+            "definition": {"name": "reviewer", "permission_mode": "read_only"},
         }
         spec = SessionSpec(
             values={"session": {"persona": persona, "systemPrompt": "Focus on migrations."}},
@@ -1215,11 +1219,20 @@ class TestProcessSpawning:
         workspace = tmp_workspaces / str(git_session.id)
         workspace.mkdir(parents=True)
         step_host = SessionSpec(
-            values={"workflowSteps": {"enabled": True}}, pod_spec=PodSpecAdditions()
+            values={"workflowSteps": MEMBER_STEPS_VALUES, "mesh": MEMBER_MESH_VALUES},
+            pod_spec=PodSpecAdditions(),
+        )
+        root = SessionSpec(
+            values={
+                "workflowSteps": ROOT_STEPS_VALUES,
+                "mesh": ROOT_MESH_VALUES,
+                "room": ROOT_ROOM_VALUES,
+            },
+            pod_spec=PodSpecAdditions(),
         )
         envs = []
 
-        for spec in (default_spec, step_host):
+        for spec in (default_spec, step_host, root):
             with (
                 patch.object(
                     manager, "_resolve_claude_binary", return_value="/usr/bin/fake-claude"
@@ -1233,8 +1246,14 @@ class TestProcessSpawning:
                 await manager._spawn_skuld(git_session, spec, workspace, 9100)
             envs.append(spawn.call_args.kwargs["env"])
 
-        assert "SKULD__WORKFLOW_STEPS__ENABLED" not in envs[0]
-        assert envs[1]["SKULD__WORKFLOW_STEPS__ENABLED"] == "true"
+        assert not [name for name in envs[0] if name.startswith("SKULD__WORKFLOW_STEPS__")]
+        assert MEMBER_STEPS_ENV.items() <= envs[1].items()
+        # A member shares its work in the run's realm; the root hosts the room that keeps it.
+        assert MEMBER_MESH_ENV.items() <= envs[1].items()
+        assert "SKULD__ROOM__ENABLED" not in envs[1]
+        assert ROOT_STEPS_ENV.items() <= envs[2].items()
+        assert ROOT_ROOM_ENV.items() <= envs[2].items()
+        assert "SKULD__WORKFLOW_STEPS__ENABLED" not in envs[2]
 
     async def test_spawn_skuld_has_no_persona_without_one(
         self,
@@ -2419,7 +2438,8 @@ class TestConstructor:
             workspaces_dir=str(tmp_workspaces),
             state_file=str(tmp_state_file),
         )
-        assert mgr._max_concurrent == DEFAULT_MAX_CONCURRENT
+        # No limit unless the operator sets one.
+        assert mgr._max_concurrent is None
         assert mgr._stop_timeout == DEFAULT_STOP_TIMEOUT
         assert mgr._claude_binary == DEFAULT_CLAUDE_BINARY
 
@@ -2434,7 +2454,7 @@ class TestConstructor:
             state_file=str(tmp_state_file),
             unknown_key="should not raise",
         )
-        assert mgr._max_concurrent == DEFAULT_MAX_CONCURRENT
+        assert mgr._max_concurrent is None
 
     def test_expanduser_paths(self) -> None:
         """Paths with ~ are expanded."""

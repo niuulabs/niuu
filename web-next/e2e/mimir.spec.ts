@@ -1,18 +1,6 @@
 import { test, expect, type Page } from '@playwright/test';
 
 /**
- * The Health surface is per-instance: Doctor and Lint only run once an
- * instance is picked from the "Instance" combobox.
- */
-async function selectInstance(page: Page, name: string) {
-  const combobox = page.getByRole('combobox', { name: 'Instance' });
-  await expect(combobox).toHaveText('Select an instance');
-  await combobox.click();
-  await page.getByRole('option', { name }).click();
-  await expect(combobox).toHaveText(name);
-}
-
-/**
  * Analytics keeps the service-wide reports (eval, query traffic)
  * behind the "Service diagnostics" disclosure.
  */
@@ -59,23 +47,6 @@ test('/mimir/pages, /mimir/sources, /mimir/search, /mimir/graph and /mimir/inges
 });
 
 // ---------------------------------------------------------------------------
-// /mimir/health — consolidated Doctor + Lint surface (legacy /lint deep link)
-// ---------------------------------------------------------------------------
-
-test('/mimir/health stacks the doctor checklist above the lint detail', async ({ page }) => {
-  await page.goto('/mimir/health');
-  await expect(page.getByTestId('health-page')).toBeVisible();
-  await selectInstance(page, 'local');
-  await expect(page.getByRole('heading', { name: /doctor/i })).toBeVisible({ timeout: 5000 });
-  await expect(page.locator('[aria-label="Lint checks"]')).toBeVisible();
-});
-
-test('/mimir/lint deep link lands on the Health page', async ({ page }) => {
-  await page.goto('/mimir/lint');
-  await expect(page.getByTestId('health-page')).toBeVisible();
-});
-
-// ---------------------------------------------------------------------------
 // /mimir/analytics — Analytics view
 // ---------------------------------------------------------------------------
 
@@ -93,29 +64,4 @@ test('/mimir/analytics shows the query traffic log', async ({ page }) => {
   await openServiceDiagnostics(page);
   await expect(page.getByTestId('query-log')).toBeVisible({ timeout: 5000 });
   await expect(page.getByTestId('zero-result-query').first()).toBeVisible();
-});
-
-// ---------------------------------------------------------------------------
-// /mimir/doctor — Doctor view
-// ---------------------------------------------------------------------------
-
-test('/mimir/doctor renders the scored checklist', async ({ page }) => {
-  await page.goto('/mimir/doctor');
-  await selectInstance(page, 'local');
-  await expect(page.getByRole('heading', { name: 'Doctor' })).toBeVisible();
-  await expect(page.getByTestId('doctor-score')).toBeVisible({ timeout: 5000 });
-  await expect(page.getByTestId('doctor-check').first()).toBeVisible();
-});
-
-test('/mimir/doctor — run fixes flows through the confirm dialog', async ({ page }) => {
-  await page.goto('/mimir/doctor');
-  await selectInstance(page, 'local');
-  await expect(page.getByTestId('doctor-score')).toHaveText('3/6', { timeout: 5000 });
-
-  await page.getByTestId('run-fixes-btn').click();
-  await expect(page.getByText('Run automatic fixes?')).toBeVisible();
-  await page.getByTestId('confirm-fix').click();
-
-  await expect(page.getByTestId('doctor-score')).toHaveText('5/6', { timeout: 5000 });
-  await expect(page.getByTestId('run-fixes-btn')).toHaveCount(0);
 });

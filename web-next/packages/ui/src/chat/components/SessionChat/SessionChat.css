@@ -11,6 +11,9 @@
 
 .niuu-chat-wrapper {
   position: relative;
+  /* What the chat raises (a worker's sheet over the room) stays inside the chat: the host's
+     header menus open over it, not under it. */
+  isolation: isolate;
   display: flex;
   flex-direction: column;
   flex: 1;

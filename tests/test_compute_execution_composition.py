@@ -390,9 +390,11 @@ class FixedProvider(Provider):
 def _provider_config(**update) -> ComputeConfig:
     base = {
         "pool_id": "pool",
-        "max_machines": 2,
         "provider": {"adapter": "tests.Provider", "kwargs": {"label": "x"}},
     }
+    # Registered hosts have no machine maximum; a pool that makes machines needs one.
+    if "hosts" not in update:
+        base["max_machines"] = 2
     return ComputeConfig(**{**base, **update})
 
 
@@ -596,10 +598,11 @@ def test_registered_hosts_describe_each_execution_with_its_runtime_limits_and_ss
         label="Container (Docker)",
         supports_slots=True,
         requires_root_daemon=True,
-        slot_limits=limits,
+        slot_limits={HostPlatform.LINUX: limits},
         forge_public_key=accesses["vm"].public_key,
         ssh_user="ubuntu",
         platforms=LINUX_ONLY,
+        slot_platforms=LINUX_ONLY,
     )
     assert container.refusal is not None
     host = hosts.executions[str(plans["vm-b"].execution)]
@@ -607,7 +610,7 @@ def test_registered_hosts_describe_each_execution_with_its_runtime_limits_and_ss
     assert (host.supports_slots, host.requires_root_daemon, host.slot_limits) == (
         False,
         False,
-        None,
+        {HostPlatform.LINUX: None},
     )
     assert (host.forge_public_key, host.ssh_user) == (accesses["vm-b"].public_key, "niuu")
     assert host.refusal is None and host.exclusive_only
@@ -633,6 +636,30 @@ def test_a_mac_host_runtime_is_labelled_as_macos(tmp_path):
     assert (mac.label, mac.platforms) == ("Host · macOS (one session, its own user)", darwin)
     linux = hosts.executions[str(plans["vm"].execution)]
     assert linux.label == "Host · Nix + rootless Podman"
+
+
+def test_a_mac_runtime_with_shared_slots_says_its_sessions_share_the_network(tmp_path):
+    resolver = _catalog_resolver(tmp_path)
+    plans = {plan.execution.id: plan for plan in resolver.plans()}
+    accesses = {name: _ssh_access(tmp_path, name, "root") for name in ("vm", "vm-b")}
+    darwin = frozenset({HostPlatform.DARWIN})
+    both = frozenset({HostPlatform.LINUX, HostPlatform.DARWIN})
+    execution = _components(
+        resolver,
+        {
+            "vm": _HostRuntime("vm", SessionRuntimeKind.HOST, slots=True, platforms=both),
+            "vm-b": _HostRuntime("vm-b", SessionRuntimeKind.HOST, slots=True, platforms=darwin),
+        },
+        accesses,
+    )
+
+    hosts = module.build_registered_hosts(_hosts_config(), MagicMock(), execution)
+
+    mac = hosts.executions[str(plans["vm-b"].execution)]
+    assert mac.label == "Host · macOS (sessions as their own users, sharing the network)"
+    assert mac.slot_platforms == darwin
+    shared = hosts.executions[str(plans["vm"].execution)]
+    assert shared.label == "Host · Linux (Nix + rootless Podman) or macOS (shared slots)"
 
 
 def test_a_runtime_without_a_kind_is_labelled_by_its_execution(tmp_path):
@@ -1048,7 +1075,10 @@ def test_the_inspector_uses_the_uid_base_of_the_hosts_own_platform(tmp_path):
     assert hosts.inspector._uid_base_for(linux) == 62000
     assert hosts.inspector._uid_base_for(mac) == 71000
     described = hosts.executions[name]
-    assert described.slot_limits == linux_limits
+    assert described.slot_limits == {
+        HostPlatform.LINUX: linux_limits,
+        HostPlatform.DARWIN: mac_limits,
+    }
     assert described.platforms == {HostPlatform.LINUX, HostPlatform.DARWIN}
 
 
@@ -1056,9 +1086,11 @@ def test_the_inspector_uses_the_uid_base_of_the_hosts_own_platform(tmp_path):
 
 
 def _builtin_config(tmp_path, **update) -> ComputeConfig:
+    # Registered hosts have no machine maximum; without a hosts section the pool needs one.
+    if "hosts" not in update:
+        update = {"max_machines": 1, **update}
     return ComputeConfig(
         pool_id="hosts",
-        max_machines=1,
         provider_binding="registered-hosts",
         provider={"adapter": "tests.Provider"},
         execution_catalog={
@@ -1080,6 +1112,23 @@ async def _close(components) -> None:
         *(preparation.close() for preparation in components.preparations.values()),
         *(access.close() for access in components.accesses),
     )
+
+
+async def test_the_built_in_catalog_composes_shared_mac_slots_beside_linux(tmp_path):
+    """Both platforms separate slots, each with its own limits (a Mac has none)."""
+    config = _builtin_config(
+        tmp_path, session_images={"linux": LINUX_PINNED, "darwin": DARWIN_PINNED}
+    )
+    config.execution_catalog.kwargs["darwin_shared_slots"] = True
+
+    components = await build(config)
+    try:
+        runtime = components.runtimes[components.default_plan.plan_digest]
+        linux = runtime.for_platform(HostPlatform.LINUX)
+        assert runtime.slot_platforms == {HostPlatform.LINUX, HostPlatform.DARWIN}
+        assert runtime.slot_limits_for(HostPlatform.LINUX) == linux.slot_limits
+    finally:
+        await _close(components)
 
 
 async def test_the_built_in_catalog_composes_real_linux_and_mac_runtimes(tmp_path):
@@ -1108,10 +1157,17 @@ async def test_the_built_in_catalog_composes_real_linux_and_mac_runtimes(tmp_pat
         assert linux._host_prepared and mac._host_prepared
         assert runtime.host_platforms == {HostPlatform.LINUX, HostPlatform.DARWIN}
         assert runtime.supports_slots
-        assert runtime.slot_limits == linux.slot_limits
+        assert runtime.slot_limits_for(HostPlatform.LINUX) == linux.slot_limits
 
         hosts = module.build_registered_hosts(
-            ComputeConfig(**{**config.model_dump(), "hosts": HOSTS, "provider": config.provider}),
+            ComputeConfig(
+                **{
+                    **config.model_dump(),
+                    "max_machines": None,
+                    "hosts": HOSTS,
+                    "provider": config.provider,
+                }
+            ),
             MagicMock(),
             components,
         )

@@ -45,7 +45,11 @@ from volundr.domain.ports import (
     TokenTracker,
 )
 from volundr.domain.services.session_participants import SessionParticipantService
-from volundr.domain.session_participants import ParticipantStatus, SessionParticipant
+from volundr.domain.session_participants import (
+    ParticipantCandidate,
+    ParticipantStatus,
+    SessionParticipant,
+)
 
 # Ambient configuration a developer box leaks into the test process. A machine
 # running a live Forge/Skuld session exports ``SKULD__*`` / ``VOLUNDR*`` /
@@ -172,6 +176,25 @@ class InMemorySessionRepository(SessionRepository):
             sessions = [s for s in sessions if s.owner_id == owner_id]
         return sessions
 
+    async def list_by_project(self, project_ids: list[UUID], tenant_id: str) -> list[Session]:
+        return [
+            s
+            for s in self._sessions.values()
+            if s.coordination is not None
+            and s.coordination.project_id in project_ids
+            and s.tenant_id == tenant_id
+        ]
+
+    async def list_by_workflow_runs(self, run_ids: list[str]) -> list[Session]:
+        return sorted(
+            (
+                s
+                for s in self._sessions.values()
+                if s.workload_config.get("workflow_run_id") in run_ids
+            ),
+            key=lambda s: s.created_at,
+        )
+
     async def update(self, session: Session) -> Session:
         current = self._sessions[session.id]
         config = dict(session.workload_config)
@@ -188,10 +211,29 @@ class InMemorySessionRepository(SessionRepository):
                 "description_updated_at": current.description_updated_at,
                 "session_usage": current.session_usage,
                 "startup": current.startup,
+                "hosted_by": current.hosted_by,
+                "hosted_port": current.hosted_port,
             }
         )
         self._sessions[session.id] = updated
         return updated
+
+    async def attach_to_unit(self, session_id, unit_id, base_port):
+        unit = self._sessions.get(unit_id)
+        current = self._sessions.get(session_id)
+        if unit is None or current is None or unit.status != SessionStatus.CREATED:
+            return None
+        if current.hosted_by is not None:
+            return None
+        ports = [s.hosted_port for s in self._sessions.values() if s.hosted_by == unit_id]
+        port = max(ports) + 1 if ports else base_port
+        updated = current.model_copy(update={"hosted_by": unit_id, "hosted_port": port})
+        self._sessions[session_id] = updated
+        return updated
+
+    async def list_hosted(self, unit_id):
+        members = [s for s in self._sessions.values() if s.hosted_by == unit_id]
+        return sorted(members, key=lambda s: s.hosted_port)
 
     async def update_startup(self, session_id, startup):
         current = self._sessions.get(session_id)
@@ -304,6 +346,9 @@ class InMemorySessionParticipantRepository(SessionParticipantRepository):
 
     def __init__(self):
         self._grants: dict[tuple[UUID, str], SessionParticipant] = {}
+        # Who the tenant holds, as (user_id, display_name, email, tenant_id); a test
+        # that asks for invitation candidates fills it.
+        self.directory: list[tuple[str, str, str, str]] = []
 
     async def invite(self, session_id, user_id, tenant_id, role, invited_by, expires_at):
         now = datetime.now(UTC)
@@ -365,6 +410,56 @@ class InMemorySessionParticipantRepository(SessionParticipantRepository):
             if p.user_id == user_id and p.status == ParticipantStatus.ACTIVE
         ]
 
+    async def list_invited_for_user(self, user_id):
+        return [
+            p
+            for p in self._grants.values()
+            if p.user_id == user_id and p.status == ParticipantStatus.INVITED
+        ]
+
+    async def count_active_for_sessions(self, session_ids, now):
+        counts: dict[UUID, int] = {}
+        for grant in self._grants.values():
+            if grant.session_id not in session_ids:
+                continue
+            if grant.status != ParticipantStatus.ACTIVE:
+                continue
+            if grant.expires_at is not None and grant.expires_at <= now:
+                continue
+            counts[grant.session_id] = counts.get(grant.session_id, 0) + 1
+        return counts
+
+    async def candidates(self, session_id, tenant_id, owner_id, query):
+        held = {
+            p.user_id
+            for p in self._grants.values()
+            if p.session_id == session_id
+            and p.status in (ParticipantStatus.INVITED, ParticipantStatus.ACTIVE)
+        }
+        needle = query.lower()
+        return [
+            ParticipantCandidate(user_id=user_id, display_name=name, email=email)
+            for user_id, name, email, member_of in sorted(
+                self.directory, key=lambda e: (e[1], e[2])
+            )
+            if member_of == tenant_id
+            and user_id != owner_id
+            and user_id not in held
+            and (not needle or needle in name.lower() or needle in email.lower())
+        ]
+
+    async def tenant_people(self, tenant_id, excluded_user_id, query):
+        needle = query.lower()
+        return [
+            ParticipantCandidate(user_id=user_id, display_name=name, email=email)
+            for user_id, name, email, member_of in sorted(
+                self.directory, key=lambda e: (e[1], e[2])
+            )
+            if member_of == tenant_id
+            and user_id != excluded_user_id
+            and (not needle or needle in name.lower() or needle in email.lower())
+        ]
+
 
 class InMemoryUserRepository(UserRepository):
     """Minimal in-memory user repository for tests that only need to satisfy
@@ -407,7 +502,7 @@ class InMemoryUserRepository(UserRepository):
 
 
 def make_session_participant_service(
-    session_service, user_repository=None
+    session_service, user_repository=None, project_members=None
 ) -> SessionParticipantService:
     """Build a SessionParticipantService backed by in-memory state.
 
@@ -421,6 +516,7 @@ def make_session_participant_service(
         InMemorySessionParticipantRepository(),
         session_service,
         user_repository if user_repository is not None else InMemoryUserRepository(),
+        project_members=project_members,
     )
 
 

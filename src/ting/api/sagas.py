@@ -349,7 +349,13 @@ async def _resolve_planning_workflow(
         None,
     )
     if workflow is None:
-        raise HTTPException(status_code=404, detail=f"{_PLANNING_WORKFLOW_NAME} workflow not found")
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                f"{_PLANNING_WORKFLOW_NAME!r} is no longer bundled (archived, see "
+                "archive/README.md), so planning cannot start. Restore the archived workflow."
+            ),
+        )
     return workflow
 
 
@@ -1389,7 +1395,7 @@ def create_sagas_router() -> APIRouter:
                 campaign,
                 node_id,
                 gate_decision,
-                by=GateActor(ActorKind.PERSON, principal.user_id),
+                by=GateActor(ActorKind.PERSON, principal.user_id, principal.email),
                 note=body.content.strip(),
             )
         except (GateRefusedError, RunStateError) as exc:

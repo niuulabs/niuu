@@ -77,23 +77,30 @@ import {
   Square,
   SquareTerminal,
   Trash2,
+  Users,
 } from 'lucide-react';
 import type { IVolundrService } from '../ports/IVolundrService';
 import type { FileTreeNode, IFileSystemPort } from '../ports/IFileSystemPort';
-import type {
-  SessionChronicle,
-  VolundrAggregatedLog,
-  VolundrLogParticipant,
-  VolundrSession,
-  VolundrSessionTrace,
-  VolundrSessionTraceSpan,
-  VolundrSessionTraceSummary,
+import {
+  canAnswerGates,
+  isSharedSession,
+  sharedSessionLabel,
+  type ForgeProject,
+  type SessionChronicle,
+  type VolundrAggregatedLog,
+  type VolundrLogParticipant,
+  type VolundrSession,
+  type VolundrSessionTrace,
+  type VolundrSessionTraceSpan,
+  type VolundrSessionTraceSummary,
 } from '../models/volundr.model';
 import { useSessionDetail, useSessionList } from './hooks/useSessionStore';
-import { coordinationOf } from '../domain/projectTree';
+import { useSharedOwnerNames } from './hooks/useSharedOwnerNames';
+import { coordinationOf, isCoordinationRole, leaderTag } from '../domain/projectTree';
+import { withRunMembers } from '../domain/runRoom';
 import { buildSessionLinks } from './sessions/sessionLinks';
-import { CoordinatorTag, WorkerOf } from './detail/Coordination';
-import { DecisionDock } from './detail/DecisionDock';
+import { CoordinatorTag, WorkerOf, WorkerTopics } from './detail/Coordination';
+import { DecisionDock, RunPausedStrip } from './detail/DecisionDock';
 import { RightDock, type RightDockTab } from './detail/RightDock';
 import {
   EMPTY_DOCK,
@@ -103,6 +110,14 @@ import {
   type DockPane,
 } from './detail/dockPanes';
 import { TerminalDock } from './detail/TerminalDock';
+import { WorkflowDock } from './detail/WorkflowDock';
+import { RUN_WORKFLOW_VIEW_SERVICE, type RunWorkflowView } from '../ports/IRunWorkflowView';
+import {
+  RUN_GATE_SERVICE,
+  type IRunGateService,
+  type RunGate,
+  type RunPause,
+} from '../ports/IRunGateService';
 import { FilePreviewPane } from './detail/FilePreviewPane';
 import { LivePreviewPane } from './detail/LivePreviewPane';
 import { LIVE_PREVIEW_DISABLED, findLocalUrls } from '../domain/livePreview';
@@ -131,6 +146,7 @@ import './LiveSessionDetailPage.css';
 import { useSessionTabs } from './ForgeSessionSettings';
 import { useForgePreference } from './useForgePreference';
 import { SessionEnvironment } from './SessionEnvironment';
+import { SessionPeopleButton } from './SessionPeople';
 import { SessionRuntimeVersion } from './SessionRuntimeVersion';
 import { modelLabel } from '@niuulabs/domain';
 import {
@@ -145,6 +161,7 @@ import {
   DOCK_WIDTH,
   SESSION_STATE_LABELS,
   TERMINAL_HEIGHT,
+  WORKFLOW_PANEL_HEIGHT,
   TRANSCRIPT_MIN_WIDTH,
 } from './sessions/presentation';
 import { ContextMeter } from './detail/ContextMeter';
@@ -162,6 +179,9 @@ import {
 export type LiveSessionTab = 'chat' | 'diffs' | 'files' | 'chronicles' | 'telemetry' | 'logs';
 
 type SessionTab = LiveSessionTab;
+
+/** While a run's coordinator is open, its run is asked this often whether a gate waits. */
+const RUN_GATE_REFRESH_MS = 5000;
 
 /** Statuses that change only through an action or a pushed state change. */
 const SETTLED_RAW_STATUSES: ReadonlySet<VolundrSession['status']> = new Set([
@@ -249,6 +269,8 @@ function WorkflowHumanGateCard({
   reason,
   recommendation,
   comments,
+  busy = false,
+  error = null,
   onApprove,
   onRequestChanges,
 }: {
@@ -257,6 +279,8 @@ function WorkflowHumanGateCard({
   reason?: string;
   recommendation?: string;
   comments: readonly ReviewComment[];
+  busy?: boolean;
+  error?: string | null;
   onApprove: (notes: string) => void;
   onRequestChanges: (notes: string) => void;
 }) {
@@ -283,6 +307,8 @@ function WorkflowHumanGateCard({
         noteLabel="Reply Notes"
         notePlaceholder="Optional context for the gate decision."
         commentCount={comments.length}
+        busy={busy}
+        error={error}
         onApprove={() => answer(onApprove)}
         onRequestChanges={() => answer(onRequestChanges)}
       />
@@ -2420,13 +2446,32 @@ function normalizeForgeBadgeLabel(value: string): string {
   return titleCaseWord(trimmed);
 }
 
+const NO_PROJECTS: ForgeProject[] = [];
+const NO_INPUT_REQUESTS: never[] = [];
+
+/** What a viewer sees where an approver would answer a permission prompt. */
+function AwaitingApprover({ count }: { count: number }) {
+  return (
+    <div
+      role="status"
+      className="niuu:mx-4 niuu:mb-2 niuu:rounded-md niuu:border niuu:border-border-subtle niuu:bg-bg-secondary niuu:px-3 niuu:py-2 niuu:text-xs niuu:text-text-secondary"
+      data-testid="permission-awaiting-approver"
+    >
+      {count === 1
+        ? 'The agent is waiting for a permission an approver of this session must answer.'
+        : `The agent is waiting for ${count} permissions an approver of this session must answer.`}
+    </div>
+  );
+}
+
 function SourceMeta({ session }: { session: VolundrSession | null | undefined }) {
-  if (!session?.source) return null;
+  const source = session?.source;
+  if (!session || !source) return null;
   return (
     <SessionEnvironment
-      session={session}
-      repoUrl={normalizeRepoLink(session.source)}
-      repoLabel={session.source.type === 'git' ? formatRepoLabel(session.source.repo) : undefined}
+      session={{ ...session, source }}
+      repoUrl={normalizeRepoLink(source)}
+      repoLabel={source.type === 'git' ? formatRepoLabel(source.repo) : undefined}
     />
   );
 }
@@ -2486,17 +2531,20 @@ interface PrimaryStateAction {
 function sessionPrimaryAction({
   status,
   readOnly,
+  shared,
   onStop,
   onStart,
   onRestore,
 }: {
   status: VolundrSession['status'] | undefined;
   readOnly: boolean;
+  /** The caller shares the session without owning it: the lifecycle is the owner's. */
+  shared: boolean;
   onStop: () => void;
   onStart: () => void;
   onRestore: () => void;
 }): PrimaryStateAction | null {
-  if (!status) return null;
+  if (!status || shared) return null;
   if (status === 'archived') {
     return {
       icon: RotateCcw,
@@ -2591,6 +2639,26 @@ function SessionIdChip({ sessionId }: { sessionId: string }) {
   );
 }
 
+/** The workflow run a session works for, opened on the run's review page. */
+function RunLink({ runId }: { runId: string }) {
+  const navigate = useNavigate();
+  const to = `/ting/review/run/${encodeURIComponent(runId)}`;
+  return (
+    <span className="niuu-live-session__ticket" data-testid="session-run">
+      <a
+        href={to}
+        title={`Open workflow run ${runId}`}
+        onClick={(event) => {
+          event.preventDefault();
+          void navigate({ to: to as never });
+        }}
+      >
+        {runId}
+      </a>
+    </span>
+  );
+}
+
 function TicketLink({ issue }: { issue: VolundrSession['trackerIssue'] }) {
   if (!issue) return null;
   if (!issue.url) {
@@ -2632,7 +2700,7 @@ function DeleteSessionDialog({
   if (!open || !session) return null;
 
   const isManual = session.origin === 'manual';
-  const isLocalStorage = session.source.type === 'local_mount';
+  const isLocalStorage = session.source?.type === 'local_mount';
 
   function toggleCleanup(key: string) {
     setCleanupState((prev) => {
@@ -3289,6 +3357,17 @@ function LiveSessionDetailPageInner({
       ? terminalPreferredHeight
       : Math.min(terminalPreferredHeight, workAreaHeight - CONVERSATION_MIN_HEIGHT);
   const terminalShown = terminalOpen && terminalHeight >= TERMINAL_HEIGHT.min;
+  // A run's coordinator draws its run on the workflow, docked as the terminal is, when the
+  // host wired a workflow view (Ting's) and the person has not hidden it from Display.
+  const RunWorkflow = useOptionalService<RunWorkflowView>(RUN_WORKFLOW_VIEW_SERVICE);
+  const [workflowPreference, setWorkflowPreference] = useForgePreference('workflowPanel', '1', [
+    '0',
+    '1',
+  ]);
+  const { width: workflowPreferredHeight, resizer: workflowResizer } = useResizableSidebar(
+    'niuu.forge.workflowHeight',
+    WORKFLOW_PANEL_HEIGHT,
+  );
   useEffect(() => {
     if (!onDockOpenChange) return;
     onDockOpenChange(dockOpen);
@@ -3323,6 +3402,13 @@ function LiveSessionDetailPageInner({
   const sessionQuery = useSessionDetail(sessionId, instanceId);
   const sessionListQuery = useSessionList();
   const sessionRead = useSessionRead();
+  // Who is looking, so a message someone else wrote in this session names its author.
+  const identityQuery = useQuery({
+    queryKey: ['volundr', 'identity'],
+    queryFn: () => volundr.getIdentity(),
+    staleTime: Infinity,
+  });
+  const viewerId = identityQuery.data?.userId;
   const liveSessionQuery = useQuery({
     queryKey: ['volundr', 'raw-session', sessionId, instanceId ?? null],
     queryFn: ({ signal }) => volundr.getSession(sessionId, { instanceId, signal }),
@@ -3339,6 +3425,11 @@ function LiveSessionDetailPageInner({
     });
   }, [domainState, instanceId, queryClient, sessionId]);
   const liveSession = liveSessionQuery.data;
+  // A person who shares the session without owning it reads its room view: no workspace, files,
+  // terminal or settings, only the conversation (and its gates, for an approver).
+  const shared = liveSession ? isSharedSession(liveSession) : false;
+  const mayAnswerGates = liveSession ? canAnswerGates(liveSession) : true;
+  const terminalVisible = terminalShown && !shared;
   const sessionStatus = liveSession?.status ?? null;
   const isRunning = sessionStatus === 'running';
   const chatEndpoint = normalizeSessionUrl(liveSession?.chatEndpoint ?? null);
@@ -3356,6 +3447,16 @@ function LiveSessionDetailPageInner({
     [chatEndpoint, historyLocator],
   );
   const chat = useSkuldChat(chatEndpoint, { historyEndpoint });
+  // Questions the agent put to people: the broker decides who may answer; the cards show it.
+  const personQuestions = useMemo(
+    () => ({
+      answers: chat.personAnswers,
+      errors: chat.personAnswerErrors,
+      sending: chat.personAnswersSending,
+      onAnswer: chat.sendPersonAnswer,
+    }),
+    [chat.personAnswers, chat.personAnswerErrors, chat.personAnswersSending, chat.sendPersonAnswer],
+  );
   // Each Forge host has its own preview domain: ask the one that runs this session.
   const previewInstanceId = liveSession?.instanceId ?? instanceId;
   const livePreviewQuery = useQuery({
@@ -3365,12 +3466,6 @@ function LiveSessionDetailPageInner({
     staleTime: Infinity,
   });
   const livePreview = livePreviewQuery.data ?? LIVE_PREVIEW_DISABLED;
-  const workflowGatesQuery = useQuery({
-    queryKey: ['volundr', 'workflow-gates', sessionId, instanceId ?? null],
-    queryFn: () => volundr.getWorkflowGates(sessionId),
-    enabled: Boolean(sessionId) && isRunning,
-    refetchInterval: isRunning ? 5_000 : false,
-  });
   // A session that failed before its first message never had a broker, so it
   // has no transcript to replay; asking for one only earns a misleading error.
   const failedBeforeStart =
@@ -3429,27 +3524,51 @@ function LiveSessionDetailPageInner({
     [transcriptTurns],
   );
   const replayMeshEvents = useMemo(() => meshEventsFromTurns(transcriptTurns), [transcriptTurns]);
-  const workflowGates = useMemo(() => workflowGatesQuery.data ?? [], [workflowGatesQuery.data]);
+  // A workflow run's gate waits in Ting; the run's own session asks for it above its composer,
+  // as it asks every other question, when the host wired a run gate service.
+  const runGates = useOptionalService<IRunGateService>(RUN_GATE_SERVICE);
+  const runRootId =
+    liveSession?.runId && !liveSession.coordination?.parent ? liveSession.runId : null;
+  const runGateQuery = useQuery({
+    queryKey: ['volundr', 'run-gate', runRootId],
+    queryFn: () => runGates!.waitingGate(runRootId!),
+    enabled: Boolean(runGates && runRootId),
+    refetchInterval: RUN_GATE_REFRESH_MS,
+  });
+  const runGate: RunGate | null = runRootId ? (runGateQuery.data ?? null) : null;
+  // A run whose sessions are stopped cannot hand its next step out; its coordinator says so
+  // where it asks for the gate, with the start that carries the run on.
+  const runPauseQuery = useQuery({
+    queryKey: ['volundr', 'run-pause', runRootId],
+    queryFn: () => runGates!.pausedStep(runRootId!),
+    enabled: Boolean(runGates && runRootId),
+    refetchInterval: RUN_GATE_REFRESH_MS,
+  });
+  // Ting resolves the pause on its next sweep; once this session runs again it is not shown.
+  const runPause: RunPause | null =
+    runRootId && sessionStatus !== 'running' ? (runPauseQuery.data ?? null) : null;
+  const [runGateDecision, setRunGateDecision] = useState<{
+    busy: boolean;
+    error: string | null;
+  }>({ busy: false, error: null });
+  const decideRunGate = useCallback(
+    async (decision: 'approve' | 'request_changes', notes: string) => {
+      if (!runGates || !runRootId || !runGate) return;
+      setRunGateDecision({ busy: true, error: null });
+      try {
+        await runGates.decide(runRootId, runGate, decision, notes);
+        setRunGateDecision({ busy: false, error: null });
+        await queryClient.invalidateQueries({ queryKey: ['volundr', 'run-gate', runRootId] });
+      } catch (error) {
+        setRunGateDecision({
+          busy: false,
+          error: errorText(error, 'The decision did not go through'),
+        });
+      }
+    },
+    [queryClient, runGate, runGates, runRootId],
+  );
   const activeHumanGate = useMemo(() => {
-    const nativeGate = workflowGates.find(
-      (gate) =>
-        gate.status === 'pending' &&
-        gate.pending_behavior === 'help_needed' &&
-        !dismissedHumanGateIds.has(gate.id),
-    );
-    if (nativeGate) {
-      return {
-        source: 'native' as const,
-        eventId: nativeGate.id,
-        gate: nativeGate,
-        summary:
-          nativeGate.summary ||
-          `${nativeGate.label} is waiting for human approval before the workflow can continue.`,
-        reason: nativeGate.condition || undefined,
-        recommendation: 'Approve to continue or request changes to send the workflow back.',
-      };
-    }
-
     const latest = [...chat.meshEvents]
       .reverse()
       .find(
@@ -3469,7 +3588,6 @@ function LiveSessionDetailPageInner({
     const participant = chat.participants.get(latest.participantId);
     if (!participant) return null;
     return {
-      source: 'legacy' as const,
       eventId,
       event: {
         summary: latest.summary || 'Workflow gate is waiting for human approval.',
@@ -3485,25 +3603,19 @@ function LiveSessionDetailPageInner({
         participantType: participant.participantType,
       },
     };
-  }, [chat.meshEvents, chat.participants, dismissedHumanGateIds, workflowGates]);
+  }, [chat.meshEvents, chat.participants, dismissedHumanGateIds]);
   const attentionItems = useMemo(() => {
-    const pendingGates = workflowGates.filter(
-      (gate) =>
-        gate.status === 'pending' &&
-        gate.pending_behavior === 'help_needed' &&
-        !dismissedHumanGateIds.has(gate.id),
-    );
-    const gates: SessionGateSummary[] = pendingGates.map((gate) => ({
-      id: gate.id,
-      title: gate.label,
-      detail: gate.summary || 'Waiting for your approval.',
-    }));
-    if (activeHumanGate?.source === 'legacy') {
+    // What needs an approver is not "needs you" for a viewer, who cannot answer it.
+    if (!mayAnswerGates) return [];
+    const gates: SessionGateSummary[] = [];
+    if (activeHumanGate) {
       gates.push({
         id: activeHumanGate.eventId,
         title: activeHumanGate.participant.displayName || 'Workflow gate',
         detail: activeHumanGate.event.summary,
       });
+    } else if (runGate) {
+      gates.push({ id: runGate.activationId, title: runGate.title, detail: runGate.summary });
     }
     return buildAttentionItems({
       gates,
@@ -3512,10 +3624,10 @@ function LiveSessionDetailPageInner({
     });
   }, [
     activeHumanGate,
+    runGate,
     chat.pendingInputRequests,
     chat.pendingPermissions,
-    dismissedHumanGateIds,
-    workflowGates,
+    mayAnswerGates,
   ]);
   const checklist = useMemo(
     () => resolveChecklist(chat.plan, chat.messages),
@@ -3538,6 +3650,35 @@ function LiveSessionDetailPageInner({
   );
   const isCoordinator =
     liveSession?.coordination?.role === 'coordinator' || coordination.workers.length > 0;
+  // Only the run's own session (nested under no other) draws the run: its members are in it.
+  const workflowRunId =
+    RunWorkflow && liveSession?.runId && !liveSession.coordination?.parent
+      ? liveSession.runId
+      : null;
+  const workflowOpen = workflowPreference === '1';
+  const workflowHeight =
+    workAreaHeight === null
+      ? workflowPreferredHeight
+      : Math.min(
+          workflowPreferredHeight,
+          workAreaHeight - CONVERSATION_MIN_HEIGHT - (terminalVisible ? terminalHeight : 0),
+        );
+  const workflowShown =
+    workflowRunId !== null && workflowOpen && workflowHeight >= WORKFLOW_PANEL_HEIGHT.min;
+  // A workflow run's first session hosts the run's room: its members are in it from Forge's
+  // record, whether the room is live or the run has finished.
+  const runHost = useMemo(
+    () => (liveSession ? { id: sessionId, runId: liveSession.runId } : null),
+    [liveSession, sessionId],
+  );
+  const roomParticipants = useMemo(
+    () => withRunMembers(chat.participants, runHost, coordination.workers),
+    [chat.participants, runHost, coordination.workers],
+  );
+  const replayRoomParticipants = useMemo(
+    () => withRunMembers(replayParticipants, runHost, coordination.workers),
+    [replayParticipants, runHost, coordination.workers],
+  );
   const hasCoordinator = Boolean(liveSession?.coordination?.parent);
   const openSession = useCallback(
     (id: string) =>
@@ -3572,6 +3713,9 @@ function LiveSessionDetailPageInner({
   const sessionProjectName = projectsQuery.data?.find(
     (project) => project.id === sessionProjectId,
   )?.name;
+  const sharedCandidates = useMemo(() => (liveSession ? [liveSession] : []), [liveSession]);
+  const ownerNames = useSharedOwnerNames(sharedCandidates, projectsQuery.data ?? NO_PROJECTS);
+  const sharedOwnerName = liveSession?.ownerId ? ownerNames.get(liveSession.ownerId) : undefined;
   const sessionModel = liveSession?.model;
   const sessionSessionDefinition = liveSession?.sessionDefinition;
   const sessionOrigin = liveSession?.origin;
@@ -3617,18 +3761,26 @@ function LiveSessionDetailPageInner({
   const ravnWorkers = useMemo(
     () =>
       isReady
-        ? roomWorkers(chat.participants, chat.meshEvents, chat.messages)
-        : roomWorkers(replayParticipants, replayMeshEvents, replayMessages),
+        ? roomWorkers(roomParticipants, chat.meshEvents, chat.messages, sessionId)
+        : roomWorkers(replayRoomParticipants, replayMeshEvents, replayMessages, sessionId),
     [
       isReady,
-      chat.participants,
+      roomParticipants,
       chat.meshEvents,
       chat.messages,
-      replayParticipants,
+      replayRoomParticipants,
       replayMeshEvents,
       replayMessages,
+      sessionId,
     ],
   );
+  // When this page owns which worker is shown, it shows that worker's topics itself.
+  const workerFocusIsHosts = focusedWorkerId !== undefined && onFocusWorker !== undefined;
+  // The room worker shown on its own: what it listens for and emits sits behind the name's
+  // chevron with the session's other facts, not across the worker's header.
+  const focusedWorker = focusedWorkerId
+    ? ravnWorkers.find((worker) => worker.peerId === focusedWorkerId)
+    : undefined;
   const panelHasContent = sessionPanelHasContent({
     workerSessions: coordination.workers,
     ravnWorkers,
@@ -3651,7 +3803,8 @@ function LiveSessionDetailPageInner({
   const isSessionConnected = isReady && chat.connected;
 
   const { enabled: enabledTabs } = useSessionTabs();
-  const tabs = ALL_TABS.filter((tab) => enabledTabs.has(tab.id));
+  // The other tabs read the owner's workspace and records: a shared session has the chat.
+  const tabs = ALL_TABS.filter((tab) => enabledTabs.has(tab.id) && (!shared || tab.id === 'chat'));
 
   const handleToggleInternalMessages = useCallback(() => {
     const next = !showInternalMessages;
@@ -3683,27 +3836,13 @@ function LiveSessionDetailPageInner({
         next.add(activeHumanGate.eventId);
         return next;
       });
-      if (activeHumanGate.source === 'native') {
-        void volundr
-          .resolveWorkflowGate(sessionId, activeHumanGate.gate.id, {
-            decision,
-            notes,
-            source: 'human',
-          })
-          .then(() =>
-            queryClient.invalidateQueries({
-              queryKey: ['volundr', 'workflow-gates', sessionId],
-            }),
-          );
-        return;
-      }
       void chat.sendDirectedMessages(
         [activeHumanGate.participant],
         notes ? `${decision}\n\n${notes}` : decision,
         [],
       );
     },
-    [activeHumanGate, chat, queryClient, sessionId, volundr],
+    [activeHumanGate, chat],
   );
 
   const resolvedActiveTab =
@@ -3742,6 +3881,7 @@ function LiveSessionDetailPageInner({
   // As Lexi's: ⌥⌘O quick opens a file into the dock, ⌥⌘→ shows or hides the dock and ⌃`
   // the terminal (Ctrl+Alt stands in for ⌥⌘ off a Mac).
   useEffect(() => {
+    if (shared) return;
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.ctrlKey && !event.shiftKey && !event.altKey && event.code === 'Backquote') {
         event.preventDefault();
@@ -3761,7 +3901,7 @@ function LiveSessionDetailPageInner({
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [toggleTerminal]);
+  }, [shared, toggleTerminal]);
 
   // The files the agent read or wrote, newest first: marked in the tree, first in quick open.
   const touchedPaths = useMemo(() => {
@@ -3860,43 +4000,45 @@ function LiveSessionDetailPageInner({
       }
     }
   });
-  const dockAddItems: MoreMenuItem[] = [
-    {
-      id: 'changes',
-      label: 'Changes',
-      icon: FileDiff,
-      onSelect: () => openPane({ kind: 'changes' }),
-    },
-    {
-      id: 'file',
-      label: 'Preview file…',
-      icon: FileText,
-      shortcut: '⌥⌘O',
-      disabled: !isRunning,
-      onSelect: () => setQuickOpen(true),
-    },
-    {
-      id: 'side',
-      label: 'Side chat',
-      icon: CornerDownRight,
-      disabled: !liveSession,
-      onSelect: () => openPane({ kind: 'side', childId: null }),
-    },
-    {
-      id: 'preview',
-      label: 'Live preview',
-      icon: Globe,
-      disabled: !isRunning || !livePreview.enabled,
-      onSelect: () => openPreviewPane(previewPorts[0] ?? null),
-    },
-    {
-      id: 'files',
-      label: 'Files',
-      icon: FolderOpen,
-      separated: true,
-      onSelect: () => openPane({ kind: 'files' }),
-    },
-  ];
+  const dockAddItems: MoreMenuItem[] = shared
+    ? []
+    : [
+        {
+          id: 'changes',
+          label: 'Changes',
+          icon: FileDiff,
+          onSelect: () => openPane({ kind: 'changes' }),
+        },
+        {
+          id: 'file',
+          label: 'Preview file…',
+          icon: FileText,
+          shortcut: '⌥⌘O',
+          disabled: !isRunning,
+          onSelect: () => setQuickOpen(true),
+        },
+        {
+          id: 'side',
+          label: 'Side chat',
+          icon: CornerDownRight,
+          disabled: !liveSession,
+          onSelect: () => openPane({ kind: 'side', childId: null }),
+        },
+        {
+          id: 'preview',
+          label: 'Live preview',
+          icon: Globe,
+          disabled: !isRunning || !livePreview.enabled,
+          onSelect: () => openPreviewPane(previewPorts[0] ?? null),
+        },
+        {
+          id: 'files',
+          label: 'Files',
+          icon: FolderOpen,
+          separated: true,
+          onSelect: () => openPane({ kind: 'files' }),
+        },
+      ];
 
   const handleSendReview = useCallback(() => {
     chat.sendMessage(formatReviewMessage(review.comments), []);
@@ -3914,14 +4056,17 @@ function LiveSessionDetailPageInner({
   );
 
   const permissionRenderer = useCallback(
-    (permissions: typeof chat.pendingPermissions, onRespond: typeof chat.respondToPermission) => (
-      <PermissionApprovalPanel
-        permissions={permissions}
-        onRespond={onRespond}
-        evaluateAutoApproval={evaluatePermissionAutoApproval}
-      />
-    ),
-    [chat, evaluatePermissionAutoApproval],
+    (permissions: typeof chat.pendingPermissions, onRespond: typeof chat.respondToPermission) =>
+      mayAnswerGates ? (
+        <PermissionApprovalPanel
+          permissions={permissions}
+          onRespond={onRespond}
+          evaluateAutoApproval={evaluatePermissionAutoApproval}
+        />
+      ) : (
+        <AwaitingApprover count={permissions.length} />
+      ),
+    [chat, evaluatePermissionAutoApproval, mayAnswerGates],
   );
 
   async function refreshSessionData() {
@@ -3974,7 +4119,6 @@ function LiveSessionDetailPageInner({
         queryClient.cancelQueries({ queryKey: ['volundr', 'conversation-history', sessionId] }),
         queryClient.cancelQueries({ queryKey: ['volundr', 'domain-session', sessionId] }),
         queryClient.cancelQueries({ queryKey: ['volundr', 'filetree', sessionId] }),
-        queryClient.cancelQueries({ queryKey: ['volundr', 'workflow-gates', sessionId] }),
       ]);
       await volundr.deleteSession(liveSession.id, cleanup);
       setDeleteDialogOpen(false);
@@ -3983,7 +4127,6 @@ function LiveSessionDetailPageInner({
       queryClient.removeQueries({ queryKey: ['volundr', 'conversation-history', sessionId] });
       queryClient.removeQueries({ queryKey: ['volundr', 'domain-session', sessionId] });
       queryClient.removeQueries({ queryKey: ['volundr', 'filetree', sessionId] });
-      queryClient.removeQueries({ queryKey: ['volundr', 'workflow-gates', sessionId] });
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ['volundr', 'domain-sessions'] }),
         queryClient.invalidateQueries({ queryKey: ['volundr', 'history'] }),
@@ -4021,6 +4164,7 @@ function LiveSessionDetailPageInner({
   const primaryStateAction = sessionPrimaryAction({
     status: liveSession?.status,
     readOnly: Boolean(readOnly),
+    shared,
     onStop: () => void handleStopSession(),
     onStart: () => void handleResumeSession(),
     onRestore: () => void handleRestoreSession(),
@@ -4038,7 +4182,7 @@ function LiveSessionDetailPageInner({
       disabled: sessionRead.pendingIds.has(readTarget.id),
     });
   }
-  if (!readOnly && openConnections) {
+  if (!readOnly && !shared && openConnections) {
     moreMenuItems.push({
       id: 'reconnect',
       label: 'Reconnect account',
@@ -4055,7 +4199,7 @@ function LiveSessionDetailPageInner({
       disabled: !canResendPromptToFlock,
     });
   }
-  if (!readOnly && liveSession && liveSession.status !== 'archived') {
+  if (!readOnly && !shared && liveSession && liveSession.status !== 'archived') {
     moreMenuItems.push({
       id: 'archive',
       label: 'Archive session',
@@ -4064,7 +4208,7 @@ function LiveSessionDetailPageInner({
       disabled: actionBusy !== null,
     });
   }
-  if (!readOnly) {
+  if (!readOnly && !shared) {
     moreMenuItems.push({
       id: 'delete',
       label: 'Delete session',
@@ -4091,47 +4235,29 @@ function LiveSessionDetailPageInner({
   }
 
   // A waiting decision sits by the composer, folded to a strip, as Lexi keeps its questions.
-  const gateRequestedAt = !activeHumanGate
-    ? Number.NaN
-    : activeHumanGate.source === 'native'
-      ? Date.parse(activeHumanGate.gate.requested_at ?? '')
-      : activeHumanGate.event.timestamp.getTime();
+  const gateRequestedAt = activeHumanGate
+    ? activeHumanGate.event.timestamp.getTime()
+    : runGate
+      ? Date.parse(runGate.requestedAt)
+      : Number.NaN;
   const gateWaitingLabel = Number.isFinite(gateRequestedAt)
     ? compactDuration(Math.max(0, minuteNow - gateRequestedAt))
     : undefined;
   const decisionDock = activeHumanGate ? (
     <DecisionDock
-      title={
-        activeHumanGate.source === 'native'
-          ? activeHumanGate.gate.label
-          : activeHumanGate.event.summary || 'Workflow gate'
-      }
+      title={activeHumanGate.event.summary || 'Workflow gate'}
       waiting={gateWaitingLabel}
     >
       <WorkflowHumanGateCard
         title={
-          activeHumanGate.source === 'native'
-            ? activeHumanGate.gate.label
-            : activeHumanGate.participant.displayName ||
-              activeHumanGate.participant.persona ||
-              activeHumanGate.event.persona ||
-              'Workflow gate'
+          activeHumanGate.participant.displayName ||
+          activeHumanGate.participant.persona ||
+          activeHumanGate.event.persona ||
+          'Workflow gate'
         }
-        summary={
-          activeHumanGate.source === 'native'
-            ? activeHumanGate.summary
-            : activeHumanGate.event.summary || 'Workflow gate'
-        }
-        reason={
-          activeHumanGate.source === 'native'
-            ? activeHumanGate.reason
-            : activeHumanGate.event.reason
-        }
-        recommendation={
-          activeHumanGate.source === 'native'
-            ? activeHumanGate.recommendation
-            : activeHumanGate.event.recommendation
-        }
+        summary={activeHumanGate.event.summary || 'Workflow gate'}
+        reason={activeHumanGate.event.reason}
+        recommendation={activeHumanGate.event.recommendation}
         comments={review.comments}
         onApprove={(notes) => {
           handleHumanGateReply('APPROVE', notes);
@@ -4143,6 +4269,30 @@ function LiveSessionDetailPageInner({
         }}
       />
     </DecisionDock>
+  ) : runGate ? (
+    <DecisionDock title={runGate.title} waiting={gateWaitingLabel}>
+      <WorkflowHumanGateCard
+        title={runGate.title}
+        summary={runGate.summary}
+        comments={review.comments}
+        busy={runGateDecision.busy}
+        error={runGateDecision.error}
+        onApprove={(notes) => {
+          void decideRunGate('approve', notes);
+          review.clear();
+        }}
+        onRequestChanges={(notes) => {
+          void decideRunGate('request_changes', notes);
+          review.clear();
+        }}
+      />
+    </DecisionDock>
+  ) : runPause ? (
+    <RunPausedStrip
+      step={runPause.title}
+      busy={actionBusy === 'start'}
+      onStart={() => void handleResumeSession()}
+    />
   ) : null;
 
   return (
@@ -4150,7 +4300,7 @@ function LiveSessionDetailPageInner({
       key={sessionId}
       sessionId={sessionId}
       workspace={
-        liveSession?.source.type === 'local_mount'
+        liveSession?.source?.type === 'local_mount'
           ? (liveSession.source.local_path ?? liveSession.source.path)
           : undefined
       }
@@ -4219,13 +4369,17 @@ function LiveSessionDetailPageInner({
                       ) : null}
                       {!readOnly && liveSession && (
                         <span className="niuu-live-session__title-actions">
-                          <RenameSession sessionId={sessionId} name={sessionName} />
+                          {shared ? null : (
+                            <RenameSession sessionId={sessionId} name={sessionName} />
+                          )}
                           <PinSession sessionId={sessionId} name={sessionName} />
-                          <AssignSessionProject
-                            sessionId={sessionId}
-                            name={sessionName}
-                            instanceId={liveSession.instanceId}
-                          />
+                          {shared ? null : (
+                            <AssignSessionProject
+                              sessionId={sessionId}
+                              name={sessionName}
+                              instanceId={liveSession.instanceId}
+                            />
+                          )}
                         </span>
                       )}
                       <Subline
@@ -4248,10 +4402,19 @@ function LiveSessionDetailPageInner({
                             id: 'host',
                             node: <span data-testid="session-host">{forgeBadgeLabel}</span>,
                           },
-                          isCoordinator && { id: 'coordinator', node: <CoordinatorTag /> },
+                          isCoordinator && {
+                            id: 'coordinator',
+                            node: (
+                              <CoordinatorTag label={leaderTag(liveSession?.coordination?.role)} />
+                            ),
+                          },
                           sessionTrackerIssue && {
                             id: 'ticket',
                             node: <TicketLink issue={sessionTrackerIssue} />,
+                          },
+                          liveSession?.runId && {
+                            id: 'run',
+                            node: <RunLink runId={liveSession.runId} />,
                           },
                           sessionDetail && {
                             id: 'activity',
@@ -4298,8 +4461,13 @@ function LiveSessionDetailPageInner({
                         ]}
                       />
                       {hasCoordinator ? (
-                        <WorkerOf coordinator={coordination.coordinator} onOpen={openSession} />
+                        <WorkerOf
+                          coordinator={coordination.coordinator}
+                          onOpen={openSession}
+                          coordinated={isCoordinationRole(liveSession?.coordination?.role)}
+                        />
                       ) : null}
+                      {focusedWorker ? <WorkerTopics worker={focusedWorker} /> : null}
                     </div>
                   </details>
                   {sessionProjectName ? (
@@ -4310,6 +4478,21 @@ function LiveSessionDetailPageInner({
                     >
                       <Folder aria-hidden="true" />
                       {sessionProjectName}
+                    </span>
+                  ) : null}
+                  {shared && liveSession?.room ? (
+                    <span
+                      className="niuu-live-session__project"
+                      data-testid="session-shared-badge"
+                      title={
+                        sharedOwnerName
+                          ? `Shared with you by ${sharedOwnerName}`
+                          : 'Shared with you'
+                      }
+                    >
+                      <Users aria-hidden="true" />
+                      {sharedSessionLabel(liveSession.room)}
+                      {sharedOwnerName ? ` · ${sharedOwnerName}` : ''}
                     </span>
                   ) : null}
                   {showDetails && sessionHandle ? (
@@ -4380,20 +4563,38 @@ function LiveSessionDetailPageInner({
                       shown: showInternalMessages,
                       onToggle: handleToggleInternalMessages,
                     }}
+                    workflowPanel={
+                      workflowRunId
+                        ? {
+                            shown: workflowOpen,
+                            onToggle: () => setWorkflowPreference(workflowOpen ? '0' : '1'),
+                          }
+                        : undefined
+                    }
                   />
                 )}
-                <SessionToolbarButton
-                  icon={SquareTerminal}
-                  title={terminalOpen ? 'Hide the terminal (⌃`)' : 'Show the terminal (⌃`)'}
-                  active={terminalOpen}
-                  onClick={toggleTerminal}
-                />
-                <SessionToolbarButton
-                  icon={Columns2}
-                  title={dockOpen ? 'Hide the dock (⌥⌘→)' : 'Show the dock (⌥⌘→)'}
-                  active={dockOpen}
-                  onClick={() => dispatchDock({ type: 'toggle' })}
-                />
+                {liveSession && !readOnly ? (
+                  <SessionPeopleButton
+                    session={liveSession}
+                    onLeft={() => void navigate({ to: '/volundr/sessions', replace: true })}
+                  />
+                ) : null}
+                {shared ? null : (
+                  <>
+                    <SessionToolbarButton
+                      icon={SquareTerminal}
+                      title={terminalOpen ? 'Hide the terminal (⌃`)' : 'Show the terminal (⌃`)'}
+                      active={terminalOpen}
+                      onClick={toggleTerminal}
+                    />
+                    <SessionToolbarButton
+                      icon={Columns2}
+                      title={dockOpen ? 'Hide the dock (⌥⌘→)' : 'Show the dock (⌥⌘→)'}
+                      active={dockOpen}
+                      onClick={() => dispatchDock({ type: 'toggle' })}
+                    />
+                  </>
+                )}
                 {panelHasContent ? (
                   <SessionToolbarButton
                     icon={PanelRight}
@@ -4503,11 +4704,14 @@ function LiveSessionDetailPageInner({
                             showToolbar={false}
                             showDisplayControls={false}
                             showWorkersStrip={!workersInList}
-                            aboveComposer={decisionDock}
+                            aboveComposer={mayAnswerGates ? decisionDock : null}
                             showInternalToggle={false}
                             internalVisibility={showInternalMessages}
                             showTokenUsage={showTokenUsage}
                             messages={chat.messages}
+                            viewerId={viewerId}
+                            roomApprover={mayAnswerGates}
+                            personQuestions={personQuestions}
                             streamingContent={chat.streamingContent}
                             streamingParts={chat.streamingParts}
                             streamingModel={chat.streamingModel}
@@ -4519,15 +4723,20 @@ function LiveSessionDetailPageInner({
                             onLoadOlderHistory={chat.loadOlderHistory}
                             historyError={chat.historyError}
                             onRetryHistory={chat.retryHistory}
-                            participants={chat.participants}
+                            participants={roomParticipants}
+                            hostPeerId={sessionId}
+                            hostLabel={leaderTag(liveSession?.coordination?.role)}
                             workerSessionIds={workerSessionIds}
                             focusedWorkerId={focusedWorkerId}
                             onFocusWorker={onFocusWorker}
                             onWorkersChange={onRoomWorkers}
+                            showWorkerEvents={!workerFocusIsHosts}
                             meshEvents={chat.meshEvents}
                             agentEvents={chat.agentEvents}
                             pendingPermissions={chat.pendingPermissions}
-                            pendingInputRequests={chat.pendingInputRequests}
+                            pendingInputRequests={
+                              mayAnswerGates ? chat.pendingInputRequests : NO_INPUT_REQUESTS
+                            }
                             availableCommands={chat.availableCommands}
                             capabilities={chat.capabilities}
                             chatEndpoint={chatEndpoint}
@@ -4588,6 +4797,8 @@ function LiveSessionDetailPageInner({
                       ) : canReplayTranscript && replayMessages.length > 0 ? (
                         <SessionChat
                           className="niuu:h-full"
+                          // A stopped run's gate still waits: it is asked for here too.
+                          aboveComposer={mayAnswerGates ? decisionDock : null}
                           showToolbar={false}
                           showDisplayControls={false}
                           showWorkersStrip={!workersInList}
@@ -4595,14 +4806,18 @@ function LiveSessionDetailPageInner({
                           internalVisibility={showInternalMessages}
                           showTokenUsage={showTokenUsage}
                           messages={replayMessages}
+                          viewerId={viewerId}
                           chatEndpoint={chatEndpoint}
                           connected={false}
                           historyLoaded={!transcriptQuery.isLoading}
-                          participants={replayParticipants}
+                          participants={replayRoomParticipants}
+                          hostPeerId={sessionId}
+                          hostLabel={leaderTag(liveSession?.coordination?.role)}
                           workerSessionIds={workerSessionIds}
                           focusedWorkerId={focusedWorkerId}
                           onFocusWorker={onFocusWorker}
                           onWorkersChange={onRoomWorkers}
+                          showWorkerEvents={!workerFocusIsHosts}
                           meshEvents={replayMeshEvents}
                           plan={chat.plan}
                           agents={chat.agents}
@@ -4689,7 +4904,7 @@ function LiveSessionDetailPageInner({
                 </div>
               )}
             </div>
-            {shownPane && dockShown ? (
+            {shownPane && dockShown && !shared ? (
               <RightDock
                 tabs={dockTabs}
                 active={dock.active}
@@ -4787,7 +5002,24 @@ function LiveSessionDetailPageInner({
               />
             ) : null}
           </div>
-          {terminalShown ? (
+          {workflowShown && RunWorkflow && workflowRunId ? (
+            <WorkflowDock
+              View={RunWorkflow}
+              runId={workflowRunId}
+              height={workflowHeight}
+              onOpenSession={openSession}
+              onClose={() => setWorkflowPreference('0')}
+              edge={
+                <SidebarResizer
+                  label="Resize the workflow"
+                  panelSide="bottom"
+                  {...workflowResizer}
+                  width={workflowHeight}
+                />
+              }
+            />
+          ) : null}
+          {terminalVisible ? (
             <TerminalDock
               height={terminalHeight}
               edge={

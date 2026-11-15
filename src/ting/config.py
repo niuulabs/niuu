@@ -30,6 +30,7 @@ from niuu.config import CorsConfig, HttpAuthAdapterConfig, InstanceRegistryConfi
 from niuu.config_models import WorkloadIdentityConfig
 from niuu.domain.observability import ObservabilityConfig
 from niuu.domain.tenancy import DEFAULT_PLATFORM_TENANT_ID
+from niuu.mesh.config import MeshSettings
 
 
 # Config file search paths (in order of priority).
@@ -980,11 +981,6 @@ class ReviewWidgetsConfig(BaseModel):
 class TicketCoordinatorConfig(BaseModel):
     """The persistent session each ticket works through."""
 
-    persona: str = Field(
-        default="ticket-coordinator",
-        description="Ravn persona that coordinates a ticket.",
-    )
-
     @model_validator(mode="before")
     @classmethod
     def _reject_removed_keys(cls, data: Any) -> Any:
@@ -999,6 +995,11 @@ class TicketCoordinatorConfig(BaseModel):
                 "ravn_config": (
                     f"{RAVN_FLOCK_REMOVED_MESSAGE}; a ticket coordinator is no "
                     "longer launched. Remove ticket_coordinator.ravn_config"
+                ),
+                "persona": (
+                    "a ticket coordinator is no longer launched, so it has no persona "
+                    "(its persona is archived, see archive/README.md). "
+                    "Remove ticket_coordinator.persona"
                 ),
             },
         )
@@ -1049,12 +1050,10 @@ class WorkflowExecutionDeliveryConfig(BaseModel):
     )
     evidence_policy_id: str = Field(
         default="",
-        min_length=1,
         description="Forge evidence policy ID, required once delivery is enabled.",
     )
     integration_policy_id: str = Field(
         default="",
-        min_length=1,
         description="Forge integration policy ID, required once delivery is enabled.",
     )
 
@@ -1160,6 +1159,24 @@ class WorkflowExecutionConfig(BaseModel):
                 "workflow_execution.delivery.enabled requires workflow_execution.enabled; "
                 "set workflow_execution.enabled: true or disable workflow_execution.delivery"
             )
+        if self.delivery.enabled:
+            unset = [
+                f"workflow_execution.delivery.{name}"
+                for name in (
+                    "review_producers",
+                    "integration_review_producer",
+                    "evidence_policy_id",
+                    "integration_policy_id",
+                )
+                if not getattr(self.delivery, name)
+            ]
+            if unset:
+                raise ValueError(
+                    f"workflow_execution.delivery.enabled requires {', '.join(unset)}. No "
+                    "delivery workflow ships (the Developer workflows are archived, see "
+                    "archive/README.md); set them for the workflow you run, or disable "
+                    "workflow_execution.delivery"
+                )
         if not self.delivery.enabled:
             offending = sorted(
                 {
@@ -1184,7 +1201,7 @@ class StepSessionsConfig(BaseModel):
         default="ting.adapters.forge_step_sessions.ForgeStepSessions",
         description=(
             "Fully qualified StepSessionPort class. It is built with the Forge connection "
-            "factory and the campaign repository, plus the plain kwargs below."
+            "factory, the campaign and project repositories, plus the plain kwargs below."
         ),
     )
     kwargs: dict[str, Any] = Field(
@@ -1199,46 +1216,71 @@ class StepSessionsConfig(BaseModel):
 class StuckDetectionConfig(BaseModel):
     """The sweep that flags workflow steps that stopped making progress (NIU-1181).
 
-    One pass looks at every open step of every active run, and asks each step's session
-    what it holds (one Forge read and one step read per open stage-member step). A flagged
-    step reaches the owner through the notification feed once per kind; the sweep itself
-    only acts to finish an interrupted start or to fail a step whose session is gone.
+    One pass looks at every open step of every active run: it reads what each run's sessions
+    recorded in their durable logs, asks Forge whether each open step's session is still up,
+    and publishes the offers that were waiting for their members. A flagged step reaches the
+    owner through the notification feed once per kind; the sweep itself only acts to publish
+    an unclaimed offer again, or to fail a step or offer that nothing can take any more.
     """
+
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_removed_keys(cls, data: Any) -> Any:
+        reject_removed_keys(
+            "workflow_steps.stuck",
+            data,
+            {
+                "start_grace_seconds": (
+                    "a step has no session of its own to start or deliver to any more: an "
+                    "offer goes to the run's root and members pick it up. Remove "
+                    "start_grace_seconds; how long an offer may wait for a pickup is "
+                    "workflow_steps.pickup_grace_seconds"
+                ),
+            },
+        )
+        return data
 
     enabled: bool = Field(
         default=True,
         description=(
             "Run the stuck-step sweep. False is a decision to go without it: stuck steps "
-            "are then neither flagged nor recovered automatically, and nothing says so."
+            "are then neither flagged nor recovered automatically, offers whose members "
+            "were not listening when they were made are never published after a restart, "
+            "and nothing says so."
         ),
     )
     sweep_interval_seconds: float = Field(
         default=120.0,
         gt=0.0,
         description=(
-            "Seconds between sweeps. Bounds how long a stuck step can go unflagged, and so "
-            "how soon an automatic start or re-delivery happens; every pass costs two Forge "
-            "reads per open stage-member step, so it should stay well above the time one "
-            "pass takes. A pass that is slower than the interval delays the next one; "
-            "passes of one Ting process never overlap."
-        ),
-    )
-    start_grace_seconds: float = Field(
-        default=600.0,
-        gt=0.0,
-        description=(
-            "Seconds a step may be active before a missing session (not started) or a "
-            "session that does not know the activation (undelivered) counts as stuck. Real "
-            "bound: how long Forge takes to create a session and accept the step; a plain "
-            "session boots in about three minutes at the median, so the default allows "
-            "several times that. A step flagged inside the grace would be restarted while "
-            "its first delivery is still on its way."
+            "Seconds between sweeps. Bounds how long a stuck step can go unflagged, how soon "
+            "an unclaimed offer is published again and how soon a report the activity stream "
+            "dropped is read back from a session's log; every pass costs a Forge read of each "
+            "run session's new log entries and one per open stage-member step, so it should "
+            "stay well above the time one pass takes. A pass that is slower than the interval "
+            "delays the next one; passes of one Ting process never overlap."
         ),
     )
 
 
 class WorkflowStepsConfig(BaseModel):
     """The step engine that runs workflow graphs on harness sessions."""
+
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_removed_keys(cls, data: Any) -> Any:
+        reject_removed_keys(
+            "workflow_steps",
+            data,
+            {
+                "session_poll_seconds": (
+                    "Ting no longer waits for a step's session to come up and delivers to it: "
+                    "an offer is published once the run's members report they listen. Remove "
+                    "session_poll_seconds"
+                ),
+            },
+        )
+        return data
 
     sessions: StepSessionsConfig = Field(default_factory=StepSessionsConfig)
     stuck: StuckDetectionConfig = Field(default_factory=StuckDetectionConfig)
@@ -1247,15 +1289,88 @@ class WorkflowStepsConfig(BaseModel):
         default=4 * 3600.0,
         gt=0.0,
         description=(
-            "Wall-clock time a stage member's step may stay active before it counts as "
-            "overdue: every activation is stamped deadline_at = activated_at + this. Real "
-            "bound: the longest single agent step an operator tolerates without a close; "
-            "workflows declare no run timeout to derive it from, so a node may override it "
-            "with deadlineSeconds. The engine only stores the deadline and never acts on it; "
-            "when it passes, stuck detection (NIU-1181) flags the step for an operator, it "
-            "is never guessed from the transcript. Gate, wait and subworkflow steps wait on "
-            "a person or an outside event and get a deadline only from their node's "
-            "deadlineSeconds."
+            "Wall-clock time a stage's offer may wait to be taken up, and a member's step may "
+            "stay active, before it counts as overdue: every offer and pickup is stamped "
+            "deadline_at = activated_at + this. Real bound: the longest single agent step an "
+            "operator tolerates without a close; workflows declare no run timeout to derive "
+            "it from, so a node may override it with deadlineSeconds. An active step past it "
+            "is flagged for an operator, never guessed from the transcript. An offer past it "
+            "with no pickup is the hard stop: nothing is going to take it, so the step fails "
+            "naming this setting, whether the members never listened or none took the work "
+            "up. Gate, wait and subworkflow steps wait on a person or an outside event and "
+            "get a deadline only from their node's deadlineSeconds."
+        ),
+    )
+    pickup_grace_seconds: float = Field(
+        default=300.0,
+        gt=0.0,
+        description=(
+            "Seconds a published offer may go without a member picking it up or passing it "
+            "before it is flagged unclaimed (a person is told once) and published again, the "
+            "same offer and the same event. It is when to look again, never a cap: the offer "
+            "is published again for as long as nobody takes it, until step_deadline_seconds "
+            "fails it. Real bound: how long a member's Skuld takes to receive an offer on the "
+            "mesh and report its pickup, which is seconds; a member that is mid-turn still "
+            "reports a pickup at once and starts the step at the next turn boundary, so a "
+            "busy member is not waited for here (it refuses, which is counted)."
+        ),
+    )
+    catch_up_page_size: int = Field(
+        default=200,
+        ge=1,
+        description=(
+            "Frames asked of Forge's session log per request when Ting reads back what its "
+            "run sessions reported while the activity stream was down. It bounds nothing: "
+            "the catch-up reads pages until the log has no more."
+        ),
+    )
+
+
+class MemoryImportsConfig(BaseModel):
+    """Connectors that import a project's tickets into its memory, and compile them."""
+
+    enabled: bool = Field(
+        default=False,
+        description=(
+            "Serve the memory import routes (/api/v1/ting/memory/imports) and run the import "
+            "loop. Off by default: an import also needs the memory gateway, so with this on "
+            "gateway_url is required and Ting does not start without it."
+        ),
+    )
+    gateway_url: str = Field(
+        default="",
+        description=(
+            "The Mimir API prefix the memory gateway's connector route lives under, for "
+            "example http://mimir:8080/api/v1/mimir (Ting posts to {gateway_url}/memory/sources). "
+            "Required when enabled."
+        ),
+    )
+    gateway_auth: HttpAuthAdapterConfig = Field(
+        default_factory=HttpAuthAdapterConfig,
+        description=(
+            "Credential Ting presents to the memory gateway when it writes a source. The "
+            "gateway admits only a platform service whose subject is in "
+            "memory.connector_service_subjects, so production uses "
+            "WorkloadIdentityBearerTokenAuthAdapter with audience mimir for the ting workload; "
+            "with the allow-all identity of local mini mode, no credential is needed."
+        ),
+    )
+    gateway_timeout_seconds: float = Field(
+        default=30.0,
+        gt=0.0,
+        description=(
+            "Seconds the memory gateway has to accept one source. Real bound: a source is one "
+            "database write behind one HTTP request; a slower answer is a gateway fault, so the "
+            "run fails, records last_error and the import runs again next interval."
+        ),
+    )
+    poll_seconds: float = Field(
+        default=300.0,
+        gt=0.0,
+        description=(
+            "Seconds between runs of every import: the import's schedule. It is when to look "
+            "again, never a cap on what a run reads: a run reads every ticket changed since its "
+            "cursor. Real bound: how stale a project's memory may be behind its tracker."
         ),
     )
 
@@ -1280,6 +1395,18 @@ class Settings(BaseSettings):
         extra="ignore",
         loc_by_alias=False,
     )
+
+    @field_validator("server_workers")
+    @classmethod
+    def _one_worker(cls, value: int) -> int:
+        if value > 1:
+            raise ValueError(
+                f"server_workers is {value}, but Ting runs one worker: each worker runs its "
+                "own activity subscriber, stuck sweep and notification loop, so every session "
+                "report would be handled once per worker. Set WORKERS (chart config.workers) "
+                "to 1"
+            )
+        return value
 
     @model_validator(mode="before")
     @classmethod
@@ -1330,6 +1457,7 @@ class Settings(BaseSettings):
     authorization: AuthorizationAdapterConfig = Field(default_factory=AuthorizationAdapterConfig)
     pat: PATConfig = Field(default_factory=PATConfig)
     workload_identity: WorkloadIdentityConfig = Field(default_factory=WorkloadIdentityConfig)
+    mesh: MeshSettings = Field(default_factory=MeshSettings)
     auth: AuthConfig = Field(default_factory=AuthConfig)
     auth_mode: str = Field(
         default="envoy",
@@ -1352,6 +1480,7 @@ class Settings(BaseSettings):
     review_widgets: ReviewWidgetsConfig = Field(default_factory=ReviewWidgetsConfig)
     workflow_execution: WorkflowExecutionConfig = Field(default_factory=WorkflowExecutionConfig)
     workflow_steps: WorkflowStepsConfig = Field(default_factory=WorkflowStepsConfig)
+    memory_imports: MemoryImportsConfig = Field(default_factory=MemoryImportsConfig)
     telegram: TelegramConfig = Field(default_factory=TelegramConfig)
     webhook: WebhookConfig = Field(default_factory=WebhookConfig)
     notification: NotificationConfig = Field(default_factory=NotificationConfig)
@@ -1368,9 +1497,15 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("server_port", "PORT"),
     )
     server_workers: int = Field(
-        default=4,
+        default=1,
         ge=1,
         validation_alias=AliasChoices("server_workers", "WORKERS"),
+        description=(
+            "Uvicorn worker processes. Must be 1: every worker runs Ting's whole lifespan, "
+            "so a second worker runs a second activity subscriber, stuck sweep, notification "
+            "loop and workflow execution worker, and every session report is handled twice. "
+            "Scale Ting by its async event loop, not by workers."
+        ),
     )
     local_platform_host: str = Field(
         default="127.0.0.1",

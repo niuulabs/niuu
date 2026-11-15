@@ -6,6 +6,7 @@ import dataclasses
 from pathlib import Path
 
 import pytest
+import yaml
 
 from personas.adapters.loader import (
     _BUILTIN_PERSONAS_DIR,
@@ -24,8 +25,6 @@ name: test-agent
 system_prompt_template: |
   You are a test agent.
   Do tests.
-allowed_tools: [file_read, git]
-forbidden_tools: [web_search]
 permission_mode: workspace-write
 llm:
   primary_alias: balanced
@@ -39,7 +38,6 @@ name: minimal-agent
 
 _NO_NAME_YAML = """\
 system_prompt_template: missing a name
-allowed_tools: [file_read]
 """
 
 _INVALID_YAML = """\
@@ -58,6 +56,18 @@ for _p in _BUILTIN_PERSONAS_DIR.glob("*.yaml"):
     _cfg = _loader.load_from_file(_p)
     if _cfg is not None:
         _BUILTIN_PERSONAS[_p.stem] = _cfg
+
+# The archived personas are not shipped and predate the removal of tool lists, so the files
+# (which must stay as released) still carry ``allowed_tools`` / ``forbidden_tools``, which a
+# persona loader refuses. Their other content is tested with those two keys left out.
+_ARCHIVED_PERSONAS: dict[str, PersonaConfig] = {}
+for _p in (Path(__file__).resolve().parents[2] / "archive" / "personas").glob("*.yaml"):
+    _document = yaml.safe_load(_p.read_text(encoding="utf-8"))
+    _document.pop("allowed_tools", None)
+    _document.pop("forbidden_tools", None)
+    _cfg = parse_persona(yaml.safe_dump(_document))
+    if _cfg is not None:
+        _ARCHIVED_PERSONAS[_p.stem] = _cfg
 
 
 # ---------------------------------------------------------------------------
@@ -124,8 +134,6 @@ class TestFilesystemPersonaAdapterParse:
         assert cfg is not None
         assert cfg.name == "test-agent"
         assert "test agent" in cfg.system_prompt_template
-        assert cfg.allowed_tools == ["file_read", "git"]
-        assert cfg.forbidden_tools == ["web_search"]
         assert cfg.permission_mode == "workspace-write"
         assert cfg.llm.primary_alias == "balanced"
         assert cfg.llm.thinking_enabled is True
@@ -136,8 +144,6 @@ class TestFilesystemPersonaAdapterParse:
         assert cfg is not None
         assert cfg.name == "minimal-agent"
         assert cfg.system_prompt_template == ""
-        assert cfg.allowed_tools == []
-        assert cfg.forbidden_tools == []
         assert cfg.permission_mode == ""
         assert cfg.llm.primary_alias == ""
         assert cfg.llm.thinking_enabled is False
@@ -158,17 +164,35 @@ class TestFilesystemPersonaAdapterParse:
     def test_non_dict_yaml_returns_none(self) -> None:
         assert parse_persona(_NOT_A_DICT_YAML) is None
 
-    def test_allowed_tools_non_list_becomes_empty(self) -> None:
-        yaml = "name: x\nallowed_tools: not-a-list\n"
-        cfg = parse_persona(yaml)
-        assert cfg is not None
-        assert cfg.allowed_tools == []
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "name: x\nallowed_tools: [file_read]\n",
+            "name: x\nforbidden_tools: [shell]\n",
+            "name: x\nallowed_tools: []\nforbidden_tools: []\n",
+            "name: x\nallowed_tools: not-a-list\n",
+        ],
+    )
+    def test_a_persona_with_a_tool_restriction_is_refused(self, text: str) -> None:
+        with pytest.raises(PersonaDocumentError) as raised:
+            parse_persona(text)
 
-    def test_forbidden_tools_non_list_becomes_empty(self) -> None:
-        yaml = "name: x\nforbidden_tools: not-a-list\n"
-        cfg = parse_persona(yaml)
-        assert cfg is not None
-        assert cfg.forbidden_tools == []
+        message = str(raised.value)
+        assert "persona x:" in message
+        assert "is not supported" in message or "are not supported" in message
+        assert "per-harness tool restrictions are not available yet" in message
+        assert "remove allowed_tools (and forbidden_tools) from the persona" in message
+
+    def test_a_persona_file_with_a_tool_restriction_is_refused_naming_the_file(
+        self, tmp_path: Path
+    ) -> None:
+        path = tmp_path / "restricted.yaml"
+        path.write_text("name: restricted\nallowed_tools: [file_read]\n", encoding="utf-8")
+
+        with pytest.raises(PersonaDocumentError, match=r"restricted\.yaml.*allowed_tools"):
+            FilesystemPersonaAdapter(persona_dirs=[str(tmp_path)], include_builtin=False).load(
+                "restricted"
+            )
 
     def test_llm_non_dict_uses_defaults(self) -> None:
         yaml = "name: x\nllm: some-string\n"
@@ -314,7 +338,8 @@ class TestListBuiltinNames:
         assert "coder" in names
         assert "reviewer" in names
         assert "security-auditor" in names
-        assert "postmortem-analyst" in names
+        assert "memory-compiler" in names
+        assert "lexi" in names
         assert "sidekick" not in names
 
 
@@ -328,7 +353,7 @@ class TestTrackerDeliveryPersonas:
         assert "./.skuld-tools/bin/tracker_issue" in cfg.system_prompt_template
 
     def test_closer_uses_explicit_tracker_shim_path(self) -> None:
-        cfg = _BUILTIN_PERSONAS["closer"]
+        cfg = _ARCHIVED_PERSONAS["closer"]
         assert "./.skuld-tools/bin/tracker_issue" in cfg.system_prompt_template
 
     def test_returns_sorted_list(self) -> None:
@@ -361,29 +386,38 @@ class TestBuiltinPersonas:
             cfg = self._load(p.stem)
             assert cfg.system_prompt_template, f"{p.stem} has empty system_prompt_template"
 
+    #: Personas that deliberately declare no iteration budget. The memory compiler's work is
+    #: one pass per source it is handed and the number of sources is not bounded by anything
+    #: it controls, so any count would be a guessed cap that stops a compile part-way
+    #: (.claude/rules/no-hidden-limits.md). Lexi is the voice a call speaks with: a call is
+    #: bounded by the person hanging up, not by a count of turns.
+    _UNBUDGETED = frozenset({"memory-compiler", "lexi"})
+
     def test_all_builtins_have_positive_budgets(self) -> None:
         for p in _BUILTIN_PERSONAS_DIR.glob("*.yaml"):
             cfg = self._load(p.stem)
-            if p.stem == "product-steward":
-                assert cfg.iteration_budget == 0
+            if p.stem in self._UNBUDGETED:
+                assert cfg.iteration_budget == 0, f"{p.stem} is meant to have no budget"
                 continue
             assert cfg.iteration_budget > 0, f"{p.stem} has non-positive iteration_budget"
 
     def test_specification_framer_leaves_publication_to_workflow_runtime(self) -> None:
-        cfg = self._load("specification-framer")
+        cfg = _ARCHIVED_PERSONAS["specification-framer"]
 
         assert "workflow runtime owns durable artifact publication" in (
             cfg.system_prompt_template.lower()
         )
-        assert "mimir:publish_files" not in cfg.allowed_tools
-
-    def test_product_steward_uses_runtime_model(self) -> None:
-        cfg = self._load("product-steward")
-        assert cfg.llm.primary_alias == ""
 
     # ------------------------------------------------------------------
     # Specialist personas (NIU-586)
     # ------------------------------------------------------------------
+
+    def test_lexi_is_a_voice_persona(self) -> None:
+        cfg = self._load("lexi")
+        assert cfg.voice.enabled
+        assert cfg.voice.voices == {"grok-voice": "ara", "openai-realtime": "marin"}
+        assert cfg.voice.style.strip()
+        assert cfg.parsed_permission_mode is PermissionMode.READ_ONLY
 
     def test_reviewer_exists(self) -> None:
         cfg = _BUILTIN_PERSONAS["reviewer"]
@@ -392,19 +426,6 @@ class TestBuiltinPersonas:
         assert cfg.iteration_budget == 25
         assert cfg.llm.thinking_enabled is True
         assert cfg.llm.primary_alias == ""
-
-    def test_reviewer_allowed_tools(self) -> None:
-        cfg = _BUILTIN_PERSONAS["reviewer"]
-        assert "file_read" in cfg.allowed_tools
-        assert "file_write" in cfg.allowed_tools
-        assert "git" in cfg.allowed_tools
-        assert "shell" in cfg.allowed_tools
-        assert "web_fetch" in cfg.allowed_tools
-        assert "tracker" in cfg.allowed_tools
-
-    def test_reviewer_forbids_only_what_a_harness_session_has(self) -> None:
-        cfg = _BUILTIN_PERSONAS["reviewer"]
-        assert cfg.forbidden_tools == []
 
     def test_reviewer_system_prompt_mentions_sql_safety(self) -> None:
         cfg = _BUILTIN_PERSONAS["reviewer"]
@@ -435,14 +456,6 @@ class TestBuiltinPersonas:
         assert cfg.iteration_budget == 25
         assert cfg.llm.thinking_enabled is True
         assert cfg.llm.primary_alias == ""
-
-    def test_security_auditor_allowed_tools(self) -> None:
-        cfg = _BUILTIN_PERSONAS["security-auditor"]
-        assert cfg.allowed_tools == ["file_read", "git_read", "web_fetch", "web_search"]
-
-    def test_security_auditor_forbidden_tools(self) -> None:
-        cfg = _BUILTIN_PERSONAS["security-auditor"]
-        assert cfg.forbidden_tools == ["shell"]
 
     def test_security_auditor_system_prompt_mentions_owasp(self) -> None:
         cfg = _BUILTIN_PERSONAS["security-auditor"]
@@ -523,3 +536,29 @@ class TestPersonaNamePaths:
         with pytest.raises(PersonaDocumentError):
             loader.save(config)
         assert not (tmp_path / "escape.yaml").exists()
+
+
+def test_a_personas_description_is_read_from_its_yaml() -> None:
+    from personas.domain.persona import parse_persona
+
+    persona = parse_persona("name: p\ndescription: ' Reviews code. '\n")
+
+    assert persona.description == "Reviews code."
+    assert parse_persona("name: q\n").description == ""
+
+
+def test_every_built_in_persona_says_what_it_does_and_when_to_talk_to_it() -> None:
+    from personas.adapters.loader import FilesystemPersonaAdapter
+
+    adapter = FilesystemPersonaAdapter(persona_dirs=[], include_builtin=True)
+    names = adapter.list_builtin_names()
+
+    assert len(names) == 5
+    for name in names:
+        persona = adapter.load(name)
+        assert persona.description, f"built-in persona {name!r} has no description"
+        assert "\n" not in persona.description and persona.description.endswith(".")
+        assert "talk to it" in persona.description, (
+            f"{name!r}: a description says when to talk to the persona"
+        )
+        assert adapter.load_current_portable(name).definition["description"] == persona.description

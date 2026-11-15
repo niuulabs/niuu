@@ -10,6 +10,7 @@ instantiation steps.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
 from niuu.utils import import_class, resolve_secret_kwargs
@@ -102,8 +103,13 @@ def resolve_transport_kwargs(
     adapter: str,
     *,
     service_prefix: str,
+    discovered_peers: Callable[[], list[str]] | None = None,
 ) -> dict[str, Any]:
-    """Resolve shared Sleipnir transport settings for Ravn and Skuld."""
+    """Resolve shared Sleipnir transport settings for Ravn and Skuld.
+
+    ``discovered_peers`` (nng only) returns the PUB addresses discovery has found so far; it
+    is called on every pass, so a peer that joins is dialed and one that left is dropped.
+    """
     mesh = settings.mesh
     if adapter == "nng":
         from niuu.mesh.cluster import read_cluster_pub_addresses
@@ -122,13 +128,22 @@ def resolve_transport_kwargs(
             that existed when it started, so anyone who joined later was
             unreachable in that direction.
             """
-            return read_cluster_pub_addresses(discovery_adapters)
+            addresses = read_cluster_pub_addresses(discovery_adapters)
+            if discovered_peers is not None:
+                addresses.extend(discovered_peers())
+            return list(dict.fromkeys(addresses))
 
-        return {
+        kwargs: dict[str, Any] = {
             "address": mesh.nng.pub_sub_address,
             "service_id": f"{service_prefix}:{peer_id}",
             "peer_addresses": _peer_addresses,
         }
+        # Skuld's own settings; Ravn's nng settings have neither and keep the transport's.
+        if advertise_host := getattr(mesh.nng, "advertise_host", ""):
+            kwargs["advertise_host"] = advertise_host
+        if interval := getattr(mesh.nng, "rediscover_interval_s", None):
+            kwargs["rediscover_interval_s"] = interval
+        return kwargs
 
     if adapter == "nats":
         nats = mesh.nats

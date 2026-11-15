@@ -11,7 +11,12 @@ export interface HandoffRowProps {
   onOpenWorker: (peerId: string) => void;
 }
 
-/** One line: who handed work to whom, what it was, and the event that carried it. */
+/**
+ * One line: who handed work to whom, what it was, and the event that carried it. The line is
+ * cut at the row's width, so the whole sentence is the tooltip. A run's `workflow` events
+ * (offered, picked up, passed, outcome, gate, ended and any kind added later) are rows of
+ * this kind, with the event's kind where the event name goes.
+ */
 export function HandoffRow({ event, parties, onOpenWorker }: HandoffRowProps) {
   const { from, targets } = parties;
   const first = targets[0];
@@ -31,7 +36,9 @@ export function HandoffRow({ event, parties, onOpenWorker }: HandoffRowProps) {
           </>
         )}
       </span>
-      <span className="niuu-chat-handoff-what">{event.preview}</span>
+      <span className="niuu-chat-handoff-what" title={event.preview}>
+        {event.preview}
+      </span>
       <span className="niuu-chat-handoff-event">{event.eventType}</span>
     </>
   );

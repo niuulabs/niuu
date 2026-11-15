@@ -3,6 +3,7 @@
 from datetime import UTC, datetime
 from uuid import uuid4
 
+from niuu.cap_telemetry import degraded_counts
 from volundr.domain.models import SessionEvent, SessionEventType
 from volundr.domain.ports import EventSink
 from volundr.domain.services.event_ingestion import EventIngestionService
@@ -98,19 +99,23 @@ class TestEventIngestionService:
         bad_sink = FakeEventSink(fail=True, name="bad")
         service = EventIngestionService(sinks=[good_sink, bad_sink])
 
+        before = degraded_counts().get("event_pipeline.sink.bad", 0)
         event = _make_event()
         await service.ingest(event)
 
         assert len(good_sink._events) == 1
         assert len(bad_sink._events) == 0
+        assert degraded_counts()["event_pipeline.sink.bad"] == before + 1
 
     async def test_sink_batch_failure_isolated(self):
         good_sink = FakeEventSink(name="good")
         bad_sink = FakeEventSink(fail=True, name="bad")
         service = EventIngestionService(sinks=[good_sink, bad_sink])
 
+        before = degraded_counts().get("event_pipeline.sink.bad", 0)
         events = [_make_event(sequence=i) for i in range(2)]
         await service.ingest_batch(events)
+        assert degraded_counts()["event_pipeline.sink.bad"] == before + 1
 
         assert len(good_sink._events) == 2
         assert len(bad_sink._events) == 0

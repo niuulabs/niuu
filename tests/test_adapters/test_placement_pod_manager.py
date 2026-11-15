@@ -10,7 +10,7 @@ from niuu.ports.session_proxy import SessionProxyTarget
 from tests.conftest import MockPodManager
 from volundr.adapters.outbound.placement_pod_manager import PlacementPodManager
 from volundr.domain.models import Session, SessionStatus
-from volundr.domain.ports import SessionCapacity
+from volundr.domain.ports import HostedUnitError, SessionCapacity
 from volundr.domain.session_runtimes import (
     ReadinessState,
     RuntimeReadiness,
@@ -254,6 +254,20 @@ def test_a_session_credential_is_minted_only_when_both_deliver_it():
     assert not _placement(delivers=False)[0].delivers_forge_session_token
 
 
+def test_a_credential_can_be_delivered_somewhere_when_one_child_delivers_it():
+    """Mini mode: local sessions get the credential though the pool's runtime cannot."""
+    assert _placement(delivers=False)[0].delivers_forge_session_token_somewhere
+    assert _placement()[0].delivers_forge_session_token_somewhere
+
+
+def test_a_session_credential_follows_the_manager_that_runs_the_session():
+    """A pool that delivers nothing (no runtime configured) does not starve local sessions."""
+    placement, _, _ = _placement(delivers=False)
+
+    assert placement.delivers_forge_session_token_for(_session())
+    assert not placement.delivers_forge_session_token_for(_session(host_selector={"tags": []}))
+
+
 async def test_startup_stages_come_from_the_child_that_runs_the_session():
     placement, _, _ = _placement()
 
@@ -333,3 +347,42 @@ async def test_a_running_pool_session_reports_its_pool_status():
     session = _session(_compute_execution=PIN).model_copy(update={"status": SessionStatus.RUNNING})
 
     assert await placement.status(session) == SessionStatus.RUNNING
+
+
+async def _member_source(unit_id, member_id):
+    return []
+
+
+def test_the_member_source_reaches_both_managers():
+    placement, local, pool = _placement()
+
+    placement.configure_hosted_members(_member_source)
+
+    assert local._hosted_members is _member_source
+    assert pool._hosted_members is _member_source
+
+
+async def test_a_members_restart_and_stop_go_to_the_manager_that_runs_its_unit():
+    placement, local, pool = _placement()
+    calls = []
+
+    async def restart(member):
+        calls.append(("pool", member.id))
+
+    async def stop_member(member):
+        calls.append(("pool-stop", member.id))
+
+    pool.restart_hosted_member = restart
+    pool.stop_hosted_member = stop_member
+    member = Session(
+        id=uuid4(), name="m", hosted_by=uuid4(), hosted_port=8082,
+        workload_config={"_compute_execution": PIN},
+    )  # fmt: skip
+    local_member = Session(id=uuid4(), name="l", hosted_by=uuid4(), hosted_port=8082)
+
+    await placement.restart_hosted_member(member)
+    await placement.stop_hosted_member(member)
+    with pytest.raises(HostedUnitError, match="cannot start one member"):
+        await placement.restart_hosted_member(local_member)
+
+    assert calls == [("pool", member.id), ("pool-stop", member.id)]

@@ -136,6 +136,45 @@ describe('useSkuldChat helpers', () => {
     ]);
   });
 
+  it('carries the author of a user turn and none for old turns or assistant turns', () => {
+    const turns = [
+      {
+        id: 'old',
+        role: 'user',
+        content: 'recorded before authorship',
+        created_at: '2026-05-01T10:00:00.000000+00:00',
+      },
+      {
+        id: 'new',
+        role: 'user',
+        content: 'hello',
+        created_at: '2026-05-01T10:01:00.000000+00:00',
+        author: { user_id: 'u-alice', display_name: 'Alice Liddell' },
+      },
+      {
+        id: 'null-author',
+        role: 'user',
+        content: 'null',
+        created_at: '2026-05-01T10:02:00.000000+00:00',
+        author: null,
+      },
+      {
+        id: 'reply',
+        role: 'assistant',
+        content: 'hi',
+        created_at: '2026-05-01T10:03:00.000000+00:00',
+        author: { user_id: 'u-alice', display_name: 'Alice Liddell' },
+      },
+    ];
+
+    const [old, authored, nullAuthor, reply] = transformTurns(turns as never);
+
+    expect(old).not.toHaveProperty('author');
+    expect(authored?.author).toEqual({ userId: 'u-alice', displayName: 'Alice Liddell' });
+    expect(nullAuthor).not.toHaveProperty('author');
+    expect(reply).not.toHaveProperty('author');
+  });
+
   it('derives participants from turns and synthesizes a single Skuld observer only for ravn rooms', () => {
     const ravnParticipants = participantsFromTurns([
       {
@@ -171,6 +210,36 @@ describe('useSkuldChat helpers', () => {
         },
       ] as never).size,
     ).toBe(0);
+  });
+
+  it('shows a kept room row as the row it was live, never as a message', () => {
+    const turns = [
+      {
+        id: 'row-1',
+        role: 'assistant',
+        content: 'Offered Implement the change to coder',
+        created_at: '2026-11-09T21:16:40.000000+00:00',
+        metadata: {
+          messageType: 'mesh_message',
+          fromPersona: 'Coordinator',
+          eventType: 'step.offered',
+          direction: 'workflow',
+        },
+        participant_meta: { peer_id: 'root-1', persona: 'coordinator', participant_type: 'skuld' },
+      },
+    ];
+
+    expect(transformTurns(turns as never)).toEqual([]);
+    expect(meshEventsFromTurns(turns as never)).toEqual([
+      expect.objectContaining({
+        type: 'mesh_message',
+        id: 'history-row-1',
+        participantId: 'root-1',
+        fromPersona: 'Coordinator',
+        eventType: 'step.offered',
+        preview: 'Offered Implement the change to coder',
+      }),
+    ]);
   });
 
   it('extracts mesh outcome events from history turns and skips non-outcome cases', () => {

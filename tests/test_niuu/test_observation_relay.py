@@ -97,7 +97,7 @@ async def test_relay_ignores_unsubscribed_mesh_and_self_origin_events() -> None:
     await relay.start()
 
     await subscriber.handler(_event("delivery.completed"))
-    await subscriber.handler(_event("ravn.mesh.activity.peer"))
+    await subscriber.handler(_event("mesh.activity.peer"))
     await subscriber.handler(_event("research.completed", {"ravn_source": f"ravn:{_PEER}"}))
 
     send.assert_not_awaited()

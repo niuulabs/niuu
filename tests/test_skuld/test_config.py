@@ -152,8 +152,17 @@ class TestSkuldSettings:
 
     def test_workflow_steps_nested_env_var(self, monkeypatch):
         monkeypatch.setenv("SKULD__WORKFLOW_STEPS__ENABLED", "true")
+        for name, value in (
+            ("RUN_ID", "run-1"),
+            ("MEMBER", "coder"),
+            ("PERSONA_ALIAS", "coder"),
+            ("ORCHESTRATOR_PEER_ID", "root-1"),
+        ):
+            monkeypatch.setenv(f"SKULD__WORKFLOW_STEPS__{name}", value)
 
-        assert SkuldSettings().workflow_steps.enabled is True
+        steps = SkuldSettings().workflow_steps
+        assert steps.enabled is True
+        assert steps.orchestrator_peer_id == "root-1"
 
     def test_mcp_servers_from_env(self, monkeypatch):
         monkeypatch.setenv(

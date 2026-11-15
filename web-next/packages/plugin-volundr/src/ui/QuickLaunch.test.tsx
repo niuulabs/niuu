@@ -121,6 +121,19 @@ describe('QuickLaunch', () => {
       expect.objectContaining({ to: '/volundr/sessions/$sessionId' }),
     );
   });
+  it('starts a team from the quick launch: it leaves for the team launch', async () => {
+    const onStartTeam = vi.fn();
+    setup({}, <QuickLaunch onAdvanced={vi.fn()} onStartTeam={onStartTeam} />);
+    await ready();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Start a team' }));
+
+    expect(onStartTeam).toHaveBeenCalledOnce();
+    expect(navigate).toHaveBeenCalledWith({
+      to: '/volundr/sessions/new',
+      search: { mode: 'team' },
+    });
+  });
   it('uses Astra for Codex and allows GPT-6 Sol plus independent effort', async () => {
     const { startSession } = setup();
     await ready();

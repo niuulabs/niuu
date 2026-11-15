@@ -214,13 +214,11 @@ async function fixture(page: Page, rich = false) {
                   ? item.status === 'archived'
                   : item.status !== 'archived',
               )
-            : path.includes('/workflow/gates')
-              ? { gates: [] }
-              : path.includes('/diff')
-                ? { files: [] }
-                : path.includes('/stats')
-                  ? {}
-                  : [];
+            : path.includes('/diff')
+              ? { files: [] }
+              : path.includes('/stats')
+                ? {}
+                : [];
     return route.fulfill({ json });
   });
   return mutations;

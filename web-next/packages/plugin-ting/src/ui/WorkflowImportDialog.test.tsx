@@ -39,7 +39,6 @@ describe('WorkflowImportDialog', () => {
           message: 'The local revision differs.',
           definition: {
             permission_mode: 'read_only',
-            allowed_tools: ['Read', 'Search'],
             system_prompt_template: 'Review the proposed change.',
           },
         },
@@ -71,7 +70,6 @@ describe('WorkflowImportDialog', () => {
           {
             name: 'local-reviewer',
             permissionMode: 'default',
-            allowedTools: [],
             iterationBudget: 10,
             isBuiltin: false,
             hasOverride: false,
@@ -101,7 +99,8 @@ describe('WorkflowImportDialog', () => {
     await waitFor(() => expect(screen.getByTestId('workflow-import-preview')).toBeInTheDocument());
     fireEvent.click(screen.getByText('Review portable persona behavior'));
     expect(screen.getByText(/read_only/)).toBeInTheDocument();
-    expect(screen.getByText(/Read, Search/)).toBeInTheDocument();
+    // Personas carry no tool restrictions (not supported yet), so none are shown.
+    expect(screen.queryByText(/Requested tools/)).not.toBeInTheDocument();
     expect(screen.getByText('Review the proposed change.')).toBeInTheDocument();
 
     fireEvent.change(screen.getByTestId('persona-mapping-reviewer'), {

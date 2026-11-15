@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Iterable, Mapping
+from collections.abc import AsyncIterator, Iterable, Mapping
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from uuid import NAMESPACE_URL, UUID, uuid5
 
 try:
@@ -29,10 +30,12 @@ from niuu.forge_mcp.models import ForgeMcpGrant
 from sleipnir.domain.catalog import volundr_session_forge_mcp_grants_changed
 from volundr.domain.execution_catalog import ExecutionCatalogError, ExecutionSelectionError
 from volundr.domain.models import (
+    HOSTED_LAUNCH_KEY,
     CleanupTarget,
     CommunicationRoute,
     EventType,
     GitSource,
+    HostedLaunch,
     IntegrationConnection,
     IntegrationType,
     LocalMountSource,
@@ -52,6 +55,8 @@ from volundr.domain.ports import (
     ChronicleRepository,
     CommunicationRouteRepository,
     EventBroadcaster,
+    HostedMemberLaunch,
+    HostedUnitError,
     IntegrationRepository,
     LaunchSpecProvider,
     PodManager,
@@ -65,8 +70,17 @@ from volundr.domain.ports import (
     SessionRepository,
     SessionSpanRepository,
     StoragePort,
+    UnitMemberContext,
 )
 from volundr.domain.presented_files import PresentedFileStore
+from volundr.domain.project_memory import (
+    MIMIR_SERVER_PREFIX,
+    ProjectMemoryResolver,
+    has_derived,
+    merge_memory,
+    offers_facts,
+    with_memory_instructions,
+)
 from volundr.domain.projects import SessionCoordination
 from volundr.domain.secret_request_ports import SessionSecretCleanup
 from volundr.domain.services.forge_session_launch import (
@@ -82,6 +96,7 @@ from volundr.domain.services.forge_session_launch import (
 )
 from volundr.domain.services.session_startup import SessionStartupRecorder
 from volundr.domain.session_changes import SessionChanges
+from volundr.domain.session_launch_facts import LAUNCH_FACTS_KEY, without_launch_facts
 from volundr.domain.session_read_state import SessionReadState, SessionReadStateChange
 from volundr.domain.session_runtimes import SessionRuntimeOffer, requested_grants
 from volundr.ports.workflow_execution_credentials import ExecutionCredentialProjectionPort
@@ -92,6 +107,7 @@ if TYPE_CHECKING:
     from sleipnir.ports.audit import AuditRepository
     from volundr.adapters.outbound.git_registry import GitProviderRegistry
     from volundr.domain.notification_ports import NotificationRecorder
+    from volundr.domain.services.mesh_identity import MeshIdentityRetirer
 
 logger = logging.getLogger(__name__)
 
@@ -201,6 +217,8 @@ class SessionService:
         presented_file_store: PresentedFileStore | None = None,
         forge_session_projection: ExecutionCredentialProjectionPort | None = None,
         secret_cleanup: SessionSecretCleanup | None = None,
+        mesh_identity: MeshIdentityRetirer | None = None,
+        project_memory: ProjectMemoryResolver | None = None,
     ):
         if forge_session_projection is not None and not forge_session_projection.supports(
             runtime_backend
@@ -212,6 +230,8 @@ class SessionService:
         self._repository = repository
         self._presented_file_store = presented_file_store
         self._secret_cleanup = secret_cleanup
+        self._mesh_identity = mesh_identity
+        self._project_memory = project_memory
         self._pod_manager = pod_manager
         self._git_registry = git_registry
         self._user_integration = user_integration
@@ -223,6 +243,13 @@ class SessionService:
         self._provisioning_timeout = provisioning_timeout
         self._provisioning_initial_delay = provisioning_initial_delay
         self._provisioning_tasks: dict[UUID, asyncio.Task] = {}
+        #: Unit roots this process is starting with their members (``unit_starting``): from
+        #: the moment the members are marked STARTING until the root's own start task exists.
+        self._units_starting: set[UUID] = set()
+        # Who started each running unit: its members' specs are built for that principal
+        # whenever the pod manager asks for them (at the unit's start, and to start one
+        # member again). Forgotten when the unit stops.
+        self._unit_principals: dict[UUID, Principal | None] = {}
         self._startup = SessionStartupRecorder(
             repository, pod_manager, broadcaster, startup_poll_seconds
         )
@@ -425,6 +452,21 @@ class SessionService:
         """Batch-fetch sessions by ID. Returns only the ones that exist."""
         return await self._repository.get_many(session_ids)
 
+    async def list_project_sessions(self, project_ids: list[UUID], tenant_id: str) -> list[Session]:
+        """Sessions of *tenant_id* attached to any of the projects, without access checks.
+
+        Callers decide what the caller may do with them (room role through project
+        membership); this is a lookup, not an authorization.
+        """
+        return await self._repository.list_by_project(project_ids, tenant_id)
+
+    async def list_workflow_run_sessions(self, run_ids: list[str]) -> list[Session]:
+        """Sessions of the workflow runs, across tenants, oldest first, without access checks.
+
+        A lookup for the memory routes, which scope the answer to their caller themselves.
+        """
+        return await self._repository.list_by_workflow_runs(run_ids)
+
     async def with_read_states(
         self, sessions: list[Session], principal: Principal | None
     ) -> list[Session]:
@@ -442,12 +484,14 @@ class SessionService:
         reader_id = principal.user_id if principal is not None else None
         return await self._repository.changes_since(cursor, reader_id)
 
-    async def get_read_state(self, session_id: UUID, principal: Principal) -> SessionReadState:
-        session = await self._repository.get(session_id)
-        if session is None:
-            raise SessionNotFoundError(session_id)
-        await self._check_access(session, principal, "read")
-        states = await self._repository.get_read_states([session_id], principal.user_id)
+    async def get_read_state(self, session_id: UUID, reader_id: str) -> SessionReadState:
+        """*reader_id*'s read state of a session the caller has already authorized.
+
+        Whoever may read the session's transcript has a read state of it: the owner,
+        admins and tenant viewers ("read") and the people in its room ("read_room"),
+        so ``ForgeService`` checks both before calling this.
+        """
+        states = await self._repository.get_read_states([session_id], reader_id)
         if session_id not in states:
             raise SessionNotFoundError(session_id)
         return states[session_id]
@@ -456,14 +500,11 @@ class SessionService:
         self,
         session_id: UUID,
         change: SessionReadStateChange,
-        principal: Principal,
+        reader_id: str,
     ) -> SessionReadState:
-        session = await self._repository.get(session_id)
-        if session is None:
-            raise SessionNotFoundError(session_id)
-        await self._check_access(session, principal, "read")
-        state = await self._repository.change_read_state(session_id, principal.user_id, change)
-        await self.notify_read_state_changed(session_id, reader_id=principal.user_id)
+        """Change *reader_id*'s read state of a session the caller has already authorized."""
+        state = await self._repository.change_read_state(session_id, reader_id, change)
+        await self.notify_read_state_changed(session_id, reader_id=reader_id)
         return state
 
     async def notify_read_state_changed(
@@ -570,9 +611,19 @@ class SessionService:
             else turn_started_at or (previous_turn if same_bucket else None)
         )
         session.activity_metadata = metadata
+        startup_failed = False
         if state is SessionActivityState.ERROR:
             message = str(metadata.get("error") or metadata.get("message") or "").strip()
             session.error = message or "Workflow agent failed"
+            # A broker that cannot start (its harness refuses the session's persona, its
+            # configured mesh never came up) says so: a session still coming up has then
+            # failed, as its readiness wait would conclude only at its deadline.
+            startup_failed = metadata.get("startup_failed") is True and stored.status in (
+                SessionStatus.PROVISIONING,
+                SessionStatus.STARTING,
+            )
+            if startup_failed:
+                session.status = SessionStatus.FAILED
         # Treat each activity report as a liveness heartbeat so the reconciler can
         # tell a live-but-idle session from one whose broker has died.
         session.last_active = datetime.now(UTC)
@@ -593,6 +644,15 @@ class SessionService:
             session.activity_state_since,
         ):
             return updated
+        if startup_failed:
+            logger.error(
+                "Session %s failed to start: its broker reported %s",
+                _sanitize_log(session_id),
+                _sanitize_log(session.error),
+            )
+            if self._broadcaster is not None:
+                await self._broadcaster.publish_session_updated(updated)
+            await self._emit_session_failed(updated, session.error or "")
 
         if self._broadcaster is not None:
             await self._broadcaster.publish(
@@ -1060,6 +1120,8 @@ class SessionService:
             await self._secret_cleanup.purge_session(session_id)
 
         deleted = await self._repository.delete(session_id)
+        if deleted:
+            await self._retire_mesh_identity(session_id, launch_id_of(session.workload_config))
 
         # Run optional resource cleanup after session record is gone
         if deleted:
@@ -1105,6 +1167,17 @@ class SessionService:
         if self._secret_cleanup is None:
             return
         await self._secret_cleanup.cancel_for_session(session_id)
+
+    async def _retire_mesh_identity(self, session_id: UUID, launch_id: str | None) -> None:
+        """Free the launch's mesh peer ids and tell the mesh it ended.
+
+        Not guarded, like the secret requests: a claim that cannot be released is an
+        error for the caller. Publishing the revocation is the one part that never raises
+        (see ``MeshRevocationPublisher``); the certificate's lifetime bounds a lost notice.
+        """
+        if self._mesh_identity is None:
+            return
+        await self._mesh_identity.retire(session_id, launch_id)
 
     async def _cleanup_presented_files(self, session_id: UUID) -> None:
         """Drop the session's durable presented files (F2) with the session."""
@@ -1279,6 +1352,8 @@ class SessionService:
 
         if not session.can_start():
             raise SessionStateError(session_id, "start", session.status)
+        if session.is_unit_root:
+            self._unit_principals[session_id] = principal
 
         if workload_config is not None and "_compute_execution" in workload_config:
             raise ExecutionSelectionError(
@@ -1302,6 +1377,10 @@ class SessionService:
         require_workload_type_available(workload_type)
         if not workload_config and session.workload_config:
             workload_config = dict(session.workload_config)
+        if workload_config and LAUNCH_FACTS_KEY in workload_config:
+            # The previous launch's facts end with it, and a caller cannot set them: the
+            # launch records what its own contributors establish (``_record_launch_facts``).
+            workload_config = without_launch_facts(workload_config)
         if self._execution_resolver is not None:
             workload_config = await self._resolve_execution_config(
                 session, workload_config or {}, launch_spec
@@ -1324,6 +1403,19 @@ class SessionService:
         project_context = session.workload_config.get("project_context", "")
         if project_context:
             workload_config = {**(workload_config or {}), "project_context": project_context}
+
+        # The project's memory mounts are derived again at every launch, so a mount added or
+        # removed since the last one applies to this one. A mount the registry no longer has,
+        # or two sources that disagree about one, refuse the start before the session flips
+        # to STARTING.
+        workload_config = await self.with_project_memory(
+            session, workload_config, launch_spec, workload_type
+        )
+
+        # A restart ends the previous launch: its mesh peer ids are freed and its mesh
+        # certificates revoked, exactly like its session credential (a launch that was
+        # stopped first has nothing left to retire).
+        await self._retire_mesh_identity(session_id, launch_id_of(session.workload_config))
 
         # Forge MCP grants persist across restarts and every start is a new launch,
         # which revokes the previous launch's session credential.
@@ -1391,6 +1483,53 @@ class SessionService:
         self._startup.watch(session_id)
 
         return starting
+
+    async def with_project_memory(
+        self,
+        session: Session,
+        workload_config: dict | None,
+        launch_spec: str | None,
+        workload_type: str = "session",
+    ) -> dict | None:
+        """``workload_config`` with its ``mimir`` merged from the session's project, the
+        launch spec and what the session itself sets.
+
+        A session in no project, or in a project with no mounts that has not had any derived
+        before, is returned as it is. Raises ``MemoryMountUnavailableError`` naming a project
+        mount the registry cannot give this session's owner, and ``MemoryMountClashError``
+        naming a mount two sources point at different targets.
+        """
+        if self._project_memory is None or session.coordination is None:
+            return workload_config
+        config = workload_config or {}
+        project = await self._project_memory.for_launch(
+            session.coordination.project_id,
+            tenant_id=session.tenant_id or "",
+            owner_id=session.owner_id or "",
+        )
+        if not project and not has_derived(config.get("mimir")):
+            return workload_config
+        merged = merge_memory(
+            config.get("mimir"), self._launch_spec_memory(launch_spec, workload_type), project
+        )
+        without = {key: value for key, value in config.items() if key != "mimir"}
+        return {**without, "mimir": merged} if merged else without
+
+    def _launch_spec_memory(self, launch_spec: str | None, workload_type: str) -> dict:
+        provider = self._launch_spec_provider
+        if provider is None:
+            return {}
+        spec = provider.get(launch_spec) if launch_spec else None
+        if spec is None and workload_type != "session":
+            spec = provider.get_default(workload_type)
+        if spec is None:
+            return {}
+        raw = spec.workload_config.get("mimir")
+        memory = dict(raw) if isinstance(raw, dict) else {}
+        hosted = spec.workload_config.get("mimir_hosted_url")
+        if hosted and not memory.get("hosted_url"):
+            memory["hosted_url"] = hosted
+        return memory
 
     async def _provision_background(
         self,
@@ -1508,10 +1647,35 @@ class SessionService:
         workload_config: dict | None = None,
     ):
         """Run the contributor pipeline and start pods with merged spec."""
-        workload_config = {**session.workload_config, **(workload_config or {})}
-        # A caller cannot change the internally persisted execution during contribution.
-        if "_compute_execution" in session.workload_config:
-            workload_config["_compute_execution"] = session.workload_config["_compute_execution"]
+        session, spec = await self._build_spec(
+            session,
+            principal,
+            definition,
+            launch_spec,
+            terminal_restricted,
+            credential_names=credential_names,
+            integration_ids=integration_ids,
+            resource_config=resource_config,
+            system_prompt=system_prompt,
+            initial_prompt=initial_prompt,
+            workload_type=workload_type,
+            workload_config=workload_config,
+        )
+        await self._startup.handing_off(session.id)
+        return await self._pod_manager.start(session, spec=spec)
+
+    async def _resolve_connections(
+        self,
+        session: Session,
+        principal: Principal | None,
+        integration_ids: list[str] | None,
+        workload_config: dict,
+    ) -> list[IntegrationConnection]:
+        """The integration connections a launch of ``session`` attaches.
+
+        The ids the caller named, or every enabled connection of the principal when it named
+        none. The fetched connections are kept so contributors don't fetch them again.
+        """
         # Auto-include all enabled integrations when none are specified.
         # Keep the fetched connections so contributors don't re-fetch by ID.
         resolved_connections: list[IntegrationConnection] = []
@@ -1556,13 +1720,47 @@ class SessionService:
             )
             resolved_connections.extend(c for c in source_connections if c.enabled)
 
-        workflow_child_local_mount = _is_workflow_child_local_mount(session, workload_config)
-        if workflow_child_local_mount:
+        if _is_workflow_child_local_mount(session, workload_config):
             resolved_connections = [
                 connection
                 for connection in resolved_connections
                 if connection.integration_type != IntegrationType.SOURCE_CONTROL
             ]
+        return resolved_connections
+
+    async def _build_spec(
+        self,
+        session: Session,
+        principal: Principal | None,
+        definition: str | None,
+        launch_spec: str | None,
+        terminal_restricted: bool,
+        credential_names: list[str] | None = None,
+        integration_ids: list[str] | None = None,
+        resource_config: dict | None = None,
+        system_prompt: str = "",
+        initial_prompt: str = "",
+        workload_type: str = "session",
+        workload_config: dict | None = None,
+    ) -> tuple[Session, SessionSpec]:
+        """Run the contributor pipeline for a launch; the session as launched, and its spec.
+
+        The spec carries the session's Forge credential (or the Secret mount that projects
+        it), minted for the launch id the session row holds.
+        """
+        workload_config = {**session.workload_config, **(workload_config or {})}
+        # A caller cannot change the internally persisted execution during contribution.
+        if "_compute_execution" in session.workload_config:
+            workload_config["_compute_execution"] = session.workload_config["_compute_execution"]
+        # Every launch, including a hosted member's at its unit's start, gets its project's
+        # memory as the project holds it now.
+        workload_config = await self.with_project_memory(
+            session, workload_config, launch_spec, workload_type
+        )
+        resolved_connections = await self._resolve_connections(
+            session, principal, integration_ids, workload_config
+        )
+        workflow_child_local_mount = _is_workflow_child_local_mount(session, workload_config)
 
         if resolved_connections or workflow_child_local_mount:
             workload_config = {
@@ -1587,15 +1785,32 @@ class SessionService:
             workload_type=workload_type,
             # Contributors never see the credential bookkeeping: an otherwise
             # empty workload config must still read as empty to them.
-            workload_config=without_forge_mcp(workload_config),
+            # Nor the record of the previous launch's facts: a contributor reports what
+            # this launch establishes and never reads what an earlier one did.
+            workload_config=without_launch_facts(without_forge_mcp(workload_config)),
+            unit_members=await self._unit_member_contexts(session, principal),
         )
 
         contributions: list[SessionContribution] = []
         for contributor in self._contributors:
             contribution = await contributor.contribute(session, context)
             contributions.append(contribution)
+        session = await self._record_launch_facts(session, contributions)
 
         spec = SessionSpec.merge(contributions)
+        if any(
+            str(server.get("name", "")).startswith(MIMIR_SERVER_PREFIX)
+            for server in spec.values.get("mcpServers", [])
+            if isinstance(server, dict)
+        ):
+            # Appended after persona and launch-spec resolution, as the project brief is,
+            # so every harness is told how to use the session's memory whichever prompt
+            # the session was given.
+            session_values = spec.values.setdefault("session", {})
+            session_values["systemPrompt"] = with_memory_instructions(
+                session_values.get("systemPrompt", ""),
+                facts=offers_facts(workload_config.get("mimir")),
+            )
         spec.forge_session = await self._deliver_forge_session(session, spec)
         if session.coordination and (
             project_context := session.workload_config.get("project_context")
@@ -1608,8 +1823,197 @@ class SessionService:
                 part for part in (existing_prompt, project_context) if part
             )
         self._overlay_resume_session(session, spec)
-        await self._startup.handing_off(session.id)
-        return await self._pod_manager.start(session, spec=spec)
+        return session, spec
+
+    async def _record_launch_facts(
+        self,
+        session: Session,
+        contributions: list[SessionContribution],
+    ) -> Session:
+        """Record what this launch's contributors established on the session, and return it.
+
+        The record replaces the whole of the previous one (and whatever a request carried
+        under its key), and is dropped when this launch established nothing, so a fact
+        never outlives the launch that made it. Two contributors may report the same fact
+        only with the same value.
+        """
+        facts: dict[str, tuple[str, Any]] = {}
+        for contributor, contribution in zip(self._contributors, contributions, strict=True):
+            for key, value in contribution.launch_facts.items():
+                if key in facts and facts[key][1] != value:
+                    raise ValueError(
+                        f"Launch fact {key!r} is reported as {facts[key][1]!r} by "
+                        f"{facts[key][0]!r} and as {value!r} by {contributor.name!r}; "
+                        "two contributors must not disagree about the same fact"
+                    )
+                facts[key] = (contributor.name, value)
+        recorded = without_launch_facts(session.workload_config)
+        if facts:
+            recorded[LAUNCH_FACTS_KEY] = {key: value for key, (_, value) in facts.items()}
+        if session.workload_config == recorded:
+            return session
+        session = session.model_copy(update={"workload_config": recorded})
+        await self._repository.update(session)
+        return session
+
+    # -- A workflow run's unit: members hosted by the unit root ----------------------------
+
+    #: The workload-config keys that place a session (on the pool, or with a host selector).
+    #: A member runs where its unit does, so it carries the unit root's.
+    _PLACEMENT_KEYS = (
+        "_compute_execution",
+        "execution_profile",
+        "compute_profile",
+        "runtime_grants",
+        "host_selector",
+    )
+
+    def member_chat_endpoint(self, member: Session) -> str:
+        """The chat endpoint of a member of a unit, as its runtime names it.
+
+        Asked of the pod manager exactly as for an ordinary session at its start: the
+        runtime that hosts the member knows where its page is (a gateway route, the
+        member's own port, a path on the unit's ingress). One that names none is reached
+        through Forge's own session proxy, which dials the member's broker target.
+        """
+        return (
+            self._pod_manager.initial_chat_endpoint(member)
+            or f"{self._public_ws_origin}/s/{member.id}/session"
+        )
+
+    async def hosted_member_launches(
+        self, unit_id: UUID, member_id: UUID | None = None
+    ) -> list[HostedMemberLaunch]:
+        """The launches of a unit's members: each one's own session and spec.
+
+        This is the member source every pod manager that hosts units is composed with. Each
+        spec is what the contributor pipeline makes for the member as if it were started on
+        its own, carrying the credential of the launch ``ForgeService`` recorded for it, so a
+        member keeps its own persona, prompts, credential, home and outcome. ``member_id``
+        asks for one member only, to start it again in place. Members are ordered by port.
+        """
+        unit = await self._repository.get(unit_id)
+        if unit is None:
+            raise SessionNotFoundError(unit_id)
+        if unit_id not in self._unit_principals:
+            raise HostedUnitError(
+                f"Unit {unit_id} was not started by this Forge process, so there is nobody to "
+                "build its members' specs for; stop the run and start it again"
+            )
+        principal = self._unit_principals[unit_id]
+        members = [
+            m for m in await self._repository.list_hosted(unit_id) if member_id in (None, m.id)
+        ]
+        if member_id is not None and not members:
+            raise HostedUnitError(f"Session {member_id} is not a member of unit {unit_id}")
+        launches: list[HostedMemberLaunch] = []
+        for member in members:
+            member = await self._placed_with(unit, member)
+            launch = HostedLaunch.model_validate(member.workload_config.get(HOSTED_LAUNCH_KEY))
+            built, spec = await self._build_spec(
+                member,
+                principal,
+                launch.definition,
+                launch.launch_spec,
+                launch.terminal_restricted,
+                credential_names=launch.credential_names,
+                integration_ids=launch.integration_ids,
+                resource_config=launch.resource_config or None,
+                system_prompt=launch.system_prompt,
+                initial_prompt=launch.initial_prompt,
+                workload_type=launch.workload_type,
+                workload_config=without_forge_mcp(member.workload_config),
+            )
+            launches.append(HostedMemberLaunch(session=built, spec=spec))
+        return launches
+
+    async def _unit_member_contexts(
+        self, session: Session, principal: Principal | None
+    ) -> tuple[UnitMemberContext, ...]:
+        """What the members of ``session`` need, when it is a unit root; else nothing.
+
+        The members are fixed when the unit starts, so the root's pipeline sees all of them.
+        The pod is the root's, so the injection the pod carries (secrets, for one) is the
+        root's and has to cover them: each member's connections are resolved exactly as
+        its own launch resolves them.
+        """
+        if not session.is_unit_root:
+            return ()
+        contexts: list[UnitMemberContext] = []
+        for member in await self._repository.list_hosted(session.id):
+            launch = HostedLaunch.model_validate(member.workload_config.get(HOSTED_LAUNCH_KEY))
+            member_config = without_forge_mcp(member.workload_config)
+            connections = await self._resolve_connections(
+                member, principal, launch.integration_ids or None, member_config
+            )
+            contexts.append(
+                UnitMemberContext(
+                    session_id=str(member.id),
+                    owner_id=member.owner_id,
+                    tenant_id=member.tenant_id,
+                    credential_names=tuple(launch.credential_names),
+                    integration_ids=tuple(c.id for c in connections),
+                    integration_connections=tuple(connections),
+                    workload_config=member_config,
+                )
+            )
+        return tuple(contexts)
+
+    async def _placed_with(self, unit: Session, member: Session) -> Session:
+        """``member`` carrying the placement of ``unit``, stored: it runs where its unit does."""
+        placed = {
+            key: unit.workload_config[key]
+            for key in self._PLACEMENT_KEYS
+            if key in unit.workload_config
+        }
+        if all(member.workload_config.get(key) == value for key, value in placed.items()):
+            return member
+        return await self._repository.update(
+            member.model_copy(update={"workload_config": {**member.workload_config, **placed}})
+        )
+
+    async def restart_hosted_member(self, member: Session, principal: Principal | None) -> None:
+        """Start one member's process again in its running unit, under its current launch.
+
+        The pod manager restarts the process in place, or asks the member's own Skuld to
+        restart its harness and re-read its credential; one that can do neither raises.
+        A restart is never skipped silently.
+        """
+        if member.hosted_by is None:
+            raise HostedUnitError(f"Session {member.id} is not a member of a unit")
+        if member.hosted_by not in self._unit_principals:
+            self._unit_principals[member.hosted_by] = principal
+        await self._pod_manager.restart_hosted_member(member)
+
+    async def end_hosted_member(
+        self, member: Session, principal: Principal | None, *, unit_running: bool
+    ) -> Session:
+        """End a member: its process (when its unit keeps running), credential and identity.
+
+        A member has no pod of its own, so while its unit runs the pod manager stops its
+        process (or its Skuld is asked to), and raises when it cannot: a member recorded as
+        stopped while its harness runs would be a lie. When the unit itself has stopped
+        there is nothing left to stop. A member that failed keeps why it failed.
+        """
+        if member.status in (SessionStatus.STOPPED, SessionStatus.ARCHIVED):
+            return member
+        if unit_running:
+            await self._pod_manager.stop_hosted_member(member)
+        context = (
+            SessionContext(principal=principal, **await self._execution_context(member))
+            if self._contributors
+            else None
+        )
+        await self._run_cleanup(member, principal, context=context)
+        ended = member.with_cleared_endpoints()
+        if member.status != SessionStatus.FAILED:
+            ended = ended.with_status(SessionStatus.STOPPED).model_copy(update={"error": None})
+        stored = await self._repository.update(ended)
+        await self._cancel_secret_requests(member.id)
+        await self._retire_mesh_identity(member.id, launch_id_of(member.workload_config))
+        if self._broadcaster is not None:
+            await self._broadcaster.publish_session_updated(stored)
+        return stored
 
     def check_forge_mcp_grants(
         self,
@@ -1783,6 +2187,42 @@ class SessionService:
             return True
         return self._forge_session_projection is not None
 
+    @property
+    def delivers_forge_session_somewhere(self) -> bool:
+        """Whether some launch can give its broker the session credential.
+
+        A placement manager runs sessions on several runtimes. A feature that needs the
+        credential is possible when one of them delivers it; a session placed on one that
+        does not finds out at its own start, where Skuld refuses the feature by name.
+        """
+        if self._forge_session_tokens is None:
+            return False
+        if self._forge_session_projection is not None:
+            return True
+        somewhere = getattr(self._pod_manager, "delivers_forge_session_token_somewhere", None)
+        if somewhere is not None:
+            return bool(somewhere)
+        return bool(getattr(self._pod_manager, "delivers_forge_session_token", False))
+
+    def _delivers_forge_session_to(self, session: Session) -> bool:
+        """Whether the pod manager that runs *session* hands its broker the credential.
+
+        A placement manager runs a session on the local manager or on a compute pool, and
+        only the one that runs it matters: a pool with no runtime configured must not
+        stop a local session from getting its credential.
+        """
+        if self._forge_session_tokens is None:
+            return False
+        if self._pod_manager_delivers_to(session):
+            return True
+        return self._forge_session_projection is not None
+
+    def _pod_manager_delivers_to(self, session: Session) -> bool:
+        per_session = getattr(self._pod_manager, "delivers_forge_session_token_for", None)
+        if per_session is not None:
+            return bool(per_session(session))
+        return bool(getattr(self._pod_manager, "delivers_forge_session_token", False))
+
     async def issue_forge_session(self, session_id: UUID) -> IssuedForgeSessionToken | None:
         """Mint a credential for the session's current launch without starting a new one.
 
@@ -1811,7 +2251,7 @@ class SessionService:
         credential = self._mint_forge_session(session)
         if credential is None:
             return None
-        if getattr(self._pod_manager, "delivers_forge_session_token", False):
+        if self._pod_manager_delivers_to(session):
             return credential
         projected = await self._forge_session_projection.project(
             session_id=session.id,
@@ -1826,7 +2266,7 @@ class SessionService:
 
     def _mint_forge_session(self, session: Session) -> IssuedForgeSessionToken | None:
         """Mint this launch's scoped credential, when a broker can receive one."""
-        if not self.delivers_forge_session:
+        if not self._delivers_forge_session_to(session):
             return None
         launch_id = launch_id_of(session.workload_config)
         if launch_id is None:
@@ -2075,6 +2515,7 @@ class SessionService:
         session_id = session.id
         if not session.can_stop():
             raise SessionStateError(session_id, "stop", session.status)
+        self._unit_principals.pop(session_id, None)
 
         # Cancel provisioning task if active
         self._cancel_provisioning_task(session_id)
@@ -2116,6 +2557,7 @@ class SessionService:
             )
             final = await self._repository.update(stopped)
             await self._cancel_secret_requests(session_id)
+            await self._retire_mesh_identity(session_id, launch_id_of(session.workload_config))
 
             if self._broadcaster is not None:
                 await self._broadcaster.publish_session_updated(final)
@@ -2169,6 +2611,7 @@ class SessionService:
             raise SessionStateError(session_id, "archive", session.status)
 
         await self._cancel_secret_requests(session_id)
+        await self._retire_mesh_identity(session_id, launch_id_of(session.workload_config))
 
         now = datetime.now(UTC)
         archived = session.model_copy(
@@ -2257,8 +2700,33 @@ class SessionService:
         still being created. The task owns the transition (PROVISIONING, or
         FAILED with the cause). A STARTING row with no task here (the process
         restarted mid-spawn) is reconciled normally.
+
+        A unit's member has no task of its own: the root's start spawns it, and the
+        member is marked STARTING before that task exists (``unit_starting``). It is in
+        flight while its unit is being started or its root's start task runs.
         """
-        return session.status == SessionStatus.STARTING and session.id in self._provisioning_tasks
+        if session.status != SessionStatus.STARTING:
+            return False
+        if session.id in self._provisioning_tasks:
+            return True
+        unit = session.hosted_by
+        return unit is not None and (
+            unit in self._units_starting or unit in self._provisioning_tasks
+        )
+
+    @asynccontextmanager
+    async def unit_starting(self, root_id: UUID) -> AsyncIterator[None]:
+        """Hold a unit's members as being started while its root is started.
+
+        The caller marks the members STARTING and then starts the root, whose start task
+        spawns them; inside this block a member is not reconciled against a runtime that
+        does not exist yet, which would read as STOPPED and end it before it ran.
+        """
+        self._units_starting.add(root_id)
+        try:
+            yield
+        finally:
+            self._units_starting.discard(root_id)
 
     def _reconciled_session(
         self,
@@ -2308,6 +2776,7 @@ class SessionService:
         final = await self._repository.update(updated)
         if final.status in _ENDED_STATUSES and session.status not in _ENDED_STATUSES:
             await self._cancel_secret_requests(final.id)
+            await self._retire_mesh_identity(final.id, launch_id_of(session.workload_config))
         if self._broadcaster is not None:
             await self._broadcaster.publish_session_updated(final)
         if session.status != SessionStatus.RUNNING and final.status == SessionStatus.RUNNING:

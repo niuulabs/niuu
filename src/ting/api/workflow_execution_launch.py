@@ -53,30 +53,20 @@ from ting.ports.volundr import VolundrFactory
 from ting.ports.workflow_campaign_repository import WorkflowCampaignRepository
 from ting.ports.workflow_execution import WorkflowExecutionRepository
 
-#: Tool-name prefix of a persona's tools that need an owner-bound
-#: ``workflow_execution`` runtime context.
-_WORKFLOW_EXECUTION_TOOL = "workflow_execution"
-
 
 def parent_session_key(execution_id: UUID) -> str:
     """The workload subject a parent execution's coordinator credential binds to."""
     return f"workflow:execution-{execution_id.hex}"
 
 
-def durable_parent_node_id(
-    workflow: WorkflowDefinition,
-    workflow_snapshot: dict[str, Any] | None,
-) -> str | None:
+def durable_parent_node_id(workflow: WorkflowDefinition) -> str | None:
     """Return the subworkflow node a launch must expand durably, if it needs one.
 
     A workflow needs a durable parent execution when its graph declares a
-    ``subworkflow`` node, or when any persona it runs holds
-    ``workflow_execution_*`` tools — Ravn refuses to start such a persona
-    without the owner-bound runtime context only a durable launch provides.
+    ``subworkflow`` node.
 
-    Raises ``HTTPException(422)`` when the need is real but cannot be met
-    from one launch: several subworkflow nodes (a parent execution expands
-    exactly one), or coordinator tools with no subworkflow node to expand.
+    Raises ``HTTPException(422)`` when the need cannot be met from one launch:
+    several subworkflow nodes (a parent execution expands exactly one).
     """
     subworkflow_ids = [
         str(node.get("id") or "")
@@ -93,37 +83,7 @@ def durable_parent_node_id(
         )
     if subworkflow_ids:
         return subworkflow_ids[0]
-    if _personas_need_workflow_execution(workflow_snapshot):
-        raise HTTPException(
-            status_code=422,
-            detail=(
-                "Workflow personas require durable workflow execution tools, but the "
-                "workflow declares no subworkflow node for them to coordinate"
-            ),
-        )
     return None
-
-
-def _personas_need_workflow_execution(workflow_snapshot: dict[str, Any] | None) -> bool:
-    definitions = (
-        workflow_snapshot.get("persona_definitions")
-        if isinstance(workflow_snapshot, dict)
-        else None
-    )
-    if not isinstance(definitions, dict):
-        return False
-    for document in definitions.values():
-        definition = document.get("definition") if isinstance(document, dict) else None
-        tools = definition.get("allowed_tools") if isinstance(definition, dict) else None
-        if not isinstance(tools, list):
-            continue
-        if any(
-            str(tool) == _WORKFLOW_EXECUTION_TOOL
-            or str(tool).startswith(f"{_WORKFLOW_EXECUTION_TOOL}_")
-            for tool in tools
-        ):
-            return True
-    return False
 
 
 def new_parent_execution(

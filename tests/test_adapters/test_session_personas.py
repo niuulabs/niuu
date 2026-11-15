@@ -17,7 +17,6 @@ async def test_registry_session_persona_provider_projects_runtime_fields() -> No
         definition={
             "name": "reviewer",
             "system_prompt_template": "Review carefully",
-            "allowed_tools": ["file_read"],
         },
     )
     registry = SimpleNamespace(

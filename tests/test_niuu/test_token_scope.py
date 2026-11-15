@@ -101,6 +101,9 @@ class TestKnownWorkloadScopes:
         granted should be a visible, reviewed change, not a silent one."""
         assert KNOWN_WORKLOAD_SCOPES == frozenset(
             {
+                "forge:mesh:identity",
+                "forge:memory",
+                "forge:session:voice",
                 "forge:session:create",
                 "forge:session:room-role",
                 "ting:workflow:coordinate",
@@ -139,6 +142,25 @@ class TestKnownWorkloadScopes:
             "These scopes are enforced but can never be granted: "
             f"{sorted(ungrantable)}. Add them to KNOWN_WORKLOAD_SCOPES."
         )
+
+
+class TestSessionCredentialAtBifrost:
+    """A session credential is not a model credential: Bifröst's routes never admit it."""
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "/v1/messages",
+            "/v1/chat/completions",
+            "/v1/responses",
+            "/api/v1/bifrost/v1/messages",
+            "/api/v1/bifrost/v1/chat/completions",
+            "/api/v1/bifrost/v1/responses",
+        ],
+    )
+    def test_refused_on_the_model_routes_with_every_session_scope(self, path: str) -> None:
+        token = _session_token(sorted(FORGE_SESSION_SCOPES))
+        assert credential_allows_route(token, "POST", path) is False
 
 
 class TestTokenRequiresScopeCheck:
@@ -336,6 +358,9 @@ class TestForgeSessionScopes:
             FORGE_SESSION_SECRET_SCOPE,
             FORGE_SESSION_MESSAGE_SCOPE,
             FORGE_SESSION_LIFECYCLE_SCOPE,
+            "forge:mesh:identity",
+            "forge:memory",
+            "forge:session:voice",
         }
         assert FORGE_SESSION_SCOPES <= KNOWN_WORKLOAD_SCOPES
         assert not FORGE_SESSION_SCOPES & VALKYRIE_BUILD_SCOPES

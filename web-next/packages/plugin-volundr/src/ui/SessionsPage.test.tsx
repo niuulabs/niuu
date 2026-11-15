@@ -1088,7 +1088,8 @@ describe('coordinators and their workers', () => {
       ]),
     );
     await screen.findByTestId('pod-entry-lead');
-    expect(screen.getByTestId('session-leads-lead')).toHaveTextContent('Coordinator · 2 workers');
+    expect(screen.getByTestId('session-leads-lead')).toHaveTextContent(/^Coordinator$/);
+    expect(screen.getByTestId('session-worker-count-lead')).toHaveAccessibleName('2 workers');
     expect(screen.queryByTestId('session-leads-w1')).toBeNull();
     expect(screen.getByTestId('pod-entry-w1').closest('.forge-session-row')).toHaveAttribute(
       'data-nested',
@@ -1112,9 +1113,44 @@ describe('coordinators and their workers', () => {
       ]),
     );
     await screen.findByTestId('pod-entry-lead');
-    expect(screen.getByTestId('session-leads-lead')).toHaveTextContent('Coordinator · 1 worker');
+    expect(screen.getByTestId('session-worker-count-lead')).toHaveAccessibleName('1 worker');
     expect(screen.getByTestId('session-leads-lone2')).toHaveTextContent(/^Coordinator$/);
+    expect(screen.queryByTestId('session-worker-count-lone2')).toBeNull();
     expect(screen.queryByTestId('session-leads-lone')).toBeNull();
+  });
+
+  it('shows a workflow run as one thread: its first session names its role, not Coordinator', async () => {
+    localStorage.setItem('niuu.forge.details', '1');
+    wrap(
+      createSessionStoreWithSessions([
+        coordinator({
+          id: 'coder',
+          name: 'wf-probe-9-coder',
+          coordination: { projectId: 'lexi', role: 'coder', objective: 'Probe: say hello' },
+          runId: 'probe-9',
+        }),
+        worker({
+          id: 'reviewer',
+          name: 'wf-probe-9-reviewer',
+          coordination: {
+            projectId: 'lexi',
+            role: 'reviewer',
+            parent: { instanceId: 'thor', sessionId: 'coder' },
+          },
+          runId: 'probe-9',
+        }),
+      ]),
+    );
+    await screen.findByTestId('pod-entry-coder');
+
+    expect(screen.getByTestId('session-leads-coder')).toHaveTextContent(/^Coder$/);
+    expect(screen.getByTestId('session-worker-count-coder')).toHaveTextContent(/^1$/);
+    expect(screen.getByTestId('pod-entry-reviewer').closest('.forge-session-row')).toHaveAttribute(
+      'data-nested',
+      'true',
+    );
+    // Each row names the run it belongs to.
+    expect(within(screen.getByTestId('pod-entry-coder')).getByText('probe-9')).toBeInTheDocument();
   });
 
   it('keeps a filtered-out coordinator as a dimmed path to the worker that matches', async () => {
@@ -1167,7 +1203,7 @@ describe('coordinators and their workers', () => {
     expect(
       within(screen.getByTestId('pod-group-pinned')).getByTestId('pod-entry-lead'),
     ).toBeTruthy();
-    expect(screen.getByTestId('session-leads-lead')).toHaveTextContent('Coordinator · 1 worker');
+    expect(screen.getByTestId('session-worker-count-lead')).toHaveAccessibleName('1 worker');
     expect(screen.getByTestId('pod-entry-w1')).toBeInTheDocument();
   });
 });

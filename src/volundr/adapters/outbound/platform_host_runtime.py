@@ -83,11 +83,6 @@ class PlatformHostRuntime(VmRuntime):
         grants = {runtime.session_grants for runtime in children.values()}
         if len(grants) != 1:
             raise ValueError("Every platform's runtime must offer the same session grants")
-        separating = [runtime for runtime in children.values() if runtime.supports_slots]
-        if len({runtime.slot_limits for runtime in separating}) > 1:
-            raise ValueError(
-                "The platforms whose runtimes separate slots must set the same slot limits"
-            )
         self._children = children
 
     # ── which child ──────────────────────────────────────────────────────────
@@ -138,15 +133,21 @@ class PlatformHostRuntime(VmRuntime):
         return any(runtime.supports_slots for runtime in self._all())
 
     @property
+    def slot_platforms(self) -> frozenset[HostPlatform]:
+        return frozenset().union(*(runtime.slot_platforms for runtime in self._all()))
+
+    @property
     def supports_reuse(self) -> bool:
         return all(runtime.supports_reuse for runtime in self._all())
 
     @property
     def slot_limits(self) -> SlotLimits | None:
-        for runtime in self._all():
-            if runtime.supports_slots:
-                return runtime.slot_limits
-        return next(iter(self._children.values())).slot_limits
+        raise TypeError(
+            "Each platform's runtime has its own slot limits; ask slot_limits_for(platform)"
+        )
+
+    def slot_limits_for(self, platform: HostPlatform) -> SlotLimits | None:
+        return self.for_platform(platform).slot_limits
 
     @property
     def session_runtime(self) -> SessionRuntimeKind | None:

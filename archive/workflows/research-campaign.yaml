@@ -1,0 +1,301 @@
+schema_version: 2
+id: 1bfc01b1-4d01-5d20-86e1-2956dff11464
+name: Research Campaign
+description: Flexible deep-research workflow that frames a question, explores the evidence deeply through parallel
+  threads, challenges the thesis, and distills durable memory into Mimir.
+version: 2.1.2
+persona_dependencies:
+  research-analyst:
+    id: research-analyst
+    revision: content-0c49e4a21930ddbe
+    digest: sha256:0c49e4a21930ddbe9a9d50fb9a39a2774e54912e2b8b894b84af143ce98ba9a5
+    path: personas/research-analyst.yaml
+  research-coordinator:
+    id: research-coordinator
+    revision: content-b5b30896a9f6eac1
+    digest: sha256:b5b30896a9f6eac1d18551507a19489a3103afa0c981b4b1bec5fa1f14408627
+    path: personas/research-coordinator.yaml
+  research-curator:
+    id: research-curator
+    revision: content-c4599be0ce3bb097
+    digest: sha256:c4599be0ce3bb097c59d042b74929f4e47d0de2bb11447a15df27891229232a0
+    path: personas/research-curator.yaml
+  research-framer:
+    id: research-framer
+    revision: content-7ffd6dd247ab190e
+    digest: sha256:7ffd6dd247ab190ed0458ce14a2190688217b3a2f5ca127fba28426fb38d6486
+    path: personas/research-framer.yaml
+  research-publisher:
+    id: research-publisher
+    revision: content-01f7f066bbcedd5f
+    digest: sha256:01f7f066bbcedd5f3edec38bb15a49a500bf9055699dee64b8bd05fccf46ce21
+    path: personas/research-publisher.yaml
+  research-skeptic:
+    id: research-skeptic
+    revision: content-df420d8a1ce68fcf
+    digest: sha256:df420d8a1ce68fcfce6f5c38b2b1638604b937f49fc584ca21285df7aa6525f8
+    path: personas/research-skeptic.yaml
+  research-synthesist:
+    id: research-synthesist
+    revision: content-3bf87a1700d35576
+    digest: sha256:3bf87a1700d35576be3d84bc393c60c93840de44b34606a690facc71942a083e
+    path: personas/research-synthesist.yaml
+workflow_dependencies:
+  general:
+    id: 4e7ebec4-0cfa-4567-98dd-2ee4ce0bc308
+    revision: sha256:ad3d2526d414ce0b83942e573d81ff5bae92e34f41a31d5138c9f66caaaad08e
+    digest: sha256:ad3d2526d414ce0b83942e573d81ff5bae92e34f41a31d5138c9f66caaaad08e
+    path: workflows/research-thread.yaml
+  breadth:
+    id: 42951d75-dd82-4596-92ea-1c0a6ef4b965
+    revision: sha256:65966a021f93e7be0ba5b6d25a527de3aa92b1c88a5f32d4ae7f39f5364738c4
+    digest: sha256:65966a021f93e7be0ba5b6d25a527de3aa92b1c88a5f32d4ae7f39f5364738c4
+    path: workflows/research-thread-breadth.yaml
+  depth:
+    id: bf5f97dd-d89b-4f3e-a8fc-ea61a42685a5
+    revision: sha256:c99b61dff15f8a123ee73d07d9c011159e041f5deec359e5c692f0225b2045ff
+    digest: sha256:c99b61dff15f8a123ee73d07d9c011159e041f5deec359e5c692f0225b2045ff
+    path: workflows/research-thread-depth.yaml
+  contrarian:
+    id: 5777251e-7ff1-47f7-b182-d040ed9a7a2f
+    revision: sha256:89baabf0c7dff185fdd942f05d7ffe737d81116f94b28cf2f26d2a13d500ba9c
+    digest: sha256:89baabf0c7dff185fdd942f05d7ffe737d81116f94b28cf2f26d2a13d500ba9c
+    path: workflows/research-thread-contrarian.yaml
+graph:
+  tags:
+  - research
+  - campaign
+  nodes:
+  - id: research-request
+    kind: trigger
+    label: Start research campaign
+    source: user research
+    dispatchEvent: research.requested
+    position:
+      x: 96
+      y: 280
+  - id: research-memory
+    kind: resource
+    label: Research Memory
+    resourceType: mimir
+    bindingMode: registry
+    registryEntryId: mimir-yggdrasil
+    url: https://mimir.yggdrasil.niuu.world/api/v1
+    authRef: workload:mimir
+    role: shared
+    categories:
+    - research
+    - memory
+    - sources
+    position:
+      x: 320
+      y: 560
+  - id: research-frame
+    kind: stage
+    label: Frame the inquiry
+    executionMode: sequential
+    joinMode: any
+    stageMembers:
+    - personaId: research-framer
+      budget: 16
+      model: gpt-5.6-terra
+      consumesEventTypes:
+      - research.requested
+    position:
+      x: 320
+      y: 280
+  - id: research-coordinate
+    kind: stage
+    label: Define and dispatch exploration threads
+    executionMode: sequential
+    joinMode: any
+    stageMembers:
+    - personaId: research-coordinator
+      budget: 20
+      model: gpt-5.6-terra
+      consumesEventTypes:
+      - research.framed
+      - research.threads.blocked
+    position:
+      x: 608
+      y: 280
+  - id: research-threads
+    kind: subworkflow
+    label: Explore the framed question across parallel threads
+    templates:
+      breadth: breadth
+      depth: depth
+      contrarian: contrarian
+      general: general
+    allowedCoordinator: research-coordinator
+    maxChildren: 12
+    maxActiveChildren: 3
+    maxAttempts: 2
+    joinMode: all
+    blockedEvent: research.threads.blocked
+    inputSchema:
+      type: object
+      properties:
+        slug: {type: string}
+        angle: {type: string}
+      required: [slug, angle]
+      additionalProperties: false
+    resultSchema:
+      type: object
+      properties:
+        question: {type: string, minLength: 1}
+        findings:
+          type: array
+          minItems: 1
+          items: {type: string, minLength: 1}
+        sources:
+          type: array
+          items: {type: string, minLength: 1}
+        confidence: {type: string, enum: [high, medium, low]}
+        openQuestions:
+          type: array
+          items: {type: string, minLength: 1}
+      required: [question, findings, sources, confidence, openQuestions]
+      additionalProperties: false
+    children:
+    - key: breadth
+      objective: Map the landscape widely across the framed question before anyone collapses too early into one story.
+      template: breadth
+      input: {slug: campaign, angle: breadth}
+    - key: depth
+      objective: Drill into the highest-value thread from the frame and track mechanisms, not just headlines.
+      template: depth
+      input: {slug: campaign, angle: depth}
+    - key: contrarian
+      objective: Hunt for counterpoints, contradictory evidence, and neglected context that weaken the default story.
+      template: contrarian
+      input: {slug: campaign, angle: contrarian}
+    position:
+      x: 928
+      y: 280
+  - id: research-analysis
+    kind: stage
+    label: Analyze the joined threads
+    executionMode: sequential
+    joinMode: any
+    stageMembers:
+    - personaId: research-analyst
+      budget: 28
+      model: gpt-5.6-terra
+      consumesEventTypes:
+      - research.threads.joined
+    position:
+      x: 1216
+      y: 280
+  - id: research-challenge
+    kind: stage
+    label: Challenge the thesis
+    executionMode: sequential
+    joinMode: any
+    stageMembers:
+    - personaId: research-skeptic
+      budget: 14
+      model: gpt-5.6-terra
+      consumesEventTypes:
+      - research.analyzed
+    position:
+      x: 1504
+      y: 280
+  - id: research-synthesis
+    kind: stage
+    label: Synthesize the research
+    executionMode: sequential
+    joinMode: any
+    stageMembers:
+    - personaId: research-synthesist
+      budget: 16
+      model: gpt-5.6-terra
+      consumesEventTypes:
+      - research.challenged
+    position:
+      x: 1792
+      y: 280
+  - id: research-curation
+    kind: stage
+    label: Curate learnings and follow-ups
+    executionMode: sequential
+    joinMode: any
+    stageMembers:
+    - personaId: research-curator
+      budget: 12
+      model: gpt-5.6-terra
+      consumesEventTypes:
+      - research.synthesized
+    position:
+      x: 2080
+      y: 280
+  - id: research-publish
+    kind: stage
+    label: Publish to Mimir
+    executionMode: sequential
+    joinMode: any
+    stageMembers:
+    - personaId: research-publisher
+      budget: 10
+      model: gpt-5.6-terra
+      consumesEventTypes:
+      - research.curated
+    position:
+      x: 2368
+      y: 280
+  - id: research-complete
+    kind: end
+    label: Research complete
+    joinMode: all
+    completionEvent: research.completed
+    position:
+      x: 2656
+      y: 280
+  edges:
+  - id: edge-research-request-to-frame
+    source: research-request
+    target: research-frame
+    label: research.requested -> research.requested
+  - id: edge-frame-to-coordinate
+    source: research-frame
+    target: research-coordinate
+    label: research.framed -> research.framed
+  - id: edge-coordinate-to-threads
+    source: research-coordinate
+    target: research-threads
+    label: research.threads.waiting -> research.threads.waiting
+  - id: edge-threads-to-analysis
+    source: research-threads
+    target: research-analysis
+    label: research.threads.joined -> research.threads.joined
+  - id: edge-analysis-to-challenge
+    source: research-analysis
+    target: research-challenge
+    label: research.analyzed -> research.analyzed
+  - id: edge-challenge-to-synthesis
+    source: research-challenge
+    target: research-synthesis
+    label: research.challenged -> research.challenged
+  - id: edge-synthesis-to-curation
+    source: research-synthesis
+    target: research-curation
+    label: research.synthesized -> research.synthesized
+  - id: edge-curation-to-publish
+    source: research-curation
+    target: research-publish
+    label: research.curated -> research.curated
+  - id: edge-publish-to-end
+    source: research-publish
+    target: research-complete
+    label: research.completed -> research.completed
+  resourceBindings:
+  - id: binding-research-memory
+    resourceNodeId: research-memory
+    targetType: workflow
+    targetId: research-campaign
+    access: read_write
+    writePrefixes:
+    - research/
+    - learnings/
+    - followups/
+    readPriority: 1

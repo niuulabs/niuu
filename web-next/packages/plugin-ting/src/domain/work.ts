@@ -22,7 +22,8 @@ export interface WorkSummary {
     'project' | 'research' | 'specification' | 'planning' | 'workflowLaunch' | 'workflowExecution';
   title: string;
   campaignSlug?: string | null;
-  condition: 'needsAttention' | 'active' | 'waiting' | 'completed' | 'failed' | 'unknown';
+  condition:
+    'needsAttention' | 'active' | 'waiting' | 'completed' | 'failed' | 'canceled' | 'unknown';
   rawState: { source: string; status: string };
   currentStep: string | null;
   attention: { kind: string; message: string } | null;

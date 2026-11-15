@@ -1,39 +1,136 @@
-"""SkuldMeshAdapter — mesh peer bridge for Claude CLI sessions (NIU-612).
+"""SkuldMeshAdapter — mesh peer bridge for Skuld sessions (NIU-612).
 
-Gives Skuld a mesh identity so it can participate in the mesh as a peer.
-Subscribes to task topics and feeds received prompts to the CLI transport.
-Results (including outcome blocks) are published back as response events.
+Gives Skuld a mesh identity so it can participate in the mesh as a peer. What other peers
+send this session lands in the session's peer inbox (``skuld.peer_inbox``) and reaches the
+harness at the next turn boundary like any other peer message:
+
+* an RPC of type ``peer_message`` carries a :class:`~niuu.domain.peer_message.PeerMessage`;
+* a ``work_request`` RPC and an outcome event on a consumed topic become a peer message from
+  the mesh peer, whose reply route is the mesh back to it;
+* a ``workflow`` event (a workflow run's offer, pickup, outcome...) goes to the session's
+  workflow host (:class:`WorkflowOfferReceiver`), which decides whether the offer is this
+  session's to take. The adapter carries it and says who the mesh verified sent it.
+
+Nothing here waits for the harness. A sender is told its message is held; the answer comes
+later, from the harness, through the ``reply`` tool.
 
 NIU-634: wired to use niuu.mesh.MeshParticipant for lifecycle management.
 """
 
 from __future__ import annotations
 
-import asyncio
 import logging
-import socket
 import uuid
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Protocol, runtime_checkable
 
-from niuu.adapters.cli import CliTurnRunner
-from niuu.domain.outcome import parse_outcome_block
+from niuu.domain.message_author import AUTHOR_KEY, MessageAuthor
+from niuu.domain.peer_envelope import RelayedSpeech, build_relayed_message
+from niuu.domain.peer_message import (
+    PEER_MESSAGE_FRAME,
+    PeerAddress,
+    PeerKind,
+    PeerMessage,
+    PeerMessageError,
+    ReplyKind,
+    ReplyRoute,
+)
+from niuu.mesh.attestation import VERIFIED_SENDER_KEY
 from niuu.mesh.events import MeshEvent, MeshEventType
+from niuu.mesh.identity import MeshPeer
 from niuu.mesh.participant import MeshParticipant
-from niuu.ports.cli import CLITransport
 from niuu.ports.mesh import MeshPort
-from skuld.config import MeshConfig
+from skuld.config import MeshConfig, RoomSeat
+from skuld.mesh_topics import IN_REPLY_TO_KEY, inbox_topic
+from skuld.peer_inbox import (
+    CHANNEL_MESH,
+    PEER_STATE_RPC_TYPE,
+    PeerAcceptance,
+    PeerMessageRefusedError,
+    PeerMessageUnconfirmedError,
+    SenderIdentity,
+)
 from sleipnir.ports.events import SleipnirSubscriber
 
 logger = logging.getLogger("skuld.mesh_adapter")
+
+#: The mesh RPC a room's host sends a member session to say something to it (a directed
+#: message). Its payload is ``{"content", "metadata": {"session_id", "room_id", "delivery_id"}}``,
+#: and, when the host vouches for a person speaking through it, ``author`` (the verified
+#: person, :meth:`~niuu.domain.message_author.MessageAuthor.to_dict`) and ``model_note`` (text
+#: only the model reads, ahead of the message). Both are the host's word about the message, so
+#: a member takes them only from the host of a room it is seated in.
+DIRECTED_MESSAGE_RPC_TYPE = "directed_message"
+
+#: The directed message's top-level key for the model-only note.
+MODEL_NOTE_KEY = "model_note"
 
 #: A broker-side answer to one mesh RPC ``type`` a mesh peer may send.
 RpcHandler = Callable[[dict], Awaitable[dict]]
 
 
+def _refused(error: str) -> dict:
+    """The answer to an RPC that was refused; the sender raises it."""
+    logger.error("mesh adapter: directed message refused: %s", error)
+    return {"status": "refused", "error": error}
+
+
+class PeerMessageReceiver(Protocol):
+    """The session's peer inbox, as the mesh sees it."""
+
+    async def accept_peer_message(
+        self,
+        envelope: PeerMessage,
+        request_id: str | None = None,
+        *,
+        channel: str | None = None,
+        verified: SenderIdentity | None = None,
+        author: MessageAuthor | None = None,
+        model_note: str = "",
+    ) -> PeerAcceptance:
+        """Hold ``envelope`` for the next turn boundary; raises when it is refused."""
+
+
+@runtime_checkable
+class WorkflowOfferReceiver(Protocol):
+    """The session's workflow host, as the mesh sees it."""
+
+    async def accept_workflow_offer(
+        self, event: MeshEvent, *, verified: SenderIdentity | None
+    ) -> str:
+        """Decide what to do with a ``workflow`` event; a refusal is reported, not raised."""
+
+    async def workflow_mesh_ready(self) -> None:
+        """The mesh is up and every standing subscription is in place."""
+
+
+class MeshConfigurationError(RuntimeError):
+    """The mesh is enabled and its configuration cannot work; the message says what to set."""
+
+
+class MeshPeerIdError(RuntimeError):
+    """The session's mesh peer id is missing, or two parts of the mesh disagree about it."""
+
+
+def resolve_mesh_peer_id(configured: str, session_id: str | None) -> str:
+    """The one mesh peer id of this session: ``mesh.peer_id``, else the session id.
+
+    A hostname is not an identity: two pods, VMs or slots can share one. A session without
+    either has no id to claim, so the mesh does not start.
+    """
+    if configured:
+        return configured
+    if session_id:
+        return str(session_id)
+    raise MeshPeerIdError(
+        "the mesh needs a peer id and this session has neither mesh.peer_id nor a session "
+        "id. Set mesh.peer_id, or run the broker as a Forge session"
+    )
+
+
 class SkuldMeshAdapter:
-    """Bridge between the mesh and the CLI transport.
+    """Bridge between the mesh and the session's peer inbox.
 
     Lifecycle:
         start() — start participant (mesh + discovery), subscribe to task topics
@@ -43,26 +140,62 @@ class SkuldMeshAdapter:
     def __init__(
         self,
         participant: MeshParticipant,
-        transport: CLITransport,
         config: MeshConfig,
         session_id: str,
+        peer_inbox: PeerMessageReceiver,
         rpc_handlers: Mapping[str, RpcHandler] | None = None,
+        consumes_event_types: Sequence[str] | None = None,
+        workflow: WorkflowOfferReceiver | None = None,
+        room_seats: Sequence[RoomSeat] = (),
     ) -> None:
         self._participant = participant
+        # The rooms this session is seated in (``room.seats``) and who hosts each: the only
+        # senders whose word about who a directed message is from (its author) is taken.
+        self._room_seats = tuple(room_seats)
         self._rpc_handlers = dict(rpc_handlers or {})
         self._mesh: MeshPort | None = participant.mesh
-        self._transport = transport
+        self._peer_inbox = peer_inbox
+        # The session's workflow host: given, else the peer inbox when that is one (the
+        # broker is both), else none and workflow events are not this session's business.
+        self._workflow: WorkflowOfferReceiver | None = workflow or (
+            peer_inbox if isinstance(peer_inbox, WorkflowOfferReceiver) else None
+        )
         self._config = config
         self._session_id = session_id
-        self._peer_id = participant.peer_id or config.peer_id or socket.gethostname()
+        # The topics subscribed to: the session's declaration when the composition root
+        # resolved one (its persona's `consumes` on top of the config), else the config's.
+        self._consumes = tuple(
+            config.consumes_event_types if consumes_event_types is None else consumes_event_types
+        )
+        # One peer id, set once by the composition root (`resolve_mesh_peer_id`) and used by
+        # the transport, the certificate, discovery and every reply route. A participant
+        # without one, or one that disagrees with the config, is a wiring error, never a
+        # second id made up here.
+        if not participant.peer_id:
+            raise MeshPeerIdError(
+                "the mesh participant has no peer id; the composition root must pass the "
+                "id from resolve_mesh_peer_id (mesh.peer_id, or the session id)"
+            )
+        if config.peer_id and config.peer_id != participant.peer_id:
+            raise MeshPeerIdError(
+                f"mesh.peer_id is {config.peer_id!r} but the mesh participant runs as "
+                f"{participant.peer_id!r}; one session has one mesh peer id"
+            )
+        self._peer_id = participant.peer_id
         self._running = False
-        self._turn_runner = CliTurnRunner(transport)
-        self._pending_responses = self._turn_runner.pending_responses
-        self._execute_lock = self._turn_runner.execute_lock
+        # Topics followed at runtime (``mesh_subscribe``), on top of the standing ones.
+        self._followed: set[str] = set()
 
     @property
     def peer_id(self) -> str:
         return self._peer_id
+
+    def peers(self) -> dict[str, MeshPeer]:
+        """The verified peer table, keyed by peer id; empty when no discovery is configured."""
+        discovery = self._participant.discovery
+        if discovery is None:
+            return {}
+        return dict(discovery.peers())
 
     @property
     def is_running(self) -> bool:
@@ -90,9 +223,10 @@ class SkuldMeshAdapter:
             self._mesh.set_rpc_handler(self._handle_rpc)
             logger.info("mesh adapter: RPC handler registered")
 
-        # Subscribe to consumed event types
+        # Subscribe to consumed event types, and to the topic answers to this peer's own
+        # events arrive on (nobody has to subscribe to anything in advance to be answered).
         if self._mesh is not None:
-            for event_type in self._config.consumes_event_types:
+            for event_type in (*self._consumes, self.inbox_topic):
                 await self._mesh.subscribe(event_type, self._handle_outcome_event)
                 logger.info("mesh adapter: subscribed to topic %r", event_type)
 
@@ -101,8 +235,10 @@ class SkuldMeshAdapter:
             "mesh adapter: started (peer_id=%s, capabilities=%s, consumes=%s)",
             self._peer_id,
             self._config.capabilities,
-            self._config.consumes_event_types,
+            list(self._consumes),
         )
+        if self._workflow is not None:
+            await self._workflow.workflow_mesh_ready()
 
     async def stop(self) -> None:
         """Unsubscribe from topics and stop participant (mesh + discovery)."""
@@ -112,11 +248,8 @@ class SkuldMeshAdapter:
         self._running = False
 
         if self._mesh is not None:
-            for event_type in self._config.consumes_event_types:
+            for event_type in (*self._consumes, self.inbox_topic, *sorted(self._followed)):
                 await self._mesh.unsubscribe(event_type)
-
-        # Cancel any pending response futures
-        await self._turn_runner.cancel_pending()
 
         await self._participant.stop()
 
@@ -128,29 +261,130 @@ class SkuldMeshAdapter:
             return
         await self._mesh.publish(event, topic=topic)
 
+    @property
+    def inbox_topic(self) -> str:
+        """Where answers addressed to this peer arrive; it always listens here."""
+        return inbox_topic(self._peer_id)
+
+    @property
+    def standing_topics(self) -> tuple[str, ...]:
+        """The topics subscribed to from the start: declared, never changed at runtime."""
+        return self._consumes
+
+    @property
+    def followed_topics(self) -> tuple[str, ...]:
+        """The topics followed at runtime, in name order."""
+        return tuple(sorted(self._followed))
+
+    async def follow(self, topic: str) -> bool:
+        """Start listening to ``topic`` now. False when this peer already listened to it."""
+        if topic in self._consumes or topic in self._followed:
+            return False
+        if not self._running or self._mesh is None:
+            raise RuntimeError(
+                "the mesh is not running, so the topic was not followed; check the broker log "
+                "for why the mesh adapter did not start"
+            )
+        await self._mesh.subscribe(topic, self._handle_outcome_event)
+        self._followed.add(topic)
+        logger.info("mesh adapter: following topic %r", topic)
+        return True
+
+    async def unfollow(self, topic: str) -> bool:
+        """Stop listening to a topic followed at runtime. False when it was not followed."""
+        if topic not in self._followed:
+            return False
+        if self._mesh is None:
+            raise RuntimeError("the mesh is not running, so the topic was not unfollowed")
+        await self._mesh.unsubscribe(topic)
+        self._followed.discard(topic)
+        logger.info("mesh adapter: stopped following topic %r", topic)
+        return True
+
+    async def publish_event(self, event: MeshEvent, topic: str) -> None:
+        """Publish an event the caller needs to know left this peer.
+
+        Unlike :meth:`publish`, a mesh that is not running raises instead of being skipped,
+        and so does a transport that refuses the event. Nothing waits for a consumer.
+        """
+        if not self._running or self._mesh is None:
+            raise RuntimeError(
+                "the mesh is not running, so the event was not published; check the broker "
+                "log for why the mesh adapter did not start"
+            )
+        await self._mesh.publish(event, topic=topic)
+
     async def send_directed_message(
         self,
         target_peer_id: str,
         content: str,
         *,
         metadata: dict[str, Any],
+        author: MessageAuthor | None = None,
+        model_note: str = "",
     ) -> dict[str, Any]:
-        """Deliver operator input without awaiting the recipient's model turn."""
+        """Deliver operator input without awaiting the recipient's model turn.
+
+        ``author`` is the verified person the message is from, when this host vouches for one;
+        ``model_note`` is text only the recipient's model reads, ahead of the message. Neither
+        is on the wire when empty, so a message without them is the message it always was. The
+        recipient takes them only from the host of a room it is seated in, and refuses the
+        message when anyone else sends them.
+        """
         if self._mesh is None:
             return {"status": "error", "error": "Mesh is unavailable"}
+        payload: dict[str, Any] = {
+            "type": DIRECTED_MESSAGE_RPC_TYPE,
+            "content": content,
+            "metadata": metadata,
+        }
+        if author is not None:
+            payload[AUTHOR_KEY] = author.to_dict()
+        if model_note:
+            payload[MODEL_NOTE_KEY] = model_note
+        return await self._mesh.send(target_peer_id, payload, timeout_s=self._config.rpc_timeout_s)
+
+    async def send_peer_message(self, target_peer_id: str, message: PeerMessage) -> dict[str, Any]:
+        """Send a stamped peer message envelope to a mesh peer and return its answer.
+
+        Raises ``RuntimeError`` when the mesh is unavailable; a transport failure or a peer
+        that does not know the peer, or the type, surfaces from the mesh or in the answer.
+        """
+        if self._mesh is None:
+            raise RuntimeError("Mesh is unavailable")
         return await self._mesh.send(
             target_peer_id,
-            {
-                "type": "directed_message",
-                "content": content,
-                "metadata": metadata,
-            },
+            {"type": PEER_MESSAGE_FRAME, "envelope": message.to_wire()},
             timeout_s=self._config.rpc_timeout_s,
         )
 
+    async def send_rpc(self, target_peer_id: str, body: dict[str, Any]) -> dict[str, Any]:
+        """Send one RPC to a mesh peer and return its answer.
+
+        Raises ``RuntimeError`` when the mesh is unavailable; the transport's own errors
+        (a timeout, an unknown peer) surface from the mesh.
+        """
+        if self._mesh is None:
+            raise RuntimeError("Mesh is unavailable")
+        return await self._mesh.send(target_peer_id, body, timeout_s=self._config.rpc_timeout_s)
+
+    async def request_peer_state(self, target_peer_id: str) -> dict[str, Any]:
+        """Ask a peer's Skuld what it is doing (``peer_state`` RPC); raises like ``send``."""
+        if self._mesh is None:
+            raise RuntimeError("Mesh is unavailable")
+        return await self._mesh.send(
+            target_peer_id, {"type": PEER_STATE_RPC_TYPE}, timeout_s=self._config.rpc_timeout_s
+        )
+
     async def _handle_rpc(self, message: dict) -> dict:
-        """Handle incoming RPC messages (work_request, task_dispatch)."""
+        """Handle incoming RPC messages (peer_message, work_request, and the broker's own)."""
         msg_type = message.get("type", "")
+
+        if msg_type == PEER_MESSAGE_FRAME:
+            return await self._handle_peer_message(message)
+
+        if msg_type == DIRECTED_MESSAGE_RPC_TYPE:
+            return await self._handle_directed_message(message)
 
         if msg_type == "work_request":
             return await self._handle_work_request(message)
@@ -161,79 +395,239 @@ class SkuldMeshAdapter:
 
         return {"error": "unknown_message_type", "type": msg_type}
 
+    async def _handle_peer_message(self, message: dict) -> dict:
+        """A peer message RPC: ``{"envelope": <wire>}`` goes into the inbox."""
+        try:
+            envelope = PeerMessage.from_wire(message.get("envelope"))
+        except PeerMessageError as exc:
+            logger.error("mesh adapter: malformed peer message refused: %s", exc)
+            return {"status": "refused", "error": str(exc)}
+        return await self._accept(envelope, verified=self._verified_sender(message))
+
+    async def _handle_directed_message(self, message: dict) -> dict:
+        """A room host says something to this member session: it becomes a user turn.
+
+        The host sends it over the mesh as ``directed_message``; here it is wrapped as the
+        envelope Forge would have stamped for a relayed room message (the host speaks and
+        relays it, the reply route is the room) and taken into the peer inbox, so it reaches
+        the harness at the next turn boundary. Anything malformed is refused with the reason
+        and the sender raises it; nothing is accepted on a guess.
+        """
+        content = message.get("content")
+        metadata = message.get("metadata")
+        if not isinstance(content, str) or not content.strip():
+            return _refused("a directed message needs text content")
+        if not isinstance(metadata, Mapping):
+            return _refused("a directed message needs a metadata object")
+        room_id = metadata.get("room_id")
+        delivery_id = metadata.get("delivery_id")
+        claimed_host = metadata.get("session_id")
+        for name, value in (
+            ("room_id", room_id),
+            ("delivery_id", delivery_id),
+            ("session_id", claimed_host),
+        ):
+            if not isinstance(value, str) or not value.strip():
+                return _refused(f"a directed message needs metadata.{name} (the room's host)")
+        verified = self._verified_sender(message)
+        if verified is not None and verified.session_id != claimed_host:
+            return _refused(
+                f"the directed message says it is from session {claimed_host!r}, but the mesh "
+                f"verified {verified.session_id or verified.peer_id!r}"
+            )
+        vouched = self._vouched_by_host(message, room_id, claimed_host, verified)
+        if isinstance(vouched, str):
+            return _refused(vouched)
+        author, model_note = vouched
+        peer = self.peers().get(verified.peer_id) if verified is not None else None
+        host = PeerAddress(
+            kind=PeerKind.SESSION,
+            id=claimed_host,
+            name=peer.display_name if peer is not None else "",
+        )
+        try:
+            envelope = build_relayed_message(
+                relayed_by=host,
+                recipient=PeerAddress(kind=PeerKind.SESSION, id=self._session_id),
+                speech=RelayedSpeech(
+                    speaker=host,
+                    room_id=room_id,
+                    reply=ReplyRoute(kind=ReplyKind.ROOM, target=host.id),
+                ),
+                content=content,
+                request_id=delivery_id,
+            )
+        except PeerMessageError as exc:
+            return _refused(str(exc))
+        return await self._accept(envelope, verified=verified, author=author, model_note=model_note)
+
+    def _vouched_by_host(
+        self,
+        message: Mapping[str, Any],
+        room_id: str,
+        claimed_host: str,
+        verified: SenderIdentity | None,
+    ) -> tuple[MessageAuthor | None, str] | str:
+        """The ``(author, model_note)`` a directed message carries, or why it is refused.
+
+        Who a message is from, and what the model is told about it, are the sender's word, so
+        they are taken only from a sender this session trusts to vouch for people: the host of
+        a room it is seated in (``room.seats``: this room, hosted by this session). When the
+        mesh verifies senders (``mesh.attestation.required``) the host must also have been
+        verified as that session; a claimed host id alone does not vouch.
+
+        From any other sender the two differ. A ``model_note`` is an instruction to the model,
+        so a message carrying one is refused with the reason. An ``author`` is also dropped
+        from the wire by every host that has a verified person (a browser's message to a room
+        member), and a room this session was never seated in (a room learned from what was
+        said in it) is an ordinary case, so a message carrying only an author is delivered
+        without it: the message is not lost, it just is not attributed to a person, and the
+        warning names the sender and the room. A message that carries neither is untouched.
+        """
+        if AUTHOR_KEY not in message and MODEL_NOTE_KEY not in message:
+            return None, ""
+        untrusted = self._vouching_refusal(room_id, claimed_host, verified)
+        if untrusted is not None:
+            sender = verified.peer_id if verified is not None else claimed_host
+            if MODEL_NOTE_KEY in message:
+                logger.warning(
+                    "mesh adapter: %s sent a directed message for room %r carrying a "
+                    "model_note it may not vouch for; refusing it",
+                    sender,
+                    room_id,
+                )
+                return f"the directed message carries a model_note, but {untrusted}"
+            logger.warning(
+                "mesh adapter: %s sent a directed message for room %r carrying an author it "
+                "may not vouch for (%s); delivering it without the author",
+                sender,
+                room_id,
+                untrusted,
+            )
+            return None, ""
+        author: MessageAuthor | None = None
+        if AUTHOR_KEY in message:
+            author = MessageAuthor.from_wire(message[AUTHOR_KEY])
+            if author is None:
+                return "the directed message's author must be {user_id, display_name}"
+        model_note = message.get(MODEL_NOTE_KEY, "")
+        if not isinstance(model_note, str):
+            return "the directed message's model_note must be text"
+        return author, model_note
+
+    def _vouching_refusal(
+        self, room_id: str, claimed_host: str, verified: SenderIdentity | None
+    ) -> str | None:
+        """Why ``claimed_host`` may not vouch for a person in ``room_id``, or ``None`` if it may."""
+        seated = any(
+            seat.room_id == room_id and seat.host_session_id == claimed_host
+            for seat in self._room_seats
+        )
+        if not seated:
+            return (
+                f"{claimed_host!r} is not the host of room {room_id!r} that this session is "
+                "seated in (room.seats)"
+            )
+        if self._config.attestation.required and verified is None:
+            return (
+                f"the mesh did not verify that {claimed_host!r} sent it "
+                "(mesh.attestation.required is on)"
+            )
+        return None
+
+    def _verified_sender(self, carrier: Any) -> SenderIdentity | None:
+        """Who the mesh verified sent this message, when this deployment verifies senders.
+
+        The mesh layer sets the key after checking the certificate and signature, over
+        whatever the sender wrote. With mesh signing off nothing checked, so the key is the
+        sender's own and is ignored: the sender is then only claimed.
+        """
+        if not self._config.attestation.required:
+            return None
+        raw = carrier.get(VERIFIED_SENDER_KEY) if isinstance(carrier, Mapping) else None
+        if raw is None:
+            return None
+        return SenderIdentity.from_wire(raw)
+
+    async def _accept(
+        self,
+        envelope: PeerMessage,
+        *,
+        verified: SenderIdentity | None = None,
+        author: MessageAuthor | None = None,
+        model_note: str = "",
+    ) -> dict:
+        extra: dict[str, Any] = {} if verified is None else {"verified": verified}
+        if author is not None:
+            extra[AUTHOR_KEY] = author
+        if model_note:
+            extra[MODEL_NOTE_KEY] = model_note
+        try:
+            acceptance = await self._peer_inbox.accept_peer_message(
+                envelope, channel=CHANNEL_MESH, **extra
+            )
+        except PeerMessageUnconfirmedError as exc:
+            return {"status": "unconfirmed", "message_id": envelope.message_id, "error": str(exc)}
+        except PeerMessageRefusedError as exc:
+            return {"status": "refused", "message_id": envelope.message_id, "error": str(exc)}
+        answer: dict[str, Any] = {"status": "accepted", "message_id": acceptance.message_id}
+        if acceptance.duplicate:
+            answer["duplicate"] = True
+        return answer
+
     async def _handle_work_request(self, message: dict) -> dict:
-        """Process a work_request: send prompt to CLI, collect result."""
+        """A work_request becomes a message from the requesting peer; its answer comes by reply.
+
+        The requester must name itself (``source_peer_id``): the answer is routed back to it
+        over the mesh, and the harness is told who asked.
+        """
         prompt = message.get("prompt", "")
-        event_type = message.get("event_type", "")
-        request_id = message.get("request_id", str(uuid.uuid4()))
-        timeout_s = float(message.get("timeout_s", self._config.default_work_timeout_s))
+        request_id = message.get("request_id") or str(uuid.uuid4())
 
         if not prompt:
+            return {"status": "error", "request_id": request_id, "error": "empty prompt"}
+        source_peer_id = message.get("source_peer_id")
+        if not isinstance(source_peer_id, str) or not source_peer_id.strip():
             return {
                 "status": "error",
                 "request_id": request_id,
-                "error": "empty prompt",
+                "error": (
+                    "work_request needs source_peer_id: the answer is sent back to that peer "
+                    "over the mesh"
+                ),
             }
 
         logger.info(
-            "mesh adapter: work_request %s (event_type=%s, timeout=%.0fs)",
+            "mesh adapter: work_request %s from %s (event_type=%s)",
             request_id,
-            event_type,
-            timeout_s,
+            source_peer_id,
+            message.get("event_type", ""),
         )
-
         try:
-            result_text = await asyncio.wait_for(
-                self._execute_prompt(prompt, request_id),
-                timeout=timeout_s,
+            envelope = self._mesh_message(
+                message_id=str(request_id),
+                source_peer_id=source_peer_id,
+                prompt=prompt,
+                event_type=str(message.get("event_type", "")),
             )
-
-            response: dict[str, Any] = {
-                "status": "complete",
-                "request_id": request_id,
-                "output": result_text,
-                "event_type": event_type,
-            }
-
-            parsed = parse_outcome_block(result_text)
-            if parsed is not None:
-                response["outcome"] = {
-                    "fields": parsed.fields,
-                    "valid": parsed.valid,
-                    "errors": parsed.errors,
-                }
-
-            return response
-        except TimeoutError:
-            logger.warning("mesh adapter: work_request %s timed out", request_id)
-            return {
-                "status": "timeout",
-                "request_id": request_id,
-                "event_type": event_type,
-            }
-        except Exception as exc:
-            logger.error("mesh adapter: work_request %s failed: %s", request_id, exc)
-            return {
-                "status": "error",
-                "request_id": request_id,
-                "error": str(exc),
-            }
-
-    async def _execute_prompt(self, prompt: str, request_id: str) -> str:
-        """Send prompt to CLI transport and collect the result text.
-
-        Serialized via ``_execute_lock`` — the CLI handles one prompt at
-        a time, so overlapping calls would corrupt the event callback chain.
-        """
-        return await self._turn_runner.run_prompt(prompt, request_id)
+        except PeerMessageError as exc:
+            return {"status": "error", "request_id": request_id, "error": str(exc)}
+        answer = await self._accept(envelope, verified=self._verified_sender(message))
+        return {**answer, "request_id": request_id}
 
     async def _handle_outcome_event(self, event: MeshEvent) -> None:
-        """Handle incoming outcome events from mesh subscriptions.
+        """An outcome event on a consumed topic becomes a message from the emitting peer.
 
-        When an outcome event arrives that matches our subscribed topics,
-        feed the prompt to the CLI transport and publish the result back.
+        A message this session refuses raises: the event is not silently dropped. A
+        ``workflow`` event goes to the workflow host instead.
         """
+        if event.type == MeshEventType.WORKFLOW:
+            await self._handle_workflow_event(event)
+            return
         if event.type != MeshEventType.OUTCOME:
+            return
+        if event.source == self._peer_id:
+            # A thread copy or an inbox copy of this peer's own publication.
             return
 
         payload = event.payload
@@ -243,62 +637,51 @@ class SkuldMeshAdapter:
             return
 
         event_type = payload.get("event_type", "")
-        request_id = str(uuid.uuid4())
-
         logger.info(
             "mesh adapter: handling outcome event (event_type=%s, source=%s)",
             event_type,
             event.source,
         )
-
-        try:
-            timeout_s = float(self._config.default_work_timeout_s)
-            result_text = await asyncio.wait_for(
-                self._execute_prompt(prompt, request_id),
-                timeout=timeout_s,
+        envelope = self._mesh_message(
+            message_id=event.event_id,
+            source_peer_id=event.source,
+            prompt=prompt,
+            event_type=event_type,
+            in_reply_to=str(payload.get(IN_REPLY_TO_KEY) or ""),
+            thread=event.correlation_id,
+        )
+        answer = await self._accept(envelope, verified=self._verified_sender(event.attestation))
+        if answer["status"] != "accepted":
+            raise PeerMessageRefusedError(
+                f"outcome event {event.event_id} from {event.source} was refused: {answer['error']}"
             )
-        except TimeoutError:
-            logger.warning(
-                "mesh adapter: outcome event handling timed out (event_type=%s, timeout=%.0fs)",
-                event_type,
-                timeout_s,
-            )
-            result_text = (
-                "---outcome---\n"
-                "verdict: blocked\n"
-                f"summary: Timed out after {int(timeout_s)}s while handling {event_type}.\n"
-                "---end---"
-            )
-        except Exception as exc:
-            logger.error("mesh adapter: outcome event handling failed: %s", exc)
-            result_text = f"Error: {exc}"
 
-        # Publish result back to mesh
-        parsed = parse_outcome_block(result_text)
-        outcome_payload: dict[str, Any] = {
-            "event_type": event_type,
-            "persona": self._config.persona,
-            "source_peer_id": self._peer_id,
-            "output": result_text,
-        }
-        if parsed is not None:
-            outcome_payload["outcome"] = {
-                "fields": parsed.fields,
-                "valid": parsed.valid,
-                "errors": parsed.errors,
-            }
-
-        response_event = MeshEvent(
-            type=MeshEventType.OUTCOME,
-            source=self._peer_id,
-            payload=outcome_payload,
-            timestamp=datetime.now(UTC),
-            urgency=self._config.default_response_urgency,
-            correlation_id=event.correlation_id,
-            session_id=self._session_id,
+    async def _handle_workflow_event(self, event: MeshEvent) -> None:
+        """A workflow event: the workflow host decides; this peer's own copies are skipped."""
+        if self._workflow is None or event.source == self._peer_id:
+            return
+        await self._workflow.accept_workflow_offer(
+            event, verified=self._verified_sender(event.attestation)
         )
 
-        if self._mesh is not None:
-            topic = f"{self._config.persona}.completed"
-            await self._mesh.publish(response_event, topic=topic)
-            logger.info("mesh adapter: published response to topic %r", topic)
+    def _mesh_message(
+        self,
+        *,
+        message_id: str,
+        source_peer_id: str,
+        prompt: str,
+        event_type: str,
+        in_reply_to: str = "",
+        thread: str = "",
+    ) -> PeerMessage:
+        content = f"[Request for event type {event_type}]\n{prompt}" if event_type else prompt
+        return PeerMessage(
+            message_id=message_id,
+            sender=PeerAddress(PeerKind.MESH_PEER, source_peer_id, name=source_peer_id),
+            recipient=PeerAddress(PeerKind.SESSION, str(self._session_id)),
+            sent_at=datetime.now(UTC),
+            content=content,
+            reply=ReplyRoute(ReplyKind.MESH, source_peer_id),
+            in_reply_to=in_reply_to,
+            thread=thread,
+        )

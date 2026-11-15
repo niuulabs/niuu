@@ -2,15 +2,20 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, Response, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from niuu.domain.models import Principal
 from personas.adapters.postgres_registry import PersonaView, PostgresPersonaRegistry
-from personas.domain.persona_document import PersonaDocumentError
-from personas.domain.tool_vocabulary import PersonaToolError, validate_tool_names
+from personas.domain.persona_document import (
+    PersonaDocumentError,
+    PortablePersonaDefinition,
+    parse_persona_definition_yaml,
+    refuse_tool_restrictions,
+)
 from volundr.adapters.inbound.auth import extract_principal, get_current_user
 from volundr.domain.models import User
 
@@ -23,26 +28,6 @@ VALID_FAN_IN_STRATEGIES = {
     "first_wins",
     "weighted_score",
 }
-
-
-def _tool_vocabulary_errors(allowed_tools: list[str], forbidden_tools: list[str]) -> list[str]:
-    """Why a tool list is not in the neutral vocabulary; the message lists the valid set."""
-    errors: list[str] = []
-    for field, tools in (("allowed_tools", allowed_tools), ("forbidden_tools", forbidden_tools)):
-        try:
-            validate_tool_names(field, list(tools))
-        except PersonaToolError as exc:
-            errors.append(str(exc))
-    return errors
-
-
-def _require_tool_vocabulary(data: Any) -> None:
-    errors = _tool_vocabulary_errors(data.allowed_tools, data.forbidden_tools)
-    if errors:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail="; ".join(errors),
-        )
 
 
 class ErrorResponse(BaseModel):
@@ -60,7 +45,6 @@ class PersonaSummaryResponse(BaseModel):
     color: str
     summary: str
     permission_mode: str
-    allowed_tools: list[str]
     iteration_budget: int
     is_builtin: bool
     has_override: bool
@@ -82,6 +66,10 @@ class PersonaProducesResponse(BaseModel):
 
     event_type: str
     event_type_map: dict[str, str] = Field(default_factory=dict)
+    when: dict[str, str] = Field(
+        default_factory=dict,
+        description="Per verdict, when the persona reports it (the persona's own rule)",
+    )
     schema_def: dict[str, str]
 
 
@@ -112,7 +100,6 @@ class PersonaDetailResponse(PersonaSummaryResponse):
 
     description: str
     system_prompt_template: str
-    forbidden_tools: list[str]
     llm: PersonaLLMResponse
     produces: PersonaProducesResponse
     consumes: PersonaConsumesResponse
@@ -140,8 +127,6 @@ class PersonaCreateRequest(BaseModel):
     summary: str = Field(default="")
     description: str = Field(default="")
     system_prompt_template: str = Field(default="")
-    allowed_tools: list[str] = Field(default_factory=list)
-    forbidden_tools: list[str] = Field(default_factory=list)
     permission_mode: str = Field(default="default")
     iteration_budget: int = Field(default=0, ge=0)
     llm_thinking_enabled: bool = Field(default=False)
@@ -155,6 +140,14 @@ class PersonaCreateRequest(BaseModel):
     fan_in_params: dict[str, Any] = Field(default_factory=dict)
     mimir_write_routing: str | None = Field(default=None)
 
+    @model_validator(mode="before")
+    @classmethod
+    def _refuse_tool_restrictions(cls, data: object) -> object:
+        """Refuse a body that still carries ``allowed_tools`` or ``forbidden_tools``."""
+        if isinstance(data, dict):
+            refuse_tool_restrictions(str(data.get("name") or "<unnamed>"), data)
+        return data
+
     def to_payload(self, *, name: str | None = None) -> dict[str, Any]:
         """Serialize to the stored JSON payload shape."""
         return {
@@ -165,8 +158,6 @@ class PersonaCreateRequest(BaseModel):
             "summary": self.summary,
             "description": self.description,
             "system_prompt_template": self.system_prompt_template,
-            "allowed_tools": list(self.allowed_tools),
-            "forbidden_tools": list(self.forbidden_tools),
             "permission_mode": self.permission_mode,
             "iteration_budget": self.iteration_budget,
             "llm_primary_alias": "",
@@ -187,6 +178,15 @@ class PersonaForkRequest(BaseModel):
     """Fork a persona to a new name."""
 
     new_name: str = Field(min_length=1, max_length=128, pattern=_NAME_PATTERN)
+
+
+class PersonaDocumentRequest(BaseModel):
+    """A persona as its YAML document."""
+
+    yaml: str = Field(
+        min_length=1,
+        description="The persona's YAML document, exactly what is saved; its name is the persona",
+    )
 
 
 class PersonaValidateResponse(BaseModel):
@@ -227,16 +227,95 @@ def create_ravn_personas_router(registry: PostgresPersonaRegistry | None = None)
         include_in_schema=False,
     )
     async def validate_persona(data: PersonaCreateRequest) -> PersonaValidateResponse:
-        errors = _tool_vocabulary_errors(data.allowed_tools, data.forbidden_tools)
-        overlap = sorted(set(data.allowed_tools) & set(data.forbidden_tools))
-        if overlap:
-            errors.append(f"allowed_tools and forbidden_tools overlap: {', '.join(overlap)}")
+        errors: list[str] = []
         if data.fan_in_strategy and data.fan_in_strategy not in VALID_FAN_IN_STRATEGIES:
             errors.append(
                 f"Invalid fan_in_strategy '{data.fan_in_strategy}'. "
                 f"Must be one of: {', '.join(sorted(VALID_FAN_IN_STRATEGIES))}"
             )
         return PersonaValidateResponse(valid=not errors, errors=errors)
+
+    @router.post("/personas/yaml/check", response_model=PersonaValidateResponse)
+    @router.post(
+        "/ravn/personas/yaml/check",
+        response_model=PersonaValidateResponse,
+        include_in_schema=False,
+    )
+    async def check_persona_yaml(body: PersonaDocumentRequest) -> PersonaValidateResponse:
+        """Check a persona's YAML as saving it would, without saving it."""
+        try:
+            _parse_document(body.yaml)
+        except HTTPException as exc:
+            return PersonaValidateResponse(valid=False, errors=[str(exc.detail)])
+        return PersonaValidateResponse(valid=True)
+
+    @router.post(
+        "/personas/yaml",
+        response_model=PersonaDetailResponse,
+        status_code=status.HTTP_201_CREATED,
+        responses={409: {"model": ErrorResponse}, 422: {"model": ErrorResponse}},
+    )
+    @router.post(
+        "/ravn/personas/yaml",
+        response_model=PersonaDetailResponse,
+        status_code=status.HTTP_201_CREATED,
+        responses={409: {"model": ErrorResponse}, 422: {"model": ErrorResponse}},
+        include_in_schema=False,
+    )
+    async def create_persona_from_yaml(
+        body: PersonaDocumentRequest,
+        principal: Principal = Depends(extract_principal),
+        user: User = Depends(get_current_user),
+        persona_registry: PostgresPersonaRegistry = Depends(_get_registry),
+    ) -> PersonaDetailResponse:
+        """Create a persona from its YAML document, keeping every field it declares."""
+        del user
+        document = _parse_document(body.yaml)
+        existing = await persona_registry.get_persona(principal.user_id, document.id)
+        if existing is not None:
+            kind = "built-in" if existing.is_builtin else "custom"
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"Persona already exists as {kind}: {document.id}",
+            )
+        return await _save_document(persona_registry, principal.user_id, document)
+
+    @router.put(
+        "/personas/{name}/yaml",
+        response_model=PersonaDetailResponse,
+        responses={404: {"model": ErrorResponse}, 422: {"model": ErrorResponse}},
+    )
+    @router.put(
+        "/ravn/personas/{name}/yaml",
+        response_model=PersonaDetailResponse,
+        responses={404: {"model": ErrorResponse}, 422: {"model": ErrorResponse}},
+        include_in_schema=False,
+    )
+    async def replace_persona_from_yaml(
+        body: PersonaDocumentRequest,
+        name: str = Path(description="Persona name"),
+        principal: Principal = Depends(extract_principal),
+        user: User = Depends(get_current_user),
+        persona_registry: PostgresPersonaRegistry = Depends(_get_registry),
+    ) -> PersonaDetailResponse:
+        """Replace a persona (or override a built-in) with its YAML document."""
+        del user
+        existing = await persona_registry.get_persona(principal.user_id, name)
+        if existing is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Persona not found: {name}",
+            )
+        document = _parse_document(body.yaml)
+        if document.id != name:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=(
+                    f"The YAML names the persona {document.id!r}, but this is {name!r}; "
+                    f"set name: {name}, or fork {name} to save it under a new name"
+                ),
+            )
+        return await _save_document(persona_registry, principal.user_id, document)
 
     @router.get(
         "/personas/{name}/portable",
@@ -380,7 +459,6 @@ def create_ravn_personas_router(registry: PostgresPersonaRegistry | None = None)
                 status_code=status.HTTP_409_CONFLICT,
                 detail=f"Persona already exists as built-in: {data.name}",
             )
-        _require_tool_vocabulary(data)
         await persona_registry.save_persona(principal.user_id, data.to_payload())
         saved = await persona_registry.get_persona(principal.user_id, data.name)
         assert saved is not None
@@ -411,7 +489,6 @@ def create_ravn_personas_router(registry: PostgresPersonaRegistry | None = None)
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Persona not found: {name}",
             )
-        _require_tool_vocabulary(data)
         await persona_registry.save_persona(principal.user_id, data.to_payload(name=name))
         saved = await persona_registry.get_persona(principal.user_id, name)
         assert saved is not None
@@ -487,22 +564,62 @@ def create_ravn_personas_router(registry: PostgresPersonaRegistry | None = None)
                 detail=f"Persona already exists as built-in: {body.new_name}",
             )
 
+        # The fork is the source's whole document under the new name, so it keeps every field
+        # (outcome rules, schema descriptions, …), not only what the registry payload holds.
+        source_document = await persona_registry.get_current_portable_persona(
+            principal.user_id, name
+        )
+        if source_document is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Persona not found: {name}",
+            )
         payload = dict(source_view.payload)
         payload["name"] = body.new_name
-        tool_errors = _tool_vocabulary_errors(
-            list(payload["allowed_tools"]), list(payload["forbidden_tools"])
-        )
-        if tool_errors:
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-                detail="; ".join(tool_errors),
-            )
+        payload["document"] = source_document.definition
         await persona_registry.save_persona(principal.user_id, payload)
         saved = await persona_registry.get_persona(principal.user_id, body.new_name)
         assert saved is not None
         return _to_detail(saved)
 
     return router
+
+
+def _parse_document(text: str) -> PortablePersonaDefinition:
+    """Parse a persona's YAML, refusing it with the reason (422) when it cannot be saved."""
+    try:
+        document = parse_persona_definition_yaml(text)
+    except ValueError as exc:  # PersonaDocumentError is a ValueError
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=str(exc),
+        ) from exc
+    if not re.fullmatch(_NAME_PATTERN, document.id):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=(
+                f"Persona name {document.id!r} must start with a letter or digit and use only "
+                "letters, digits, dashes and underscores"
+            ),
+        )
+    return document
+
+
+async def _save_document(
+    registry: PostgresPersonaRegistry,
+    owner_id: str,
+    document: PortablePersonaDefinition,
+) -> PersonaDetailResponse:
+    try:
+        await registry.save_persona_document(owner_id, document)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=str(exc),
+        ) from exc
+    saved = await registry.get_persona(owner_id, document.id)
+    assert saved is not None
+    return _to_detail(saved)
 
 
 def _to_summary(view: PersonaView) -> PersonaSummaryResponse:
@@ -514,7 +631,6 @@ def _to_summary(view: PersonaView) -> PersonaSummaryResponse:
         color=str(payload["color"]),
         summary=str(payload["summary"]),
         permission_mode=str(payload["permission_mode"]),
-        allowed_tools=list(payload["allowed_tools"]),
         iteration_budget=int(payload["iteration_budget"]),
         is_builtin=view.is_builtin,
         has_override=view.has_override,
@@ -540,7 +656,6 @@ def _to_detail(view: PersonaView) -> PersonaDetailResponse:
         **_to_summary(view).model_dump(),
         description=str(payload["description"]),
         system_prompt_template=str(payload["system_prompt_template"]),
-        forbidden_tools=list(payload["forbidden_tools"]),
         llm=PersonaLLMResponse(
             thinking_enabled=bool(payload["llm_thinking_enabled"]),
             max_tokens=int(payload["llm_max_tokens"]),
@@ -553,6 +668,7 @@ def _to_detail(view: PersonaView) -> PersonaDetailResponse:
         produces=PersonaProducesResponse(
             event_type=str(payload["produces_event_type"]),
             event_type_map=dict(payload.get("produces_event_map") or {}),
+            when=dict(payload.get("produces_when") or {}),
             schema_def=dict(payload["produces_schema"]),
         ),
         consumes=PersonaConsumesResponse(

@@ -16,6 +16,7 @@ from typing import Any
 from niuu.domain.models import actor_name
 from ting.domain.models import Saga, WorkflowCampaign, WorkflowCampaignStatus
 from ting.domain.ticket_coordinator import PENDING_GATES_KEY, TICKET_METADATA_KEY, ticket_of
+from ting.domain.workflow_steps import RunState
 
 PLAN_SURFACE = "ting.plan"
 PLANNING_WORKFLOW_NAME = "Saga Planning"
@@ -32,6 +33,7 @@ class ReviewState(StrEnum):
     RUNNING = "running"
     DONE = "done"
     FAILED = "failed"
+    CANCELED = "canceled"
 
 
 class ReviewKind(StrEnum):
@@ -65,6 +67,17 @@ class ReviewTicket:
 
 
 @dataclass(frozen=True)
+class ReviewSession:
+    """A Forge session a run worked in: one per member of a step-engine run."""
+
+    session_id: str
+    #: The member (persona) whose steps the session ran; empty for a run's own session.
+    member: str = ""
+    #: The Forge connection the session is on: the run's own.
+    connection_id: str | None = None
+
+
+@dataclass(frozen=True)
 class ReviewRun:
     """A run, as its review page introduces it."""
 
@@ -77,6 +90,8 @@ class ReviewRun:
     branch: str
     started_by: str | None = None
     ticket: ReviewTicket | None = None
+    #: Every session the run worked in, in the order the run first used them.
+    sessions: tuple[ReviewSession, ...] = ()
 
 
 def is_project_plan(campaign: WorkflowCampaign) -> bool:
@@ -109,7 +124,24 @@ def _started_by(metadata: Mapping[str, Any]) -> str | None:
     return actor_name(actor) if actor.startswith(_SERVICE_ACCOUNT_ACTOR) else None
 
 
-def review_run(campaign: WorkflowCampaign) -> ReviewRun:
+def run_sessions(campaign: WorkflowCampaign, state: RunState | None) -> tuple[ReviewSession, ...]:
+    """The run's own session when no step ran in it, then each member's session from the ledger."""
+    members: dict[str, ReviewSession] = {}
+    steps = sorted(state.steps, key=lambda step: step.created_at) if state else ()
+    for step in steps:
+        if step.session_id and step.session_id not in members:
+            members[step.session_id] = ReviewSession(
+                session_id=step.session_id,
+                member=step.member or "",
+                connection_id=campaign.connection_id,
+            )
+    if not campaign.session_id or campaign.session_id in members:
+        return tuple(members.values())
+    own = ReviewSession(session_id=campaign.session_id, connection_id=campaign.connection_id)
+    return (own, *members.values())
+
+
+def review_run(campaign: WorkflowCampaign, state: RunState | None = None) -> ReviewRun:
     return ReviewRun(
         slug=campaign.slug,
         title=_run_title(campaign),
@@ -120,6 +152,7 @@ def review_run(campaign: WorkflowCampaign) -> ReviewRun:
         branch=str(campaign.metadata.get("branch") or ""),
         started_by=_started_by(campaign.metadata),
         ticket=_ticket(campaign.metadata),
+        sessions=run_sessions(campaign, state),
     )
 
 
@@ -133,6 +166,8 @@ def _state(campaign: WorkflowCampaign, gate_label: str | None) -> ReviewState:
         return ReviewState.DONE
     if campaign.status == WorkflowCampaignStatus.FAILED:
         return ReviewState.FAILED
+    if campaign.status == WorkflowCampaignStatus.CANCELED:
+        return ReviewState.CANCELED
     # A gate is only waiting while it holds the run. Recording one blocks the campaign,
     # so a running campaign that still names a gate has already been answered.
     if campaign.status == WorkflowCampaignStatus.BLOCKED and gate_label is not None:

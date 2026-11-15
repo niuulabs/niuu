@@ -65,6 +65,52 @@ describe('ComputeHostsPanel', () => {
     expect(view.container).toBeEmptyDOMElement();
   });
 
+  describe('for someone who may not manage hosts', () => {
+    function setupReadOnly() {
+      const base = createMockComputeHosts();
+      const getComputeHosts = vi.fn(async (instanceId: string) => {
+        const overview = await base.getComputeHosts(instanceId);
+        if (!overview) return overview;
+        return {
+          ...overview,
+          canManage: false,
+          connectors: [],
+          runtimes: [],
+          pairingCodes: [],
+        };
+      });
+      return setup({ override: { getComputeHosts } });
+    }
+
+    it('lists the hosts and says why nothing can be changed', async () => {
+      setupReadOnly();
+      expect(await row('hrimfaxi')).toBeInTheDocument();
+      expect(screen.getAllByTestId(/^host-row-/)).toHaveLength(8);
+      expect(screen.getByTestId('hosts-read-only-note')).toHaveTextContent(
+        'Only an admin of this Forge can add or change them.',
+      );
+    });
+
+    it('hides Add host, Check all, row actions and tag editing', async () => {
+      setupReadOnly();
+      await row('hrimfaxi');
+      expect(screen.queryByRole('button', { name: 'Add host' })).toBeNull();
+      expect(screen.queryByRole('button', { name: 'Check all' })).toBeNull();
+      expect(screen.queryByRole('columnheader', { name: 'Actions' })).toBeNull();
+      expect(screen.queryByRole('button', { name: /^(Drain|Remove|Check now|Resume)/ })).toBeNull();
+      expect(screen.queryByRole('button', { name: /^(Add tag to|Remove tag)/ })).toBeNull();
+      expect(within(await row('hrimfaxi')).getByText('site:hnoss')).toBeInTheDocument();
+    });
+
+    it('leaves the managers view with all of it', async () => {
+      setup();
+      await row('hrimfaxi');
+      expect(screen.getByRole('button', { name: 'Add host' })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Check all' })).toBeInTheDocument();
+      expect(screen.queryByTestId('hosts-read-only-note')).toBeNull();
+    });
+  });
+
   it('shows the error when the hosts cannot be read, and retries', async () => {
     const getComputeHosts = vi
       .fn()
@@ -205,6 +251,25 @@ describe('ComputeHostsPanel', () => {
       fireEvent.click(screen.getByRole('button', { name: 'Resume skinfaxi' }));
       await waitFor(() => expect(spies.resumeComputeHost).toHaveBeenCalledWith('forge', out.id));
       expect(await within(await row('skinfaxi')).findByText('Ready')).toBeInTheDocument();
+    });
+
+    it('edits the slots of an out-of-service host with a PATCH', async () => {
+      const out: ComputeHost = { ...skinfaxi, state: 'out_of_service', sessions: [], slots: 2 };
+      const { spies } = setup({ hosts: [out] });
+      await row('skinfaxi');
+      fireEvent.click(screen.getByRole('button', { name: 'Edit slots skinfaxi' }));
+      fireEvent.change(screen.getByLabelText('Sessions at once'), { target: { value: '3' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+      await waitFor(() =>
+        expect(spies.updateComputeHost).toHaveBeenCalledWith('forge', out.id, { slots: 3 }),
+      );
+      await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    });
+
+    it('does not offer Edit slots on an in-service host', async () => {
+      setup();
+      await row('hrimfaxi');
+      expect(screen.queryByRole('button', { name: 'Edit slots hrimfaxi' })).not.toBeInTheDocument();
     });
 
     it('cancels a drain', async () => {

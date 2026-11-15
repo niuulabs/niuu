@@ -8,6 +8,7 @@
  * ignores the frame as a whole; none of them invents values for missing fields.
  */
 import type {
+  MessageAuthor,
   SessionAgent,
   SessionEffort,
   SessionPlan,
@@ -200,6 +201,21 @@ export function parseUsageFrame(frame: Frame): SessionUsage | null {
     ...(window !== undefined ? { window } : {}),
     ...(totalInputTokens !== undefined ? { totalInputTokens } : {}),
     ...(totalOutputTokens !== undefined ? { totalOutputTokens } : {}),
+  };
+}
+
+/**
+ * The `author` the broker stamped on a user turn or `user_confirmed` frame
+ * (`{user_id, display_name}`). `undefined` when there is none: a message recorded before
+ * authorship existed, or one that was not sent by a verified person.
+ */
+export function parseMessageAuthor(raw: unknown): MessageAuthor | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const { user_id: userId, display_name: displayName } = raw as Record<string, unknown>;
+  if (typeof userId !== 'string' || !userId.trim()) return undefined;
+  return {
+    userId: userId.trim(),
+    displayName: typeof displayName === 'string' ? displayName.trim() : '',
   };
 }
 

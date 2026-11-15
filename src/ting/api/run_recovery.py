@@ -122,7 +122,7 @@ def create_run_recovery_router() -> APIRouter:
             recovered = await _workflow_runs(request).retry_step(
                 campaign,
                 activation_id,
-                by=GateActor(ActorKind.PERSON, principal.user_id),
+                by=GateActor(ActorKind.PERSON, principal.user_id, principal.email),
                 reason=_reason(body),
             )
         except (RecoveryRefusedError, RunStateError) as exc:
@@ -147,7 +147,7 @@ def create_run_recovery_router() -> APIRouter:
             recovered = await _workflow_runs(request).reassign_step(
                 campaign,
                 activation_id,
-                by=GateActor(ActorKind.PERSON, principal.user_id),
+                by=GateActor(ActorKind.PERSON, principal.user_id, principal.email),
                 reason=_reason(body),
             )
         except (RecoveryRefusedError, RunStateError) as exc:
@@ -171,7 +171,7 @@ def create_run_recovery_router() -> APIRouter:
             await _workflow_runs(request).cancel(
                 campaign,
                 _reason(body),
-                by=GateActor(ActorKind.PERSON, principal.user_id),
+                by=GateActor(ActorKind.PERSON, principal.user_id, principal.email),
             )
         except RunStateError as exc:
             raise _refused(exc) from exc

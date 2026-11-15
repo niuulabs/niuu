@@ -17,15 +17,22 @@ import type { Session } from '../domain/session';
 
 const navigate = vi.fn();
 
+let routeSessionId = 'lead';
+
 vi.mock('@tanstack/react-router', () => ({
   useNavigate: () => navigate,
-  useParams: () => ({ sessionId: 'lead' }),
+  useParams: () => ({ sessionId: routeSessionId }),
 }));
 
-const worker = (peerId: string, name: string, status: Worker['status']): Worker => ({
+const worker = (
+  peerId: string,
+  name: string,
+  status: Worker['status'],
+  persona: string = name,
+): Worker => ({
   peerId,
   name,
-  persona: name,
+  persona,
   color: '#3366aa',
   status,
   consumes: [],
@@ -41,7 +48,10 @@ vi.mock('./LiveSessionDetailPage', () => ({
     onRoomWorkers,
   }: { sessionId: string } & RoomWorkerFocus) => {
     useEffect(() => {
-      onRoomWorkers?.([worker('coder', 'coder', 'working'), worker('rev', 'reviewer', 'idle')]);
+      onRoomWorkers?.([
+        worker('coder', 'coder', 'working'),
+        worker('rev', 'wf-run-reviewer', 'idle', 'reviewer'),
+      ]);
     }, [onRoomWorkers]);
     return (
       <div data-testid="detail">
@@ -74,8 +84,8 @@ const session = (id: string, name: string): Session => ({
   events: [],
 });
 
-function renderPage() {
-  const sessions = [session('lead', 'storm-probe'), session('other', 'other-session')];
+function renderPage(extra: Session[] = [], lead: Session = session('lead', 'storm-probe')) {
+  const sessions = [lead, session('other', 'other-session'), ...extra];
   const store: ISessionStore = {
     getSession: async (id) => sessions.find((s) => s.id === id) ?? null,
     listSessions: async () => sessions,
@@ -115,7 +125,8 @@ describe('SessionsPage — the open room’s workers', () => {
     expect(coder).toHaveTextContent('coder');
     expect(coder).toHaveTextContent('Working');
     expect(screen.getByTestId('room-worker-rev')).toHaveTextContent('Idle');
-    expect(screen.getByTestId('session-leads-lead')).toHaveTextContent('Coordinator · 2 workers');
+    expect(screen.getByTestId('session-leads-lead')).toHaveTextContent(/^Coordinator$/);
+    expect(screen.getByTestId('session-worker-count-lead')).toHaveTextContent(/^2$/);
     expect(screen.queryByTestId('session-leads-other')).toBeNull();
   });
 
@@ -139,5 +150,106 @@ describe('SessionsPage — the open room’s workers', () => {
       within(entry as HTMLElement).getByRole('button', { name: /Collapse workers of/ }),
     );
     expect(screen.queryByTestId('room-worker-coder')).toBeNull();
+  });
+
+  it("lists a workflow run's member sessions as its room's workers, counted once", async () => {
+    // An earlier case folds the lead; this one reads it open.
+    localStorage.clear();
+    const member = (id: string, role: string): Session => ({
+      ...session(id, `wf-run-${role}`),
+      coordination: {
+        projectId: 'probe',
+        role,
+        parent: { instanceId: 'cluster-a', sessionId: 'lead' },
+      },
+    });
+    renderPage([member('coder', 'coder'), member('rev', 'reviewer')]);
+
+    await screen.findByTestId('room-worker-coder');
+    expect(screen.getByTestId('room-worker-rev')).toBeInTheDocument();
+    // Each member is listed once, as the room's worker, not again as a session row.
+    expect(screen.queryByTestId('pod-entry-coder')).toBeNull();
+    expect(screen.queryByTestId('pod-entry-rev')).toBeNull();
+    expect(screen.getByTestId('session-worker-count-lead')).toHaveAccessibleName('2 workers');
+  });
+
+  it("leads a run member's row with its role, ahead of its long name", async () => {
+    localStorage.clear();
+    const member = (id: string, role: string): Session => ({
+      ...session(id, `wf-run-0123456789ab-${role}`),
+      coordination: {
+        projectId: 'probe',
+        role,
+        parent: { instanceId: 'cluster-a', sessionId: 'lead' },
+      },
+    });
+    routeSessionId = 'coder';
+    try {
+      renderPage([member('coder', 'coder'), member('rev', 'security-auditor')]);
+
+      expect(await screen.findByTestId('pod-entry-rev-role')).toHaveTextContent('Security-auditor');
+      expect(screen.getByTestId('pod-entry-coder-role')).toHaveTextContent('Coder');
+      // One line, as under the open run: the state ends the line, no second line under it.
+      const row = screen.getByTestId('pod-entry-coder');
+      expect(within(row).getByTestId('pod-entry-coder-state')).toBeInTheDocument();
+      expect(row.querySelector('.forge-session-row__metadata')).toBeNull();
+      // The run's own session has no parent: it is named, not given a role.
+      expect(screen.queryByTestId('pod-entry-lead-role')).toBeNull();
+    } finally {
+      routeSessionId = 'lead';
+    }
+  });
+
+  it("shows a run's root as working while a member works, though the root itself is idle", async () => {
+    localStorage.clear();
+    routeSessionId = 'other';
+    try {
+      const coder: Session = {
+        ...session('coder', 'wf-run-coder'),
+        coordination: {
+          projectId: 'probe',
+          role: 'coder',
+          parent: { instanceId: 'cluster-a', sessionId: 'lead' },
+        },
+      };
+      renderPage([coder], { ...session('lead', 'storm-probe'), state: 'idle' });
+      const lead = await screen.findByTestId('pod-entry-lead');
+      expect(within(lead).getByText('Working')).toBeInTheDocument();
+      expect(within(lead).queryByText('Idle')).toBeNull();
+    } finally {
+      routeSessionId = 'lead';
+    }
+  });
+
+  it("leads an open room's worker row with its persona", async () => {
+    localStorage.clear();
+    renderPage();
+    expect(await screen.findByTestId('room-worker-rev-role')).toHaveTextContent('Reviewer');
+    // A worker whose persona is its name says it once.
+    expect(screen.queryByTestId('room-worker-coder-role')).toBeNull();
+  });
+
+  it("leaves the run's sessions where they are when one of its members is opened", async () => {
+    localStorage.clear();
+    const member = (id: string, role: string): Session => ({
+      ...session(id, `wf-run-${role}`),
+      coordination: {
+        projectId: 'probe',
+        role,
+        parent: { instanceId: 'cluster-a', sessionId: 'lead' },
+      },
+    });
+    routeSessionId = 'coder';
+    try {
+      renderPage([member('coder', 'coder'), member('rev', 'reviewer')]);
+
+      expect(await screen.findByTestId('detail')).toHaveTextContent('coder:everyone');
+      // The member's chat names the run's other members, but it leads none of them.
+      expect(screen.queryByTestId('room-worker-rev')).toBeNull();
+      expect(screen.queryByTestId('session-leads-coder')).toBeNull();
+      expect(screen.getByTestId('pod-entry-rev')).toBeInTheDocument();
+    } finally {
+      routeSessionId = 'lead';
+    }
   });
 });

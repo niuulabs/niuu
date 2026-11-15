@@ -433,7 +433,7 @@ test('notifications feed: live rows, reconnect gap-fill, filters, delivery and m
     .filter({ hasText: 'Benchmark run crashed' })
     .getByRole('button', { name: /Benchmark run crashed — open gpu-bench/ })
     .click();
-  await expect(page).toHaveURL(/\/volundr\/session\/sess-bench#notification-n-crash$/);
+  await expect(page).toHaveURL(/\/volundr\/sessions\/sess-bench#notification-n-crash$/);
 });
 
 test('a host the first load missed is picked up by refetching, not by gap-fill', async ({
@@ -516,7 +516,7 @@ test('notifications feed is keyboard accessible', async ({ page }) => {
   await expect(page.getByTestId('notifications-unread')).toHaveText('1 unread');
   await open(1).focus();
   await page.keyboard.press('Enter');
-  await expect(page).toHaveURL(/\/volundr\/session\/sess-bench#notification-n-crash$/);
+  await expect(page).toHaveURL(/\/volundr\/sessions\/sess-bench#notification-n-crash$/);
 });
 
 async function sessionFixture(page: Page) {
@@ -529,6 +529,15 @@ async function sessionFixture(page: Page) {
     source: { type: 'local_mount', local_path: '/workspace' },
     chat_endpoint: `${origin.replace('http:', 'ws:')}/forge-host/thor/s/review/session`,
     created_at: '2026-09-23T09:00:00Z',
+  };
+  // Who is looking: the session header asks, to decide who may manage the chat's people.
+  const viewer = {
+    userId: 'u1',
+    email: 'dev@niuu.world',
+    tenantId: 't1',
+    roles: ['user'],
+    displayName: 'Dev',
+    status: 'active',
   };
   const draft = {
     kind: 'milestone',
@@ -609,10 +618,10 @@ async function sessionFixture(page: Page) {
     return route.fulfill({
       json: path.endsWith('/sessions/review')
         ? session
-        : path.endsWith('/sessions')
-          ? [session]
-          : path.includes('/workflow/gates')
-            ? { gates: [] }
+        : path.endsWith('/identity/me')
+          ? viewer
+          : path.endsWith('/sessions')
+            ? [session]
             : path.includes('/features/modules')
               ? [{ key: 'chat', scope: 'session', enabled: true, label: 'Chat', order: 0 }]
               : path.includes('/stats') || path.endsWith('/read-state')
@@ -626,7 +635,7 @@ test('a notification turn renders as a card in the session transcript and takes 
   page,
 }, info) => {
   await sessionFixture(page);
-  await page.goto('/volundr/session/review#notification-n-1');
+  await page.goto('/volundr/sessions/review#notification-n-1');
   const card = page.getByTestId('notification-card');
   await expect(card).toBeVisible();
   await expect(card).toHaveAttribute('data-targeted', 'true');

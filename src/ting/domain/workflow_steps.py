@@ -1,11 +1,12 @@
 """The step ledger: what a workflow run has activated, closed and decided.
 
-A workflow run advances one *step activation* at a time. Ting activates a step for
-a persona (or opens a gate, or a wait), a harness session closes it, and the step
-engine (``ting.domain.step_engine``) decides what activates next. Everything the
-engine needs is in two durable collections, kept per run:
+A workflow run advances by *offers*. Ting offers a stage's work on the run's mesh (or opens
+a gate, or a wait); every member whose persona takes that kind of work picks the offer up, and
+each pickup is a *step activation* of its own that its harness session closes. The step engine
+(``ting.domain.step_engine``) decides what is offered next. Everything the engine needs is in
+two durable collections, kept per run:
 
-* ``WorkflowStep`` rows, one per activation, with the state the activation is in;
+* ``WorkflowStep`` rows, one per offer and one per pickup, with the state each is in;
 * ``RunEvent`` rows, an append-only log of every outcome event and every engine
   transition, so a run can be replayed and audited.
 
@@ -45,6 +46,17 @@ EVENT_DELIVERY_COALESCED = "engine.delivery.coalesced"
 EVENT_END_REJECTED = "engine.end.rejected"
 EVENT_CLOSE_REJECTED = "engine.close.rejected"
 EVENT_STEP_UNCLOSED = "engine.step.unclosed"
+#: The handoff over the mesh: an offer opened or queued, published (again), picked up,
+#: passed by a member, refused by one; a member reporting it listens, or being restarted.
+EVENT_OFFER_OPENED = "engine.offer.opened"
+EVENT_OFFER_QUEUED = "engine.offer.queued"
+EVENT_OFFER_PUBLISHED = "engine.offer.published"
+EVENT_OFFER_PICKED_UP = "engine.offer.picked_up"
+EVENT_OFFER_PASSED = "engine.offer.passed"
+EVENT_OFFER_REFUSED = "engine.offer.refused"
+EVENT_UNIT_LAUNCHED = "engine.unit.launched"
+EVENT_MEMBER_LISTENING = "engine.member.listening"
+EVENT_MEMBER_RESTARTED = "engine.member.restarted"
 #: Stuck detection (NIU-1181): a flag raised on an open step, and a recovery action taken on one.
 EVENT_STEP_FLAGGED = "engine.step.flagged"
 EVENT_RECOVERY = "engine.recovery"
@@ -70,7 +82,12 @@ SUBWORKFLOW_BLOCKED_VERDICT = "blocked"
 
 
 class StepKind(StrEnum):
+    #: A member's pickup of an offer: the work one harness session holds.
     STAGE_MEMBER = "stage_member"
+    #: What one event produced for one stage node, offered to every member that takes its work.
+    #: It is open until a member picks it up (or every member passed, or its deadline passes);
+    #: the pickups are the steps that do the work.
+    OFFER = "offer"
     GATE = "gate"
     WAIT = "wait"
     END = "end"
@@ -113,14 +130,25 @@ class FlagKind(StrEnum):
 
     #: The step is past its ``deadline_at``.
     OVERDUE = "overdue"
-    #: The step is active but has no session after the start grace.
-    NOT_STARTED = "not_started"
-    #: The step has a session but the session does not know the activation.
-    UNDELIVERED = "undelivered"
+    #: An offer was published and no member picked it up within the pickup grace.
+    UNCLAIMED = "unclaimed"
     #: A turn ended with the step still open.
     UNCLOSED = "unclosed"
     #: The step's Forge session failed, stopped or no longer exists.
     SESSION_GONE = "session_gone"
+    #: An offer cannot go out because the run's root session (and with it the unit) is
+    #: stopped, failed or gone; it waits for the run to be resumed.
+    UNIT_STOPPED = "unit_stopped"
+
+    @property
+    def recurs(self) -> bool:
+        """Whether a resolved flag of this kind is raised again when its condition returns.
+
+        A run can be stopped and started more than once while one step waits, and each stop
+        needs the owner. The other kinds are raised once per step: an unclaimed offer clears
+        with each republication, and telling the owner each time would be noise.
+        """
+        return self is FlagKind.UNIT_STOPPED
 
 
 class RecoveryAction(StrEnum):
@@ -157,6 +185,15 @@ class StepFencingError(StepEngineError):
         self.activation_id = activation_id
         self.reason = reason
         super().__init__(f"close of activation {activation_id} rejected: {reason}")
+
+
+class HandoffRefusedError(StepEngineError):
+    """A session's report about the handoff (listening, pickup, pass, refusal) does not fit the run.
+
+    The report names a session that is not the run's member it claims to be, an offer the
+    run never made, or one the run has moved past. Nothing is recorded; the caller logs it
+    at error and the engine has counted it.
+    """
 
 
 class InvalidEndingError(StepEngineError):
@@ -260,6 +297,12 @@ class WorkflowStep:
     deadline_at: datetime | None = None
     activated_at: datetime | None = None
     closed_at: datetime | None = None
+    #: The offer a pickup took up, as the offer's id (the offer row's own id for an offer).
+    offer_id: str | None = None
+    #: When the member reported the pickup; ``None`` for rows that are not a pickup.
+    picked_up_at: datetime | None = None
+    #: Who decides what is offered: ``engine`` (Ting) or ``session`` (a coordinator agent).
+    orchestration: str = "engine"
 
     def __post_init__(self) -> None:
         if (self.state is StepState.WAITING) != (self.waiting_on is not None):
@@ -459,15 +502,59 @@ class Ending:
 
 @dataclass(frozen=True)
 class GateActor:
-    """Who resolved a gate."""
+    """Who resolved a gate.
+
+    ``name`` is how people read the actor (a person's email, as Forge's own gate copy
+    names deciders); empty when only the id is known.
+    """
 
     kind: ActorKind
     id: str
+    name: str = ""
+
+    def to_json(self) -> dict[str, str]:
+        return {
+            "kind": self.kind.value,
+            "id": self.id,
+            **({"name": self.name} if self.name else {}),
+        }
 
 
 def activation_id_for(run_id: UUID, node_id: str, member: str | None, attempt: int) -> UUID:
     """The id of one activation: deterministic, so repeating it cannot duplicate the row."""
     return uuid5(NAMESPACE_URL, f"niuu:workflow-step:{run_id}:{node_id}:{member or ''}:{attempt}")
+
+
+def is_repeat_close(
+    step: WorkflowStep | None,
+    *,
+    session_id: str | None,
+    attempt: int,
+    ending: Ending,
+) -> bool:
+    """True when ``ending`` is the close this session already gave this step.
+
+    Session activity is delivered at least once: a stream that reconnects, or two
+    subscriptions that see the same session, hand Ting the same close again. The same
+    session closing the same attempt the same way is that repeat, not a second close,
+    so it is accepted without changing anything. A different ending after a close is
+    not a repeat and is fenced as before.
+    """
+    if step is None or step.closed_at is None:
+        return False
+    if step.session_id != session_id or step.attempt != attempt:
+        return False
+    match ending.kind:
+        case EndingKind.VERDICT:
+            return step.state in (StepState.DONE, StepState.FAILED) and step.verdict == (
+                (ending.verdict or "").strip()
+            )
+        case EndingKind.FAILED:
+            return step.state is StepState.FAILED and not step.verdict and step.note == ending.note
+        case EndingKind.DONE:
+            return step.state is StepState.DONE and not step.verdict and step.note == ending.note
+    # A waiting ending leaves the step open, so a repeat of it is closed again as usual.
+    return False
 
 
 def check_fence(

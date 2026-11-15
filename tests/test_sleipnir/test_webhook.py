@@ -30,11 +30,14 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from niuu.cap_telemetry import cap_hit_counts
 from sleipnir.adapters.webhook import (
     DEFAULT_ENDPOINT_PATH,
     DEFAULT_LISTEN_PORT,
     DEFAULT_MAX_ATTEMPTS,
     DEFAULT_RETRY_BASE_DELAY,
+    MAX_ATTEMPTS_KNOB,
+    WebhookDeliveryError,
     WebhookPublisher,
     WebhookSubscriber,
     WebhookTransport,
@@ -215,8 +218,8 @@ async def test_publisher_raises_when_not_started():
         await pub.publish(make_event())
 
 
-async def test_publisher_retries_on_failure(caplog):
-    """publisher retries up to max_attempts and then logs a warning."""
+async def test_publisher_raises_and_counts_after_max_attempts():
+    """Exhausting max_attempts raises WebhookDeliveryError and counts a cap hit."""
     client = AsyncMock()
     client.post = AsyncMock(side_effect=httpx.ConnectError("refused"))
     client.aclose = AsyncMock()
@@ -227,12 +230,58 @@ async def test_publisher_retries_on_failure(caplog):
         retry_base_delay=0.0,  # no sleep in tests
     )
     pub._client = client
+    before = cap_hit_counts().get(MAX_ATTEMPTS_KNOB, 0)
 
-    with caplog.at_level(logging.WARNING, logger="sleipnir.adapters.webhook"):
+    with pytest.raises(WebhookDeliveryError, match="failed all 3 attempts"):
         await pub.publish(make_event())
 
     assert client.post.await_count == 3
-    assert any("after 3 attempts" in r.message for r in caplog.records)
+    assert cap_hit_counts()[MAX_ATTEMPTS_KNOB] == before + 1
+
+
+async def test_publisher_does_not_retry_a_refused_event():
+    """A 4xx other than 429 is the receiver refusing the event: no retry, raise at once."""
+    client = AsyncMock()
+    client.post = AsyncMock(return_value=_make_mock_response(422))
+    client.aclose = AsyncMock()
+
+    pub = WebhookPublisher(
+        publish_urls=["http://host:8080/sleipnir/events"],
+        max_attempts=3,
+        retry_base_delay=0.0,
+    )
+    pub._client = client
+
+    with pytest.raises(WebhookDeliveryError, match="HTTP 422"):
+        await pub.publish(make_event())
+    assert client.post.await_count == 1
+
+
+async def test_publisher_names_only_the_failing_receiver():
+    """One URL failing raises naming it, after the other URL took the event."""
+    ok = _make_mock_response(204)
+    client = AsyncMock()
+
+    async def post(url, **_kwargs):
+        if "bad" in url:
+            raise httpx.ConnectError("refused")
+        return ok
+
+    client.post = AsyncMock(side_effect=post)
+    pub = WebhookPublisher(
+        publish_urls=["http://good/sleipnir/events", "http://bad/sleipnir/events"],
+        max_attempts=1,
+        retry_base_delay=0.0,
+    )
+    pub._client = client
+
+    with pytest.raises(WebhookDeliveryError, match=r"1 of 2 webhook receiver\(s\): http://bad"):
+        await pub.publish(make_event())
+
+
+def test_publisher_refuses_zero_attempts():
+    with pytest.raises(ValueError, match="sleipnir.webhook.max_attempts must be at least 1"):
+        WebhookPublisher(publish_urls=["http://host/sleipnir/events"], max_attempts=0)
 
 
 async def test_publisher_succeeds_on_second_attempt(caplog):
@@ -254,7 +303,7 @@ async def test_publisher_succeeds_on_second_attempt(caplog):
         await pub.publish(make_event())
 
     assert client.post.await_count == 2
-    assert not any("after 3 attempts" in r.message for r in caplog.records)
+    assert not any("failed all 3 attempts" in r.message for r in caplog.records)
 
 
 async def test_publisher_http_error_triggers_retry():

@@ -72,3 +72,28 @@ describe('volundr root redirect', () => {
     expect(redirectTarget(rootBeforeLoad())).toBe('/volundr/forge');
   });
 });
+
+describe('old session links', () => {
+  it('open the session on the Sessions page, keeping its anchor and query', () => {
+    const routes = volundrPlugin.routes?.(createRootRoute()) ?? [];
+    const old = routes.find((route) => route.options.path === '/volundr/session/$sessionId');
+    const beforeLoad = (old?.options as { beforeLoad: (ctx: unknown) => void }).beforeLoad;
+
+    let target: { to: string; params: unknown; hash: string; search: unknown } | undefined;
+    try {
+      beforeLoad({
+        params: { sessionId: 'review' },
+        location: { search: { instance_id: 'forge-east' }, hash: 'notification-n-1' },
+      });
+    } catch (thrown) {
+      target = (thrown as { options: typeof target }).options;
+    }
+
+    expect(target).toMatchObject({
+      to: '/volundr/sessions/$sessionId',
+      params: { sessionId: 'review' },
+      search: { instance_id: 'forge-east' },
+      hash: 'notification-n-1',
+    });
+  });
+});

@@ -27,6 +27,7 @@ import type {
   CommitSagaRequest,
 } from '../ports';
 import type { Workflow } from '../domain/workflow';
+import { CARD_WIDTH, workflowCardSize } from '../domain/workflowGeometry';
 
 // ---------------------------------------------------------------------------
 // Shared mock client factory
@@ -1275,10 +1276,11 @@ describe('buildWorkflowHttpAdapter', () => {
 
     const [workflow] = await buildWorkflowHttpAdapter(client).listWorkflows();
 
+    // Every card is CARD_WIDTH wide, so columns sit one card and a 72px gap apart.
     expect(workflow.nodes.map((node) => node.position)).toEqual([
       { x: 96, y: 64 },
-      { x: 336, y: 64 },
-      { x: 632, y: 64 },
+      { x: 96 + CARD_WIDTH + 72, y: 64 },
+      { x: 96 + 2 * (CARD_WIDTH + 72), y: 64 },
     ]);
     expect(workflow.edges).toEqual([
       {
@@ -1337,7 +1339,7 @@ describe('buildWorkflowHttpAdapter', () => {
     expect(done.x).toBeGreaterThan(left.x);
   });
 
-  it('leaves exact measured clearance between positionless multi-member stage cards', async () => {
+  it('leaves exact clearance between positionless stage cards, whatever their member count', async () => {
     const client = makeClient();
     client.get.mockResolvedValue([
       {
@@ -1396,9 +1398,9 @@ describe('buildWorkflowHttpAdapter', () => {
     const replacement = workflow.nodes.find((node) => node.id === 'b-replacement')!.position;
 
     expect(replacement.x).toBe(review.x);
-    // Three members render a 136px header; its connected input/output row adds
-    // 36px. The layout then reserves the configured 36px row gap.
-    expect(replacement.y).toBe(review.y + 172 + 36);
+    // A card's height is its head plus its port rows, not its members: the
+    // three-member review has one input/output row, then the 36px row gap.
+    expect(replacement.y).toBe(review.y + workflowCardSize('stage', 1).height + 36);
   });
 
   it('launches a workflow through the direct launch endpoint', async () => {

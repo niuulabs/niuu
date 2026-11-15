@@ -17,6 +17,10 @@ to a newer version may be left in place as history -- it is not re-verified
 against the package, since `load_system_workflows()` only ever returns the
 current head per id, so old content no longer "loads" to compare against.
 Only each id's CURRENT `id@version` is required to be present and unchanged.
+
+Workflows moved to `archive/workflows` keep their entries here on purpose:
+`tests/test_catalog_archive.py` checks that each archived file still matches its
+locked revision, so a restore is verifiable.
 """
 
 from __future__ import annotations

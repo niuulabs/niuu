@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
@@ -15,6 +16,7 @@ import respx
 from volundr.adapters.outbound.memory_integrations import InMemoryIntegrationRepository
 from volundr.config import _default_integration_definitions
 from volundr.domain.models import IntegrationConnection, IntegrationType, SecretType
+from volundr.domain.services.client_credentials import ClientCredentialsMinter
 from volundr.domain.services.integration_registry import (
     IntegrationRegistry,
     definitions_from_config,
@@ -123,6 +125,7 @@ def _service(repo, store, **kwargs) -> OAuthTokenRefreshService:
         integration_registry=_registry(),
         credential_store=store,
         clients=_clients(store, ids, secrets),
+        client_credentials_minter=ClientCredentialsMinter(request_timeout=5.0),
         **kwargs,
     )
 
@@ -347,3 +350,100 @@ async def test_legacy_refresher_never_reads_engine_managed_tokens(repo, store):
     report = await _service(repo, store).refresh_due()
     assert report.refreshed == report.failed == []
     store.get_value.assert_not_called()
+
+
+def _team_jira_connection(project_id: str = "proj-1") -> IntegrationConnection:
+    now = datetime.now(UTC)
+    return IntegrationConnection(
+        id="jira-team",
+        owner_id=f"project:{project_id}",
+        integration_type=IntegrationType.ISSUE_TRACKER,
+        adapter="x",
+        credential_name="jira-team-cred",
+        config={"cloud_id": "cloud-1"},
+        enabled=True,
+        created_at=now,
+        updated_at=now,
+        slug="jira",
+        project_id=project_id,
+    )
+
+
+async def _seed_team_jira(repo, store, *, expires_in: timedelta | None, access_token="old-access"):
+    await repo.save_connection(_team_jira_connection())
+    data = {"client_id": "svc-id", "client_secret": "svc-secret"}
+    if access_token:
+        data["access_token"] = access_token
+    if expires_in is not None:
+        data["expires_at"] = (datetime.now(UTC) + expires_in).isoformat()
+    await store.store(
+        "project", "proj-1", "jira-team-cred", SecretType.API_KEY, data, {"auth_state": "active"}
+    )
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_a_team_service_account_token_is_reminted_before_it_expires(repo, store) -> None:
+    await _seed_team_jira(repo, store, expires_in=timedelta(minutes=2))
+    route = respx.post(JIRA_TOKEN_URL).mock(
+        return_value=httpx.Response(200, json={"access_token": "new-access", "expires_in": 3600})
+    )
+
+    report = await _service(repo, store).refresh_due()
+
+    assert report.refreshed == ["jira/project:proj-1/jira-team-cred"]
+    sent = json.loads(route.calls.last.request.content)
+    assert sent["grant_type"] == "client_credentials"
+    assert sent["client_id"] == "svc-id"
+    assert sent["audience"] == "api.atlassian.com"
+    item = store.items[("project", "proj-1", "jira-team-cred")]
+    assert item["data"]["access_token"] == "new-access"
+    assert item["data"]["client_secret"] == "svc-secret"
+    assert datetime.fromisoformat(item["data"]["expires_at"]) > datetime.now(UTC) + timedelta(
+        minutes=50
+    )
+    assert item["metadata"]["auth_state"] == "active"
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_a_team_service_account_without_a_minted_token_is_minted(repo, store) -> None:
+    await _seed_team_jira(repo, store, expires_in=None, access_token="")
+    respx.post(JIRA_TOKEN_URL).mock(
+        return_value=httpx.Response(200, json={"access_token": "first", "expires_in": 3600})
+    )
+
+    report = await _service(repo, store).refresh_due()
+
+    assert report.refreshed == ["jira/project:proj-1/jira-team-cred"]
+    assert store.items[("project", "proj-1", "jira-team-cred")]["data"]["access_token"] == "first"
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_a_team_service_account_token_that_is_fresh_is_left_alone(repo, store) -> None:
+    await _seed_team_jira(repo, store, expires_in=timedelta(hours=1))
+    route = respx.post(JIRA_TOKEN_URL)
+
+    report = await _service(repo, store).refresh_due()
+
+    assert report.refreshed == []
+    assert report.failed == []
+    assert not route.called
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_a_rejected_mint_flips_the_team_connection_to_sign_in_needed(repo, store) -> None:
+    await _seed_team_jira(repo, store, expires_in=timedelta(minutes=1))
+    respx.post(JIRA_TOKEN_URL).mock(
+        return_value=httpx.Response(401, json={"error": "access_denied"})
+    )
+
+    report = await _service(repo, store).refresh_due()
+
+    assert report.failed == ["jira/project:proj-1/jira-team-cred"]
+    item = store.items[("project", "proj-1", "jira-team-cred")]
+    assert item["data"]["access_token"] == "old-access"
+    assert item["metadata"]["auth_state"] == "auth_required"
+    assert item["metadata"]["auth_error_code"] == REFRESH_FAILED_ERROR_CODE

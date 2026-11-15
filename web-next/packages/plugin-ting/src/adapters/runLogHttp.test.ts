@@ -105,6 +105,25 @@ describe('buildRunLogHttpAdapter', () => {
     await expect(adapter.session('s1', null)).rejects.toThrow('502');
   });
 
+  it('names the workflow run a member session works for, and its role', async () => {
+    const get = vi.fn().mockResolvedValue({
+      id: 's2',
+      name: 'wf-n587-reviewer',
+      status: 'running',
+      tracker_issue_id: 'workflow:n587',
+      coordination: { role: 'reviewer' },
+    });
+
+    expect(await buildRunLogHttpAdapter(client(get)).session('s2', 'noatun')).toEqual({
+      sessionId: 's2',
+      instanceId: 'noatun',
+      title: 'wf-n587-reviewer',
+      running: true,
+      runSlug: 'n587',
+      member: 'reviewer',
+    });
+  });
+
   it("lists each project's sessions on the host the project lives on", async () => {
     const get = vi.fn(async (path: string) => {
       if (path === '/projects') {

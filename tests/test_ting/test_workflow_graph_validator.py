@@ -7,10 +7,10 @@ from typing import Any
 
 import pytest
 
+from tests.support.full_catalogue import load_full_catalogue as load_system_workflows
 from tests.test_ting.graph_builders import edge, end, persona, stage, trigger
 from ting.domain.exceptions import WorkflowDocumentError
 from ting.domain.workflow_document import validate_workflow_graph
-from ting.system_workflows import load_system_workflows
 
 PERSONAS = {
     "coder": persona({"ok": "work.done", "blocked": "work.blocked"}, ["go", "work.changes"]),

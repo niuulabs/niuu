@@ -37,6 +37,7 @@ import json
 import logging
 import re
 from pathlib import PurePosixPath
+from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -49,6 +50,7 @@ from volundr.adapters.outbound.host_session_programs import (
     SLOT_STORAGE,
 )
 from volundr.adapters.outbound.ssh_vm_runtime import HostModeRuntime
+from volundr.adapters.outbound.vm_hosted_unit import FORGE_SESSIONS_DIRECTORY, HostedUnitError
 from volundr.adapters.outbound.vm_slot_layout import (
     FORGE_SESSION_DIRECTORY,
     GUEST_AGENT_DIRECTORY,
@@ -317,12 +319,26 @@ if ours:
         raise RuntimeError('The host session survived SIGKILL')
 pidfile.unlink(missing_ok=True)
 c = h['containers']
-if c:
+# A member of a run's unit leaves its slot's ids to the others; the root's stop withdraws them.
+if c and not h.get('member'):
     span = '%d-%d' % (c['first'], c['first'] + c['count'] - 1)
     ours = h['user'] + ':' + str(c['first']) + ':' + str(c['count'])
     if ours in pathlib.Path('/etc/subuid').read_text().split():
         subprocess.run(['usermod', '--del-subuids', span, '--del-subgids', span, h['user']],
             check=True)
+"""
+
+# Whether a host session's PID 1 runs in the slot's network namespace. argv: the stop spec
+# (JSON, as _HOST_STOP takes it). Exit 0 running, 44 not.
+_HOST_RUNNING = r"""
+import json, os, pathlib, sys
+h = json.loads(sys.argv[1])
+try:
+    pid = int(pathlib.Path(h['pidfile']).read_text())
+    ours = os.stat('/proc/%d/ns/net' % pid).st_ino == os.stat('/run/netns/' + h['netns']).st_ino
+except (FileNotFoundError, ProcessLookupError, ValueError):
+    ours = False
+sys.exit(0 if ours else 44)
 """
 
 
@@ -353,6 +369,7 @@ class HostSlotLayout(SlotLayout):
             (SESSION_LAUNCH, f"{self.agent_root}/session-launch.json"),
             (SESSION_SECRETS, f"{self.agent_root}/session-secrets"),
             (FORGE_SESSION_DIRECTORY, f"{self.agent_root}/forge-session"),
+            (FORGE_SESSIONS_DIRECTORY, f"{self.agent_root}/forge-sessions"),
             (GUEST_AGENT_DIRECTORY, f"{self.agent_root}/guest-agent"),
             (SESSION_RUNTIME, f"{self.agent_root}/run"),
         )
@@ -576,8 +593,25 @@ class SshHostVmRuntime(HostModeRuntime):
         count = self._containers.subordinate_ids_per_slot
         return {"first": self._containers.subordinate_id_base + layout.slot * count, "count": count}
 
-    def _host_spec(self, layout: SlotLayout, payload: dict, image: dict) -> dict:
-        """Where the session's processes run and what they see, for _HOST_START."""
+    @staticmethod
+    def _member_home(layout: SlotLayout, member: dict) -> str:
+        return f"{layout.session_data}/members/{member['port']}/home"
+
+    @staticmethod
+    def _session_state(layout: SlotLayout, member: dict | None) -> tuple[str, str]:
+        """The PID file and log of the unit's root Skuld, or of one member's."""
+        key = layout.key if member is None else f"{layout.key}-m{member['port']}"
+        return f"{HOST_SESSION_STATE}/{key}.pid", f"{HOST_SESSION_LOGS}/{key}.log"
+
+    def _host_spec(
+        self, layout: SlotLayout, payload: dict, image: dict, member: dict | None = None
+    ) -> dict:
+        """Where one Skuld of the slot runs and what it sees, for _HOST_START.
+
+        ``member`` is a member of a run's unit: it shares the root's workspace, user,
+        namespaces and cgroup, and keeps its own home, credential directory, PID file and
+        log (``payload`` is then the member's own, from ``_unit_payloads``).
+        """
         session_data = PurePosixPath(layout.session_data)
         rootfs = image["rootfs"]
         mounts = [
@@ -588,6 +622,14 @@ class SshHostVmRuntime(HostModeRuntime):
         mounts = [{**item, "readonly": True} for item in mounts]
         runtime_directory = f"{layout.run_root}/xdg"
         private = [f"{layout.data_root}/tmp", f"{layout.run_root}/shm", runtime_directory]
+        home = self._member_home(layout, member) if member else str(session_data / "home")
+        if member:
+            # Parents first: each is created inside the one before it.
+            private += [
+                f"{layout.session_data}/members",
+                f"{layout.session_data}/members/{member['port']}",
+                home,
+            ]
         mounts += [
             {"source": _RESOLV_CONF, "target": "/etc/resolv.conf"},
             {"source": private[0], "target": "/tmp"},
@@ -597,7 +639,7 @@ class SshHostVmRuntime(HostModeRuntime):
         mounts = [{"readonly": item.get("readonly", False), **item} for item in mounts]
         mounts += [
             {"source": str(session_data / "workspace"), "target": _WORKSPACE, "readonly": False},
-            {"source": str(session_data / "home"), "target": _HOME, "readonly": False},
+            {"source": home, "target": _HOME, "readonly": False},
         ]
         # The pod's mounts at the targets the session expects, parents before children.
         declared = [*payload.get("secret_mounts", []), *payload.get("volume_mounts", [])]
@@ -620,11 +662,13 @@ class SshHostVmRuntime(HostModeRuntime):
         if self._containers is not None:
             # Podman's per-user runtime directory; there is no login session to make one.
             environment["XDG_RUNTIME_DIR"] = runtime_directory
+        pidfile, log = self._session_state(layout, member)
+        scope = f"m{member['port']}-session-" if member else "session-"
         return {
             "user": layout.name,
-            "scope_prefix": f"{layout.unit_prefix}session-",
-            "pidfile": f"{HOST_SESSION_STATE}/{layout.key}.pid",
-            "log": f"{HOST_SESSION_LOGS}/{layout.key}.log",
+            "scope_prefix": f"{layout.unit_prefix}{scope}",
+            "pidfile": pidfile,
+            "log": log,
             "nix": self._nix,
             "containers": self._subordinate_ids(layout),
             "bin": HOST_BIN,
@@ -660,39 +704,73 @@ class SshHostVmRuntime(HostModeRuntime):
             "start_timeout": self._session_start_timeout,
         }
 
+    def _unit_payloads(self, payload: dict) -> list[tuple[dict | None, dict]]:
+        """The Skuld processes this launch starts: the root's, then each member's.
+
+        Each is its own launch payload: the unit's pod layout with that Skuld's environment
+        and mounts (its own Forge session credential directory). ``only`` names the one
+        member being started again in place.
+        """
+        root_id = payload["environment"].get("SESSION_ID")
+        units: list[tuple[dict | None, dict]] = [(None, payload)]
+        for member in payload.get("members") or []:
+            units.append(
+                (
+                    member,
+                    {
+                        **payload,
+                        "environment": member["environment"],
+                        "volume_mounts": member["volume_mounts"],
+                    },
+                )
+            )
+        only = payload.get("only")
+        if not only:
+            return units
+        chosen = [(m, p) for m, p in units if (m["id"] if m else root_id) in only]
+        if not chosen:
+            raise HostedUnitError(
+                f"The launch names {only} to start again, which are not Skuld processes of "
+                "this unit"
+            )
+        return chosen
+
     async def _launch_skuld(
         self, lease: SlotLease, bootstrap: MachineBootstrap, payload: dict
     ) -> None:
         layout = self._slot(lease)
-        containers = [*payload.get("init_containers", []), *payload.get("sidecars", [])]
-        references = list(dict.fromkeys(container["image"] for container in containers))
-        # Before fetching: room for what this launch unpacks, and what it runs from stays.
-        self._step(lease, "guest_prune", "Removing images no session uses")
-        await self._prune_images(lease, bootstrap, [self._image, *references])
         claim = self._claim(layout)
-        images: dict[str, dict] = {}
-        if references:
-            self._step(lease, "guest_images", "Fetching the session's agent images")
-            for reference in references:
-                images[reference] = await self._fetch_image(lease, bootstrap, reference, claim)
-        self._step(lease, "guest_skuld", "Starting the session's agents")
-        await self._guest_access.execute(
-            lease,
-            bootstrap,
-            self._python(programs.PODS_START),
-            data=json.dumps({**payload, "pods": self._pods_spec(layout, images)}).encode(),
-        )
+        units = self._unit_payloads(payload)
+        if not payload.get("only"):
+            containers = [*payload.get("init_containers", []), *payload.get("sidecars", [])]
+            references = list(dict.fromkeys(container["image"] for container in containers))
+            # Before fetching: room for what this launch unpacks, and what it runs from stays.
+            self._step(lease, "guest_prune", "Removing images no session uses")
+            await self._prune_images(lease, bootstrap, [self._image, *references])
+            images: dict[str, dict] = {}
+            if references:
+                self._step(lease, "guest_images", "Fetching the session's agent images")
+                for reference in references:
+                    images[reference] = await self._fetch_image(lease, bootstrap, reference, claim)
+            self._step(lease, "guest_skuld", "Starting the session's agents")
+            await self._guest_access.execute(
+                lease,
+                bootstrap,
+                self._python(programs.PODS_START),
+                data=json.dumps({**payload, "pods": self._pods_spec(layout, images)}).encode(),
+            )
         self._step(lease, "guest_image", "Unpacking Skuld onto the machine")
         image = await self._unpack(lease, bootstrap, claim)
-        host = self._host_spec(layout, payload, image)
-        environment = host.pop("environment")
-        self._step(lease, "guest_host", f"Starting Skuld as {layout.name}")
-        await self._guest_access.execute(
-            lease,
-            bootstrap,
-            self._python(_HOST_START),
-            data=json.dumps({**payload, "environment": environment, "host": host}).encode(),
-        )
+        for member, unit in units:
+            host = self._host_spec(layout, unit, image, member)
+            environment = host.pop("environment")
+            self._step(lease, "guest_host", f"Starting Skuld as {layout.name}")
+            await self._guest_access.execute(
+                lease,
+                bootstrap,
+                self._python(_HOST_START),
+                data=json.dumps({**unit, "environment": environment, "host": host}).encode(),
+            )
 
     async def prune_host(self, lease: AllocationRef, bootstrap: MachineBootstrap) -> None:
         """The host's check: what no slot claims or mounts goes, the release's image stays."""
@@ -704,27 +782,34 @@ class SshHostVmRuntime(HostModeRuntime):
         # release's session image stays for the next session.
         await self._prune_images(lease, bootstrap, [self._image])
 
-    async def _stop_session(
-        self, lease: SlotLease, bootstrap: MachineBootstrap, layout: SlotLayout
-    ) -> int:
-        """Skuld first (SIGTERM, its flush time, then SIGKILL), then the slot's agents."""
+    def _stop_spec(self, layout: SlotLayout, member: dict | None) -> dict:
+        pidfile, _ = self._session_state(layout, member)
+        spec = {
+            "pidfile": pidfile,
+            "netns": layout.name,
+            "user": layout.name,
+            "containers": self._subordinate_ids(layout),
+            "stop_timeout": self._stop_timeout,
+            "poll": self._poll,
+        }
+        return {**spec, "member": True} if member is not None else spec
+
+    async def _stop_host_session(
+        self, lease: SlotLease, bootstrap: MachineBootstrap, layout: SlotLayout, member: dict | None
+    ) -> None:
         await self._guest_access.execute(
             lease,
             bootstrap,
-            self._python(
-                _HOST_STOP,
-                json.dumps(
-                    {
-                        "pidfile": f"{HOST_SESSION_STATE}/{layout.key}.pid",
-                        "netns": layout.name,
-                        "user": layout.name,
-                        "containers": self._subordinate_ids(layout),
-                        "stop_timeout": self._stop_timeout,
-                        "poll": self._poll,
-                    }
-                ),
-            ),
+            self._python(_HOST_STOP, json.dumps(self._stop_spec(layout, member))),
         )
+
+    async def _stop_session(
+        self, lease: SlotLease, bootstrap: MachineBootstrap, layout: SlotLayout
+    ) -> int:
+        """The members, then Skuld (SIGTERM, its flush time, then SIGKILL), then the agents."""
+        for member in reversed((self._launch(bootstrap) or {}).get("members") or []):
+            await self._stop_host_session(lease, bootstrap, layout, member)
+        await self._stop_host_session(lease, bootstrap, layout, None)
         # Then the agents, after Skuld has flushed through them.
         result = await self._guest_access.execute(
             lease,
@@ -742,3 +827,25 @@ class SshHostVmRuntime(HostModeRuntime):
             expected_exit_codes=(0, 42),
         )
         return result.exit_code
+
+    async def member_running(
+        self, lease: SlotLease, bootstrap: MachineBootstrap, member_id: UUID
+    ) -> bool:
+        """Whether the member's Skuld process runs in the slot."""
+        layout = self._slot(lease)
+        member = self._member(bootstrap, member_id)
+        result = await self._guest_access.execute(
+            lease,
+            bootstrap,
+            self._python(_HOST_RUNNING, json.dumps(self._stop_spec(layout, member))),
+            expected_exit_codes=(0, 44),
+        )
+        return result.exit_code == 0
+
+    async def stop_member(
+        self, lease: SlotLease, bootstrap: MachineBootstrap, member_id: UUID
+    ) -> None:
+        layout = self._slot(lease)
+        member = self._member(bootstrap, member_id)
+        await self._stop_host_session(lease, bootstrap, layout, member)
+        await self._close_tunnel(f"{layout.key}-m{member['port']}")

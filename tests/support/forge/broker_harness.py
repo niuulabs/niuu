@@ -68,8 +68,8 @@ class FakeWebSocket:
         # Set by ``kill`` to make the NEXT receive raise WebSocketDisconnect,
         # unwinding handle_websocket exactly like a dropped browser socket.
         self._disconnect = False
-        # Headers are read pre-accept by _update_jwt_from_websocket AND by
-        # WebSocketLifecycleMixin._resolve_room_role. This harness models a
+        # Headers are read pre-accept by WebSocketLifecycleMixin._resolve_room_role.
+        # This harness models a
         # single trusted local browser connection (not a multi-role
         # scenario), so it defaults to the owner room role — every existing
         # harness-based test exercises owner-level actions (interrupt,
@@ -284,8 +284,6 @@ class BrokerHarness:
                 f"{self._native_session_id}.jsonl"
             )
             env_mutations["FORGE_FAKEAGENT_TRANSCRIPT_DIR"] = str(self.transcript_path.parent)
-        # Remote Control would try to register with claude.ai — force it off.
-        env_mutations["SKULD__TMUX_REMOTE_CONTROL"] = "0"
         self._apply_env(env_mutations)
 
         # Stand up the hook server FIRST so we know the port before the transport
@@ -308,6 +306,8 @@ class BrokerHarness:
             turn_idle_timeout_s=self._idle_timeout_s,
             turn_no_output_timeout_s=self._no_output_timeout_s,
             pane_poll_interval_s=self._pane_poll_interval_s,
+            # Remote Control would try to register with claude.ai — force it off.
+            tmux_remote_control=False,
         )
 
         settings = SkuldSettings(

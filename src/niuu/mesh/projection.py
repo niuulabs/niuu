@@ -11,7 +11,11 @@ from niuu.mesh.surface import strip_surface_marker
 _ACTIVITY_BY_EVENT: dict[MeshEventType, str] = {
     MeshEventType.THOUGHT: "thinking",
     MeshEventType.TOOL_START: "tool_executing",
-    MeshEventType.TOOL_RESULT: "idle",
+    # A tool's result goes back to the agent, which goes on: the peer is not idle until its
+    # turn ends (its reply, or ``TASK_COMPLETE``). A room ends a peer's work message on idle,
+    # so idle here split a turn's work into one message per tool, and parallel tools left
+    # empty messages.
+    MeshEventType.TOOL_RESULT: "thinking",
     MeshEventType.TASK_STARTED: "busy",
     MeshEventType.TASK_COMPLETE: "idle",
     MeshEventType.DECISION: "thinking",
@@ -206,6 +210,9 @@ def _without_surface_marker(event: MeshEvent) -> MeshEvent:
 
 def project_mesh_event(event: MeshEvent, *, persona: str = "") -> list[dict[str, Any]]:
     """Return collaboration events whose meaning is decided inside Ravn."""
+    if event.type == MeshEventType.REVOCATION:
+        # A control notice between peers, not something an agent said.
+        return []
     event = _without_surface_marker(event)
     if event.type in (MeshEventType.RESPONSE, MeshEventType.ERROR):
         projected = _base(event, "message")
@@ -244,16 +251,19 @@ def project_mesh_event(event: MeshEvent, *, persona: str = "") -> list[dict[str,
         projected["usage"] = dict(event.payload)
         return [projected]
 
+    # The work first, then the activity it leaves the peer in. A room keeps a peer's work in
+    # one message until the peer goes idle; told "idle" before a tool result, it closed that
+    # message and opened a new one holding the result alone, shown as an empty message.
     events: list[dict[str, Any]] = []
-    activity = _ACTIVITY_BY_EVENT.get(event.type)
-    if activity:
-        projected = _base(event, "activity")
-        projected.update({"activityType": activity, "detail": _activity_detail(event)})
-        events.append(projected)
-
     delegation = _delegation(event, persona)
     if delegation is not None:
         events.append(delegation)
 
     events.append(_agent_event(event))
+
+    activity = _ACTIVITY_BY_EVENT.get(event.type)
+    if activity:
+        projected = _base(event, "activity")
+        projected.update({"activityType": activity, "detail": _activity_detail(event)})
+        events.append(projected)
     return events

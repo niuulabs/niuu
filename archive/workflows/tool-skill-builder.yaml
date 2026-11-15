@@ -1,0 +1,209 @@
+schema_version: 1
+id: 3c217e0a-1ff0-56d6-ba27-54cd43bff8e6
+name: Tool & Skill Builder
+description: Resident capability workflow that designs, implements, reviews, canaries, and publishes a
+  missing Valkyrie/Ravn tool or skill.
+version: 1.0.10
+persona_dependencies:
+  capability-publisher:
+    id: capability-publisher
+    revision: content-f4fb6728373e2e01
+    digest: sha256:f4fb6728373e2e017d4158acb46b9b3145cba9473097a08d259d86b12eb09fdc
+    path: personas/capability-publisher.yaml
+  coder:
+    id: coder
+    revision: content-6c648f6dd3dafec8
+    digest: sha256:6c648f6dd3dafec85cc2090c32b1400feee7acab2a2fd4fe17a3b0ce90521c69
+    path: personas/coder.yaml
+  reviewer:
+    id: reviewer
+    revision: content-8b9a792f57d3aeea
+    digest: sha256:8b9a792f57d3aeea4003c7207bc6451344c9cb0aa927efc55bfd681799d37c05
+    path: personas/reviewer.yaml
+  security-auditor:
+    id: security-auditor
+    revision: content-372ca2715f0fb1c9
+    digest: sha256:372ca2715f0fb1c9318735489792df2af63bd7138cd72358ccf07f96e5a8b76a
+    path: personas/security-auditor.yaml
+  specification-framer:
+    id: specification-framer
+    revision: content-44af1901d85eb1be
+    digest: sha256:44af1901d85eb1befe7da012d57d87d23d6451624227b7bc475dea4e8ce26f80
+    path: personas/specification-framer.yaml
+graph:
+  tags:
+  - tool-builder
+  - skill-builder
+  - capability-builder
+  artifactPaths:
+  - capabilities/{slug}/learned_tool.json
+  nodes:
+  - id: capability-request
+    kind: trigger
+    label: Missing capability requested
+    source: valkyrie capability policy
+    dispatchEvent: capability.requested
+    position:
+      x: 96
+      y: 280
+  - id: capability-memory
+    kind: resource
+    label: Capability Memory
+    resourceType: mimir
+    bindingMode: registry
+    registryEntryId: mimir-yggdrasil
+    url: https://mimir.yggdrasil.niuu.world/api/v1
+    authRef: workload:mimir
+    role: shared
+    categories:
+    - capability
+    - skills
+    - tools
+    - valkyrie
+    position:
+      x: 352
+      y: 520
+  - id: capability-frame
+    kind: stage
+    label: Frame missing capability
+    executionMode: sequential
+    joinMode: any
+    stageMembers:
+    - personaId: specification-framer
+      budget: 16
+      model: gpt-5.6-terra
+      consumesEventTypes:
+      - capability.requested
+    position:
+      x: 352
+      y: 280
+  - id: capability-build
+    kind: stage
+    label: Build tool or skill
+    description: 'Implement the capability and write the built artifact to a single canonical file named
+      learned_tool.json at the repo/workspace root. That file MUST be a JSON object with keys: manifest
+      (name, description, input_schema, required_permission, declared_reach, entry_point), tool_code (the
+      Python implementation exposing the entry point), test_code (a self-contained pytest/asserts module
+      that loads the tool and exercises the entry point), and requirements (a list of pip package strings,
+      [] for stdlib-only). Also emit that same JSON object as the final message as a fallback.'
+    executionMode: sequential
+    joinMode: any
+    stageMembers:
+    - personaId: coder
+      budget: 48
+      model: gpt-5.6-terra
+      consumesEventTypes:
+      - spec.framed
+      - review.changes_requested
+      - security.changes_requested
+      systemPromptExtra: This capability workflow may intentionally run without a source repository. When
+        no real repository and remote were supplied, do not initialize Git or invent a local remote. Build
+        and test the canonical learned_tool.json in the workspace; the publisher stage owns durable publication.
+        If a real repository was supplied, retain the normal commit and push discipline. The commissioning
+        resident installs the published artifact itself after this workflow completes; you cannot reach
+        the resident or its tool catalog, so never block because the tool is missing from a live catalog
+        or because you cannot install, register or adopt it there.
+    position:
+      x: 704
+      y: 280
+  - id: capability-review
+    kind: stage
+    label: Review capability
+    description: Review the implementation, tests, permissions, declared reach, and dependency choices
+      represented by learned_tool.json and the current workspace diff. Request concrete changes when the
+      artifact is unsafe, incomplete, or not independently verifiable.
+    executionMode: sequential
+    joinMode: any
+    stageMembers:
+    - personaId: reviewer
+      budget: 24
+      model: gpt-5.6-terra
+      consumesEventTypes:
+      - code.changed
+      systemPromptExtra: In a capability workspace with no supplied source repository, review learned_tool.json
+        and its executable tests directly. Do not require or invent a Git checkpoint. When a real repository
+        was supplied, retain the normal committed-diff requirement.
+    - personaId: security-auditor
+      budget: 24
+      model: gpt-5.6-terra
+      consumesEventTypes:
+      - code.changed
+      systemPromptExtra: In a capability workspace with no supplied source repository, audit learned_tool.json
+        and its executable tests directly. Do not require or invent a Git checkpoint. When a real repository
+        was supplied, retain the normal committed-diff requirement.
+    position:
+      x: 1056
+      y: 280
+  - id: capability-publish
+    kind: stage
+    label: Publish capability record
+    description: Publish the canonical learned_tool.json artifact (manifest, tool_code, test_code, requirements)
+      from the repo/workspace root to the durable capabilities/{slug}/learned_tool.json path and verify
+      it can be read back so the commissioning Valkyrie can retrieve it structurally.
+    executionMode: sequential
+    joinMode: all
+    stageMembers:
+    - personaId: capability-publisher
+      budget: 16
+      model: gpt-5.6-terra
+      consumesEventTypes:
+      - review.passed
+      - security.passed
+    position:
+      x: 1408
+      y: 280
+  - id: capability-complete
+    kind: end
+    label: Capability ready
+    joinMode: all
+    completionEvent: capability.ready
+    position:
+      x: 1760
+      y: 280
+  edges:
+  - id: edge-capability-request-to-frame
+    source: capability-request
+    target: capability-frame
+    label: capability.requested -> capability.requested
+  - id: edge-capability-frame-to-build
+    source: capability-frame
+    target: capability-build
+    label: spec.framed -> spec.framed
+  - id: edge-capability-build-to-review
+    source: capability-build
+    target: capability-review
+    label: code.changed -> code.changed
+  - id: edge-capability-review-to-build
+    source: capability-review
+    target: capability-build
+    label: review.changes_requested -> review.changes_requested
+    rework: true
+  - id: edge-capability-security-to-build
+    source: capability-review
+    target: capability-build
+    label: security.changes_requested -> security.changes_requested
+    rework: true
+  - id: edge-capability-review-to-publish
+    source: capability-review
+    target: capability-publish
+    label: review.passed -> review.passed
+  - id: edge-capability-security-to-publish
+    source: capability-review
+    target: capability-publish
+    label: security.passed -> security.passed
+  - id: edge-capability-publish-to-end
+    source: capability-publish
+    target: capability-complete
+    label: capability.ready -> capability.ready
+  resourceBindings:
+  - id: binding-capability-memory
+    resourceNodeId: capability-memory
+    targetType: workflow
+    targetId: tool-skill-builder
+    access: read_write
+    writePrefixes:
+    - capabilities/
+    - skills/
+    - tools/
+    - specifications/
+    readPriority: 1

@@ -111,7 +111,21 @@ class TestHealthCheck:
 
         response = client.get("/health")
         assert response.status_code == 200
-        assert response.json() == {"status": "healthy"}
+        body = response.json()
+        assert body["status"] == "healthy"
+        assert body["caps"]["cap_hits_total"] >= 0
+
+    def test_health_reports_cap_hits(self):
+        """A cap hit anywhere in the process shows on Forge's /health."""
+        from fastapi.testclient import TestClient
+
+        from niuu.cap_telemetry import record_cap_hit
+
+        record_cap_hit("test.forge_health_knob", "raise test.forge_health_knob")
+        client = TestClient(create_app())
+        caps = client.get("/health").json()["caps"]
+        assert caps["cap_hits.test.forge_health_knob"] >= 1
+        assert caps["cap_hits_total"] >= 1
 
     def test_health_reports_presented_file_usage_against_the_quota(self, tmp_path):
         """LEX-1514: usage, the quota and the refusal count sit on the health surface."""
@@ -674,6 +688,7 @@ class TestLifespan:
                 registry = app.state.session_proxy_registry
                 if enforce:
                     from types import SimpleNamespace
+                    from uuid import uuid4
 
                     from identity.models import Principal
                     from niuu.ports.identity import InvalidTokenError
@@ -690,7 +705,12 @@ class TestLifespan:
                         patch(
                             "volundr.main.PostgresSessionRepository.get",
                             new=AsyncMock(
-                                return_value=SimpleNamespace(owner_id="alice", tenant_id="acme")
+                                return_value=SimpleNamespace(
+                                    id=uuid4(),
+                                    owner_id="alice",
+                                    tenant_id="acme",
+                                    coordination=None,
+                                )
                             ),
                         ),
                     ):
@@ -752,6 +772,7 @@ class TestLifespan:
             patch("volundr.main._bootstrap_startup_schema", new=AsyncMock()),
             patch("volundr.main.database_pool", _mock_db_pool),
             patch("volundr.main.import_class", side_effect=selective_import),
+            patch("volundr.composition_builders.import_class", side_effect=selective_import),
             patch("volundr.main._seed_configured_integrations", seed_integrations),
             patch("volundr.main._seed_linear_integration", seed_linear),
             patch("volundr.main._has_seeded_linear_integration", return_value=False),
@@ -783,8 +804,8 @@ class TestLifespan:
         subscriber.start.assert_awaited_once()
         subscriber.stop.assert_awaited_once()
 
-    def test_lifespan_swallows_audit_subscriber_start_failures(self):
-        """Audit subscriber start failures do not prevent app startup."""
+    def test_lifespan_fails_when_the_audit_subscriber_cannot_start(self):
+        """sleipnir.enabled with an audit subscriber that cannot start stops Forge."""
         from fastapi.testclient import TestClient
 
         mock_pool = AsyncMock()
@@ -818,6 +839,7 @@ class TestLifespan:
             patch("volundr.main._bootstrap_startup_schema", new=AsyncMock()),
             patch("volundr.main.database_pool", _mock_db_pool),
             patch("volundr.main.import_class", side_effect=selective_import),
+            patch("volundr.composition_builders.import_class", side_effect=selective_import),
             patch("volundr.main.AuditSubscriber", return_value=subscriber),
             patch(
                 "volundr.adapters.outbound.bifrost_catalog_http.HttpBifrostCatalogAdapter.list_models",
@@ -837,12 +859,10 @@ class TestLifespan:
             ),
         ):
             app = create_app(settings)
-            with TestClient(app) as client:
-                response = client.get("/health")
-                assert response.status_code == 200
+            with pytest.raises(RuntimeError, match="boom"), TestClient(app):
+                pass
 
         subscriber.start.assert_awaited_once()
-        subscriber.stop.assert_awaited_once()
 
     def test_lifespan_starts_and_stops_notification_delivery(
         self, monkeypatch: pytest.MonkeyPatch

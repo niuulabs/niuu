@@ -286,8 +286,15 @@ class TestRoleGrants:
         stored = await forge.sessions.get(session.id)
         assert stored.workload_config["forge_mcp"]["grants"] == []
 
-    @pytest.mark.parametrize("extra", [_filed("worker"), _filed("reviewer"), {}])
-    async def test_workers_unknown_roles_and_unfiled_sessions_get_none(self, extra) -> None:
+    async def test_a_worker_gets_message_and_nothing_else_under_the_default_config(self) -> None:
+        forge = _forge(forge_mcp_role_grants=ForgeMcpConfig().role_grants)
+        credential = await forge.start(await forge.session(**_filed("worker")))
+        assert credential.grants == (ForgeMcpGrant.MESSAGE,)
+        # Reaching a peer is not lifecycle: a worker still cannot create, start or stop.
+        assert ForgeMcpGrant.LIFECYCLE not in effective_grants(credential.token, None)
+
+    @pytest.mark.parametrize("extra", [_filed("reviewer"), {}])
+    async def test_unknown_roles_and_unfiled_sessions_get_none(self, extra) -> None:
         forge = _forge()
         credential = await forge.start(await forge.session(**extra))
         assert credential.grants == ()
@@ -304,10 +311,11 @@ class TestRoleGrants:
         credential = await forge.start(await forge.session(**_filed("coordinator")))
         assert credential.grants == ()
 
-    def test_config_default_is_coordinator_lifecycle_and_message(self) -> None:
+    def test_config_default_is_coordinator_lifecycle_and_message_worker_message(self) -> None:
         config = ForgeMcpConfig()
         assert config.role_grants == {
-            "coordinator": [ForgeMcpGrant.LIFECYCLE, ForgeMcpGrant.MESSAGE]
+            "coordinator": [ForgeMcpGrant.LIFECYCLE, ForgeMcpGrant.MESSAGE],
+            "worker": [ForgeMcpGrant.MESSAGE],
         }
         assert ForgeMcpConfig.model_validate({"role_grants": {}}).role_grants == {}
         with pytest.raises(ValueError):

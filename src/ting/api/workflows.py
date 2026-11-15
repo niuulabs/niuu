@@ -10,6 +10,7 @@ from datetime import UTC, datetime
 from typing import Any, Literal
 from uuid import UUID, uuid4
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, status
 from pydantic import BaseModel, Field, field_validator
 
@@ -38,11 +39,13 @@ from ting.domain.models import (
     WorkflowScope,
     WorkflowVersionSummary,
 )
+from ting.domain.run_members import RunMemberError, run_members
 from ting.domain.services.dispatch_service import (
     HostTagsUnreadableError,
     TargetSelectionError,
     select_adapter_by_tags,
 )
+from ting.domain.services.run_thread import RUN_PROJECT_KEY
 from ting.domain.utils import _session_name, _slugify
 from ting.domain.workflow_document import (
     WorkflowPlacement,
@@ -157,6 +160,15 @@ class WorkflowLaunchBody(BaseModel):
     connection_id: str | None = Field(default=None, max_length=255, alias="connectionId")
     model: str = Field(default="", max_length=255)
     workflow_version: str | None = Field(default=None, alias="workflowVersion", max_length=64)
+    project_id: UUID | None = Field(
+        default=None,
+        alias="projectId",
+        description=(
+            "The Forge project the run belongs to. Its sessions join it, so Forge's "
+            "Sessions page shows the run together under the project. It must exist on the "
+            "run's Forge."
+        ),
+    )
     definition: str | None = Field(default=None, max_length=255)
     context: dict[str, Any] = Field(default_factory=dict)
     provenance: dict[str, Any] = Field(default_factory=dict)
@@ -820,7 +832,17 @@ async def prepare_workflow_launch(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="No Volundr connection is available for this user",
         )
+    if launch.project_id is not None:
+        await _require_project(target_adapter, str(launch.project_id), bearer_token, principal)
     settings = request.app.state.settings
+    await _require_playable_members(
+        target_adapter,
+        workflow_snapshot,
+        launch_model=launch.model,
+        default_model=settings.dispatch.default_model,
+        auth_token=bearer_token,
+        principal=principal,
+    )
     return WorkflowLaunchExecution(
         workflow=workflow,
         workflow_snapshot=workflow_snapshot,
@@ -839,12 +861,72 @@ async def prepare_workflow_launch(
     )
 
 
+async def _require_playable_members(
+    forge: VolundrPort,
+    snapshot: dict[str, Any],
+    *,
+    launch_model: str,
+    default_model: str,
+    auth_token: str | None,
+    principal: Principal,
+) -> None:
+    """Refuse a run a member of which its Forge could not start, before the run exists.
+
+    Each member's session runs the harness its model picks on that Forge, and the harness
+    refuses a persona it cannot play when the session starts. Forge runs the same check
+    now, so the launch is refused with the harness's reasons instead of a step failing.
+    A workflow with no members (no stages) has nothing to check.
+    """
+    try:
+        members = run_members(snapshot, launch_model=launch_model, default_model=default_model)
+    except RunMemberError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if not members:
+        return
+    try:
+        verdicts = await forge.check_playability(
+            members, auth_token=auth_token, principal=principal
+        )
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"The run was not started: {exc}",
+        ) from exc
+    refused = [verdict for verdict in verdicts if not verdict.playable]
+    if refused:
+        raise HTTPException(
+            status_code=422,
+            detail="This workflow cannot run on this Forge: "
+            + " ".join(
+                f"{verdict.member} on {verdict.model} ({verdict.transport or 'no harness'}): "
+                + "; ".join(verdict.reasons)
+                + "."
+                for verdict in refused
+            ),
+        )
+
+
+async def _require_project(
+    forge: VolundrPort, project_id: str, auth_token: str | None, principal: Principal
+) -> None:
+    """A launch into a project names one its Forge has; anything else is refused."""
+    if await forge.get_project(project_id, auth_token=auth_token, principal=principal) is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=(
+                f"Project {project_id} is not on this run's Forge; create it there first, "
+                "or launch without projectId"
+            ),
+        )
+
+
 def workflow_run_metadata(
     launch: WorkflowLaunchBody, execution: WorkflowLaunchExecution
 ) -> dict[str, Any]:
     """The campaign metadata a run's sessions are created from (repo, branches, model)."""
     return {
         "launch_slug": execution.slug,
+        **({RUN_PROJECT_KEY: str(launch.project_id)} if launch.project_id is not None else {}),
         # What the person asked for, so the run's review page can say what it is about.
         "prompt": launch.prompt,
         **({"repo": launch.repo} if launch.repo else {}),
@@ -898,11 +980,29 @@ async def start_workflow_run(
         await fail_unstarted_campaign(campaign_repo, saved, str(exc))
         if isinstance(exc, WorkflowDocumentError):
             raise HTTPException(status_code=422, detail=str(exc)) from exc
+        if isinstance(exc, httpx.HTTPStatusError):
+            raise _forge_refusal(exc) from exc
         raise
     started = await campaign_repo.get_campaign(saved.id)
     if started is None:
         raise LookupError(f"campaign {saved.slug} vanished while its run started")
     return started
+
+
+def _forge_refusal(exc: httpx.HTTPStatusError) -> HTTPException:
+    """Forge's answer to a run that could not start, as the launch's own answer.
+
+    A refusal Forge explains (no free session slot: 409, a member it will not start: 422,
+    not allowed: 403) keeps its status, so the caller can act on it; anything else Forge
+    answered is a 502 naming what it said. Either way the run was not started.
+    """
+    forge_status = exc.response.status_code
+    status_code = forge_status if forge_status in _FORGE_REFUSALS_PASSED_ON else 502
+    return HTTPException(status_code=status_code, detail=f"The run was not started: {exc}")
+
+
+#: Forge refusals a launch answers with Forge's own status.
+_FORGE_REFUSALS_PASSED_ON = frozenset({403, 404, 409, 422})
 
 
 async def fail_unstarted_campaign(

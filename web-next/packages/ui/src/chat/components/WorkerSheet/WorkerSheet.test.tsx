@@ -111,6 +111,12 @@ describe('WorkerSheet', () => {
     expect(within(sheet).getByText('code.changed')).toBeInTheDocument();
   });
 
+  it('leaves the event lists to a host that shows them elsewhere', () => {
+    renderSheet({ showEvents: false });
+    expect(screen.queryByText('Listens for')).toBeNull();
+    expect(screen.queryByText('Emits')).toBeNull();
+  });
+
   it('leaves the event lists out for a worker that has none', () => {
     renderSheet({ worker: { ...worker, consumes: [], emits: [] } });
     expect(screen.queryByText('Listens for')).toBeNull();

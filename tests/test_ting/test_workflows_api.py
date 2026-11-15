@@ -8,6 +8,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from uuid import UUID, uuid4
 
+import httpx
 import jwt
 import pytest
 from fastapi import FastAPI, HTTPException, Request
@@ -41,6 +42,7 @@ from ting.domain.workflow_document import (
 )
 from ting.domain.workflow_versioning import next_workflow_version
 from ting.ports.volundr import (
+    ForgeProjectRef,
     HostTagSetsUnreadableError,
     SpawnRequest,
     VolundrPort,
@@ -205,10 +207,27 @@ class RecordingVolundrPort(VolundrPort):
         self._tag_sets_unreadable = tag_sets_unreadable
         self.requests: list[SpawnRequest] = []
         self.stopped: list[str] = []
+        #: Forge projects this host has, by id.
+        self.projects: dict[str, ForgeProjectRef] = {}
 
     @property
     def name(self) -> str:
         return self._name
+
+    async def check_playability(self, members, *, auth_token=None, principal=None):
+        from ting.ports.volundr import MemberPlayability
+
+        self.playability_checks = [*getattr(self, "playability_checks", []), list(members)]
+        refusals = getattr(self, "playability_refusals", {})
+        return [
+            MemberPlayability(
+                member.member, member.model, "test-harness", tuple(refusals.get(member.member, ()))
+            )
+            for member in members
+        ]
+
+    async def get_project(self, project_id, *, auth_token=None, principal=None):
+        return self.projects.get(project_id)
 
     @property
     def tags(self) -> list[str]:
@@ -1649,7 +1668,7 @@ class TestWorkflowCatalogAPI:
             },
         )
 
-        assert response.status_code == 201
+        assert response.status_code == 201, response.text
         body = response.json()
         assert "sessionId" not in body
         assert body["workflowId"] == str(workflow.id)
@@ -1667,6 +1686,51 @@ class TestWorkflowCatalogAPI:
         assert launched.id == campaign.id
         assert payload["prompt"].startswith("Research whether AI grief companions")
         assert "Workflow Launch" in payload["initiative_context"]
+
+    def test_a_run_launched_into_a_project_records_it_for_its_sessions(self) -> None:
+        workflow = _make_research_workflow()
+        adapter = RecordingVolundrPort(name="cpu", target_id="cpu-1")
+        project_id = "11111111-1111-1111-1111-111111111111"
+        adapter.projects[project_id] = ForgeProjectRef(id=project_id, name="Probe", instance_id="h")
+        campaign_repo = RecordingCampaignRepository()
+        client = _make_client(
+            InMemoryWorkflowRepository([workflow]),
+            volundr_factory=RecordingVolundrFactory([adapter]),
+            campaign_repo=campaign_repo,
+            workflow_runs=FakeWorkflowRuns(),
+        )
+
+        response = client.post(
+            f"/api/v1/ting/workflows/{workflow.id}/launch",
+            headers=_headers(roles="ting:admin"),
+            json={"prompt": "Probe the thread.", "projectId": project_id},
+        )
+
+        assert response.status_code == 201
+        [campaign] = campaign_repo.items.values()
+        assert campaign.metadata["forge_project_id"] == project_id
+
+    def test_a_launch_into_a_project_its_forge_lacks_is_refused(self) -> None:
+        workflow = _make_research_workflow()
+        campaign_repo = RecordingCampaignRepository()
+        runs = FakeWorkflowRuns()
+        client = _make_client(
+            InMemoryWorkflowRepository([workflow]),
+            volundr_factory=RecordingVolundrFactory([RecordingVolundrPort()]),
+            campaign_repo=campaign_repo,
+            workflow_runs=runs,
+        )
+
+        response = client.post(
+            f"/api/v1/ting/workflows/{workflow.id}/launch",
+            headers=_headers(roles="ting:admin"),
+            json={"prompt": "Probe.", "projectId": "22222222-2222-2222-2222-222222222222"},
+        )
+
+        assert response.status_code == 404
+        assert "is not on this run's Forge" in response.json()["detail"]
+        assert campaign_repo.items == {}
+        assert runs.launched == []
 
     def test_a_run_that_cannot_start_fails_its_campaign_and_the_launch(self) -> None:
         workflow = _make_research_workflow()
@@ -1689,6 +1753,37 @@ class TestWorkflowCatalogAPI:
         [campaign] = campaign_repo.items.values()
         assert campaign.status.value == "failed"
         assert campaign.metadata["failure_error"] == "no Forge capacity"
+
+    @pytest.mark.parametrize(("forge_status", "expected"), [(409, 409), (422, 422), (500, 502)])
+    def test_a_run_forge_refuses_answers_with_forges_reason(
+        self, forge_status: int, expected: int
+    ) -> None:
+        workflow = _make_research_workflow()
+        campaign_repo = RecordingCampaignRepository()
+        request = httpx.Request("POST", "http://forge/api/v1/forge/sessions")
+        refusal = httpx.HTTPStatusError(
+            "Forge could not start the run's room: No session slot is free: 4 of 4 sessions "
+            "are running on this host",
+            request=request,
+            response=httpx.Response(forge_status, request=request),
+        )
+        client = _make_client(
+            InMemoryWorkflowRepository([workflow]),
+            volundr_factory=RecordingVolundrFactory([RecordingVolundrPort()]),
+            campaign_repo=campaign_repo,
+            workflow_runs=FakeWorkflowRuns(launch_error=refusal),
+        )
+
+        response = client.post(
+            f"/api/v1/ting/workflows/{workflow.id}/launch",
+            headers=_headers(roles="ting:admin"),
+            json={"prompt": "No room for it."},
+        )
+
+        assert response.status_code == expected
+        assert response.json()["detail"].startswith("The run was not started: Forge could not")
+        [campaign] = campaign_repo.items.values()
+        assert campaign.status.value == "failed"
 
     def test_launch_workflow_still_refuses_a_workflow_the_caller_cannot_see(self) -> None:
         workflow = _make_workflow(owner_id="someone-else")
@@ -1994,8 +2089,14 @@ class TestPrepareWorkflowLaunch:
     def _principal() -> Principal:
         return Principal(user_id="user-1", email="", roles=["ting:admin"], tenant_id="")
 
-    async def _prepare(self, request: Request, workflow: WorkflowDefinition, **kwargs):
-        adapter = RecordingVolundrPort(name="cpu", target_id="cpu-1")
+    async def _prepare(
+        self,
+        request: Request,
+        workflow: WorkflowDefinition,
+        adapter: RecordingVolundrPort | None = None,
+        **kwargs,
+    ):
+        adapter = adapter or RecordingVolundrPort(name="cpu", target_id="cpu-1")
         launch = kwargs.pop("launch", WorkflowLaunchBody(prompt="run it"))
         execution = await prepare_workflow_launch(
             request=request,
@@ -2024,6 +2125,120 @@ class TestPrepareWorkflowLaunch:
         execution = await self._prepare(self._request(), workflow, pinned_workflow_snapshot=pinned)
 
         assert execution.workflow_snapshot == pinned
+
+    @staticmethod
+    def _members_snapshot(name: str, *, auditor_model: str = "gpt-5.6-terra") -> dict:
+        def document(persona: str) -> dict:
+            return {"id": persona, "revision": "content-0123456789abcdef", "definition": {}}
+
+        return {
+            "name": name,
+            "graph": {
+                "nodes": [
+                    {
+                        "id": "code",
+                        "kind": "stage",
+                        "stageMembers": [{"personaId": "coder", "model": "claude-opus-5-5"}],
+                    },
+                    {
+                        "id": "checks",
+                        "kind": "stage",
+                        "stageMembers": [
+                            {"personaId": "security-auditor", "model": auditor_model},
+                            {"personaId": "reviewer"},
+                        ],
+                    },
+                ],
+                "edges": [],
+            },
+            "persona_definitions": {
+                persona: document(persona) for persona in ("coder", "security-auditor", "reviewer")
+            },
+        }
+
+    async def test_every_member_is_checked_on_its_models_harness_before_the_run(self) -> None:
+        workflow = _make_research_workflow()
+        adapter = RecordingVolundrPort(name="cpu", target_id="cpu-1")
+
+        await self._prepare(
+            self._request(),
+            workflow,
+            adapter,
+            launch=WorkflowLaunchBody(prompt="run it", model="claude-fable-5-1"),
+            pinned_workflow_snapshot=self._members_snapshot(workflow.name),
+        )
+
+        [checked] = adapter.playability_checks
+        assert [(m.member, m.model) for m in checked] == [
+            ("coder", "claude-opus-5-5"),
+            ("security-auditor", "gpt-5.6-terra"),
+            ("reviewer", "claude-fable-5-1"),
+        ]
+
+    async def test_a_member_its_harness_cannot_play_refuses_the_launch_with_why(self) -> None:
+        workflow = _make_research_workflow()
+        adapter = RecordingVolundrPort(name="cpu", target_id="cpu-1")
+        adapter.playability_refusals = {
+            "security-auditor": ("allowed_tools:file_read: Codex reads files only through shell",)
+        }
+
+        with pytest.raises(HTTPException) as caught:
+            await self._prepare(
+                self._request(),
+                workflow,
+                adapter,
+                launch=WorkflowLaunchBody(prompt="run it", model="claude-fable-5-1"),
+                pinned_workflow_snapshot=self._members_snapshot(workflow.name),
+            )
+
+        assert caught.value.status_code == 422
+        assert caught.value.detail == (
+            "This workflow cannot run on this Forge: security-auditor on gpt-5.6-terra "
+            "(test-harness): allowed_tools:file_read: Codex reads files only through shell."
+        )
+
+    async def test_a_forge_that_cannot_check_refuses_the_launch_with_its_reason(self) -> None:
+        workflow = _make_research_workflow()
+        adapter = RecordingVolundrPort(name="cpu", target_id="cpu-1")
+
+        async def unreachable(members, *, auth_token=None, principal=None):
+            request = httpx.Request("POST", "http://forge/api/v1/forge/sessions/playability")
+            raise httpx.HTTPStatusError(
+                "Forge could not check the run's personas: Method Not Allowed",
+                request=request,
+                response=httpx.Response(405, request=request),
+            )
+
+        adapter.check_playability = unreachable  # type: ignore[method-assign]
+
+        with pytest.raises(HTTPException) as caught:
+            await self._prepare(
+                self._request(),
+                workflow,
+                adapter,
+                launch=WorkflowLaunchBody(prompt="run it", model="claude-fable-5-1"),
+                pinned_workflow_snapshot=self._members_snapshot(workflow.name),
+            )
+
+        assert caught.value.status_code == 502
+        assert caught.value.detail == (
+            "The run was not started: Forge could not check the run's personas: Method Not Allowed"
+        )
+
+    async def test_a_member_with_no_model_refuses_the_launch(self) -> None:
+        workflow = _make_research_workflow()
+        request = self._request()
+        request.app.state.settings.dispatch.default_model = ""
+
+        with pytest.raises(HTTPException) as caught:
+            await self._prepare(
+                request,
+                workflow,
+                pinned_workflow_snapshot=self._members_snapshot(workflow.name),
+            )
+
+        assert caught.value.status_code == 422
+        assert "no model for member 'reviewer'" in caught.value.detail
 
     async def test_a_denied_launch_is_a_403(self) -> None:
         with pytest.raises(HTTPException) as caught:

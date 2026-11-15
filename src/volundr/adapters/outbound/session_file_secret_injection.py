@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import shutil
 from pathlib import Path
 
@@ -44,6 +45,41 @@ def shell_export_line(name: str, value: str) -> str:
     """Render ``export NAME='value'`` with POSIX single-quote escaping."""
     escaped = value.replace("'", "'\\''")
     return f"export {name}='{escaped}'"
+
+
+_EXPORT = re.compile(r"export ([A-Za-z_][A-Za-z0-9_]*)='")
+
+
+def read_shell_exports(text: str) -> dict[str, str]:
+    """The variables an env file of :func:`shell_export_line` lines sets.
+
+    For a runtime that cannot source the file in a shell (a host process gets them as
+    its environment). Anything that is not such a line is refused, never skipped.
+    """
+    values: dict[str, str] = {}
+    position = 0
+    while position < len(text):
+        if text[position] == "\n":
+            position += 1
+            continue
+        match = _EXPORT.match(text, position)
+        if match is None:
+            raise ValueError("credential env file holds a line that is not export NAME='value'")
+        position = match.end()
+        parts: list[str] = []
+        while True:
+            end = text.find("'", position)
+            if end == -1:
+                raise ValueError(f"credential env file leaves {match.group(1)} unquoted")
+            parts.append(text[position:end])
+            if text.startswith("'\\''", end):
+                parts.append("'")
+                position = end + 4
+                continue
+            position = end + 1
+            break
+        values[match.group(1)] = "".join(parts)
+    return values
 
 
 class SessionFileSecretInjectionAdapter(SecretInjectionPort):

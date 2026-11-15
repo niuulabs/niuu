@@ -655,6 +655,25 @@ class Session(BaseModel):
         ),
     )
 
+    hosted_by: UUID | None = Field(
+        default=None,
+        description=(
+            "The unit-root session whose unit (pod, VM, VM slot, sandbox or process group) "
+            "runs this session. A hosted member has no pod of its own: its status and "
+            "endpoint follow the unit, but its transcript, credential, log and outcome stay "
+            "its own."
+        ),
+    )
+    hosted_port: int | None = Field(
+        default=None,
+        ge=1,
+        le=65535,
+        description=(
+            "The port of this member's broker inside its unit, assigned when the member is "
+            "created (the unit's member base port plus its index). Unique within a unit."
+        ),
+    )
+
     short_description: str | None = Field(
         default=None,
         description=(
@@ -808,6 +827,101 @@ class Session(BaseModel):
             }
         )
 
+    @property
+    def is_unit_root(self) -> bool:
+        """True for a session created to host a run's members (see ``HostedLaunch``)."""
+        return isinstance(self.workload_config.get(HOSTED_UNIT_KEY), dict)
+
+    @property
+    def is_hosted(self) -> bool:
+        """True for a member session that runs inside another session's unit."""
+        return self.hosted_by is not None
+
+    def hosted_in(self, unit: Session, chat_endpoint: str | None = None) -> Session:
+        """This member as the unit shows it: its status follows ``unit``.
+
+        A member has no pod of its own. While its unit is coming up or running the member
+        reads as the unit does, except that a member stopped or failed on its own stays
+        so; when the unit is stopping, stopped, failed or archived, every member reads as
+        the unit does. ``chat_endpoint`` is where the member's runtime says its page is
+        (the pod manager names it; the unit's address is not derived); it shows only while
+        the member is up.
+        """
+        if self.hosted_by != unit.id or self.hosted_port is None:
+            raise ValueError(f"Session {self.id} is not a member of unit {unit.id}")
+        status = hosted_status(self.status, unit.status)
+        error = self.error
+        if status == SessionStatus.FAILED and unit.status == SessionStatus.FAILED:
+            error = unit.error or error
+        return self.model_copy(
+            update={
+                "status": status,
+                "chat_endpoint": chat_endpoint if status in _HOSTED_LIVE_STATUSES else None,
+                "code_endpoint": None,
+                "error": error,
+            }
+        )
+
+
+#: ``workload_config`` key of a unit root: the root's own launch (a ``HostedLaunch``), held
+#: until the unit starts. Its presence is what makes a session a unit root.
+HOSTED_UNIT_KEY = "hosted_unit"
+
+#: ``workload_config`` key of a member: its launch (a ``HostedLaunch``), held until its unit
+#: starts, because a member is never started on its own.
+HOSTED_LAUNCH_KEY = "hosted_launch"
+
+#: ``workload_config`` key Forge adds to a unit root's launch: the members the unit starts
+#: with, ``[{"id": ..., "port": ...}]``. A run's members are fixed when its unit starts.
+HOSTED_MEMBERS_KEY = "hosted_members"
+
+#: Statuses in which a hosted member has an endpoint to show.
+_HOSTED_LIVE_STATUSES = frozenset(
+    {SessionStatus.STARTING, SessionStatus.PROVISIONING, SessionStatus.RUNNING}
+)
+
+#: Statuses a member can hold on its own while its unit is up.
+_HOSTED_OWN_STATUSES = frozenset(
+    {
+        SessionStatus.STOPPING,
+        SessionStatus.STOPPED,
+        SessionStatus.FAILED,
+        SessionStatus.ARCHIVED,
+    }
+)
+
+
+class HostedLaunch(BaseModel):
+    """What a session in a unit is launched with, kept until the unit starts.
+
+    An ordinary session passes these to the service when it starts. A unit root and its
+    members are created first and started together, so the arguments are kept on the
+    session and the start reads them back.
+    """
+
+    definition: str | None = None
+    launch_spec: str | None = None
+    terminal_restricted: bool = False
+    credential_names: list[str] = Field(default_factory=list)
+    integration_ids: list[str] = Field(default_factory=list)
+    resource_config: dict = Field(default_factory=dict)
+    system_prompt: str = ""
+    initial_prompt: str = ""
+    workload_type: str = "session"
+
+
+def hosted_status(own: SessionStatus, unit: SessionStatus) -> SessionStatus:
+    """The status of a hosted member given its own stored status and its unit's."""
+    if own == SessionStatus.ARCHIVED:
+        return SessionStatus.ARCHIVED
+    if unit in _HOSTED_LIVE_STATUSES:
+        return own if own in _HOSTED_OWN_STATUSES else unit
+    if unit == SessionStatus.CREATED:
+        return SessionStatus.CREATED
+    if unit in (SessionStatus.STOPPING, SessionStatus.FAILED):
+        return unit
+    return SessionStatus.STOPPED
+
 
 class ExternalSessionRecord(BaseModel):
     """A CLI session discovered outside Volundr (Claude Code, Codex, ...).
@@ -899,6 +1013,22 @@ class RoomParticipantInfo:
     display_name: str = ""
     participant_type: str = "ravn"
     status: str = "idle"
+
+
+@dataclass(frozen=True)
+class ConnectedPerson:
+    """A person with a live, verified browser connection to a session's room."""
+
+    user_id: str
+    display_name: str = ""
+
+
+@dataclass(frozen=True)
+class RoomRoster:
+    """Everyone a live room reports: its seated participants and the people connected to it."""
+
+    participants: list[RoomParticipantInfo]
+    connected_people: list[ConnectedPerson]
 
 
 @dataclass(frozen=True)
@@ -1327,6 +1457,36 @@ class CredentialEnrollmentSpec:
     default_credential_name: str
 
 
+class TeamInstallMethod(StrEnum):
+    """How a provider is installed for a team, so it acts as a bot, never a person."""
+
+    #: The provider's app install (OAuth authorization code), e.g. a Slack bot or a
+    #: Linear app acting as itself (``authorize_params: {actor: app}``).
+    OAUTH = "oauth"
+    #: A provider service account's OAuth client credentials, minted into a
+    #: short-lived access token, e.g. an Atlassian service account.
+    CLIENT_CREDENTIALS = "client_credentials"
+
+
+@dataclass(frozen=True)
+class TeamInstallSpec:
+    """Whether and how a catalog integration can be installed for a project team."""
+
+    method: TeamInstallMethod
+    #: Authorize-URL parameters that make the install act as the app (``oauth``).
+    authorize_params: dict[str, str] = field(default_factory=dict)
+    #: Scopes of the team install when they differ from a person's (``oauth``).
+    scopes: tuple[str, ...] = ()
+    #: Token endpoint of a ``client_credentials`` install.
+    token_url: str = ""
+    #: Extra token-request fields of a ``client_credentials`` install (e.g. audience).
+    token_params: dict[str, str] = field(default_factory=dict)
+    #: Connection config keys a team install must carry (e.g. Jira's ``cloud_id``).
+    required_config: tuple[str, ...] = ()
+    #: Only a team can install it (a Slack bot): personal connections are refused.
+    team_only: bool = False
+
+
 class CredentialEnrollmentState(StrEnum):
     """Durable lifecycle for one interactive provider enrollment."""
 
@@ -1405,6 +1565,8 @@ class IntegrationDefinition:
     # How to check an API key works: {"url", "auth": "bearer" | "<header name>",
     # "headers": {...}}. Empty when the provider offers no cheap probe.
     key_probe: dict[str, Any] = ()  # type: ignore[assignment]
+    # Set when a project owner may install this integration for the project's team.
+    team_install: TeamInstallSpec | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.credential_schema, dict):

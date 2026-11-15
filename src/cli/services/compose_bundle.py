@@ -354,6 +354,9 @@ def platform_environment(settings: CLISettings, data_root: Path) -> dict[str, st
         "NIUU_CONFIG": str(data_root / "config.yaml"),
         "NIUU_MODE": "mini",
         "NIUU_SETUP_MODE": "docker",
+        # The platform image carries no gbrain, so mini mode's local memory cannot
+        # run in it: switched off explicitly rather than failing the start.
+        "NIUU_LOCAL_MEMORY__ENABLED": "false",
         "NIUU_SERVER__HOST": "0.0.0.0",
         "NIUU_SERVER__EXTERNAL_HOST": "${NIUU_EXTERNAL_HOST}",
         "NIUU_SERVER__PORT": str(settings.server.port),
@@ -412,9 +415,6 @@ def platform_environment(settings: CLISettings, data_root: Path) -> dict[str, st
         "NIUU_POD_MANAGER__SKULD_IMAGE": "${NIUU_SKULD_IMAGE}",
         "NIUU_POD_MANAGER__NETWORK": "${COMPOSE_PROJECT_NAME}_default",
         "NIUU_POD_MANAGER__PLATFORM_URL": f"http://niuu:{settings.server.port}",
-        # Sessions that may run at once; the wizard's runtime step changes it
-        # (stack setting max_sessions) and the applier restarts the platform.
-        "NIUU_POD_MANAGER__MAX_CONCURRENT": str(settings.pod_manager.max_concurrent),
         "NIUU_DOCKER__DATA_DIR": str(data_root),
         "NIUU_SETUP_ENABLED": "true",
         "NIUU_SETUP_STATE_FILE": str(data_root / SETUP_STATE_FILE),
@@ -427,6 +427,10 @@ def platform_environment(settings: CLISettings, data_root: Path) -> dict[str, st
         "BIFROST__URL": f"http://127.0.0.1:{settings.server.port}",
         "PYTHONUNBUFFERED": "1",
     }
+    if settings.pod_manager.max_concurrent is not None:
+        # Sessions that may run at once, when the operator set a limit; the wizard's runtime
+        # step changes it (stack setting max_sessions) and the applier restarts the platform.
+        env["NIUU_POD_MANAGER__MAX_CONCURRENT"] = str(settings.pod_manager.max_concurrent)
     env.update(auth_adapter_env(settings.host_auth))
     if model_gateway_providers(settings):
         env["NIUU_BIFROST"] = json.dumps({"providers": bifrost_providers(settings)})

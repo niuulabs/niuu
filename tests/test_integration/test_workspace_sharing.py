@@ -23,9 +23,11 @@ class TestWorkspacePathConsistency:
 
     @pytest.fixture
     def deployment_yaml(self) -> str:
-        """Load deployment.yaml template."""
-        template_path = CHART_DIR / "templates" / "deployment.yaml"
-        return template_path.read_text()
+        """Load deployment.yaml template and the broker container it includes."""
+        templates = CHART_DIR / "templates"
+        return (templates / "deployment.yaml").read_text() + (
+            templates / "_broker-container.tpl"
+        ).read_text()
 
     @pytest.fixture
     def helpers_tpl(self) -> str:
@@ -74,9 +76,11 @@ class TestPersistenceConfiguration:
 
     @pytest.fixture
     def deployment_yaml(self) -> str:
-        """Load deployment.yaml template."""
-        template_path = CHART_DIR / "templates" / "deployment.yaml"
-        return template_path.read_text()
+        """Load deployment.yaml template and the broker container it includes."""
+        templates = CHART_DIR / "templates"
+        return (templates / "deployment.yaml").read_text() + (
+            templates / "_broker-container.tpl"
+        ).read_text()
 
     def test_persistence_enabled_by_default(self, values_yaml):
         """Test persistence is enabled by default."""
@@ -105,9 +109,11 @@ class TestSecurityContext:
 
     @pytest.fixture
     def deployment_yaml(self) -> str:
-        """Load deployment.yaml template."""
-        template_path = CHART_DIR / "templates" / "deployment.yaml"
-        return template_path.read_text()
+        """Load deployment.yaml template and the broker container it includes."""
+        templates = CHART_DIR / "templates"
+        return (templates / "deployment.yaml").read_text() + (
+            templates / "_broker-container.tpl"
+        ).read_text()
 
     @pytest.fixture
     def values_yaml(self) -> dict:

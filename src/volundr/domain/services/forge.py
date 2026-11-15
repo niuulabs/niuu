@@ -2,38 +2,60 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from collections.abc import Mapping
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING, Any
+from uuid import UUID
 
 from niuu.domain.session_description import DESCRIPTION_FIELDS, SessionDescriptionPatch
 from niuu.forge_mcp.credentials import normalize_grants
-from volundr.domain.services.forge_session_launch import FORGE_MCP_KEY, GRANTS_KEY
+from volundr.domain.models import (
+    HOSTED_LAUNCH_KEY,
+    HOSTED_MEMBERS_KEY,
+    HOSTED_UNIT_KEY,
+    HostedLaunch,
+    Session,
+    SessionStatus,
+)
+from volundr.domain.ports import HostedUnitError, PersonaNotPlayableError
+from volundr.domain.services.forge_session_launch import (
+    FORGE_MCP_KEY,
+    GRANTS_KEY,
+    launch_id_of,
+)
+from volundr.domain.services.session import (
+    SessionAccessDeniedError,
+    SessionNotFoundError,
+    SessionStateError,
+)
 from volundr.domain.session_broker import broker_base_url
 from volundr.domain.workflow_session import (
     PERSONA_DEFINITION_KEY,
     PERSONA_NAME_KEY,
+    WORKFLOW_EVENT_FILTERS_KEY,
     WORKFLOW_MEMBER_KEY,
+    WORKFLOW_ORCHESTRATION_KEY,
+    WORKFLOW_PERSONA_ALIAS_KEY,
     WORKFLOW_RUN_ID_KEY,
+    WORKFLOW_RUN_ROOM_KEY,
     WORKFLOW_STEP_HOST_KEY,
+    WORKFLOW_TOPICS_KEY,
 )
 
 if TYPE_CHECKING:
-    from datetime import datetime
-    from uuid import UUID
-
     from niuu.ports.session_proxy import SessionProxyTarget
     from volundr.adapters.inbound.rest import SessionCreate
     from volundr.domain.models import (
         Chronicle,
         ModelProvider,
         Principal,
-        Session,
         SessionActivityState,
         Timeline,
         TimelineEvent,
         TimelineEventType,
         WorkspaceStatus,
     )
-    from volundr.domain.ports import PricingProvider
+    from volundr.domain.ports import PersonaPlayabilityPort, Playability, PricingProvider
     from volundr.domain.services.chronicle import ChronicleService
     from volundr.domain.services.repo import ProviderInfo, RepoService
     from volundr.domain.services.session_archive import SessionArchiveService
@@ -46,6 +68,69 @@ if TYPE_CHECKING:
     from volundr.domain.session_read_state import SessionReadState, SessionReadStateChange
 
     from .session import SessionService
+
+
+#: The port of the first member's broker inside a unit; the next member's is one above, and
+#: so on. The unit root's own Skuld keeps its usual port (8081), so members start just above
+#: it. The composition root passes the configured value as ``hosted_member_base_port``.
+DEFAULT_HOSTED_MEMBER_BASE_PORT = 8082
+
+_LIVE_UNIT_STATUSES = frozenset(
+    {SessionStatus.STARTING, SessionStatus.PROVISIONING, SessionStatus.RUNNING}
+)
+
+
+class HostedMemberError(SessionStateError):
+    """A member of a run's unit cannot be created, started or stopped in the unit's state.
+
+    A ``SessionStateError``, so the session routes already answer it with 409; ``reason``
+    names what is wrong and what to do about it.
+    """
+
+    def __init__(
+        self,
+        session_id: UUID,
+        operation: str,
+        current_status: SessionStatus | None,
+        reason: str,
+    ) -> None:
+        self.session_id = session_id
+        self.operation = operation
+        self.current_status = current_status
+        self.reason = reason
+        Exception.__init__(self, reason)
+
+
+class HostedUnitNotFoundError(SessionNotFoundError):
+    """The unit a member names does not exist.
+
+    A ``SessionNotFoundError``, so a caller answers it as not found (404), not as a
+    session in the wrong state; ``reason`` names the unit and what to do about it.
+    """
+
+    def __init__(self, unit_id: UUID, reason: str) -> None:
+        self.session_id = unit_id
+        self.reason = reason
+        Exception.__init__(self, reason)
+
+
+class HostedUnitInUseError(SessionStateError):
+    """A unit root cannot be deleted while it still hosts members.
+
+    A ``SessionStateError``, so the routes answer it with 409 and the message; the members
+    are deleted first, then the unit.
+    """
+
+    def __init__(self, unit_id: UUID, member_count: int) -> None:
+        self.session_id = unit_id
+        self.operation = "delete"
+        self.current_status = None
+        self.member_count = member_count
+        Exception.__init__(
+            self,
+            f"session {unit_id} is the unit of {member_count} member session(s): "
+            "delete the members first",
+        )
 
 
 class ForgeService:
@@ -64,7 +149,14 @@ class ForgeService:
         workspace_service: WorkspaceService | None = None,
         project_service=None,
         session_participant_service: SessionParticipantService,
+        hosted_member_base_port: int = DEFAULT_HOSTED_MEMBER_BASE_PORT,
+        persona_playability: PersonaPlayabilityPort | None = None,
     ) -> None:
+        if not 0 < hosted_member_base_port < 65536:
+            raise ValueError(
+                f"hosted_member_base_port must be a TCP port, got {hosted_member_base_port}"
+            )
+        self._hosted_member_base_port = hosted_member_base_port
         self._session_service = session_service
         self._stats_service = stats_service
         self._token_service = token_service
@@ -75,6 +167,7 @@ class ForgeService:
         self._workspace_service = workspace_service
         self._project_service = project_service
         self._session_participant_service = session_participant_service
+        self._persona_playability = persona_playability
 
     @property
     def has_broadcaster(self) -> bool:
@@ -92,6 +185,8 @@ class ForgeService:
             workspace_service=workspace_service,
             project_service=self._project_service,
             session_participant_service=self._session_participant_service,
+            hosted_member_base_port=self._hosted_member_base_port,
+            persona_playability=self._persona_playability,
         )
 
     async def list_sessions(
@@ -101,11 +196,12 @@ class ForgeService:
         include_archived: bool = False,
         principal: Principal | None = None,
     ) -> list[Session]:
-        return await self._session_service.list_sessions(
+        sessions = await self._session_service.list_sessions(
             status=status,
             include_archived=include_archived,
             principal=principal,
         )
+        return await self._hosted_views(sessions)
 
     async def list_participant_only_sessions(
         self,
@@ -153,6 +249,9 @@ class ForgeService:
             launch_spec=data.launch_spec,
             role=coordination.role if coordination is not None else None,
         )
+        hosted_by = getattr(data, "hosted_by", None)
+        if isinstance(hosted_by, UUID):
+            await self._require_open_unit(hosted_by, data, principal)
         if coordination is not None:
             if self._project_service is None:
                 raise ValueError("Projects are not enabled on this Forge host")
@@ -166,6 +265,9 @@ class ForgeService:
 
     async def _launch_session(self, data, principal, existing=None, project_options=None):
         resolved_definition = self._resolve_session_definition(data.model, data.definition)
+        self.require_playable(
+            data.model, getattr(data, "persona_definition", None), data.definition
+        )
         forge_mcp = getattr(data, "forge_mcp", None)
         requested_grants = tuple(forge_mcp.grants) if forge_mcp is not None else ()
         # No slot, no record: a session created only to fail would sit in the
@@ -194,13 +296,55 @@ class ForgeService:
         if getattr(data, "workflow_step_host", False) is True:
             workload_config[WORKFLOW_STEP_HOST_KEY] = True
         workflow_run_id = getattr(data, "workflow_run_id", None)
-        if workflow_run_id is not None:
+        if getattr(data, "workflow_run_room", False) is True:
+            workload_config[WORKFLOW_RUN_ROOM_KEY] = True
+            workload_config[WORKFLOW_RUN_ID_KEY] = str(workflow_run_id)
+        elif workflow_run_id is not None:
             workload_config[WORKFLOW_RUN_ID_KEY] = str(workflow_run_id)
             workload_config[WORKFLOW_MEMBER_KEY] = data.workflow_member
+        # What Skuld needs to serve the run's steps: kept as sent, so a request that left one
+        # out stays without it and the workflow_step_host contributor refuses it by name.
+        persona_alias = getattr(data, "workflow_persona_alias", None)
+        if isinstance(persona_alias, str):
+            workload_config[WORKFLOW_PERSONA_ALIAS_KEY] = persona_alias
+        event_filters = getattr(data, "workflow_event_filters", None)
+        if isinstance(event_filters, dict):
+            workload_config[WORKFLOW_EVENT_FILTERS_KEY] = dict(event_filters)
+        topics = getattr(data, "workflow_topics", None)
+        if isinstance(topics, list):
+            workload_config[WORKFLOW_TOPICS_KEY] = list(topics)
+        orchestration = getattr(data, "workflow_orchestration", None)
+        if isinstance(orchestration, str):
+            workload_config[WORKFLOW_ORCHESTRATION_KEY] = orchestration
         if requested_grants:
             workload_config[FORGE_MCP_KEY] = {
                 GRANTS_KEY: [grant.value for grant in normalize_grants(requested_grants)]
             }
+        hosted_by = getattr(data, "hosted_by", None)
+        hosts_members = getattr(data, "hosts_members", False) is True
+        if isinstance(hosted_by, UUID) or hosts_members:
+            launch = HostedLaunch(
+                definition=resolved_definition,
+                launch_spec=data.launch_spec,
+                terminal_restricted=data.terminal_restricted,
+                credential_names=list(data.credential_names),
+                integration_ids=list(data.integration_ids),
+                resource_config=dict(data.resource_config or {}),
+                system_prompt=data.system_prompt,
+                initial_prompt=data.initial_prompt,
+                workload_type=data.workload_type,
+            )
+            # A member is held, not started, so nothing else would refuse its memory now.
+            await self._session_service.with_project_memory(
+                session, workload_config, data.launch_spec, data.workload_type
+            )
+            if isinstance(hosted_by, UUID):
+                workload_config[HOSTED_LAUNCH_KEY] = launch.model_dump()
+                return await self._hold_member(
+                    session, hosted_by, workload_config, launch, principal, created=existing is None
+                )
+            workload_config[HOSTED_UNIT_KEY] = launch.model_dump()
+            return await self._hold(session, workload_config, launch)
         return await self._session_service.start_session(
             session.id,
             definition=resolved_definition,
@@ -216,6 +360,294 @@ class ForgeService:
             workload_config=workload_config or None,
         )
 
+    # -- A run's unit and the members it hosts ---------------------------------------------
+
+    async def _require_open_unit(self, unit_id: UUID, data, principal: Principal | None) -> None:
+        """Refuse a member for a unit that is missing, is not a unit, belongs to someone else
+        or to another run, or has already started: a run's members are fixed at that point."""
+        unit = await self._session_service.get_session(unit_id)
+        if unit is None:
+            raise HostedUnitNotFoundError(unit_id, f"unit session {unit_id} does not exist")
+        if not unit.is_unit_root:
+            raise HostedMemberError(
+                unit_id,
+                "add a member to",
+                unit.status,
+                f"session {unit_id} is not a unit: create it with hosts_members to host a "
+                "run's members",
+            )
+        if unit.status != SessionStatus.CREATED:
+            raise HostedMemberError(
+                unit_id,
+                "add a member to",
+                unit.status,
+                f"a run's members are fixed when its unit starts: unit session {unit_id} is "
+                f"{unit.status.value}",
+            )
+        if principal is not None and (
+            unit.owner_id != principal.user_id or unit.tenant_id != principal.tenant_id
+        ):
+            raise HostedMemberError(
+                unit_id,
+                "add a member to",
+                unit.status,
+                f"unit session {unit_id} belongs to another owner",
+            )
+        unit_run = unit.workload_config.get(WORKFLOW_RUN_ID_KEY)
+        member_run = getattr(data, "workflow_run_id", None)
+        if (str(member_run) if member_run is not None else None) != unit_run:
+            raise HostedMemberError(
+                unit_id,
+                "add a member to",
+                unit.status,
+                f"unit session {unit_id} hosts workflow run {unit_run}, not {member_run}: a "
+                "member joins the unit of its own run",
+            )
+
+    async def _hold(self, session: Session, workload_config: dict, launch: HostedLaunch) -> Session:
+        """Keep a created session, with its launch, until its unit starts."""
+        held = await self._session_service._repository.update(
+            session.model_copy(
+                update={
+                    "workload_config": workload_config,
+                    "session_definition": launch.definition,
+                    "workload_type": launch.workload_type,
+                    "updated_at": datetime.now(UTC),
+                }
+            )
+        )
+        await self._publish_updated(held)
+        return held
+
+    async def _hold_member(
+        self,
+        session: Session,
+        unit_id: UUID,
+        workload_config: dict,
+        launch: HostedLaunch,
+        principal: Principal | None,
+        *,
+        created: bool,
+    ) -> Session:
+        """Attach a created session to its unit, atomically with the unit still being open."""
+        held = await self._hold(session, workload_config, launch)
+        attached = await self._session_service._repository.attach_to_unit(
+            held.id, unit_id, self._hosted_member_base_port
+        )
+        if attached is None:
+            # The unit started (or was removed) after the check above. The member this call
+            # created must not outlive the refusal.
+            if created:
+                await self._session_service.delete_session(held.id, principal=principal)
+            raise HostedMemberError(
+                unit_id,
+                "add a member to",
+                None,
+                f"a run's members are fixed when its unit starts: unit session {unit_id} "
+                "started or was removed while the member was being added",
+            )
+        await self._publish_updated(attached)
+        return await self._hosted_view(attached)
+
+    async def _publish_updated(self, session: Session) -> None:
+        broadcaster = self._session_service._broadcaster
+        if broadcaster is not None:
+            await broadcaster.publish_session_updated(session)
+
+    async def _hosted_view(self, session: Session, *, reconcile: bool = False) -> Session:
+        """``session`` as its unit shows it, when it is a hosted member; else unchanged."""
+        unit_id = getattr(session, "hosted_by", None)
+        if not isinstance(unit_id, UUID):
+            return session
+        unit = (
+            await self._session_service.reconcile_session_if_active(unit_id)
+            if reconcile
+            else await self._session_service.get_session(unit_id)
+        )
+        return self._member_in(session, unit)
+
+    def _member_in(self, member: Session, unit: Session | None) -> Session:
+        """``member`` as its unit shows it, at the endpoint its runtime names for it."""
+        if unit is None:
+            return member.model_copy(
+                update={
+                    "status": SessionStatus.FAILED,
+                    "chat_endpoint": None,
+                    "code_endpoint": None,
+                    "error": f"its unit session {member.hosted_by} is gone",
+                }
+            )
+        return member.hosted_in(unit, self._session_service.member_chat_endpoint(member))
+
+    async def _hosted_views(self, sessions: list[Session]) -> list[Session]:
+        unit_ids = {
+            s.hosted_by for s in sessions if isinstance(getattr(s, "hosted_by", None), UUID)
+        }
+        if not unit_ids:
+            return sessions
+        known = {s.id: s for s in sessions if s.id in unit_ids}
+        missing = [unit_id for unit_id in unit_ids if unit_id not in known]
+        units = {**known, **await self._session_service.get_many_sessions(missing)}
+        return [
+            self._member_in(s, units.get(s.hosted_by))
+            if isinstance(getattr(s, "hosted_by", None), UUID)
+            else s
+            for s in sessions
+        ]
+
+    async def _prepare_member(
+        self, member: Session, principal: Principal | None, *, launch_spec: str | None
+    ) -> Session:
+        """A new launch of a member: its own launch id (so its own credential), and STARTING.
+
+        The previous launch's credential and mesh identity are retired exactly as a
+        restart of an ordinary session retires them.
+        """
+        launch = HostedLaunch.model_validate(member.workload_config.get(HOSTED_LAUNCH_KEY) or {})
+        await self._session_service._retire_mesh_identity(
+            member.id, launch_id_of(member.workload_config)
+        )
+        workload_config = self._session_service._with_forge_mcp_launch(
+            member, principal, member.workload_config, launch_spec or launch.launch_spec
+        )
+        prepared = member.model_copy(
+            update={
+                "status": SessionStatus.STARTING,
+                "session_definition": launch.definition or member.session_definition,
+                "workload_type": launch.workload_type,
+                "workload_config": workload_config,
+                "chat_endpoint": self._session_service.member_chat_endpoint(member),
+                "code_endpoint": None,
+                "error": None,
+                "updated_at": datetime.now(UTC),
+            }
+        )
+        return await self._session_service._repository.update(prepared)
+
+    async def _start_unit(
+        self,
+        root: Session,
+        *,
+        launch_spec: str | None,
+        principal: Principal | None,
+        integration_ids: list[str] | None,
+    ) -> Session:
+        """Start a unit root together with every member it hosts.
+
+        The members get their new launches first, because the runtime that renders the unit
+        reads them (and mints their credentials) while the root starts. If the root cannot
+        start, every member is put back as it was.
+        """
+        await self.ensure_access(root, principal, "start")
+        if not root.can_start():
+            raise SessionStateError(root.id, "start", root.status)
+        launch = HostedLaunch.model_validate(root.workload_config[HOSTED_UNIT_KEY])
+        repository = self._session_service._repository
+        members = await repository.list_hosted(root.id)
+        unit_config = {
+            # The pool execution the service pinned stays on the row; a caller may not send it.
+            **{k: v for k, v in root.workload_config.items() if k != "_compute_execution"},
+            HOSTED_MEMBERS_KEY: [{"id": str(m.id), "port": m.hosted_port} for m in members],
+        }
+        # From the members' STARTING until the root's start task exists, a read of a member
+        # must not reconcile it against a runtime the root has not spawned yet.
+        async with self._session_service.unit_starting(root.id):
+            prepared = [
+                await self._prepare_member(m, principal, launch_spec=launch_spec) for m in members
+            ]
+            try:
+                started = await self._session_service.start_session(
+                    root.id,
+                    definition=launch.definition,
+                    launch_spec=launch_spec or launch.launch_spec,
+                    principal=principal,
+                    terminal_restricted=launch.terminal_restricted,
+                    credential_names=launch.credential_names,
+                    integration_ids=integration_ids or launch.integration_ids,
+                    resource_config=launch.resource_config or None,
+                    system_prompt=launch.system_prompt,
+                    initial_prompt=launch.initial_prompt,
+                    workload_type=launch.workload_type,
+                    workload_config=unit_config,
+                )
+            except BaseException:
+                for original in members:
+                    await repository.update(original)
+                raise
+        for member in prepared:
+            await self._publish_updated(member)
+        return started
+
+    async def _start_member(
+        self,
+        member: Session,
+        *,
+        launch_spec: str | None,
+        principal: Principal | None,
+    ) -> Session:
+        """Start a member again inside its running unit, under a new launch."""
+        await self.ensure_access(member, principal, "start")
+        unit = await self._session_service.reconcile_session_if_active(member.hosted_by)
+        if unit is None or unit.status not in _LIVE_UNIT_STATUSES:
+            raise HostedMemberError(
+                member.id,
+                "start",
+                member.status,
+                f"session {member.id} runs in unit session {member.hosted_by}, which is "
+                f"{unit.status.value if unit is not None else 'gone'}: start the unit, and its "
+                "members start with it",
+            )
+        effective = member.hosted_in(unit)
+        if not effective.can_start():
+            raise SessionStateError(member.id, "start", effective.status)
+        prepared = await self._prepare_member(member, principal, launch_spec=launch_spec)
+        try:
+            await self._session_service.restart_hosted_member(prepared, principal)
+        except BaseException:
+            # The member did not restart: it is as it was, not recorded under a new launch.
+            await self._session_service._repository.update(member)
+            raise
+        await self._publish_updated(prepared)
+        return self._member_in(prepared, unit)
+
+    async def _end_member(
+        self, member: Session, principal: Principal | None, *, unit_running: bool
+    ) -> Session:
+        return await self._session_service.end_hosted_member(
+            member, principal, unit_running=unit_running
+        )
+
+    async def _stop_member(self, member: Session, principal: Principal | None) -> Session:
+        """Stop one member's Skuld and harness; the unit and the other members keep running."""
+        await self.ensure_access(member, principal, "stop")
+        unit = await self._session_service.reconcile_session_if_active(member.hosted_by)
+        if unit is None:
+            raise HostedMemberError(
+                member.id,
+                "stop",
+                member.status,
+                f"unit session {member.hosted_by} of session {member.id} is gone",
+            )
+        effective = member.hosted_in(unit)
+        if not effective.can_stop():
+            raise SessionStateError(member.id, "stop", effective.status)
+        # A member has no process of its own to stop once its unit is down (failed, stopping
+        # or stopped): the unit's pod took every member's Skuld with it, and asking a Skuld
+        # that is gone is not a stop that can succeed. Ending the member then only ends its
+        # record, credential and identity. While the unit is up, a Skuld that cannot be
+        # asked is a real failure and is raised.
+        try:
+            stopped = await self._end_member(
+                member.model_copy(update={"status": effective.status}),
+                principal,
+                unit_running=unit.status in _LIVE_UNIT_STATUSES,
+            )
+        except HostedUnitError as exc:
+            # The runtime could not confirm the member's process ended: the member stays as
+            # it was and the caller is told why (a session state conflict, 409), not 500.
+            raise HostedMemberError(member.id, "stop", effective.status, str(exc)) from exc
+        return self._member_in(stopped, unit)
+
     def _resolve_session_definition(
         self,
         model: str,
@@ -223,17 +655,33 @@ class ForgeService:
     ) -> str | None:
         if explicit_definition:
             return explicit_definition
-        if self._pricing_provider is None:
-            return None
-        normalized_model = str(model or "").strip()
-        if not normalized_model:
-            return None
-        for candidate in self._pricing_provider.list_models():
-            if str(getattr(candidate, "id", "") or "").strip() != normalized_model:
-                continue
-            definition = str(getattr(candidate, "session_definition", "") or "").strip()
-            return definition or None
-        return None
+        return catalog_session_definition(self._pricing_provider, model)
+
+    def check_playable(
+        self, model: str, persona: Mapping[str, Any], *, definition: str | None = None
+    ) -> Playability:
+        """Whether ``persona`` can be played on the harness a session of ``model`` runs."""
+        if self._persona_playability is None:
+            raise PersonaNotPlayableError(
+                "this Forge cannot check personas against harnesses: no persona playability "
+                "checker is configured"
+            )
+        return self._persona_playability.check(model, persona, definition=definition)
+
+    def require_playable(
+        self, model: str, persona: Mapping[str, Any] | None, definition: str | None
+    ) -> None:
+        """Refuse a session whose persona its harness would refuse to start, before it exists."""
+        if persona is None:
+            return
+        verdict = self.check_playable(model, persona, definition=definition)
+        if verdict.playable:
+            return
+        raise PersonaNotPlayableError(
+            f"persona {persona.get('id')!r} cannot run on model {model!r} "
+            f"({verdict.transport or verdict.definition or 'no harness'}): "
+            + "; ".join(verdict.reasons)
+        )
 
     async def with_read_states(
         self, sessions: list[Session], principal: Principal | None
@@ -246,15 +694,52 @@ class ForgeService:
         return await self._session_service.changes_since(cursor, principal)
 
     async def get_read_state(self, session_id: UUID, principal: Principal) -> SessionReadState:
-        return await self._session_service.get_read_state(session_id, principal)
+        await self.ensure_transcript_reader(session_id, principal)
+        return await self._session_service.get_read_state(session_id, principal.user_id)
 
     async def change_read_state(
         self, session_id: UUID, change: SessionReadStateChange, principal: Principal
     ) -> SessionReadState:
-        return await self._session_service.change_read_state(session_id, change, principal)
+        await self.ensure_transcript_reader(session_id, principal)
+        return await self._session_service.change_read_state(session_id, change, principal.user_id)
+
+    async def ensure_transcript_reader(self, session_id: UUID, principal: Principal | None) -> None:
+        """``ensure_transcript_access`` by id, on the stored row (no pod reconcile).
+
+        Raises:
+            SessionNotFoundError: No such session.
+            PermissionError: Authorization is configured and no principal was given.
+            SessionAccessDeniedError: The caller holds neither right.
+        """
+        session = await self._session_service.get_session(session_id)
+        if session is None:
+            raise SessionNotFoundError(session_id)
+        await self.ensure_transcript_access(session, principal)
+
+    async def ensure_transcript_access(self, session: Session, principal: Principal | None) -> None:
+        """Authorize reading a session's conversation: "read", or "read_room".
+
+        The owner, admins and tenant viewers read every session ("read"). The people
+        in its room (an active participant grant, or the session's project) read its
+        transcript, tool results, attachments and presented files, and keep their own
+        read state of it, on "read_room": the same right that opens the room.
+
+        Raises:
+            PermissionError: Authorization is configured and no principal was given.
+            SessionAccessDeniedError: The caller holds neither right.
+        """
+        try:
+            await self._session_service._check_access(session, principal, "read")
+            return
+        except SessionAccessDeniedError:
+            pass
+        await self._session_participant_service.check_room_access(session, principal, "read_room")
 
     async def get_session(self, session_id: UUID) -> Session | None:
-        return await self._session_service.reconcile_session_if_active(session_id)
+        session = await self._session_service.reconcile_session_if_active(session_id)
+        if session is None:
+            return None
+        return await self._hosted_view(session, reconcile=True)
 
     async def reconcile_session(self, session_id: UUID) -> Session | None:
         """Force a pod-status reconcile of one session (used on a dead-pod op)."""
@@ -263,7 +748,8 @@ class ForgeService:
     async def get_authorized_session(
         self, session_id: UUID, *, principal: Principal | None, action: str
     ) -> Session:
-        return await self._session_service.get_authorized_session(session_id, principal, action)
+        session = await self._session_service.get_authorized_session(session_id, principal, action)
+        return await self._hosted_view(session)
 
     async def ensure_access(
         self,
@@ -319,6 +805,9 @@ class ForgeService:
         principal: Principal | None = None,
         cleanup_targets=None,
     ) -> bool:
+        members = await self._session_service._repository.list_hosted(session_id)
+        if members:
+            raise HostedUnitInUseError(session_id, len(members))
         return await self._session_service.delete_session(
             session_id,
             principal=principal,
@@ -333,6 +822,16 @@ class ForgeService:
         principal: Principal | None = None,
         integration_ids: list[str] | None = None,
     ) -> Session:
+        session = await self._session_service.get_session(session_id)
+        if isinstance(session, Session) and session.hosted_by is not None:
+            return await self._start_member(session, launch_spec=launch_spec, principal=principal)
+        if isinstance(session, Session) and session.is_unit_root:
+            return await self._start_unit(
+                session,
+                launch_spec=launch_spec,
+                principal=principal,
+                integration_ids=integration_ids,
+            )
         return await self._session_service.start_session(
             session_id,
             launch_spec=launch_spec,
@@ -346,6 +845,15 @@ class ForgeService:
         *,
         principal: Principal | None = None,
     ) -> Session:
+        session = await self._session_service.get_session(session_id)
+        if isinstance(session, Session) and session.hosted_by is not None:
+            return await self._stop_member(session, principal)
+        if isinstance(session, Session) and session.is_unit_root:
+            members = await self._session_service._repository.list_hosted(session.id)
+            stopped = await self._session_service.stop_session(session_id, principal=principal)
+            for member in members:
+                await self._end_member(member, principal, unit_running=False)
+            return stopped
         return await self._session_service.stop_session(session_id, principal=principal)
 
     async def update_activity(
@@ -658,3 +1166,18 @@ def _seeded_description(data) -> SessionDescriptionPatch | None:
     if not values:
         return None
     return SessionDescriptionPatch.model_validate(values)
+
+
+def catalog_session_definition(pricing_provider: PricingProvider | None, model: str) -> str | None:
+    """The session definition the model catalog gives ``model``, if it names one."""
+    if pricing_provider is None:
+        return None
+    normalized_model = str(model or "").strip()
+    if not normalized_model:
+        return None
+    for candidate in pricing_provider.list_models():
+        if str(getattr(candidate, "id", "") or "").strip() != normalized_model:
+            continue
+        definition = str(getattr(candidate, "session_definition", "") or "").strip()
+        return definition or None
+    return None

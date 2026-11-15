@@ -124,7 +124,9 @@ class EventTriggerAdapter:
         owner_id: str,
         default_model: str = "claude-sonnet-4-6",
         dedup_cache_size: int = 10_000,
+        platform_verifier: object | None = None,
     ) -> None:
+        self._platform_verifier = platform_verifier
         self._subscriber = subscriber
         self._saga_repo = saga_repo
         self._volundr_factory = volundr_factory
@@ -186,11 +188,21 @@ class EventTriggerAdapter:
 
     async def _handle_event(self, event: SleipnirEvent) -> None:
         """Dispatch *event* to any matching rules."""
+        verified = False
         for rule in self._rules:
             if not fnmatch.fnmatch(event.event_type, rule.event_pattern):
                 continue
             if not matches_filter(event.payload, rule.filter):
                 continue
+
+            if self._platform_verifier is not None and not verified:
+                # A rule matched, so this event would start a saga: it must have been
+                # published by a platform service. An event no rule wants is not checked.
+                checked = self._platform_verifier.accept(event)
+                if checked is None:
+                    return
+                event = checked
+                verified = True
 
             dedup_key = self._dedup_key(event, rule.saga_template)
             if dedup_key in self._seen_set:
@@ -627,6 +639,7 @@ def build_event_trigger_adapter(
     volundr_factory: VolundrFactory,
     event_bus: EventBusPort,
     config: object,  # ting.config.EventTriggerConfig
+    platform_verifier: object | None = None,
 ) -> EventTriggerAdapter:
     """Construct an EventTriggerAdapter from application config.
 
@@ -657,4 +670,5 @@ def build_event_trigger_adapter(
         owner_id=cfg.owner_id,
         default_model=cfg.default_model,
         dedup_cache_size=cfg.dedup_cache_size,
+        platform_verifier=platform_verifier,
     )

@@ -42,24 +42,27 @@ export interface ComputeHostPayload {
   connector: string;
   connection: {
     kind: string;
-    target: string;
+    /** Absent for a reader who may not manage hosts. */
+    target?: string;
     connected: boolean;
     since: string | null;
-    last_error: string | null;
+    last_error?: string | null;
   };
   slots: number | null;
   sessions: Array<{
     slot: number;
-    session_id: string;
+    /** Absent for a reader who may not manage hosts. */
+    session_id?: string;
     state: ComputeHost['sessions'][number]['state'];
   }>;
   slots_free: number;
   facts: HostFactsPayload | null;
-  suggested_slots: SuggestedSlots | null;
-  findings: string[];
-  host_key_fingerprint: string;
+  /** The operator-only fields below are absent for a reader who may not manage hosts. */
+  suggested_slots?: SuggestedSlots | null;
+  findings?: string[];
+  host_key_fingerprint?: string;
   registered_at: string;
-  registered_by: string;
+  registered_by?: string;
   last_checked_at: string | null;
 }
 
@@ -100,6 +103,7 @@ export interface NewPairingCodePayload extends PairingCodePayload {
 
 export interface ComputeHostsPayload {
   pool_id: string;
+  can_manage: boolean;
   hosts: ComputeHostPayload[];
   summary: {
     hosts: number;
@@ -109,8 +113,9 @@ export interface ComputeHostsPayload {
     free_by_tag_set: ComputeSummary['freeByTagSet'];
     warm_targets: WarmTargetPayload[];
   };
-  connectors: Array<{ binding_id: string; kind: string; label: string }>;
-  runtimes: Array<{
+  /** `connectors`, `runtimes` and `pairing_codes` are absent when `can_manage` is false. */
+  connectors?: Array<{ binding_id: string; kind: string; label: string }>;
+  runtimes?: Array<{
     execution: string;
     runtime: string;
     label: string;
@@ -118,7 +123,7 @@ export interface ComputeHostsPayload {
     allowed: boolean;
     refusal: string | null;
   }>;
-  pairing_codes: PairingCodePayload[];
+  pairing_codes?: PairingCodePayload[];
 }
 
 export function invalidPayload(what: string, source: string): Error {
@@ -152,24 +157,24 @@ export function toComputeHost(host: ComputeHostPayload): ComputeHost {
     connector: host.connector,
     connection: {
       kind: host.connection.kind,
-      target: host.connection.target,
+      target: host.connection.target ?? '',
       connected: host.connection.connected,
       since: host.connection.since,
-      lastError: host.connection.last_error,
+      lastError: host.connection.last_error ?? null,
     },
     slots: host.slots,
     sessions: host.sessions.map((session) => ({
       slot: session.slot,
-      sessionId: session.session_id,
+      sessionId: session.session_id ?? null,
       state: session.state,
     })),
     slotsFree: host.slots_free,
     facts: toFacts(host.facts),
-    suggestedSlots: host.suggested_slots,
-    findings: host.findings,
-    hostKeyFingerprint: host.host_key_fingerprint,
+    suggestedSlots: host.suggested_slots ?? null,
+    findings: host.findings ?? [],
+    hostKeyFingerprint: host.host_key_fingerprint ?? null,
     registeredAt: host.registered_at,
-    registeredBy: host.registered_by,
+    registeredBy: host.registered_by ?? null,
     lastCheckedAt: host.last_checked_at,
   };
 }
@@ -224,21 +229,28 @@ export function toComputeHostsOverview(
 ): ComputeHostsOverview {
   if (
     !payload ||
+    typeof payload.can_manage !== 'boolean' ||
     !Array.isArray(payload.hosts) ||
-    !Array.isArray(payload.pairing_codes) ||
-    !Array.isArray(payload.connectors) ||
-    !Array.isArray(payload.runtimes) ||
     !payload.summary
   ) {
     throw invalidPayload('compute hosts', source);
   }
   const { summary } = payload;
-  const connectors: ComputeConnector[] = payload.connectors.map((connector) => ({
+  // A reader who may not manage hosts is sent none of the Add host flow's inputs; a manager
+  // is sent all three, and a body missing one is not the documented shape.
+  const { connectors, runtimes, pairing_codes: pairingCodes } = payload;
+  if (
+    payload.can_manage &&
+    (!Array.isArray(connectors) || !Array.isArray(runtimes) || !Array.isArray(pairingCodes))
+  ) {
+    throw invalidPayload('compute hosts', source);
+  }
+  const connectorViews: ComputeConnector[] = (connectors ?? []).map((connector) => ({
     bindingId: connector.binding_id,
     kind: connector.kind,
     label: connector.label,
   }));
-  const runtimes: ComputeRuntime[] = payload.runtimes.map((runtime) => ({
+  const runtimeViews: ComputeRuntime[] = (runtimes ?? []).map((runtime) => ({
     execution: runtime.execution,
     runtime: runtime.runtime,
     label: runtime.label,
@@ -248,6 +260,7 @@ export function toComputeHostsOverview(
   }));
   return {
     poolId: payload.pool_id,
+    canManage: payload.can_manage,
     hosts: payload.hosts.map(toComputeHost),
     summary: {
       hosts: summary.hosts,
@@ -257,9 +270,9 @@ export function toComputeHostsOverview(
       freeByTagSet: summary.free_by_tag_set,
       warmTargets: summary.warm_targets,
     },
-    connectors,
-    runtimes,
-    pairingCodes: payload.pairing_codes.map(toPairingCode),
+    connectors: connectorViews,
+    runtimes: runtimeViews,
+    pairingCodes: (pairingCodes ?? []).map(toPairingCode),
   };
 }
 

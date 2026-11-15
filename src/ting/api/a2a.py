@@ -90,7 +90,12 @@ from ting.api.workflows import (
 from ting.domain.a2a_launch import A2ALaunchReservation
 from ting.domain.exceptions import WorkflowDocumentError
 from ting.domain.execution_snapshot import pinned_child_workflow
-from ting.domain.models import WorkflowCampaign, WorkflowCampaignStatus, WorkflowDefinition
+from ting.domain.models import (
+    TERMINAL_CAMPAIGN_STATUSES,
+    WorkflowCampaign,
+    WorkflowCampaignStatus,
+    WorkflowDefinition,
+)
 from ting.domain.services.workflow_runs import WorkflowRuns
 from ting.domain.ticket_coordinator import TICKET_METADATA_KEY, ticket_of
 from ting.domain.utils import _session_name
@@ -163,8 +168,9 @@ _STATUS_TO_STATE: dict[WorkflowCampaignStatus, int] = {
     WorkflowCampaignStatus.BLOCKED: TaskState.TASK_STATE_INPUT_REQUIRED,
     WorkflowCampaignStatus.COMPLETED: TaskState.TASK_STATE_COMPLETED,
     WorkflowCampaignStatus.FAILED: TaskState.TASK_STATE_FAILED,
+    WorkflowCampaignStatus.CANCELED: TaskState.TASK_STATE_CANCELED,
 }
-_TERMINAL_STATUSES = frozenset({WorkflowCampaignStatus.COMPLETED, WorkflowCampaignStatus.FAILED})
+_TERMINAL_STATUSES = TERMINAL_CAMPAIGN_STATUSES
 _STATES_THAT_MAY_HOLD_A_GATE = frozenset(
     {TaskState.TASK_STATE_WORKING, TaskState.TASK_STATE_INPUT_REQUIRED}
 )
@@ -678,7 +684,7 @@ class WorkflowTaskHandler(RequestHandler):
             owner_id=self._principal.user_id, saga_id=saga_id, issue_id=issue_id
         )
         answered = any(
-            campaign.status != WorkflowCampaignStatus.FAILED
+            campaign.status not in {WorkflowCampaignStatus.FAILED, WorkflowCampaignStatus.CANCELED}
             and campaign.created_at >= coordinator.requested_at
             for campaign in campaigns
         )
@@ -705,11 +711,10 @@ class WorkflowTaskHandler(RequestHandler):
         """Reserve the parent execution required by a fan-out A2A skill.
 
         The A2A task surface launches the same workflow documents as the
-        research API. A coordinator with ``workflow_execution_*`` tools must
-        therefore receive the owner-bound runtime context that only a durable
-        parent execution can mint.
+        research API, so a fan-out skill needs the durable parent execution
+        its ``subworkflow`` node expands.
         """
-        parent_node_id = durable_parent_node_id(workflow, workflow_snapshot)
+        parent_node_id = durable_parent_node_id(workflow)
         if parent_node_id is None:
             return None
         execution_repo = self._workflow_execution_repo()
@@ -1110,6 +1115,7 @@ class WorkflowTaskHandler(RequestHandler):
                 by=GateActor(
                     kind=ActorKind.AGENT if self._principal.actor else ActorKind.PERSON,
                     id=self._principal.actor or self._principal.user_id,
+                    name="" if self._principal.actor else self._principal.email,
                 ),
                 note=notes,
             )

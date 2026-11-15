@@ -11,6 +11,11 @@ export interface PresentedFileRef {
   mime?: string;
   /** Where it was in the session (`/workspace/...` or `/home/...`), when the broker recorded it. */
   path?: string;
+  /**
+   * The session that presented it, when another session did (a workflow run's member, whose
+   * files the run's room lists): it opens from that session's durable copy.
+   */
+  sessionId?: string;
 }
 
 export interface PresentedResource {
@@ -18,6 +23,8 @@ export interface PresentedResource {
   path: string;
   name: string;
   mime?: string;
+  /** The session that presented it, when it is not the session being read. */
+  sessionId?: string;
 }
 
 interface PartLike {
@@ -42,6 +49,7 @@ export function presentedFilesIn(
         name: typeof input.name === 'string' ? input.name : fileId,
         ...(typeof input.mime === 'string' ? { mime: input.mime } : {}),
         ...(typeof input.path === 'string' ? { path: input.path } : {}),
+        ...(typeof input.session_id === 'string' ? { sessionId: input.session_id } : {}),
       });
     }
   }

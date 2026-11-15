@@ -16,6 +16,7 @@ import signal
 import socket
 import time
 import uuid
+from collections.abc import Iterable
 from contextlib import suppress
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
@@ -25,9 +26,19 @@ from typing import Any
 import httpx
 from fastapi import WebSocket, WebSocketDisconnect  # noqa: F401
 
+from niuu.cap_telemetry import record_degraded
 from niuu.domain.conversation_timeline import TIMELINE_KEY, project_timeline, stamp_parts, timeline
 from niuu.domain.logging import LoggingConfig
+from niuu.domain.message_author import AUTHOR_KEY, MessageAuthor
 from niuu.domain.outcome import parse_outcome_block
+from niuu.domain.peer_message import (
+    PEER_MESSAGE_FRAME,
+    PeerAddress,
+    PeerKind,
+    PeerMessage,
+    PeerMessageError,
+)
+from niuu.domain.person_question import PERSON_ANSWER_MESSAGE
 from niuu.domain.presented_files import PRESENT_FILE_RPC_TYPE
 from niuu.domain.text_projection import projection_revision
 from niuu.domain.transcript_reducer import (
@@ -45,7 +56,8 @@ from niuu.domain.transcript_reducer import (
     steering_state_from_frame,
     steering_target_id,
 )
-from niuu.mesh.cluster import read_cluster_pub_addresses
+from niuu.mesh import mesh_event_prefix
+from niuu.mesh.attestation import VERIFIED_SENDER_KEY
 from niuu.mesh.discovery_builder import build_discovery_adapters
 from niuu.mesh.identity import MeshIdentity
 from niuu.observability import get_observability
@@ -99,7 +111,12 @@ from skuld.file_routes import (  # noqa: F401
 )
 from skuld.forge_mcp.integration import ForgeSessionMixin
 from skuld.history_hydration import fetch_durable_history, merge_history_turns
+from skuld.mesh_follows import MeshFollowMixin
+from skuld.mesh_topics import MeshTopics, mesh_topics
+from skuld.peer_inbox import PEER_STATE_RPC_TYPE, PeerInboxMixin, PeerMessageUnconfirmedError
+from skuld.person_questions import PersonQuestionMixin
 from skuld.preview import PreviewForwarder, PreviewPortWatcher
+from skuld.room_delivery import ROOM_MESSAGE_RPC_TYPE, RoomDelivery, RoomDeliveryError
 from skuld.service_manager import (  # noqa: F401
     ServiceCreateRequest,
     ServiceManager,
@@ -178,6 +195,17 @@ def _configure_logging() -> None:
 
 _configure_logging()
 logger = logging.getLogger("skuld.broker")
+
+#: Room participant types that are not agents: a message for everyone does not go to them.
+_NON_AGENT_PARTICIPANT_TYPES = frozenset({"human", "workflow"})
+
+#: What a workflow run's root announces itself as on the run's mesh: it runs no agent.
+RUN_ROOT_PERSONA = "coordinator"
+#: How a run's root is named in the run's room.
+RUN_ROOT_DISPLAY_NAME = "Coordinator"
+RUN_ROOT_DESCRIPTION = (
+    "The run's root: it publishes the run's step offers and hosts its room; it runs no agent."
+)
 
 FORGE_SESSIONS_PATH = "/api/v1/forge/sessions"
 FORGE_CHRONICLES_PATH = "/api/v1/forge/chronicles"
@@ -381,6 +409,10 @@ _VIEWER_MESSAGE_TYPES = frozenset(
         "discover_slash_commands",
         "get_effort",
         "get_runtime_options",
+        # A person answers a question the agent put to them. Any room member may send it;
+        # the handler lets through only the addressee, or an approver (see
+        # PersonQuestionMixin.handle_person_answer).
+        PERSON_ANSWER_MESSAGE,
     }
 )
 # Approver additionally resolves the tool-permission / operator-question wait.
@@ -402,6 +434,9 @@ _OWNER_ONLY_MESSAGE_TYPES = frozenset(
         "set_max_thinking_tokens",
         "resend_initial_prompt",
         "publish_event",
+        # Forge hands another agent's message to this session. It claims a sender, so only the
+        # session's owner connection (Forge acting for it) may send one.
+        PEER_MESSAGE_FRAME,
     }
 )
 _ROOM_ROLE_RANK = {"viewer": 0, "approver": 1, "owner": 2}
@@ -467,6 +502,9 @@ class Broker(
     ActivityReportingMixin,
     ChronicleMixin,
     WorkflowStepMixin,
+    PeerInboxMixin,
+    PersonQuestionMixin,
+    MeshFollowMixin,
 ):
     """WebSocket broker for Claude Code sessions.
 
@@ -481,6 +519,8 @@ class Broker(
     ):
         self._settings = settings or SkuldSettings()
         self._init_workflow_steps()
+        self._init_peer_inbox()
+        self._init_mesh_follows()
         self._ws_identity = None
         self._ws_authorization = None
         if self._settings.ws_auth.enforce_ownership:
@@ -500,6 +540,10 @@ class Broker(
             if not isinstance(self._ws_authorization, AuthorizationPort):
                 raise TypeError("WebSocket authorization must implement AuthorizationPort")
 
+        #: The session voice channel (``skuld.voice``), built at startup when enabled.
+        self._voice_channel = None
+        #: The hosted room as a room call sees it, when the channel is bound to the room.
+        self._voice_room = None
         self._room_role_resolver = None
         if self._settings.ws_auth.room_role_source == "remote":
             from skuld.room_role_port import RoomRoleResolverPort
@@ -529,8 +573,10 @@ class Broker(
         self.preview_forwarder: PreviewForwarder | None = None
         self._channels = ChannelRegistry()
         self._http_client: httpx.AsyncClient | None = None
-        self._http_client_jwt: str | None = None  # JWT used to create _http_client
         self._http_client_auth_header: str = ""
+        # Carries the session credential on this session's own record (log, activity,
+        # usage, message claims); see EventLogMixin._get_session_http_client.
+        self._session_http_client: httpx.AsyncClient | None = None
         self._workload_jwt: str | None = None
         self._workload_jwt_expires_at: float = 0.0
         self._sleipnir_publisher: SleipnirPublisher = sleipnir_publisher or InProcessBus()
@@ -559,6 +605,9 @@ class Broker(
         self._session_runtime_cache = None
         self._session_tools_cache = None
         self._forge_mcp_toolbox_cache = None
+        self._memory_gateway_cache = None
+        # The launch context pack, fetched once in startup() when memory is on.
+        self._memory_context_pack = None
         # What the session's persona was projected into on this start (id, revision, engine,
         # projected arguments and the gaps stated as notes); empty without a persona.
         self._persona_status: dict[str, object] = {}
@@ -591,6 +640,10 @@ class Broker(
         self._pending_attention: dict[str, str] = {}
         self._activity_heartbeat_task: asyncio.Task[None] | None = None
         self._conversation_turns: list[ConversationTurn] = []
+        # User ids of every person who has spoken in this session, restored from the
+        # local history and the durable log. More than one means the model is told who
+        # said each message (see _author_prefix).
+        self._human_author_ids: set[str] = set()
         self._pending_assistant_content: str = ""
         self._pending_assistant_parts: list[dict] = []
         # Tool details are available before their live preview is sent, including
@@ -609,6 +662,7 @@ class Broker(
         self._startup_ready = False
         self._startup_state = "created"
         self._startup_failure = ""
+        self._shutdown_started = False
         self._peer_pending_commands: dict[str, list[str]] = {}
         self._git_workspace_checkpoint: GitWorkspaceCheckpoint | None = None
         # Genuine agent questions: a peer that emits help_needed is asking the
@@ -660,6 +714,18 @@ class Broker(
 
         # Mesh adapter — only active when mesh.enabled is True
         self._mesh_adapter: Any = None
+        #: Shares this session's work with its realm's room (``mesh.share_work``); None off.
+        self._work_sharer: Any = None
+        #: The turn in progress answers only teammates (a team's agent): its text and tool
+        #: work stay in this session; the room hears what it sends them. Cleared per turn.
+        self._turn_kept_from_room = False
+        self._mesh_attested: Any = None
+        self._mesh_topics: MeshTopics | None = None
+        self._mesh_identity: Any = None
+        self._mesh_discovery: Any = None
+        # The nng transport and the PUB address it announced, when the mesh runs on nng.
+        self._mesh_nng_transport: Any = None
+        self._mesh_pub_address: str | None = None
 
         # Optional mesh-to-collaboration bridge.
         self._collaboration_mesh_bridge: Any = None
@@ -683,6 +749,7 @@ class Broker(
                 publish_presence_event=self._publish_room_presence_event,
                 report_usage=self._report_usage,
                 deliver_to_session=self._deliver_to_member_session,
+                host_identity=self._host_peer_address,
             )
         self._restored_room_members: dict[str, dict[str, Any]] = {}
 
@@ -690,10 +757,6 @@ class Broker(
         # first forwarded user message; None when disabled.
         self._reflex_injector: Any = None
         self._reflex_initialised = False
-
-        # JWT identity state — populated on first browser WebSocket connection
-        self._user_jwt: str | None = None
-        self._user_claims: dict = {}
 
     @staticmethod
     def _parse_trace_uuid(value: object) -> uuid.UUID:
@@ -729,9 +792,11 @@ class Broker(
                     participant_meta=t.get("participant_meta"),
                     thread_id=t.get("thread_id"),
                     visibility=t.get("visibility", "public"),
+                    author=t.get("author"),
                 )
                 for t in turns
             ]
+            self._note_authors_of_turns(self._conversation_turns)
             logger.info(
                 "Loaded %d conversation turns from %s",
                 len(self._conversation_turns),
@@ -740,28 +805,79 @@ class Broker(
         except Exception:
             logger.warning("Failed to load conversation history from %s", path, exc_info=True)
 
+    def _note_human_author(self, author: MessageAuthor | None) -> None:
+        """Count a person who spoke in this session (no author: nobody to count)."""
+        if author is not None:
+            self._human_author_ids.add(author.user_id)
+
+    def _note_authors_of_turns(self, turns: list[ConversationTurn]) -> None:
+        """Count the authors of already-recorded turns (restore after a restart)."""
+        for turn in turns:
+            if turn.role == "user":
+                self._note_human_author(MessageAuthor.from_wire(turn.author))
+
+    def _restore_durable_authors(self, frames: list) -> None:
+        """Count the authors of the durable log's human frames, so a restarted broker
+        knows the session already had more than one person speaking."""
+        for frame in frames:
+            if frame.kind in ("user", "user_confirmed"):
+                self._note_human_author(MessageAuthor.from_wire(frame.payload.get(AUTHOR_KEY)))
+
+    def _author_prefix(self, author: MessageAuthor | None) -> str:
+        """What opens a human message the model reads: ``[<name>] `` once more than one
+        person has spoken in this session, so every voice is attributed and none is
+        presumed to be "the user". A session with one person is unchanged."""
+        if author is None or len(self._human_author_ids) < 2:
+            return ""
+        return f"[{author.label}] "
+
+    def _author_for(self, sender_ws: WebSocket | None) -> MessageAuthor | None:
+        """The verified person behind the live connection *sender_ws*, if it has one.
+
+        ``sender_ws is None`` is an internally synthesized dispatch (Telegram, replay,
+        resume): there is no connection, so no author. A connection whose channel cannot
+        be found has none either.
+        """
+        if sender_ws is None:
+            return None
+        for ch in self._channels.channels:
+            if isinstance(ch, WebSocketChannel) and ch.ws is sender_ws:
+                return ch.author
+        return None
+
     def _save_conversation_history(self) -> None:
-        """Persist conversation history to disk."""
+        """Persist conversation history to disk; a write that fails raises.
+
+        The file is what the broker reloads on restart. A failed write used to be a
+        warning, so the session kept running while its history on disk stopped
+        moving, and a restart brought back an older conversation with no sign of
+        what was lost.
+        """
         path = self._conversation_history_path()
-        try:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            turns = [asdict(t) for t in self._conversation_turns]
-            turns = project_timeline(turns, self.session_id)
-            data = {"turns": turns, "projection_revision": projection_revision(turns)}
-            path.write_text(json.dumps(data, indent=2), encoding="utf-8")
-        except Exception:
-            logger.warning("Failed to save conversation history to %s", path, exc_info=True)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        turns = [asdict(t) for t in self._conversation_turns]
+        turns = project_timeline(turns, self.session_id)
+        data = {"turns": turns, "projection_revision": projection_revision(turns)}
+        path.write_text(json.dumps(data, indent=2), encoding="utf-8")
 
     def _append_turn(self, turn: ConversationTurn) -> dict | None:
-        """Append a turn and persist to disk; return its durable-log entry (if logging)."""
+        """Append a turn and persist it; return its durable-log entry (if logging).
+
+        The turn reaches the durable event log first, so a failed write of the local
+        history file (which raises) cannot also cost the turn its durable record.
+        """
         self._conversation_turns.append(turn)
-        self._save_conversation_history()
-        return self._enqueue_event_log(
+        entry = self._enqueue_event_log(
             {
                 "type": "conversation.turn",
                 "turn": asdict(turn),
             }
         )
+        self._save_conversation_history()
+        if self._voice_room is not None:
+            # A room call hears every post the room keeps, once it is durable.
+            self._voice_room.observe_turn(turn)
+        return entry
 
     def _serialize_in_progress_turn(self) -> dict | None:
         """Reconstruct the in-flight assistant turn as a turn-shaped dict (or None when idle).
@@ -847,18 +963,23 @@ class Broker(
         from niuu.mesh import (
             build_in_process_mesh,
             build_mesh_from_adapters_list,
-            resolve_peer_id,
         )
         from niuu.mesh.participant import MeshParticipant
         from niuu.mesh.transport_builder import (
-            build_nng_transport,
             build_transport,
             resolve_transport_kwargs,
         )
-        from skuld.mesh_adapter import SkuldMeshAdapter
+        from skuld.mesh_adapter import (
+            MeshConfigurationError,
+            MeshPeerIdError,
+            SkuldMeshAdapter,
+            resolve_mesh_peer_id,
+        )
 
         mesh_cfg = self._settings.mesh
-        own_peer_id = resolve_peer_id(mesh_cfg.peer_id)
+        # The one id of this session on the mesh: the transport, the certificate Forge signs,
+        # discovery and every reply route use it.
+        own_peer_id = resolve_mesh_peer_id(mesh_cfg.peer_id, self.session_id)
 
         def _sleipnir_transport(entry: dict[str, Any]) -> Any:
             transport_name = str(entry.get("transport") or mesh_cfg.transport or "nng")
@@ -892,18 +1013,27 @@ class Broker(
             from niuu.adapters.mesh.sleipnir_mesh import SleipnirMeshAdapter  # noqa: PLC0415
 
             if mesh_cfg.transport == "nng":
-                nng_cfg = getattr(mesh_cfg, "nng", None)
-                address = (
-                    getattr(nng_cfg, "pub_sub_address", "tcp://127.0.0.1:0")
-                    if nng_cfg
-                    else "tcp://127.0.0.1:0"
+                if not (mesh_cfg.discovery_adapters or mesh_cfg.adapters):
+                    raise MeshConfigurationError(
+                        "mesh.enabled with the nng transport has no peer discovery: a session "
+                        "dials only the peers discovery tells it about, so it would run alone "
+                        "and say nothing. Set mesh.discovery_adapters (`registry` for sessions "
+                        "that share a host, `k8s` in a cluster, `static` for a fixed list), or "
+                        "let the pod manager that starts this session set it"
+                    )
+                kwargs = resolve_transport_kwargs(
+                    self._settings,
+                    "nng",
+                    service_prefix="skuld",
+                    discovered_peers=self._discovered_pub_addresses,
                 )
-                peer_addresses = read_cluster_pub_addresses(mesh_cfg.adapters)
-                transport = build_nng_transport(
-                    address=address,
-                    service_id=f"skuld:{own_peer_id}",
-                    peer_addresses=peer_addresses or None,
-                )
+                # One id: the transport's, discovery's and the certificate's.
+                kwargs["service_id"] = own_peer_id
+                transport = build_transport("nng", **kwargs)
+                # Bind now so the address is known before discovery announces it.
+                await transport.bind()
+                self._mesh_nng_transport = transport
+                self._mesh_pub_address = transport.pub_address
             else:
                 transport = build_transport(
                     mesh_cfg.transport,
@@ -922,21 +1052,51 @@ class Broker(
                 rpc_reply_cache_size=mesh_cfg.rpc_reply_cache_size,
             )
 
+        # Who listens and what is published is declared: the persona's `consumes` and
+        # `produces` on top of the mesh config. The same declaration is announced to peers.
+        self._mesh_topics = mesh_topics(self._settings)
+        topics = self._mesh_topics
+
+        # Prove who sends what: sign and verify every message on whatever transport this is.
+        if mesh_cfg.attestation.required:
+            mesh = await self._attest_mesh(mesh, own_peer_id)
+        else:
+            logger.warning(
+                "mesh.attestation.required is false: this session accepts any claimed sender "
+                "on the mesh and its messages carry no proof"
+            )
+
         # Build discovery adapter using shared niuu.mesh.discovery_builder
+        run_root = self._settings.workflow_steps.root
         own_identity = MeshIdentity(
-            peer_id=mesh_cfg.peer_id or self.session_id or "skuld",
+            peer_id=own_peer_id,
             realm_id=mesh_cfg.realm_id,
-            persona=mesh_cfg.persona,
-            display_name="Skuld",
+            # A run's root runs no agent: it is the run's coordinator (it publishes the run's
+            # offers and hosts its room), never the coder the mesh config defaults to.
+            persona=RUN_ROOT_PERSONA if run_root else topics.persona_id or mesh_cfg.persona,
+            # What peers address this session by: its mesh name, else the session's name.
+            display_name=mesh_cfg.display_name or self._settings.session.name or "Skuld",
             participant_type="skuld",
-            capabilities=list(mesh_cfg.capabilities),
+            capabilities=[] if run_root else list(mesh_cfg.capabilities),
             permission_mode="full_access",
             version="0.1.0",
+            consumes_event_types=list(topics.consumes),
+            emits_event_types=(
+                list(topics.produces) if run_root else ["code.changed", *topics.produces]
+            ),
+            role=RUN_ROOT_PERSONA if run_root else topics.role,
+            description=RUN_ROOT_DESCRIPTION if run_root else topics.description,
+            pub_address=self._mesh_pub_address,
+            activity_state=self._activity_state,
+            busy=self._coarse_bucket(self._activity_state) == "running",
         )
+        # Kept current by `_set_activity_state`, so every heartbeat carries it.
+        self._mesh_identity = own_identity
         discovery = build_discovery_adapters(
             adapters_config=list(mesh_cfg.discovery_adapters or mesh_cfg.adapters),
             own_identity=own_identity,
             sleipnir_transport_builder=_sleipnir_transport,
+            attestor=self._mesh_attested.attestor if self._mesh_attested is not None else None,
         )
 
         if self._room_bridge is not None and discovery is not None:
@@ -954,6 +1114,9 @@ class Broker(
                     environment_id=getattr(peer, "realm_id", "") or mesh_cfg.realm_id,
                     participant_kind="mesh",
                     heartbeat_ttl_s=0.0,
+                    room_ids=self._realm_room_seat(
+                        getattr(peer, "realm_id", "") or mesh_cfg.realm_id
+                    ),
                 )
 
             def _on_join(peer: Any) -> None:
@@ -970,21 +1133,39 @@ class Broker(
 
             await discovery.watch(_on_join, _on_leave)
 
+        if self._mesh_nng_transport is not None and discovery is not None:
+            await discovery.watch(self._on_mesh_peer_change, self._on_mesh_peer_change)
+
         participant = MeshParticipant(
             mesh=mesh,
             discovery=discovery,
             peer_id=own_peer_id,
         )
 
+        self._mesh_discovery = discovery
         self._mesh_adapter = SkuldMeshAdapter(
             participant=participant,
-            transport=self._transport,
             config=mesh_cfg,
             session_id=self.session_id,
+            peer_inbox=self,
+            consumes_event_types=self._mesh_topics.consumes,
+            # The rooms this session is seated in: the hosts whose word about who a
+            # directed message is from it takes.
+            room_seats=tuple(self._settings.room.seats),
             # Flock members share the workspace, not this broker's loopback secret:
             # their present-file comes over the mesh they already speak.
-            rpc_handlers={PRESENT_FILE_RPC_TYPE: _present_peer_file},
+            rpc_handlers={
+                PRESENT_FILE_RPC_TYPE: _present_peer_file,
+                PEER_STATE_RPC_TYPE: self.peer_state_rpc,
+                ROOM_MESSAGE_RPC_TYPE: self.handle_room_message_rpc,
+            },
         )
+
+        if self._mesh_adapter.peer_id != own_identity.peer_id:
+            raise MeshPeerIdError(
+                f"the mesh runs as {self._mesh_adapter.peer_id!r} but discovery announces "
+                f"{own_identity.peer_id!r}; one session has one mesh peer id"
+            )
 
         try:
             await self._mesh_adapter.start()
@@ -992,16 +1173,24 @@ class Broker(
                 "Mesh adapter started (peer_id=%s)",
                 self._mesh_adapter.peer_id,
             )
+            if mesh_cfg.share_work:
+                self._work_sharer = self._build_work_sharer(topics.persona_id or mesh_cfg.persona)
+            # Listen again to what the session followed before a restart.
+            await self.apply_restored_follows()
 
             # Register Skuld + discovered mesh peers as room participants
             # so the browser UI shows them without a direct WebSocket.
             if self._room_bridge is not None:
+                # A run's root is the run's coordinator in its room too: the run's offers, its
+                # gates and its end are said by it, not by a broker called Skuld.
                 await self._room_bridge.register_mesh_peer(
                     peer_id=self._mesh_adapter.peer_id,
-                    persona="Skuld",
-                    display_name="Skuld",
-                    subscribes_to=list(mesh_cfg.consumes_event_types),
-                    emits=["code.changed"],
+                    persona=RUN_ROOT_PERSONA if run_root else "Skuld",
+                    display_name=RUN_ROOT_DISPLAY_NAME if run_root else "Skuld",
+                    subscribes_to=list(topics.consumes),
+                    emits=(
+                        list(topics.produces) if run_root else ["code.changed", *topics.produces]
+                    ),
                     tools=list(mesh_cfg.tools),
                     participant_type="skuld",
                     participant_kind="mesh",
@@ -1018,11 +1207,22 @@ class Broker(
                 from sleipnir.ports.events import SleipnirSubscriber
 
                 sleipnir_subscriber = self._mesh_adapter.sleipnir_subscriber
+                # Platform events are not mesh events: the relay reads the bus itself and
+                # checks each one it acts on (below), so it never sees the mesh-only wrapper.
+                raw_subscriber = sleipnir_subscriber
+                if sleipnir_subscriber is not None and self._mesh_attested is not None:
+                    # The room trusts what it shows: only verified mesh events, with the
+                    # sender and the projection taken from the proof, not the envelope.
+                    sleipnir_subscriber = self._mesh_attested.verified_subscriber(
+                        sleipnir_subscriber,
+                        event_prefix=mesh_event_prefix(mesh_cfg.realm_id),
+                    )
                 if sleipnir_subscriber is None:
                     # Fallback: InProcessBus implements both Publisher and Subscriber.
                     # Only use it if it actually satisfies the Subscriber interface.
                     if isinstance(self._sleipnir_publisher, SleipnirSubscriber):
                         sleipnir_subscriber = self._sleipnir_publisher
+                        raw_subscriber = sleipnir_subscriber
                     else:
                         logger.warning(
                             "Sleipnir publisher does not implement SleipnirSubscriber"
@@ -1038,7 +1238,7 @@ class Broker(
                         handle_frame=self._room_bridge.handle_collaboration_frame,
                         register_peer=self._room_bridge.register_mesh_peer,
                         has_participant=self._room_bridge.has_participant,
-                        session_id=self.session_id,
+                        session_id=self._room_event_session(),
                         environment_id=mesh_cfg.realm_id,
                     )
                     await self._collaboration_mesh_bridge.start()
@@ -1069,7 +1269,8 @@ class Broker(
                             )
 
                         self._observation_relay = ObservationRelay(
-                            sleipnir_subscriber,
+                            raw_subscriber,
+                            platform_verifier=self._platform_event_verifier(),
                             participant=lambda: self._room_bridge.participant(resident_peer),
                             patterns=self._settings.observation_relay.event_patterns,
                             send_directed=_relay_directed,
@@ -1083,7 +1284,131 @@ class Broker(
         except Exception as exc:
             logger.error("Mesh adapter start failed: %r", exc, exc_info=True)
             self._mesh_adapter = None
+            if self._mesh_attested is not None:
+                await self._mesh_attested.signer.stop()
+                self._mesh_attested = None
             raise
+
+    def _platform_event_verifier(self) -> Any | None:
+        """Checks the platform events this session acts on; ``None`` while signing is off."""
+        if self._mesh_attested is None:
+            return None
+        from niuu.mesh.platform_events import PlatformEventVerifier  # noqa: PLC0415
+
+        return PlatformEventVerifier(
+            self._mesh_attested.verifier,
+            event_max_age_s=self._settings.mesh.attestation.event_max_age_s,
+            on_refusal=self.record_unverified_mesh_sender,
+        )
+
+    async def _attest_mesh(self, mesh: Any, own_peer_id: str) -> Any:
+        """Wrap the mesh so it signs and verifies; fatal when this session cannot sign."""
+        from skuld.mesh_attestation import (  # noqa: PLC0415
+            MeshAttestationUnavailableError,
+            attest_mesh,
+        )
+
+        if not self.volundr_api_url:
+            raise MeshAttestationUnavailableError(
+                "the mesh needs Forge to certify this session's mesh identity, and "
+                "volundr_api_url is not set. Set it, or set mesh.attestation.required: false "
+                "to run the mesh unauthenticated"
+            )
+        mesh_cfg = self._settings.mesh
+        attested = await attest_mesh(
+            mesh,
+            config=mesh_cfg.attestation,
+            peer_id=own_peer_id,
+            session_id=str(self.session_id),
+            mesh_realm=mesh_cfg.realm_id,
+            forge_token=self._settings.forge_mcp.token,
+            http_client=self._get_http_client,
+            request_timeout_s=self._settings.forge_mcp.forge_request_timeout_s,
+            on_refusal=self.record_unverified_mesh_sender,
+        )
+        self._mesh_attested = attested
+        return attested
+
+    def _discovered_pub_addresses(self) -> list[str]:
+        """The PUB addresses of the peers discovery has found (what the nng SUB side dials).
+
+        A peer discovery found without an address cannot be dialed; that is said, once per
+        pass, rather than the peer being dropped from the table without a word.
+        """
+        discovery = self._mesh_discovery
+        if discovery is None:
+            return []
+        addresses: list[str] = []
+        for peer in discovery.peers().values():
+            if peer.pub_address:
+                addresses.append(peer.pub_address)
+                continue
+            logger.error(
+                "mesh peer %s has no nng PUB address, so this session cannot hear it: its "
+                "discovery must carry one (`k8s` needs mesh.nng.pub_sub_address's port as "
+                "`nng_port`)",
+                peer.peer_id,
+            )
+        return addresses
+
+    def _on_mesh_peer_change(self, _peer: Any) -> None:
+        """A peer joined or left: dial or hang up now, not at the next pass."""
+        transport = self._mesh_nng_transport
+        if transport is None:
+            return
+        task = asyncio.get_running_loop().create_task(
+            transport.refresh_peers(), name="skuld-mesh-refresh-peers"
+        )
+        task.add_done_callback(self._log_refresh_failure)
+
+    @staticmethod
+    def _log_refresh_failure(task: asyncio.Task) -> None:
+        if not task.cancelled() and task.exception() is not None:
+            logger.error("refreshing the nng peers failed", exc_info=task.exception())
+
+    def _build_work_sharer(self, persona: str) -> Any:
+        """What shares this member's replies, tool work and step closes with its realm's room."""
+        from skuld.shared_work import WorkSharer  # noqa: PLC0415
+
+        mesh = self._mesh_adapter._mesh
+
+        async def _publish(event: Any, topic: str) -> None:
+            await mesh.publish(event, topic)
+
+        return WorkSharer(
+            publish=_publish,
+            peer_id=self._mesh_adapter.peer_id,
+            persona=persona,
+            session_id=self.session_id,
+        )
+
+    def _room_event_session(self) -> str | None:
+        """The session the room's mesh events must be tagged with; None for a realm room.
+
+        A realm's room (a workflow run's, hosted by its first session) shows what every
+        member of the realm publishes, each under its own session; any other room shows
+        only what is tagged with this session.
+        """
+        return None if self._settings.room.realm_room else self.session_id
+
+    def _room_copies_cli_replies(self) -> bool:
+        """Whether this broker's CLI replies are also posted into its room.
+
+        A realm room's host keeps its own agent: each reply is already its own turn, so a
+        copy would show it twice.
+        """
+        return not self._settings.room.realm_room
+
+    def _realm_room_seat(self, realm_id: str) -> tuple[str, ...]:
+        """The room a mesh peer of ``realm_id`` is seated in: this realm room, else none.
+
+        A realm room's members are the peers of its own realm. Seating them is what lets a
+        member post into the room (``handle_session_room_message``) and be heard in it.
+        """
+        room = self._settings.room
+        if not room.realm_room or realm_id != room.environment_id:
+            return ()
+        return (room.environment_id,)
 
     def _room_default_target_peer_id(self) -> str:
         """Peer that untargeted browser messages route to (resident sessions)."""
@@ -1128,6 +1453,47 @@ class Broker(
         if len(peer_ids) != 1:
             return ""
         return peer_ids[0]
+
+    def _room_agent_peer_ids(self) -> list[str]:
+        """Peer ids of every agent in the room: all but people, workflows and this host.
+
+        A team's members are harness sessions (Claude Code, Codex) on the realm mesh, and the
+        mesh announces them as ``skuld`` participants, so the type alone cannot tell a member
+        from the host. The host is told apart by its own mesh peer id.
+        """
+        if self._room_bridge is None:
+            return []
+        host_peer_id = self._mesh_adapter.peer_id if self._mesh_adapter is not None else ""
+        return [
+            participant.peer_id
+            for participant in self._room_bridge.participants.values()
+            if participant.participant_type not in _NON_AGENT_PARTICIPANT_TYPES
+            and participant.peer_id != host_peer_id
+        ]
+
+    def _untargeted_room_peer_ids(self) -> list[str]:
+        """Who an untargeted browser message goes to in a declared-routed room.
+
+        ``room.untargeted_delivery`` decides: ``refuse`` takes the room's sole ravn (none when
+        it is ambiguous), ``everyone`` takes every agent in the room. Empty means there is no
+        one to deliver to and the caller reports it.
+        """
+        if self._settings.room.untargeted_delivery == "everyone":
+            return self._room_agent_peer_ids()
+        sole = self._sole_room_ravn_peer_id()
+        return [sole] if sole else []
+
+    def _no_untargeted_target_message(self) -> str:
+        if self._settings.room.untargeted_delivery == "everyone":
+            return (
+                "No agent in this room to deliver this message to. Wait for the room's agents "
+                "to join, or address a participant explicitly with a directed_message."
+            )
+        return (
+            "No room participant to deliver this message to. Set "
+            "room.default_target_peer_id, or address a participant "
+            "explicitly with a directed_message."
+        )
 
     def _event_consumer_peer_ids(self, event_type: str) -> set[str]:
         """Return room peer ids that subscribe to ``event_type``."""
@@ -1286,6 +1652,21 @@ class Broker(
             extra_payload=payload,
         )
 
+    async def post_room_notice(
+        self, content: str, *, notice_id: str, metadata: dict[str, Any] | None = None
+    ) -> None:
+        """Post a notice in the room this session hosts, as its Coordinator.
+
+        A notice is shown, never sent: no member is asked to act on it and no agent sees it.
+        A workflow run's coordinator (Ting) posts its steps, gates and the run's end here.
+        """
+        if self._room_bridge is None:
+            raise RuntimeError("Room mode is not enabled on this session")
+        host = self._observer_peer_id()
+        if not host:
+            raise RuntimeError("the room's host has not joined its mesh yet")
+        await self._room_bridge.post_notice(host, content, notice_id=notice_id, metadata=metadata)
+
     def _observer_peer_id(self) -> str:
         """Return Skuld's room participant id when available."""
         if self._mesh_adapter is not None and getattr(self._mesh_adapter, "peer_id", ""):
@@ -1331,6 +1712,8 @@ class Broker(
             if request is None:
                 return
             await self._report_peer_help_needed_activity(request, frame)
+            if self._voice_room is not None:
+                self._voice_room.observe_question(peer_id, frame)
 
         if event_type == "task_started":
             metadata = frame.get("metadata", {})
@@ -1642,20 +2025,60 @@ class Broker(
         )
         return message_id
 
-    async def _deliver_to_member_session(self, session_id: str, content: str) -> bool:
-        """Hand a room delivery to the session a member joined from, through Forge."""
+    def _host_peer_address(self) -> PeerAddress:
+        """This session as a party to a message: its id, name and node."""
+        return PeerAddress(
+            kind=PeerKind.SESSION,
+            id=str(self.session_id),
+            name=self._settings.session.name,
+            node=socket.gethostname(),
+        )
+
+    async def _deliver_to_member_session(self, session_id: str, delivery: RoomDelivery) -> bool:
+        """Hand a room delivery to the session a member joined from, as a peer envelope.
+
+        This session calls Forge with its own session credential, so Forge stamps it
+        ``relayed_by``; the participant who spoke, the room and the reply route travel as
+        the ``peer`` block. A delivery that cannot be made raises: the room's caller learns
+        of it, and it is counted, never logged and dropped.
+        """
         if not self.volundr_api_url:
-            logger.error("Cannot reach session %s: volundr_api_url is not set", session_id)
-            return False
+            raise RoomDeliveryError(
+                f"Cannot reach session {session_id}: volundr_api_url is not set"
+            )
+        token = self._settings.forge_mcp.token
+        if not token:
+            raise RoomDeliveryError(
+                f"Cannot deliver to session {session_id}: this session holds no Forge session "
+                "credential (forge_mcp.token), which Forge needs to stamp it as the room's host. "
+                "Enable forge_mcp.session_tokens on the Forge that launched it"
+            )
         client = await self._get_http_client()
         try:
             response = await client.post(
-                f"{FORGE_SESSIONS_PATH}/{session_id}/messages", json={"content": content}
+                f"{FORGE_SESSIONS_PATH}/{session_id}/messages",
+                json={
+                    "content": delivery.content,
+                    "request_id": delivery.request_id,
+                    "peer": delivery.speech.to_body(),
+                },
+                headers={"Authorization": f"Bearer {token}"},
             )
-            response.raise_for_status()
         except httpx.HTTPError as exc:
-            logger.error("Could not reach session %s through Forge: %s", session_id, exc)
-            return False
+            raise RoomDeliveryError(
+                f"Could not reach session {session_id} through Forge: {exc}"
+            ) from exc
+        if response.status_code >= 400:
+            remedy = (
+                "; this session's credential needs the 'message' grant (forge_mcp.role_grants "
+                "or default_grants) to relay room messages"
+                if response.status_code == 403
+                else ""
+            )
+            raise RoomDeliveryError(
+                f"Forge refused the room message for session {session_id} "
+                f"({response.status_code}): {response.text[:500]}{remedy}"
+            )
         return True
 
     async def _report_peer_help_needed_activity(
@@ -1922,7 +2345,14 @@ class Broker(
         response: dict[str, Any],
         *,
         auto_approved: bool,
+        decided_by: MessageAuthor | None = None,
     ) -> None:
+        """Answer a pending permission request and record it as resolved.
+
+        ``decided_by`` is the verified person behind the connection that decided it. An
+        auto-approval and a decision from a connection without an identity carry none,
+        which is the true state: nobody is named who did not decide.
+        """
         if not self._transport:
             logger.warning("Cannot respond to permission request; transport is not initialized")
             return
@@ -1941,6 +2371,7 @@ class Broker(
                 "request_id": request_id,
                 "behavior": response.get("behavior", "deny"),
                 "auto_approved": auto_approved,
+                **({"decided_by": decided_by.to_dict()} if decided_by is not None else {}),
             }
         )
 
@@ -2037,6 +2468,8 @@ class Broker(
                     if kind in {"tool_use", "tool_result"} and isinstance(identity, str):
                         self._live_tool_details.setdefault(identity, {})[kind] = block
             self._enqueue_event_log(data, ts=frame_ts)
+            if self._work_sharer is not None and not self._turn_kept_from_room:
+                await self._work_sharer.cli_event(data)
 
         if event_type == "remote_control":
             # A remote-control transport reporting its pairing URL. Surface it as
@@ -2498,9 +2931,17 @@ class Broker(
                 self._flush_pending_assistant_turn(metadata=turn_metadata)
             self._live_tool_details.clear()
 
-            # Emit CLI turn as room_message so it shows participant color
+            # Emit CLI turn as room_message so it shows participant color. A realm room's
+            # host keeps its own agent: its reply is already its own turn, so it is not
+            # copied into the room a second time.
+            if self._work_sharer is not None and content and not self._turn_kept_from_room:
+                await self._work_sharer.reply(content)
+            self._turn_kept_from_room = False
             if self._room_bridge is not None and self._mesh_adapter is not None and content:
-                await self._room_bridge.broadcast_cli_message(self._mesh_adapter.peer_id, content)
+                if self._room_copies_cli_replies():
+                    await self._room_bridge.broadcast_cli_message(
+                        self._mesh_adapter.peer_id, content
+                    )
                 await self._room_bridge.broadcast_cli_activity(self._mesh_adapter.peer_id, "idle")
             if explicit_room_reply and self._pending_explicit_human_response_count > 0:
                 self._pending_explicit_human_response_count -= 1
@@ -2766,6 +3207,7 @@ class Broker(
                     str(request_id),
                     response,
                     auto_approved=False,
+                    decided_by=self._author_for(sender_ws),
                 )
 
             # AskUserQuestion: a human answered a question the agent asked.
@@ -2788,6 +3230,23 @@ class Broker(
                 self._pending_ask_user_questions.pop(answered_request_id, None)
                 self._save_control_state()
                 await self._exit_attention(answered_request_id)
+                decided_by = self._author_for(sender_ws)
+                if decided_by is not None:
+                    await self._emit_broker_frame(
+                        {
+                            "type": "ask_user_answered",
+                            "request_id": answered_request_id,
+                            "decided_by": decided_by.to_dict(),
+                        }
+                    )
+
+            # A person answers the question the agent put to them (ask_person).
+            case "person_answer":
+                await self.handle_person_answer(
+                    data,
+                    sender_ws,
+                    approver=_ROOM_ROLE_RANK[actual_role] >= _ROOM_ROLE_RANK["approver"],
+                )
 
             # Phase 3: interrupt current turn
             case "get_effort" | "set_effort":
@@ -2922,6 +3381,12 @@ class Broker(
                         },
                     )
 
+            # Another agent's message, from Forge (a session message, or a room's relay to a
+            # member session). Answered with user_delivered / user_delivery_failed for the
+            # request_id once the message is durably in the inbox.
+            case "peer_message":
+                await self._accept_peer_message_frame(data)
+
             # Room: forward a directed message to a specific Ravn participant
             case "directed_message":
                 if self._room_bridge is None:
@@ -2952,6 +3417,7 @@ class Broker(
                             if isinstance(data.get("metadata"), dict)
                             else None,
                         ),
+                        author=self._author_for(sender_ws),
                     )
                 except LookupError as exc:
                     if sender_ws:
@@ -3032,58 +3498,24 @@ class Broker(
                 # the CLI transport path does — a bare str() would deliver a
                 # Python repr of the block list (base64 blobs inline).
                 default_target = self._room_default_target_peer_id()
-                if not default_target and self._is_declared_room_routed():
+                targets = [default_target] if default_target else []
+                if not targets and self._is_declared_room_routed():
                     # A declared-routed broker has no CLI agent to fall through
                     # to, so an unresolvable target must be reported, never
                     # dropped into a transport that does not exist.
-                    default_target = self._sole_room_ravn_peer_id()
-                    if not default_target:
-                        error_msg = (
-                            "No room participant to deliver this message to. Set "
-                            "room.default_target_peer_id, or address a participant "
-                            "explicitly with a directed_message."
-                        )
+                    targets = self._untargeted_room_peer_ids()
+                    if not targets:
+                        error_msg = self._no_untargeted_target_message()
                         logger.info("_dispatch_browser_message: %s", error_msg)
                         if sender_ws:
                             await self._send_broker_frame_to(
                                 sender_ws, {"type": "error", "content": error_msg}
                             )
                         return
-                if default_target:
-                    if not await self._guard_reply_context_consumption(
-                        default_target, actual_role, data, sender_ws
-                    ):
-                        return
-                    request_id = data.get("request_id")
-                    request_id = request_id if isinstance(request_id, str) and request_id else None
-                    # A live browser connection can never claim "telegram" —
-                    # only the real Telegram channel dispatches with no
-                    # sender_ws (see the sender_ws is None guard above).
-                    incoming_source = str(data.get("source") or "").strip().lower()
-                    is_telegram = sender_ws is None and incoming_source == "telegram"
-                    source = "telegram" if is_telegram else "browser"
-                    if source == "telegram":
-                        metadata = _telegram_directed_metadata(data)
-                    else:
-                        metadata = _sanitize_directed_metadata(
-                            actual_role,
-                            data.get("metadata")
-                            if isinstance(data.get("metadata"), dict)
-                            else None,
-                        )
-                    try:
-                        await self.handle_directed_room_message(
-                            default_target,
-                            content_str,
-                            source=source,
-                            request_id=request_id,
-                            metadata=metadata,
-                        )
-                    except LookupError as exc:
-                        if sender_ws:
-                            await self._send_broker_frame_to(
-                                sender_ws, {"type": "error", "content": str(exc)}
-                            )
+                if targets:
+                    await self._deliver_untargeted_to(
+                        targets, content_str, data, actual_role, sender_ws
+                    )
                     return
 
                 # Record user turn in conversation history
@@ -3096,7 +3528,7 @@ class Broker(
                     )
                     token = str(uuid.uuid4())
                     claim = await claim_message(
-                        await self._get_http_client(),
+                        await self._get_session_http_client(),
                         session_id=self.session_id,
                         request_id=request_id,
                         content=content_str,
@@ -3115,8 +3547,96 @@ class Broker(
                         return
                     self._message_claim_tokens[request_id] = token
                 await self._submit_user_turn(
-                    content_str, msg_id=msg_id, request_id=request_id, source="browser"
+                    content_str,
+                    msg_id=msg_id,
+                    request_id=request_id,
+                    source="browser",
+                    author=self._author_for(sender_ws),
                 )
+
+    async def _deliver_untargeted_to(
+        self,
+        targets: list[str],
+        content_str: str,
+        data: dict,
+        actual_role: str,
+        sender_ws: WebSocket | None,
+        *,
+        model_note: str = "",
+    ) -> None:
+        """Deliver an untargeted browser message as a directed message to each of ``targets``.
+
+        The sender's verified author and the caller's ``model_note`` (read by each target's
+        model ahead of the message, never shown) go to every target.
+
+        Each target takes the single-target path (reply-context guard, directed delivery), so a
+        message for everyone is exactly N directed messages. Every target is tried: an unknown
+        participant is reported to the sender and a failed delivery is raised after the rest
+        were attempted, never swallowed. Only the first delivered message carries the
+        client's ``request_id``, so the client's one optimistic message is confirmed once.
+        """
+        request_id = data.get("request_id")
+        request_id = request_id if isinstance(request_id, str) and request_id else None
+        # A live browser connection can never claim "telegram" -
+        # only the real Telegram channel dispatches with no
+        # sender_ws (see the sender_ws is None guard above).
+        incoming_source = str(data.get("source") or "").strip().lower()
+        is_telegram = sender_ws is None and incoming_source == "telegram"
+        source = "telegram" if is_telegram else "browser"
+        if source == "telegram":
+            metadata = _telegram_directed_metadata(data)
+        else:
+            metadata = _sanitize_directed_metadata(
+                actual_role,
+                data.get("metadata") if isinstance(data.get("metadata"), dict) else None,
+            )
+        failures: list[str] = []
+        for target in targets:
+            if not await self._guard_reply_context_consumption(
+                target, actual_role, data, sender_ws
+            ):
+                continue
+            try:
+                await self.handle_directed_room_message(
+                    target,
+                    content_str,
+                    source=source,
+                    request_id=request_id,
+                    metadata=metadata,
+                    author=self._author_for(sender_ws),
+                    model_note=model_note,
+                )
+            except LookupError as exc:
+                if sender_ws:
+                    await self._send_broker_frame_to(
+                        sender_ws, {"type": "error", "content": str(exc)}
+                    )
+                continue
+            except RuntimeError as exc:
+                failures.append(str(exc))
+                continue
+            request_id = None
+        if failures:
+            raise RuntimeError("; ".join(failures))
+
+    async def _accept_peer_message_frame(self, data: dict) -> None:
+        """Take a ``peer_message`` frame into the inbox and acknowledge it by ``request_id``."""
+        request_id = data.get("request_id")
+        request_id = request_id if isinstance(request_id, str) and request_id else None
+        raw = data.get("envelope")
+        message_id = str(raw.get("message_id") or "") if isinstance(raw, dict) else ""
+        try:
+            envelope = PeerMessage.from_wire(raw)
+            acceptance = await self.accept_peer_message(envelope, request_id)
+        except PeerMessageUnconfirmedError as exc:
+            # Forge may have stored it: "pending", never "failed", so the sender is told to
+            # retry with the same request_id instead of sending it again as a new message.
+            await self._emit_delivery_ack(request_id, message_id, "pending", error=str(exc))
+            return
+        except PeerMessageError as exc:
+            await self._emit_delivery_ack(request_id, message_id, "failed", error=str(exc))
+            return
+        await self._emit_delivery_ack(request_id, acceptance.message_id, "delivered")
 
     async def _submit_user_turn(
         self,
@@ -3126,6 +3646,8 @@ class Broker(
         request_id: str | None,
         source: str,
         extra_metadata: dict[str, Any] | None = None,
+        author: MessageAuthor | None = None,
+        model_note: str = "",
     ) -> asyncio.Task[None]:
         """Record a user turn, echo it to every client and deliver it to the transport.
 
@@ -3133,10 +3655,75 @@ class Broker(
         is steered into the harness exactly as a person's message is: same durable turn, same
         bounded-retry delivery, same acknowledgement. Returns the delivery task, which ends
         once the outcome is decided (delivered, or the turn marked failed).
+
+        ``author`` is the verified person who sent it (None for a workflow step or any
+        sender that is not a verified person). It is recorded on the turn, the durable log
+        frame, the ``user_confirmed`` broadcast and the trace span, and once the session has
+        had more than one person it opens the message the model reads. ``model_note`` is
+        read by the model ahead of the message and never shown in the conversation.
         """
+        await self._record_user_turn(
+            content_str,
+            msg_id=msg_id,
+            request_id=request_id,
+            source=source,
+            extra_metadata=extra_metadata,
+            author=author,
+        )
+        return self._spawn_user_delivery(
+            content_str, msg_id=msg_id, request_id=request_id, author=author, model_note=model_note
+        )
+
+    def _spawn_user_delivery(
+        self,
+        content_str: str,
+        *,
+        msg_id: str,
+        request_id: str | None,
+        author: MessageAuthor | None,
+        model_note: str = "",
+    ) -> asyncio.Task[None]:
+        """Deliver an already recorded user turn to the transport, in the background."""
+        # Fire-and-forget so the WS receive loop isn't pinned on a turn that may
+        # run for minutes (the transport serialises its own deliveries, so order
+        # holds). BUG-3 / INV-7: the delivery is wrapped so its OUTCOME is durable
+        # and observable — bounded retry on a transient failure, a VISIBLE failed
+        # turn on terminal failure — instead of being silently swallowed on a
+        # wedged input channel while the API says "sent". The redirect-vs-send
+        # routing is recomputed AT DELIVERY TIME (not snapshotted here) so a turn
+        # boundary that moves between accept and delivery routes correctly.
+        return asyncio.create_task(
+            self._deliver_user_message_and_ack(
+                content_str,
+                request_id=request_id,
+                msg_id=msg_id,
+                author=author,
+                model_note=model_note,
+            ),
+            name=f"transport-deliver-{msg_id}",
+        )
+
+    async def _record_user_turn(
+        self,
+        content_str: str,
+        *,
+        msg_id: str,
+        request_id: str | None,
+        source: str,
+        extra_metadata: dict[str, Any] | None = None,
+        author: MessageAuthor | None = None,
+        steering_state: str = "pending",
+    ) -> None:
+        """Record a user turn durably and echo it to every client, without delivering it.
+
+        ``steering_state`` is ``pending`` for a turn the transport will be handed next; a
+        turn the agent already has another way (an answer returned by the tool call that
+        waited for it) is recorded ``active``.
+        """
+        self._note_human_author(author)
         now = datetime.now(UTC)
         input_timeline = self._enqueue_human_turn_event(
-            content_str, msg_id, request_id=request_id, ts=now
+            content_str, msg_id, request_id=request_id, ts=now, author=author
         )
         self._append_turn(
             ConversationTurn(
@@ -3150,11 +3737,12 @@ class Broker(
                 # "active". Survives reconnect + REST since metadata is
                 # serialized with the turn.
                 metadata={
-                    "steering_state": "pending",
+                    "steering_state": steering_state,
                     **({"request_id": request_id} if request_id else {}),
                     **({TIMELINE_KEY: input_timeline} if input_timeline else {}),
                     **(extra_metadata or {}),
                 },
+                author=author.to_dict() if author is not None else None,
             )
         )
         # Mirror the human turn into the durable event log so log-only
@@ -3164,8 +3752,8 @@ class Broker(
             name=content_str[:120] or "user turn",
             parent_span_id=self._trace_session_span_id,
             actor_type="user",
-            actor_id=request_id or msg_id,
-            actor_label="user",
+            actor_id=author.user_id if author is not None else request_id or msg_id,
+            actor_label=author.label if author is not None else "user",
             attributes={"source": source},
             started_at=now,
             ended_at=now,
@@ -3180,27 +3768,11 @@ class Broker(
                 "id": msg_id,
                 "content": content_str,
                 "request_id": request_id,
-                "steering_state": "pending",
+                "steering_state": steering_state,
                 "created_at": now.isoformat(),
                 **({TIMELINE_KEY: input_timeline} if input_timeline else {}),
+                **({AUTHOR_KEY: author.to_dict()} if author is not None else {}),
             }
-        )
-
-        # Fire-and-forget so the WS receive loop isn't pinned on a turn that may
-        # run for minutes (the transport serialises its own deliveries, so order
-        # holds). BUG-3 / INV-7: the delivery is wrapped so its OUTCOME is durable
-        # and observable — bounded retry on a transient failure, a VISIBLE failed
-        # turn on terminal failure — instead of being silently swallowed on a
-        # wedged input channel while the API says "sent". The redirect-vs-send
-        # routing is recomputed AT DELIVERY TIME (not snapshotted here) so a turn
-        # boundary that moves between accept and delivery routes correctly.
-        return asyncio.create_task(
-            self._deliver_user_message_and_ack(
-                content_str,
-                request_id=request_id,
-                msg_id=msg_id,
-            ),
-            name=f"transport-deliver-{msg_id}",
         )
 
     async def _try_route_pending_help_reply(self, data: dict, content: str) -> bool:
@@ -3367,11 +3939,19 @@ class Broker(
         return native_steering or turn_active
 
     async def _attempt_transport_delivery(
-        self, content: str, *, msg_id: str, request_id: str | None
-    ) -> None:
+        self,
+        content: str,
+        *,
+        msg_id: str,
+        request_id: str | None,
+        author: MessageAuthor | None = None,
+    ) -> bool:
         """One delivery attempt. Re-resolves routing so a moved turn boundary routes
         correctly, then sends with a per-attempt timeout so a wedged input channel is
-        bounded (and therefore retryable) instead of hanging the delivery forever."""
+        bounded (and therefore retryable) instead of hanging the delivery forever.
+
+        Returns True when the send itself ran the agent's turn on the message
+        (``capabilities.send_runs_turn``), which proves the agent consumed it."""
         timeout = self._settings.delivery.attempt_timeout_seconds
         if self._resolve_delivery_routing():
             # Live steering appends to the existing turn; redirect may cancel and
@@ -3379,9 +3959,17 @@ class Broker(
             # Preserve correlation for both app-server acceptance and native hooks.
             mode = getattr(self._transport.capabilities, "steering_mode", "none")
             control = "steer" if mode == "live" else "redirect"
+            prefix = self._author_prefix(author)
+            # A transport that merges steers (the SDK) names who sent them: the author
+            # rides beside the content, and only once the content is attributed.
+            attribution = {"author_name": author.label} if prefix and author is not None else {}
             accepted = await asyncio.wait_for(
                 self._transport.send_control(
-                    control, content=content, msg_id=msg_id, request_id=request_id
+                    control,
+                    content=f"{prefix}{content}",
+                    msg_id=msg_id,
+                    request_id=request_id,
+                    **attribution,
                 ),
                 timeout=timeout,
             )
@@ -3389,17 +3977,23 @@ class Broker(
                 raise DeliveryNotAcceptedError(
                     "Transport rejected the message before accepting input"
                 )
-            return
+            return False
         # Idle / non-native transports (Codex turn/start, SDK, …). Thread the ids so a
         # transport that CAN correlate a consumption signal (Codex turn/started) flips
         # the bubble; transports that can't simply ignore the kwargs.
-        outbound = await self._apply_retrieval_reflex(content)
-        accepted = await asyncio.wait_for(
-            self._transport.send_message(outbound, msg_id=msg_id, request_id=request_id),
-            timeout=timeout,
-        )
+        outbound = self._author_prefix(author) + await self._apply_retrieval_reflex(content)
+        sending = self._transport.send_message(outbound, msg_id=msg_id, request_id=request_id)
+        runs_turn = getattr(self._transport.capabilities, "send_runs_turn", False) is True
+        if runs_turn:
+            # The send returns when the whole turn is over (SDK, ``claude -p``). Cutting it at
+            # the attempt timeout would cancel a healthy turn and run it again; the transport's
+            # own turn timeout is what bounds it, and that one is loud.
+            accepted = await sending
+        else:
+            accepted = await asyncio.wait_for(sending, timeout=timeout)
         if accepted is False:
             raise DeliveryNotAcceptedError("Transport rejected the message before accepting input")
+        return runs_turn
 
     async def _deliver_user_message_and_ack(
         self,
@@ -3407,6 +4001,8 @@ class Broker(
         *,
         request_id: str | None,
         msg_id: str,
+        author: MessageAuthor | None = None,
+        model_note: str = "",
     ) -> None:
         """Deliver a user message to the transport with BOUNDED RETRY and a durable,
         observable outcome (SRD FR-5 / INV-7).
@@ -3420,7 +4016,8 @@ class Broker(
         * retries a transient send failure (wedged ``_send_lock``, transport warming)
           up to ``delivery.max_attempts`` with exponential backoff;
         * on success emits ``user_delivered`` (the pending->active flip is driven later
-          by the correlated consumption signal);
+          by the correlated consumption signal, or here when the send itself ran the
+          turn: such a transport has no later signal for it);
         * on TERMINAL failure flips the user turn to a VISIBLE ``failed`` state
           (persisted + broadcast) and emits ``user_delivery_failed`` — never leaving the
           turn silently ``pending``.
@@ -3431,6 +4028,8 @@ class Broker(
         """
         if await self._deliver_effort_command(content, msg_id, request_id):
             return
+        # What the model reads ahead of the message; the conversation shows the message alone.
+        content = f"{model_note}{content}"
         pending_q = len(self._pending_ask_user_questions)
         if pending_q:
             logger.warning(
@@ -3448,6 +4047,7 @@ class Broker(
         attempts = cfg.max_attempts
         backoff = cfg.initial_backoff_seconds
         last_error: Exception | None = None
+        ran_turn = False
         # Mark the turn as in-flight so the non-native pending->active backstop EXCLUDES
         # it: while we are still retrying, the agent could not have consumed this steer,
         # so an unrelated transport frame must not flip it to "active". Cleared only once
@@ -3457,8 +4057,8 @@ class Broker(
         try:
             for attempt in range(1, attempts + 1):
                 try:
-                    await self._attempt_transport_delivery(
-                        content, msg_id=msg_id, request_id=request_id
+                    ran_turn = await self._attempt_transport_delivery(
+                        content, msg_id=msg_id, request_id=request_id, author=author
                     )
                     last_error = None
                     break
@@ -3494,6 +4094,13 @@ class Broker(
         finally:
             self._delivering_msg_ids.discard(msg_id)
 
+        if ran_turn:
+            # The send returned because the agent's turn on this message is over. The
+            # pending->active backstop skipped the turn while its delivery was in flight,
+            # which for such a transport is the whole turn, and nothing correlated will
+            # come later: without this the turn stays "pending" in the history until the
+            # next message's output flips it, and the session's last message never.
+            await self._activate_user_turn({"msg_id": msg_id, "request_id": request_id})
         await self._emit_delivery_ack(
             request_id,
             msg_id,
@@ -3557,7 +4164,7 @@ class Broker(
         if settle_claim and token and status != "pending":
             try:
                 await settle_message(
-                    await self._get_http_client(),
+                    await self._get_session_http_client(),
                     session_id=self.session_id,
                     request_id=request_id,
                     token=token,
@@ -3803,10 +4410,17 @@ class Broker(
         metadata: dict[str, Any] | None = None,
         participant_id: str | None = None,
         deliver_to_transport: bool = True,
+        author: MessageAuthor | None = None,
     ) -> str:
-        """Record and broadcast a human-originated room message."""
+        """Record and broadcast a human-originated room message.
+
+        ``author`` is the verified person who sent it, when a verified connection or
+        request carried one; messages relayed from a channel, an agent or a session carry
+        none and are recorded without.
+        """
         if not content.strip():
             raise ValueError("content is required")
+        self._note_human_author(author)
         participant_meta = None
         participant = None
         if participant_id:
@@ -3829,6 +4443,7 @@ class Broker(
                 thread_id=_non_empty_str(metadata_payload.get("thread_id")),
                 visibility=_non_empty_str(metadata_payload.get("visibility")) or "public",
                 metadata=metadata_payload,
+                author=author.to_dict() if author is not None else None,
             )
         )
         now = datetime.now(UTC)
@@ -3837,8 +4452,8 @@ class Broker(
             name=content[:120] or "human turn",
             parent_span_id=self._trace_session_span_id,
             actor_type="user",
-            actor_id=source,
-            actor_label=source,
+            actor_id=author.user_id if author is not None else source,
+            actor_label=author.label if author is not None else source,
             attributes={"source": source, "metadata": metadata_payload},
             started_at=now,
             ended_at=now,
@@ -3850,6 +4465,8 @@ class Broker(
             "source": source,
             "metadata": metadata_payload,
         }
+        if author is not None:
+            event[AUTHOR_KEY] = author.to_dict()
         if request_id:
             event["request_id"] = request_id
         if participant_id:
@@ -3873,8 +4490,104 @@ class Broker(
                     metadata=metadata_payload,
                 )
         if deliver_to_transport:
-            await self._send_explicit_human_message_to_transport(content)
+            await self._send_explicit_human_message_to_transport(content, author)
         return msg_id
+
+    async def handle_room_message_rpc(self, message: dict) -> dict:
+        """A member session posts in a room over the mesh, instead of through Forge.
+
+        The caller is the session the mesh verified (its certificate names it), never one the
+        message claims. With mesh signing off nothing is verified, so this refuses and says
+        to post through Forge (which is what a session does when signing is off).
+        """
+        if not self._settings.mesh.attestation.required:
+            return {
+                "status": "refused",
+                "error": "this session's mesh does not verify senders "
+                "(mesh.attestation.required is off), so a room post over the mesh cannot be "
+                "attributed; post through Forge",
+            }
+        raw = message.get(VERIFIED_SENDER_KEY)
+        caller = raw.get("session_id") if isinstance(raw, dict) else ""
+        caller_peer_id = raw.get("peer_id") if isinstance(raw, dict) else ""
+        if not caller:
+            return {"status": "refused", "error": "the mesh named no verified session for you"}
+        room_id, content = message.get("room_id"), message.get("content")
+        if not isinstance(room_id, str) or not isinstance(content, str):
+            return {"status": "refused", "error": "a room post needs a room_id and content"}
+        try:
+            message_id = await self.handle_session_room_message(
+                caller, room_id, content, caller_peer_id=caller_peer_id
+            )
+        except PermissionError as exc:
+            return {"status": "refused", "error": str(exc)}
+        except (ValueError, RuntimeError) as exc:
+            return {"status": "error", "error": str(exc)}
+        return {"status": "accepted", "message_id": message_id}
+
+    def room_seats(self) -> dict[str, dict[str, str]]:
+        """The rooms this session has been told it is in, and who hosts each.
+
+        Learned from what was said in them: a message said in a room names the room and the
+        session that relayed it, its host. {room_id: {host_session_id: host_node}}. It
+        includes nothing this session has not been told, and the inbox is durable, so it
+        survives a restart. The rooms it was configured to sit in (``room.seats``, a team's
+        room) are there from the start.
+        """
+        seats: dict[str, dict[str, str]] = {}
+        for seat in self._settings.room.seats:
+            seats.setdefault(seat.room_id, {})[seat.host_session_id] = seat.host_node
+        for entry in self._peer_inbox.values():
+            envelope = entry.envelope
+            if envelope.room_id and envelope.relayed_by is not None:
+                seats.setdefault(envelope.room_id, {})[envelope.relayed_by.id] = (
+                    envelope.relayed_by.node
+                )
+        return seats
+
+    async def handle_session_room_message(
+        self, caller_session_id: str, room_id: str, content: str, *, caller_peer_id: str = ""
+    ) -> str:
+        """Record a message a member session says in a room, as said by that session.
+
+        ``caller_session_id`` is the session Forge verified. It is accepted only when a
+        participant seated in ``room_id`` joined from that session, or is the mesh peer that
+        session is (a member of a realm room: its peer id is its session id, or the peer the
+        mesh verified, ``caller_peer_id``); anyone else is refused with the reason. Nothing
+        about the speaker comes from ``content``.
+        """
+        mesh_identities = {caller_session_id, caller_peer_id} - {""}
+        if self._room_bridge is None:
+            raise RuntimeError("Room mode is not enabled")
+        member = next(
+            (
+                participant
+                for participant in self._room_bridge.participants.values()
+                if room_id in participant.room_ids
+                and (
+                    participant.session_id == caller_session_id
+                    or (
+                        participant.participant_kind == "mesh"
+                        and participant.peer_id in mesh_identities
+                    )
+                )
+            ),
+            None,
+        )
+        if member is None:
+            raise PermissionError(
+                f"Session {caller_session_id} is not a member of room {room_id} on this "
+                "session; ask the room's host to join it first"
+            )
+        return await self.handle_human_room_message(
+            content,
+            source="session",
+            participant_id=member.peer_id,
+            metadata={"speaker_session_id": caller_session_id, "room_id": room_id},
+            # A host that runs no agent of its own has no transport to say it to: the post
+            # is the room's, and starting a CLI for it would answer chat meant for no one.
+            deliver_to_transport=not self._is_declared_room_routed(),
+        )
 
     async def handle_directed_room_message(
         self,
@@ -3884,8 +4597,16 @@ class Broker(
         source: str = "external",
         request_id: str | None = None,
         metadata: dict[str, Any] | None = None,
+        author: MessageAuthor | None = None,
+        model_note: str = "",
     ) -> str:
-        """Record and route a directed human message to a room participant."""
+        """Record and route a directed human message to a room participant.
+
+        ``author`` is the verified person it is from; to a mesh member it is carried on the
+        directed message, so the member records the turn as theirs. ``model_note`` is text
+        only the member's model reads, ahead of the message (carried the same way). A
+        participant reached another way (a local room peer) is given neither.
+        """
         if self._room_bridge is None:
             raise RuntimeError("Room mode is not enabled")
         if not target_peer_id.strip():
@@ -3914,6 +4635,7 @@ class Broker(
             metadata=routing_metadata,
             participant_id=_non_empty_str(routing_metadata.get("participant_id")),
             deliver_to_transport=False,
+            author=author,
         )
 
         delivered = await self._room_bridge.route_directed_message(
@@ -3946,7 +4668,15 @@ class Broker(
                     response = await self._mesh_adapter.send_directed_message(
                         target_peer_id,
                         content,
-                        metadata=routing_metadata,
+                        # The room this host speaks in, and an id fixed for this delivery:
+                        # the member answers into the room and its inbox deduplicates.
+                        metadata={
+                            **routing_metadata,
+                            "room_id": self._settings.room.environment_id,
+                            "delivery_id": msg_id,
+                        },
+                        author=author,
+                        model_note=model_note,
                     )
                     status = str(response.get("status") or "error").strip().lower()
                     telemetry.set_attributes({**attributes, "skuld.room.status": status})
@@ -4017,11 +4747,9 @@ class Broker(
         participant_id: str,
         display_name: str,
         environment_id: str,
-        role: str = "observer",
         room_id: str = "",
         capabilities: list[str] | None = None,
         surfaces: list[str] | None = None,
-        environment_action_authorities: list[str] | None = None,
         participant_type: str = "human",
         session_id: str = "",
         subscribes_to: list[str] | None = None,
@@ -4034,11 +4762,9 @@ class Broker(
             participant_id,
             display_name=display_name,
             environment_id=environment_id,
-            role=role,
             room_id=room_id,
             capabilities=capabilities,
             surfaces=surfaces,
-            environment_action_authorities=environment_action_authorities,
             participant_type=participant_type,
             session_id=session_id,
             subscribes_to=subscribes_to,
@@ -4054,7 +4780,6 @@ class Broker(
                     "member": {
                         "display_name": display_name,
                         "environment_id": environment_id,
-                        "role": role,
                         "participant_type": participant_type,
                         "session_id": session_id,
                         "subscribes_to": subscribes_to or [],
@@ -4062,7 +4787,25 @@ class Broker(
                     },
                 }
             )
+        if session_id:
+            await self._tell_member_it_is_seated(participant_id, meta.room_ids)
         return asdict(meta)
+
+    async def _tell_member_it_is_seated(self, participant_id: str, room_ids: Iterable[str]) -> None:
+        """Tell a session that joined a room which room it is in and who hosts it.
+
+        The member's Skuld learns its rooms from what is said in them, so the first thing said
+        to a new member says where it now is and how to speak. A member that cannot be told
+        fails the join loudly: it is seated, but could not answer the room.
+        """
+        host = self._host_peer_address()
+        for room_id in room_ids:
+            await self._room_bridge.tell_member(
+                participant_id,
+                f"You were seated in room {room_id}, hosted by session {host.id}. Speak in it "
+                f'with room_post(room_id="{room_id}", content=...).',
+                room_id,
+            )
 
     async def heartbeat_environment(
         self,
@@ -4117,25 +4860,27 @@ class Broker(
             summary=summary,
         )
 
-    def require_room_capability(self, participant_id: str, capability: str) -> None:
-        """Raise when a room participant cannot perform a control action."""
-        if self._room_bridge is None:
-            raise RuntimeError("Room mode is not enabled")
-        self._room_bridge.require_participant_capability(participant_id, capability)
-
-    async def _send_explicit_human_message_to_transport(self, content: str) -> None:
+    async def _send_explicit_human_message_to_transport(
+        self, content: str, author: MessageAuthor | None = None
+    ) -> None:
         """Deliver an explicit human room message to Skuld's own transport."""
         if self._transport is None:
             logger.warning("No transport available for explicit human room message")
             return
-        outbound = self._format_room_message_for_skuld(content)
+        outbound = self._format_room_message_for_skuld(content, author)
         self._pending_explicit_human_messages.append((content, outbound))
         self._pending_explicit_human_response_count += 1
         await self._ensure_transport_started()
         await self._transport.send_message(outbound)
 
-    def _format_room_message_for_skuld(self, content: str) -> str:
-        """Wrap an explicit human room message with flock context for Skuld."""
+    def _format_room_message_for_skuld(
+        self, content: str, author: MessageAuthor | None = None
+    ) -> str:
+        """Wrap an explicit human room message with flock context for Skuld.
+
+        The wrapper names the person who sent it when the message carried a verified
+        author; a message with none (a channel relay, an agent) is wrapped as before.
+        """
         if self._room_bridge is None:
             return content
 
@@ -4165,7 +4910,11 @@ class Broker(
         lines.extend(
             [
                 "",
-                "Human message from an external communication interface:",
+                (
+                    f"Human message from {author.label} via an external communication interface:"
+                    if author is not None
+                    else "Human message from an external communication interface:"
+                ),
                 content,
             ]
         )
@@ -4180,6 +4929,23 @@ class Broker(
         if self._room_bridge is None:
             return []
         return self._room_bridge.environment_roster(environment_id=environment_id)
+
+    def connected_people(self) -> list[dict[str, str]]:
+        """The verified people with a live browser connection to this session, once each.
+
+        Browser connections are not room participants, so this is the only place they show.
+        A connection that carried no verified identity is not counted: it is a socket, not a
+        known person. Sorted by user id so the answer is stable.
+        """
+        people: dict[str, dict[str, str]] = {}
+        for channel in self._channels.channels:
+            if not isinstance(channel, WebSocketChannel) or not channel.is_open:
+                continue
+            author = channel.author
+            if author is None:
+                continue
+            people.setdefault(author.user_id, author.to_dict())
+        return [people[user_id] for user_id in sorted(people)]
 
     def get_communication_routes(self) -> list[dict[str, Any]]:
         """Return active external communication routes exposed by this broker."""
@@ -4215,6 +4981,8 @@ class Broker(
                 not self._settings.session.resume_session_id
                 and not self._settings.room.enabled
                 and not self._settings.workflow_steps.enabled
+                and not self._settings.peer_inbox.enabled
+                and not self._settings.voice_channel.enabled
             )
             or not self.volundr_api_url
             or not self._settings.event_log_enabled
@@ -4222,7 +4990,7 @@ class Broker(
             return
         try:
             durable = await fetch_durable_history(
-                await self._get_http_client(),
+                await self._get_session_http_client(),
                 session_id=self.session_id,
                 path=self.FORGE_LOG_PATH_TEMPLATE.format(sid=self.session_id),
                 timeout_seconds=self._settings.history_hydration_timeout_seconds,
@@ -4241,6 +5009,9 @@ class Broker(
                     "The durable history of this workflow step host could not be restored; "
                     "refusing to start without knowing which step is open"
                 ) from exc
+            if self._settings.peer_inbox.enabled:
+                self._refuse_peer_messages_after_failed_restore(exc)
+            self._voice_history_unrestored(exc)
             logger.warning(
                 "Durable history hydration skipped for session %s; preserving local cache: %s",
                 self.session_id,
@@ -4250,6 +5021,7 @@ class Broker(
         # Direct cache replacement, never _append_turn: replayed frames are
         # already durable and must not be emitted/persisted a second time.
         self._conversation_turns = hydrated
+        self._note_authors_of_turns(hydrated)
         self._save_conversation_history()
         logger.info("Hydrated %d conversation turns from durable history", len(hydrated))
         await self._rejoin_room_members()
@@ -4281,7 +5053,40 @@ class Broker(
         """Restore broker-owned state from the frozen durable-log horizon."""
         self._restore_durable_controls(frames)
         self._restore_durable_workflow_steps(frames)
+        self._restore_durable_peer_inbox(frames)
+        self._restore_durable_mesh_follows(frames)
         self._restore_durable_room_members(frames)
+        self._restore_durable_authors(frames)
+        self._restore_durable_voice_calls(frames)
+
+    def _start_voice_channel(self) -> None:
+        """Build the voice channel (fatal when enabled and it cannot serve)."""
+        if not self._settings.voice_channel.enabled:
+            return
+        from skuld.voice.broker_session import build_voice_channel
+
+        self._voice_channel = build_voice_channel(self)
+
+    def _restore_durable_voice_calls(self, frames: list) -> None:
+        """Fold the session's recorded voice calls back into the channel's call list."""
+        if self._voice_channel is None:
+            return
+        restored = self._voice_channel.calls.restore(frames)
+        if restored:
+            logger.info("Restored %d voice call record frame(s) from durable history", restored)
+
+    def _voice_history_unrestored(self, exc: Exception) -> None:
+        """The call list could not be restored: say so on the channel, loudly."""
+        if self._voice_channel is None:
+            return
+        reason = f"{type(exc).__name__}: {exc}"
+        self._voice_channel.history_unavailable = reason
+        record_degraded(
+            "skuld.voice.history",
+            f"session {self.session_id}: the voice call list could not be restored from the "
+            f"durable event log ({reason}); call history answers 503 until the session restarts, "
+            "new calls are still recorded",
+        )
 
     def _restore_durable_room_members(self, frames: list) -> None:
         """Work out who holds a seat from another session, by their latest join or leave."""
@@ -4290,7 +5095,10 @@ class Broker(
                 continue
             participant_id = frame.payload["participant_id"]
             if frame.payload["joined"]:
-                self._restored_room_members[participant_id] = frame.payload["member"]
+                # Seats logged before room roles were removed still carry a "role";
+                # joining no longer takes one, and it never granted anything.
+                member = {k: v for k, v in frame.payload["member"].items() if k != "role"}
+                self._restored_room_members[participant_id] = member
             else:
                 self._restored_room_members.pop(participant_id, None)
 
@@ -4362,7 +5170,6 @@ from skuld.broker_api import (  # noqa: E402, F401
     _RoomHeartbeatRequest,
     _RoomLeaveRequest,
     _RoomCloseRequest,
-    _RoomCapabilityRequest,
     send_message_to_session,
     send_room_message,
     send_directed_room_message,
@@ -4371,7 +5178,6 @@ from skuld.broker_api import (  # noqa: E402, F401
     heartbeat_room,
     leave_room,
     close_room,
-    require_room_capability,
     get_room_participants,
     get_communication_routes,
     _TokenRedactFilter,
@@ -4392,7 +5198,13 @@ def main() -> None:
     install_uvicorn_log_redaction()
     settings = SkuldSettings()
     logger.info("Starting Skuld broker on %s:%d", settings.host, settings.port)
-    uvicorn.run(app, host=settings.host, port=settings.port, access_log=False)
+    server = uvicorn.Server(
+        uvicorn.Config(app, host=settings.host, port=settings.port, access_log=False)
+    )
+    _broker_api.harness_control.attach(server)
+    server.run()
+    if _broker_api.harness_control.restart_requested:
+        _broker_api.harness_control.reexec()
 
 
 if __name__ == "__main__":

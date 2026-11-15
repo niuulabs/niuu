@@ -141,8 +141,6 @@ export function WorkflowBuilder({
     addNodeFromPort,
     deleteNode,
     deleteEdge,
-    moveNode,
-    autoLayout,
     undo,
     redo,
     canUndo,
@@ -215,7 +213,10 @@ export function WorkflowBuilder({
 
   const [catalogOpen, setCatalogOpen] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
-  const hasWorkflowCatalog = workflowCatalog.length > 0 || Boolean(onCreateWorkflow);
+  // The picker is for hosts that let the person switch workflows from the header;
+  // a host with its own list leaves both callbacks out and keeps the catalog for validation.
+  const hasWorkflowCatalog =
+    (Boolean(onSelectWorkflow) && workflowCatalog.length > 0) || Boolean(onCreateWorkflow);
   useEffect(() => {
     if (!isDirty) return;
     function protectUnsavedDraft(event: BeforeUnloadEvent) {
@@ -723,7 +724,6 @@ export function WorkflowBuilder({
               registryMounts={registryMounts}
               onDeleteNode={deleteNode}
               onDeleteEdge={deleteEdge}
-              onMoveNode={moveNode}
               onStartConnect={startConnect}
               onCancelConnect={cancelConnect}
               onCompleteConnect={completeConnect}
@@ -731,7 +731,6 @@ export function WorkflowBuilder({
               onAddStageWithPersona={addStageWithPersona}
               onAddStageFromPort={addStageFromPort}
               onAddNodeFromPort={addNodeFromPort}
-              onAutoLayout={autoLayout}
               personas={personas ?? DEFAULT_PERSONAS}
               issues={issues}
             />

@@ -683,3 +683,130 @@ class TestSettings:
     def test_invalid_settings_are_rejected(self, overrides):
         with pytest.raises(ValueError):
             settings(**overrides)
+
+
+TEAM_PROJECT = "11111111-1111-4111-8111-111111111111"
+
+
+class RecordingUsage:
+    def __init__(self, error: Exception | None = None) -> None:
+        self.rows = []
+        self.error = error
+
+    async def record(self, usage) -> None:
+        if self.error is not None:
+            raise self.error
+        self.rows.append(usage)
+
+    async def list_for_project(self, project_id, *, limit, before=None):
+        return self.rows
+
+
+class TestTeamRoutes:
+    def harness(self, *, emails=None, usage=None, team=True) -> Harness:
+        from volundr.domain.services.notification_dispatcher import TeamDelivery
+
+        h = Harness()
+        self.usage = usage or RecordingUsage()
+        directory = {"alice": "alice@acme.test", **(emails or {})}
+
+        async def email(user_id: str) -> str | None:
+            return directory.get(user_id)
+
+        h.dispatcher = NotificationDispatcher(
+            h.store.outbox,
+            h.provider,
+            renderer(),
+            h.settings,
+            clock=h.clock,
+            monotonic=h.mono,
+            jitter=lambda: 0.5,
+            team=TeamDelivery(recipient_email=email, usage=self.usage) if team else None,
+        )
+        return h
+
+    def route(self, h: Harness, deliver_to: str, channel: str = "#pay"):
+        from niuu.domain.models import project_owner_id
+
+        return h.rule(
+            owner_id=project_owner_id(TEAM_PROJECT),
+            integration_connection_id="slack-1",
+            match=NotificationRuleMatch(project_ids=[TEAM_PROJECT]),
+            config={
+                "project_id": TEAM_PROJECT,
+                "team_event": "needs_decision",
+                "deliver_to": deliver_to,
+                "channel": channel,
+            },
+        )
+
+    async def notify(self, h: Harness, owner: str = "alice", **metadata):
+        return await h.notify(
+            f"n-{owner}",
+            owner_id=owner,
+            project_id=TEAM_PROJECT,
+            kind=NotificationKind.ATTENTION,
+            metadata=metadata,
+        )
+
+    async def test_channel_route_posts_to_its_channel_and_records_the_use(self):
+        h = self.harness()
+        self.route(h, "channel")
+        await self.notify(h)
+        await h.dispatcher.run_once()
+        assert h.only().status is DeliveryStatus.DELIVERED
+        (message,) = h.sink.sent
+        assert message.destination == "#pay" and message.recipient_email is None
+        (use,) = self.usage.rows
+        assert use.project_id == TEAM_PROJECT and use.connection_id == "slack-1"
+        assert use.acting_for == "alice" and use.action == "notify:needs_decision"
+
+    async def test_channel_route_without_its_own_channel_uses_the_connection_default(self):
+        h = self.harness()
+        self.route(h, "channel", channel="")
+        await self.notify(h)
+        await h.dispatcher.run_once()
+        assert h.sink.sent[0].destination is None
+
+    async def test_recipient_route_messages_the_person_by_email(self):
+        h = self.harness()
+        self.route(h, "recipient")
+        await self.notify(h)
+        await h.dispatcher.run_once()
+        assert h.sink.sent[0].recipient_email == "alice@acme.test"
+
+    async def test_a_person_without_an_email_is_a_dead_delivery_with_the_fix(self):
+        h = self.harness()
+        self.route(h, "recipient")
+        await self.notify(h, owner="ghost")
+        await h.dispatcher.run_once()
+        assert h.only().status is DeliveryStatus.DEAD
+        assert "has no email on record" in h.only().last_error
+        assert h.sink.sent == [] and self.usage.rows == []
+
+    async def test_without_team_support_a_team_route_is_dead_not_silent(self):
+        h = self.harness(team=False)
+        self.route(h, "channel")
+        await self.notify(h)
+        await h.dispatcher.run_once()
+        assert h.only().status is DeliveryStatus.DEAD
+        assert "Team routes are not available" in h.only().last_error
+
+    async def test_an_unrecorded_use_after_sending_is_reported_degraded(self, caplog):
+        h = self.harness(usage=RecordingUsage(error=ConnectionError("db")))
+        self.route(h, "channel")
+        await self.notify(h)
+        await h.dispatcher.run_once()
+        assert h.only().status is DeliveryStatus.DELIVERED
+        assert "degraded [notifications.team_usage]" in caplog.text
+
+    async def test_a_malformed_route_is_dead(self):
+        h = self.harness()
+        rule = self.route(h, "channel")
+        await self.notify(h)
+        h.store.rules[rule.id] = rule.model_copy(
+            update={"config": {**rule.config, "deliver_to": "pigeon"}}
+        )
+        await h.dispatcher.run_once()
+        assert h.only().status is DeliveryStatus.DEAD
+        assert "malformed" in h.only().last_error

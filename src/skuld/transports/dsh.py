@@ -507,31 +507,41 @@ class DshJsonRpcTransport(CLITransport):
             )
 
     async def _handle_tool_result(self, data: dict) -> None:
+        """Map a ``tool/result`` event (session format V4) to a Claude-style tool result.
+
+        From session format V4 (dsh 0.2) a tool result is a tool-role message of its own:
+        ``{role: "tool", toolCallId, isError?, content: [{type: "text", text}, ...]}``.
+        The V3 ``tool-result`` content block inside a user message is gone. A result in any
+        other shape is logged at error rather than dropped from the transcript unseen.
+        """
         message = data.get("message", {})
-        for block in message.get("content", []):
-            if not isinstance(block, dict) or block.get("type") != "tool-result":
-                continue
-            parts = [
-                part.get("text", "")
-                for part in block.get("content", [])
-                if isinstance(part, dict) and part.get("type") == "text"
-            ]
-            content = "".join(parts)
-            await self._emit(
-                {
-                    "type": "user",
-                    "message": {
-                        "content": [
-                            {
-                                "type": "tool_result",
-                                "tool_use_id": block.get("toolCallId", ""),
-                                "content": content,
-                                "is_error": bool(block.get("isError", False)),
-                            }
-                        ]
-                    },
-                }
+        if not isinstance(message, dict) or message.get("role") != "tool":
+            logger.error(
+                "dsh tool/result in an unknown shape (expected a tool-role message, session "
+                "format V4): %.300s",
+                json.dumps(data, default=str),
             )
+            return
+        parts = [
+            part.get("text", "")
+            for part in message.get("content", [])
+            if isinstance(part, dict) and part.get("type") == "text"
+        ]
+        await self._emit(
+            {
+                "type": "user",
+                "message": {
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": message.get("toolCallId", ""),
+                            "content": "".join(parts),
+                            "is_error": bool(message.get("isError", False)),
+                        }
+                    ]
+                },
+            }
+        )
 
     def _make_result(self, stop_reason: str) -> dict:
         usage = self._turn_usage or {

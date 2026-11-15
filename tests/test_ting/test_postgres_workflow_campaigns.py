@@ -221,7 +221,7 @@ async def test_a_finished_campaign_cannot_be_reopened_by_a_stale_write() -> None
         await repo.save_campaign(_campaign())
 
     sql = pool.execute.await_args.args[0]
-    assert "workflow_campaigns.status IN ('completed', 'failed')" in sql
+    assert "workflow_campaigns.status IN ('completed', 'failed', 'canceled')" in sql
 
 
 @pytest.mark.asyncio

@@ -6,6 +6,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import uuid4
 
+from tests.support.full_catalogue import load_full_catalogue as load_system_workflows
 from ting.domain.models import WorkflowCampaign, WorkflowCampaignStatus
 from ting.domain.services.ticket_review import ledger_reviews, ledger_run_reviews
 from ting.domain.workflow_board import (
@@ -26,7 +27,6 @@ from ting.domain.workflow_steps import (
     WaitingOnKind,
     WorkflowStep,
 )
-from ting.system_workflows import load_system_workflows
 
 NOW = datetime(2026, 10, 31, 12, tzinfo=UTC)
 RUN_ID = uuid4()

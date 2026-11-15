@@ -65,7 +65,6 @@ def test_caller_trace_id_reaches_the_bifrost_span(telemetry) -> None:
         record_genai_span_attributes(
             requested_model="claude-sonnet-4-6",
             provider="anthropic",
-            failover_attempts=0,
             cache_hit=False,
             usage=UsageInfo(input_tokens=120, output_tokens=45),
         )
@@ -79,7 +78,7 @@ def test_caller_trace_id_reaches_the_bifrost_span(telemetry) -> None:
     attrs = dict(bifrost_recorded.attributes or {})
     assert attrs["gen_ai.request.model"] == "claude-sonnet-4-6"
     assert attrs["gen_ai.provider.name"] == "anthropic"
-    assert attrs["bifrost.failover_attempts"] == 0
+    assert "bifrost.failover_attempts" not in attrs
     assert attrs["bifrost.cache_hit"] is False
     assert attrs["gen_ai.usage.input_tokens"] == 120
     assert attrs["gen_ai.usage.output_tokens"] == 45

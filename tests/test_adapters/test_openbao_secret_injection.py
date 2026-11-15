@@ -615,6 +615,13 @@ class TestGuestAgentInjection:
     def test_adapter_supports_guest_agents(self):
         assert self._adapter().supports_guest_agents is True
 
+    def test_the_injector_works_on_the_pod_not_the_session(self):
+        """One pod, one injection: a unit's members ride the root's (see the contributor)."""
+        from volundr.domain.ports import SecretInjectionPort
+
+        assert SecretInjectionPort.injects_per_pod.fget(object()) is False
+        assert self._adapter().injects_per_pod is True
+
     @pytest.mark.asyncio()
     async def test_produces_init_container_and_volumes(self):
         adapter = self._adapter()

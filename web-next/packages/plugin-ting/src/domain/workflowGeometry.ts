@@ -25,51 +25,43 @@ export interface WorkflowGeometryContext {
   measurements?: ReadonlyMap<string, WorkflowSize> | Readonly<Record<string, WorkflowSize>>;
 }
 
-const DEFAULT_SIZES: Record<WorkflowNode['kind'], WorkflowSize> = {
-  stage: { width: 224, height: 92 },
-  gate: { width: 76, height: 76 },
-  cond: { width: 68, height: 68 },
-  trigger: { width: 168, height: 58 },
-  end: { width: 52, height: 52 },
-  resource: { width: 168, height: 58 },
-  subworkflow: { width: 168, height: 58 },
-  wait: { width: 168, height: 58 },
-  include: { width: 200, height: 66 },
-};
+/** Every node kind but `end` is drawn as one card of this width. */
+export const CARD_WIDTH = 236;
+/** The card's head: its icon tile, title and who runs it. */
+export const CARD_HEADER_HEIGHT = 58;
+/** One row of the card's ports: an incoming event on the left, an outcome on the right. */
+export const CARD_PORT_ROW = 22;
+/** Room above and below the card's port rows. */
+export const CARD_PORT_PAD = 6;
+/** The end of a workflow is a small "Done" pill, not a card. */
+export const END_CARD_WIDTH = 150;
+export const END_CARD_HEIGHT = 40;
 
 /**
- * Estimate the rendered card size before the canvas has mounted. The formula
- * mirrors the card contract, so imported positionless graphs get collision-free
- * initial layout while measured DOM sizes remain authoritative afterwards.
+ * The size of a node's card with `rows` port rows. Port rows sit under the head, so a
+ * socket's centre is `portTop + CARD_PORT_ROW * (index + 0.5)` on its side.
+ */
+export function workflowCardSize(kind: WorkflowNode['kind'], rows: number): WorkflowSize {
+  if (kind === 'end') return { width: END_CARD_WIDTH, height: END_CARD_HEIGHT };
+  if (rows <= 0) return { width: CARD_WIDTH, height: CARD_HEADER_HEIGHT };
+  return {
+    width: CARD_WIDTH,
+    height: CARD_HEADER_HEIGHT + CARD_PORT_PAD * 2 + rows * CARD_PORT_ROW,
+    portTop: CARD_HEADER_HEIGHT + CARD_PORT_PAD,
+    portBottom: CARD_PORT_PAD,
+  };
+}
+
+/**
+ * Estimate the rendered card size before the canvas has mounted, from the same card
+ * contract the canvas draws, so a positionless graph lays out without overlaps.
  */
 export function estimateWorkflowNodeSize(
   node: WorkflowNode,
   context: WorkflowPortCatalogContext = {},
 ): WorkflowSize {
-  const base = DEFAULT_SIZES[node.kind];
   const catalog = nodePortCatalog(node, context);
-  const rows = Math.max(catalog.inputs.length, catalog.outputs.length);
-  if (node.kind === 'stage') {
-    const memberCount =
-      node.stageMembers && node.stageMembers.length > 0
-        ? node.stageMembers.length
-        : (node.personaIds?.length ?? 0);
-    const members = Math.max(memberCount, 1);
-    const headerHeight = base.height + Math.max(0, members - 1) * 22;
-    return {
-      width: base.width,
-      height: headerHeight + (rows > 0 ? 22 + rows * 14 : 0),
-      portTop: rows > 0 ? headerHeight + 22 : undefined,
-    };
-  }
-  if (node.kind === 'wait' || node.kind === 'include') {
-    return {
-      width: base.width,
-      height: base.height + (rows > 0 ? 16 + rows * 14 : 0),
-      portTop: rows > 0 ? base.height + 16 : undefined,
-    };
-  }
-  return base;
+  return workflowCardSize(node.kind, Math.max(catalog.inputs.length, catalog.outputs.length));
 }
 
 export function workflowSizeFor(
@@ -88,7 +80,9 @@ export function nodeBounds(
 ): WorkflowBounds {
   const measured = workflowSizeFor(context.measurements, node.id);
   const size =
-    measured && measured.width > 0 && measured.height > 0 ? measured : DEFAULT_SIZES[node.kind];
+    measured && measured.width > 0 && measured.height > 0
+      ? measured
+      : workflowCardSize(node.kind, 0);
   return { x: node.position.x, y: node.position.y, width: size.width, height: size.height };
 }
 

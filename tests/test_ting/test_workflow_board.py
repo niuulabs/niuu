@@ -11,6 +11,8 @@ from uuid import uuid4
 import pytest
 import yaml
 
+from tests.support.full_catalogue import full_catalogue_root
+from tests.support.full_catalogue import load_full_catalogue as load_system_workflows
 from ting.domain.exceptions import WorkflowDocumentError
 from ting.domain.models import RunStatus, Saga, SagaBoardWorkflow, SagaStatus, WorkflowScope
 from ting.domain.workflow_board import (
@@ -31,7 +33,6 @@ from ting.domain.workflow_board import (
     workflow_requires_repository,
 )
 from ting.domain.workflow_document import load_workflow_document
-from ting.system_workflows import BUNDLED_SYSTEM_WORKFLOWS_PATH, load_system_workflows
 
 
 def _gate_column(graph: dict[str, Any]) -> dict[str, Any]:
@@ -473,7 +474,7 @@ def test_the_reviewed_delivery_flow_declares_a_code_gate() -> None:
 
 
 def test_an_invalid_board_fails_the_workflow_document() -> None:
-    path = BUNDLED_SYSTEM_WORKFLOWS_PATH / "reviewed-delivery-flow.yaml"
+    path = full_catalogue_root() / "reviewed-delivery-flow.yaml"
     document = path.read_text(encoding="utf-8").replace(
         "gate: delivery-code-gate", "gate: delivery-missing-gate"
     )
@@ -663,7 +664,7 @@ def test_the_ticket_work_flow_is_the_bundled_workflow_that_needs_no_repository()
 
 
 def test_requires_repository_must_be_a_boolean() -> None:
-    document = yaml.safe_load((BUNDLED_SYSTEM_WORKFLOWS_PATH / "ticket-work-flow.yaml").read_text())
+    document = yaml.safe_load((full_catalogue_root() / "ticket-work-flow.yaml").read_text())
     document["graph"]["requiresRepository"] = "no"
 
     with pytest.raises(WorkflowDocumentError, match="requiresRepository"):

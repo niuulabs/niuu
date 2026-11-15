@@ -45,6 +45,7 @@ export interface IRunLogService {
   sendMessage(sessionId: string, instanceId: string | null, content: string): Promise<void>;
 }
 
+import type { RunGraph } from './domain/runGraph';
 export interface IWorkService {
   list(options?: { executionLimit?: number; executionCursor?: string }): Promise<WorkCollection>;
   get(kind: WorkResourceKind, id: string): Promise<WorkDetail>;
@@ -54,6 +55,10 @@ export interface IWorkService {
   /** What this ticket's runs have put in front of a person, read from their session logs. */
   ticketReviews(projectId: string, issueId: string): Promise<TicketReviews>;
   runReviews(slug: string): Promise<RunReviews>;
+  /** One run by its slug, whatever page of Work it is on, finished or not. */
+  run(slug: string): Promise<WorkDetail>;
+  /** The run's workflow graph, each node with where the run is at it. */
+  runGraph(slug: string): Promise<RunGraph>;
   decideRunGate(slug: string, decision: GateDecision): Promise<void>;
   /** Every run a person reviews, across their projects. */
   reviews(): Promise<ReviewList>;
@@ -662,7 +667,6 @@ export interface IDispatchBus {
 export interface TingPersonaSummary {
   name: string;
   permissionMode: string;
-  allowedTools: string[];
   iterationBudget: number;
   isBuiltin: boolean;
   hasOverride: boolean;
@@ -679,7 +683,6 @@ export interface TingPersonaSummary {
  */
 export interface TingPersonaDetail extends TingPersonaSummary {
   systemPromptTemplate: string;
-  forbiddenTools: string[];
   yamlSource: string;
 }
 
@@ -722,4 +725,33 @@ export interface ITingSettingsService {
  */
 export interface IAuditLogService {
   listAuditEntries(filter?: AuditFilter): Promise<AuditEntry[]>;
+}
+
+/** A project's tickets brought into its memory (Ting's memory imports). */
+export interface MemoryImport {
+  id: string;
+  projectId: string;
+  connector: 'linear';
+  /** The project's team integration it reads with. */
+  connectionId: string;
+  /** The tracker's id of what it reads (a Linear project id). */
+  trackerProjectId: string;
+  compile: boolean;
+  lastRunAt: string | null;
+  lastError: string;
+}
+
+/** The service key memory imports are wired under. */
+export const MEMORY_IMPORTS_SERVICE_KEY = 'ting.memoryImports';
+
+/** A project owner's memory imports, with their own login. */
+export interface IMemoryImportsService {
+  list(projectId: string): Promise<MemoryImport[]>;
+  create(input: {
+    projectId: string;
+    connectionId: string;
+    trackerProjectId: string;
+    compile: boolean;
+  }): Promise<MemoryImport>;
+  remove(importId: string): Promise<void>;
 }

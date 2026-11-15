@@ -238,11 +238,32 @@ git:
     pullPolicy: IfNotPresent
 
 # Broker configuration (Skuld application settings)
-# -- Workflow step hosting. Forge sets enabled for a session a workflow run launched as a step
-# host (the create request's workflow_step_host). Skuld then serves the workflow step API and
-# offers the workflow_step_close tool; an ordinary session leaves both off.
+# -- Workflow step hosting. Forge sets these for a session a workflow run launched: a member
+# (the create request's workflow_step_host) or the run's root (the run's room). A member takes the
+# run's offers from the mesh and offers the workflow_step_close tool; the root publishes them.
+# An ordinary session leaves everything off and empty. Skuld refuses to start a member or root
+# that lacks a field it needs (a member: runId, member, personaAlias, orchestratorPeerId; the
+# root: runId).
 workflowSteps:
+  # -- This session is a member of a workflow run
   enabled: false
+  # -- This session is the root of a workflow run (exclusive with enabled)
+  root: false
+  # -- The workflow run the session belongs to
+  runId: ""
+  # -- The member's name in the workflow stage
+  member: ""
+  # -- The alias the workflow gives the member's pinned persona
+  personaAlias: ""
+  # -- The mesh peer id of the run's root; a member takes offers published by this peer only
+  orchestratorPeerId: ""
+  # -- The member's eventFilters from the workflow; empty takes every offer of its topics
+  eventFilters: {}
+  # -- Every topic the workflow routes to the member (its stages' consumesEventTypes); it
+  # subscribes to them on top of its persona's own topics
+  topics: []
+  # -- Who decides the run's next step: engine or session. Empty keeps Skuld's default (engine)
+  orchestration: ""
 
 broker:
   conversationRecentMaxTurns: 15
@@ -319,8 +340,37 @@ forgeMcp:
   # Null keeps the broker default (60). Must exceed secretRequests.waitMaxS.
   brokerRequestTimeoutS: null
   # -- Seconds the engine allows one MCP tool call (forge_mcp.tool_timeout_s). Null keeps the broker
-  # default (120). Must exceed secretRequests.waitMaxS.
+  # default (120). Set as Codex's tool_timeout_sec and as Claude Code's per-server timeout for the
+  # Forge server, so both engines are bounded by it. Must exceed secretRequests.waitMaxS and ask.waitMaxS.
   toolTimeoutS: null
+
+# The session voice channel (skuld.voice): a realtime voice call with the session's owner,
+# served at /voice beside the chat WebSocket. Forge turns it on per launch when its own
+# voice.enabled is set (env SKULD__VOICE_CHANNEL__ENABLED and SKULD__VOICE_CHANNEL__DEFAULT_PERSONA); these
+# values only tune it. Null keeps the broker default. See docs/operator/session-voice.md.
+voice:
+  # -- Name the voice introduces itself by (voice.display_name). Null: the persona's name.
+  displayName: null
+  # -- IANA time zone for the date and time in the call's prompt (voice.time_zone). Null: UTC.
+  timeZone: null
+  # -- Realtime model per prompt provider, e.g. {grok: grok-voice-3.0, gpt-realtime: gpt-realtime-2.1}
+  # (voice.models). Null keeps the broker's models.
+  models: null
+  # -- Seconds one credential mint through Forge may take (voice.mint_timeout_seconds). Null: 20.
+  mintTimeoutSeconds: null
+  # -- Seconds send_to_this_session waits for the agent to take a message before it answers
+  # "queued" (voice.send_confirm_seconds). Null: 15. Must stay below toolTimeoutSeconds.
+  sendConfirmSeconds: null
+  # -- Time limit each voice tool advertises to the phone (voice.tool_timeout_seconds). Null: 60.
+  toolTimeoutSeconds: null
+  # -- Most recent turns the call's instructions open with (voice.card_recent_turns). Null: 6.
+  cardRecentTurns: null
+  # -- Characters of one turn in the call's instructions; a longer turn is cut, marked and counted
+  # (voice.card_turn_max_chars). Null: 1500.
+  cardTurnMaxChars: null
+  # -- Characters one tool result may carry; the realtime client clamps tool results at 64 KiB
+  # (voice.full_read_max_chars). Null: 65536.
+  fullReadMaxChars: null
 
 # request_secret / request-secret: the agent asks the user for a secret through a masked chat card.
 secretRequests:
@@ -330,6 +380,17 @@ secretRequests:
   # Bounded by the engine's MCP call timeouts: it must stay below forgeMcp.brokerRequestTimeoutS
   # (default 60) and forgeMcp.toolTimeoutS (default 120), or the broker refuses to start. When it
   # passes, the call fails and the request stays open in the chat; the agent calls it again.
+  waitMaxS: 50
+
+# ask: the agent sends a message to another session and waits for its answer.
+ask:
+  # -- Seconds between checks of whether the recipient is blocked on a person or gone (ask.poll_interval_s).
+  # The answer itself is not polled; it wakes the wait when it reaches the session's inbox.
+  pollIntervalS: 2
+  # -- Longest one ask call waits, and the ceiling for the deadline_s a caller passes (ask.wait_max_s).
+  # Bounded by the engine's MCP call timeouts like secretRequests.waitMaxS: it must stay below
+  # forgeMcp.brokerRequestTimeoutS (default 60) and forgeMcp.toolTimeoutS (default 120), or the
+  # broker refuses to start. When it passes, the call returns deadline and the agent calls it again.
   waitMaxS: 50
 
 # Volundr API (for token usage reporting back to the control plane)
@@ -435,10 +496,18 @@ envoy:
     email: x-auth-email
     tenant: x-auth-tenant
     roles: x-auth-roles
+    # The caller's display name (percent-encoded), recorded as the author of
+    # their messages. Only the session proxy (niuu.session_proxy) stamps it; the
+    # Gateway removes any client-supplied copy.
+    displayName: x-auth-display-name
     # A client-supplied copy must never reach the broker: only the session
     # proxy (niuu.session_proxy) is trusted to stamp this, from a verified
     # session_participants grant (see the room-scoped Cedar actions).
     roomRole: x-niuu-room-role
+    # The member session posting into a room (room_post). Forge stamps it from the
+    # caller's verified session credential; a client-supplied copy must never reach
+    # the broker, which seats the message as that session's.
+    roomCallerSession: x-niuu-room-caller-session
   # JWT authentication (via Keycloak)
   jwt:
     # -- Enable JWT authentication filter
@@ -588,15 +657,190 @@ extraVolumes: []
 # -- Extra volume mounts added to skuld and devrunner containers
 extraVolumeMounts: []
 
+# -- Port of this release's broker (config `port`). A member of a unit (below) is given its own.
+brokerPort: 8081
+
+# -- The unit this release's broker is part of. Forge sets it on the members' values, never on
+# the root's own: a member renders as a container of the root's pod, so its workspace is the
+# root's (one checkout for the run) and its scratch directories live under the root's.
+unit:
+  # -- Id of the unit's root session (the release's own `session.id`). Empty for a release that
+  # is not hosting a unit, and for the root itself.
+  sessionId: ""
+  # -- The directory every Skuld of the unit shares for its local mesh: nng on loopback with
+  # `registry` discovery on a file in it (an `emptyDir` mounted into every container). Set by
+  # Forge with `members`; empty leaves the pod without it.
+  meshDir: ""
+  # -- Id of the member whose repository, branch and Git credential the unit's one checkout is
+  # cloned from, when the root itself names no repository. Forge sets it; every member that
+  # names a repository names the same one.
+  checkoutFrom: ""
+
+# -- The sessions this pod hosts besides its own: one Skuld container per member, each with its
+# own configuration, credential and broker port, all started with the pod (a workflow run is
+# one unit). Forge sets it for a unit root, from the members' own launches. Each entry:
+# `id` (the member session's id), `port` (its broker port) and `values` (the complete values the
+# member would have been launched with on its own, as Forge computes them: `session`, `mesh`,
+# `broker`, `forgeMcp`, `envVars`, `extraVolumeMounts`, `git`, `resources`, ...). The pod-level
+# parts of a member's values (nodeSelector, tolerations, affinity, runtimeClassName,
+# serviceAccountName, securityContext, the home and sessions volumes and their claims) must be
+# the root's; Forge refuses a unit whose members differ. The members' `extraVolumes` belong
+# in the root's `extraVolumes` (under a name only that member's `extraVolumeMounts` use).
+members: []
+
 # -- Desired Deployment replicas. 0 suspends the pod while preserving
 # configured persistent storage.
 replicaCount: 1
 
-# -- Mesh configuration for session-local agent flocks.
-mesh:
+# The room this session hosts (Skuld's `room` settings). Off by default: an ordinary session
+# pays for no collaboration wiring. Forge turns it on for a workflow run's first session, so
+# the run's other members show in it as workers.
+room:
+  # -- Host a room (room.enabled). The session keeps its own agent.
   enabled: false
+  # -- Environment of the room's participants (room.environment_id); empty uses mesh.realmId
+  environmentId: ""
+  # -- Show every member of the mesh realm, not only events tagged with this session
+  # (room.realm_room). A workflow run's realm is the run's own.
+  realmRoom: false
+  # -- The session runs no agent of its own: it only hosts the room (room.routed). A
+  # workflow run's room session is one.
+  routed: false
+  # -- What a routed room does with a browser message that names no participant
+  # (room.untargeted_delivery). `refuse`: it goes to the room's sole ravn, and two or more
+  # are refused with an error. `everyone`: it is delivered to every agent in the room (a
+  # team's room); a room with no agent refuses it.
+  untargetedDelivery: refuse
+
+# -- Rooms of other sessions this session sits in from the start (room.seats), so it can
+# speak in them with room_post before anything was said to it there. Each is
+# `{roomId, hostSessionId, hostNode}`; Forge gives a team's members their team's room.
+roomSeats: []
+
+# Mesh configuration for session-local agent flocks. Every value below is a key of Skuld's
+# `mesh` settings (skuld.config.MeshConfig), rendered into the broker's config file. A value
+# left null (or empty) keeps Skuld's own default. Forge sets them per session through the
+# pod manager's `session_defaults` (the volundr chart's podManager.kwargs) or a session
+# contributor, as it does for every other value of this chart.
+mesh:
+  # -- Join the flock as a mesh peer (mesh.enabled). Adds the session's mesh tools:
+  # mesh_send, mesh_publish and mesh_peers.
+  enabled: false
+  # -- Mesh transport: nng, nats, in_process or a Sleipnir transport class path (mesh.transport)
   transport: nng
+  # -- Container ports to expose for direct mesh peers (not a Skuld setting)
   peerPorts: []
+  # -- This peer's id on the mesh (mesh.peer_id). Empty uses the session id: one id for the
+  # transport, discovery, the signing certificate and reply routes.
+  peerId: ""
+  # -- What pod discovery shows of this peer to the realm's other peers (and their rooms):
+  # its persona and the topics it consumes and emits, written as the pod's
+  # ravn.niuu.world/persona, /consumes and /emits annotations. Forge sets it for a workflow
+  # step session from its pinned persona; Skuld's own topics come from the persona itself.
+  announce: {}
+  # -- Share this session's replies, tool work and step closes with its realm's room
+  # (mesh.share_work). Forge sets it for a workflow run's member sessions.
+  shareWork: false
+  # -- Flock realm the peer announces in and discovers within (mesh.realm_id). Peers in
+  # another realm are not seen.
+  realmId: ""
+  # -- What this session is called on the mesh and in its room (mesh.display_name).
+  # Empty uses the session's name; a team's agents go by their role.
+  displayName: ""
+  # -- Persona name announced when the session has no pinned persona (mesh.persona).
+  # Null keeps `coder`. A pinned persona's id is announced instead.
+  persona: null
+  # -- What the session is for, announced to peers so they can choose whom to talk to
+  # (mesh.role). Empty announces the pinned persona's id.
+  role: ""
+  # -- What the session does, announced to peers (mesh.description). The pinned persona's
+  # own description wins when it has one.
+  description: ""
+  # -- Capabilities announced to peers (mesh.capabilities). Null keeps Skuld's default.
+  capabilities: null
+  # -- Tools announced to peers (mesh.tools). Null keeps Skuld's default.
+  tools: null
+  # -- Topics the session subscribes to (mesh.consumes_event_types). Null keeps
+  # `["code.requested"]`. A pinned persona's `consumes` are subscribed in addition.
+  consumesEventTypes: null
+  # -- Topics mesh_publish may publish (mesh.publish_event_types), in addition to the pinned
+  # persona's `produces`. A topic in neither is refused.
+  publishEventTypes: null
+  # -- Attention hint (0.0-1.0) on events mesh_publish publishes (mesh.published_event_urgency).
+  # Null keeps 0.8.
+  publishedEventUrgency: null
+  # -- With the mesh enabled on nng and no `discoveryAdapters` or `adapters`, discover the
+  # session pods of the realm by listing pods (see `nng`). false leaves such a mesh without
+  # discovery, which Skuld refuses to start.
+  discoverPods: true
+  rbac:
+    # -- Create the namespaced Role and RoleBinding that let the session's ServiceAccount
+    # `get`, `list` and `watch` pods, which `k8s` discovery needs. Created only when the mesh
+    # uses `k8s` discovery of this release's namespace (the cluster default, or a
+    # `discoveryAdapters` entry naming `k8s` and this namespace). Nothing is cluster-wide.
+    # false leaves the grant to you.
+    create: true
+  # -- NNG transport settings (mesh.nng) when `transport` is nng.
+  # With `enabled: true` and nothing else set (no `discoveryAdapters`, no `adapters`) the chart
+  # runs the mesh for a cluster: `k8s` discovery of the pods of the realm, a PUB socket on
+  # `tcp://0.0.0.0:<port>` announced at the pod's own IP, and the pod labelled and annotated
+  # for that discovery. The chart also creates the Role that lets the session's ServiceAccount
+  # read pods (`rbac` above), and, when networkPolicy.enabled, the rule that lets session pods
+  # reach each other on <port>. Setting `discoveryAdapters`
+  # turns all of that off: you then choose the addresses yourself.
+  nng:
+    # -- Port of the PUB socket in the cluster default above. Null keeps 7480.
+    port: null
+    # -- Publish/subscribe address (mesh.nng.pub_sub_address). Empty keeps
+    # tcp://127.0.0.1:0, or the cluster default above.
+    pubSubAddress: ""
+    # -- Request/reply address (mesh.nng.req_rep_address)
+    reqRepAddress: ""
+    # -- Host other machines dial this session at (mesh.nng.advertise_host). Needed when
+    # `pubSubAddress` listens on every interface. The cluster default announces the pod IP.
+    advertiseHost: ""
+    # -- Seconds between re-reads of the discovered peers (mesh.nng.rediscover_interval_s).
+    # Null keeps 1.
+    rediscoverIntervalS: null
+  # -- Mesh adapter entries (mesh.adapters): each has an `adapter` alias or class path and
+  # that adapter's own settings. Null keeps none.
+  adapters: null
+  # -- Discovery adapter entries (mesh.discovery_adapters), same shape as `adapters`:
+  # `k8s` (pods of a cluster), `registry` (sessions that share a file system),
+  # `static` (a fixed list), `event_bus` (a NATS bus). Null on nng keeps the cluster default
+  # described at `nng` above.
+  discoveryAdapters: null
+  # -- NATS JetStream settings (mesh.nats), as a map of niuu.mesh.config.MeshNatsConfig
+  # keys, e.g. `{servers: ["nats://nats:4222"], stream_name: ravn_environment}`.
+  nats: {}
+  # -- Seconds a mesh request waits for the peer's answer (mesh.rpc_timeout_s). Null keeps 10.
+  rpcTimeoutS: null
+  # -- Replies the mesh remembers so a retried request is answered once
+  # (mesh.rpc_reply_cache_size). Null keeps Skuld's default.
+  rpcReplyCacheSize: null
+  # -- Largest diff, in bytes, a peer may fetch from this session (mesh.diff_max_bytes). Null
+  # keeps 8192.
+  diffMaxBytes: null
+  # -- Seconds a diff request may take (mesh.diff_timeout_s). Null keeps 10.
+  diffTimeoutS: null
+  # Proof of who sent each mesh message. On by default and needs no setting: the session asks
+  # the Forge that launched it for a certificate with the credential it already holds
+  # (forgeMcp.tokenFile; Kubernetes and Flux sessions need Forge's
+  # forge_mcp.session_tokens.projection_adapter for that). Every key is optional; null keeps
+  # the broker's default. The certificate lifetime is Forge's
+  # forge_mcp.mesh_identity.ttl_seconds (default 900 s).
+  attestation:
+    # -- false runs the mesh unauthenticated: any claimed sender is accepted. Null keeps true.
+    required: null
+    # -- Fraction of the certificate lifetime after which it is renewed. Null keeps 0.5.
+    renewFraction: null
+    # -- Fraction of the lifetime between retries after a failed renewal. Null keeps 0.1.
+    retryFraction: null
+    # -- Seconds a request's signing time may differ from this clock. Null keeps 300.
+    clockSkewS: null
+    # -- Oldest a published event may be on receipt. Null keeps 3600; must exceed the
+    # transport's redelivery window.
+    eventMaxAgeS: null
 
 # -- Secret mapping manifest for file-based credential injection.
 # Rendered into a ConfigMap and mounted at /run/secrets/manifest.json.

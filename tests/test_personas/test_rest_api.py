@@ -66,7 +66,6 @@ def client_no_builtin(loader_no_builtin: FilesystemPersonaAdapter) -> TestClient
 _CUSTOM_PERSONA = {
     "name": "test-agent",
     "system_prompt_template": "You are a test agent.",
-    "allowed_tools": ["file_read"],
     "permission_mode": "read-only",
     "iteration_budget": 5,
 }
@@ -74,7 +73,6 @@ _CUSTOM_PERSONA = {
 _CREATE_PAYLOAD = {
     "name": "test-agent",
     "system_prompt_template": "You are a test agent.",
-    "allowed_tools": ["file_read"],
     "permission_mode": "read-only",
     "iteration_budget": 5,
 }
@@ -111,7 +109,7 @@ def test_list_returns_summary_shape(client: TestClient) -> None:
     persona = resp.json()[0]
     assert "name" in persona
     assert "is_builtin" in persona
-    assert "allowed_tools" in persona
+    assert "allowed_tools" not in persona
     assert "iteration_budget" in persona
 
 

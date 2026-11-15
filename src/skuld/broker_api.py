@@ -25,9 +25,11 @@ from pydantic import BaseModel, Field
 
 from niuu.adapters.identity_headers import parse_roles_header
 from niuu.build_identity import build_identity
+from niuu.cap_telemetry import health_counts
 from niuu.domain.conversation_timeline import resolve_timeline_turn
 from niuu.domain.history_paging import InvalidHistoryCursorError
 from niuu.domain.json_text import json_text_safe
+from niuu.domain.message_author import MessageAuthor
 from niuu.domain.presented_files import (
     PRESENTED_ARTIFACT_KEY_FIELD,
     PRESENTED_ARTIFACT_KEY_PATTERN,
@@ -39,7 +41,12 @@ from niuu.domain.presented_files import (
     presented_version_label,
 )
 from niuu.domain.text_projection import projection_revision
-from niuu.room_access import ROOM_ROLE_HEADER, ROOM_ROLE_RANK, required_role_for_route
+from niuu.room_access import (
+    ROOM_CALLER_SESSION_HEADER,
+    ROOM_ROLE_HEADER,
+    ROOM_ROLE_RANK,
+    required_role_for_route,
+)
 from skuld.conversation_models import ConversationTurn
 from skuld.conversation_read import conversation_rows, wait_history_quiet
 from skuld.conversation_shallow import SHALLOW_DETAIL, elide_turn, is_elided_input
@@ -47,6 +54,8 @@ from skuld.conversation_snapshot import ConversationSnapshotTooLargeError, prepa
 from skuld.event_log import FORGE_SESSIONS_PATH
 from skuld.file_routes import register_file_routes
 from skuld.forge_mcp.routes import register_forge_mcp_routes
+from skuld.harness_control import HarnessControl, HarnessControlError
+from skuld.memory_mcp.routes import register_memory_mcp_routes
 from skuld.path_security import (
     UnsafePathError,
     resolve_contained_path,
@@ -65,12 +74,9 @@ from skuld.presented_durable import (
 from skuld.preview import PreviewMiddleware
 from skuld.room_role_port import RoomRoleResolutionError
 from skuld.service_manager import ServiceCreateRequest, ServiceStatus
-from skuld.workflow_steps import (
-    WorkflowStepConflictError,
-    WorkflowStepNotHostedError,
-    WorkflowStepRequest,
-    WorkflowStepUnavailableError,
-)
+from skuld.voice.channel import register_voice_routes
+from skuld.websocket_auth import author_from_headers
+from skuld.workflow_steps import WorkflowOfferRefusedError, WorkflowStepNotHostedError
 from volundr.log_aggregate import aggregate_workspace_logs
 
 logger = logging.getLogger("skuld.broker")
@@ -89,6 +95,7 @@ class _BrokerProxy:
 
 
 broker = _BrokerProxy()
+harness_control = HarnessControl(lambda: _broker_getter())
 
 
 def bind_broker(getter: Callable[[], Any], log_buffer: deque[dict]) -> None:
@@ -272,7 +279,10 @@ async def _effective_room_role(request: Request) -> str | None:
       gates every caller who reaches this pod at all, and participants are
       not supported on these backends (invites are refused with 409), so a
       missing header simply means owner — identical to this pod's behavior
-      before session_participants existed. This is NOT gated on
+      before session_participants existed. VM invites are allowed: every
+      browser request reaches a VM broker through Forge's session proxy,
+      which always stamps the header; only Forge's own tunnel and the guest
+      itself reach it without one. This is NOT gated on
       ``enforce_ownership``: a non-enforced Kubernetes deployment's nginx
       sidecar always sets x-forwarded-for on every request it proxies
       (charts/skuld/templates/nginx-configmap.yaml), so a loopback-based
@@ -407,6 +417,7 @@ async def health() -> dict:
         "session_id": broker.session_id,
         **startup,
         **_BUILD_IDENTITY,
+        "caps": health_counts(),
     }
 
 
@@ -1006,6 +1017,9 @@ async def get_preview_ports() -> dict:
 # handling or room-role gate (skuld.preview).
 app.add_middleware(PreviewMiddleware, forwarder_provider=lambda: broker.preview_forwarder)
 register_forge_mcp_routes(app, lambda: broker, dependencies=_LOOPBACK_GUARD)
+register_memory_mcp_routes(app, lambda: broker, dependencies=_LOOPBACK_GUARD)
+# The session voice channel at /voice: owner-only, answered 404 while it is off.
+register_voice_routes(app, lambda: broker._voice_channel)
 
 # --------------------------------------------------------------------------- present-file
 #
@@ -1288,6 +1302,9 @@ async def present_host_file(
     )
     broker._append_turn(turn)
     await broker._channels.broadcast({"type": "conversation.turn", "turn": asdict(turn)})
+    if broker._work_sharer is not None:
+        # A run's member: the run's room lists the file with the run's deliverables.
+        await broker._work_sharer.presented(dict(turn.parts[0]["input"]))
     logger.info(
         "present-file: staged %s (%d bytes) as %s",
         repr(name),
@@ -1428,6 +1445,31 @@ class _DirectedRoomMessageRequest(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class _RoomNoticeRequest(BaseModel):
+    """A notice for the room this session hosts: shown as its Coordinator, sent to no one."""
+
+    content: str = Field(min_length=1)
+    #: Keys the notice, so one posted again is shown once.
+    notice_id: str = Field(min_length=1, max_length=200)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class _RoomOfferRequest(BaseModel):
+    """A workflow run's offer, as its engine signed it, for the run's root to publish."""
+
+    #: The ``step.offered`` payload exactly as the engine signed it.
+    offer: dict[str, Any]
+    #: The engine's attestation of ``offer`` (absent only where the mesh does not sign).
+    attestation: dict[str, Any] | None = None
+
+
+class _SessionRoomMessageRequest(BaseModel):
+    """A member session speaking in a room this session hosts (stamped by Forge)."""
+
+    room_id: str = Field(min_length=1, max_length=200)
+    content: str = Field(min_length=1)
+
+
 class _ResendPromptRequest(BaseModel):
     """Request body for resending the configured initial prompt into a room."""
 
@@ -1451,11 +1493,9 @@ class _RoomJoinRequest(BaseModel):
     participant_id: str
     display_name: str = ""
     environment_id: str
-    role: str = "observer"
     room_id: str = ""
     capabilities: list[str] = Field(default_factory=list)
     surfaces: list[str] = Field(default_factory=lambda: ["skuld.room"])
-    environment_action_authorities: list[str] = Field(default_factory=list)
     participant_type: str = "human"
     session_id: str = ""
     subscribes_to: list[str] = Field(default_factory=list)
@@ -1484,13 +1524,6 @@ class _RoomCloseRequest(BaseModel):
     room_id: str
     reason: str = "closed"
     summary: str = ""
-
-
-class _RoomCapabilityRequest(BaseModel):
-    """Request body for verifying a participant control capability."""
-
-    participant_id: str
-    capability: str
 
 
 @app.post("/api/message", dependencies=_LOOPBACK_GUARD)
@@ -1558,6 +1591,20 @@ def _room_identity_fields(
     return None, f"room_{role}"
 
 
+def _request_author(request: Request) -> MessageAuthor | None:
+    """The verified person behind this request, for the message's author.
+
+    Read only from the headers the session proxy stamps (like the room role): never from
+    the body, so a caller below owner cannot name someone else as the author.
+    """
+    cfg = broker._settings.ws_auth
+    return author_from_headers(
+        request.headers,
+        user_id_header=cfg.user_id_header,
+        display_name_header=cfg.display_name_header,
+    )
+
+
 @app.post("/api/room/message")
 async def send_room_message(request: Request, body: _RoomMessageRequest) -> dict:
     """Inject a human-originated message into the active room session."""
@@ -1571,6 +1618,7 @@ async def send_room_message(request: Request, body: _RoomMessageRequest) -> dict
             participant_id=participant_id,
             metadata=metadata,
             deliver_to_transport=body.deliver_to_transport,
+            author=_request_author(request),
         )
     except ValueError as exc:
         raise HTTPException(400, str(exc))
@@ -1602,6 +1650,7 @@ async def send_directed_room_message(request: Request, body: _DirectedRoomMessag
             body.content,
             source=source,
             metadata=metadata,
+            author=_request_author(request),
         )
     except ValueError as exc:
         raise HTTPException(400, str(exc))
@@ -1611,6 +1660,97 @@ async def send_directed_room_message(request: Request, body: _DirectedRoomMessag
         raise HTTPException(404, str(exc))
 
     return {"status": "sent", "message_id": message_id}
+
+
+class _HarnessRestartRequest(BaseModel):
+    launch_id: str = Field(
+        min_length=1,
+        description="The launch whose credential the new process must read.",
+    )
+
+
+@app.post("/api/harness/stop")
+async def stop_harness() -> dict:
+    """Stop this member's harness and broker work; the process stays up and idle.
+
+    For a member of a workflow run's unit (its pod or sandbox cannot stop one member from
+    outside). Idempotent. Unlisted in the room-role table, so owner only.
+    """
+    try:
+        await harness_control.stop()
+    except HarnessControlError as exc:
+        raise HTTPException(exc.status, {"error": exc.code, "message": str(exc)}) from exc
+    return {"status": "stopped"}
+
+
+@app.post("/api/harness/restart")
+async def restart_harness(body: _HarnessRestartRequest) -> dict:
+    """Stop this member's harness and replace the process, re-reading its credential.
+
+    409 ``credential_stale`` until the credential file carries ``launch_id``; the caller
+    asks again. The process is replaced after this answer is sent.
+    """
+    try:
+        await harness_control.restart(body.launch_id)
+    except HarnessControlError as exc:
+        raise HTTPException(exc.status, {"error": exc.code, "message": str(exc)}) from exc
+    return {"status": "restarting"}
+
+
+@app.post("/api/room/notice")
+async def post_room_notice(body: _RoomNoticeRequest) -> dict:
+    """Post a notice in this session's room (owner only: unlisted in the room-role table)."""
+    try:
+        await broker.post_room_notice(
+            body.content, notice_id=body.notice_id, metadata=body.metadata
+        )
+    except RuntimeError as exc:
+        raise HTTPException(503, str(exc))
+    except LookupError as exc:
+        raise HTTPException(404, str(exc))
+    return {"status": "posted", "notice_id": body.notice_id}
+
+
+@app.post("/api/room/offer")
+async def post_room_offer(body: _RoomOfferRequest) -> dict:
+    """Publish a workflow offer on the run's mesh (owner only: unlisted in the room-role table).
+
+    The run's engine signs the offer and hands it to the run's root here; the root checks the
+    signature and publishes it verbatim, so every member that consumes its topic receives it.
+    The same offer posted again is the same event.
+    """
+    try:
+        return await broker.publish_workflow_offer(body.offer, body.attestation)
+    except WorkflowStepNotHostedError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except WorkflowOfferRefusedError as exc:
+        raise HTTPException(exc.status, str(exc)) from exc
+
+
+@app.post("/api/room/session-message")
+async def send_session_room_message(request: Request, body: _SessionRoomMessageRequest) -> dict:
+    """Record a message a member session says in a room this session hosts.
+
+    Forge stamps the calling session from its verified credential
+    (``ROOM_CALLER_SESSION_HEADER``); the message is recorded as said by that session only
+    when it is seated in the named room.
+    """
+    caller = request.headers.get(ROOM_CALLER_SESSION_HEADER, "").strip()
+    if not caller:
+        raise HTTPException(
+            403,
+            "A room message from a session must come through Forge with the calling session's "
+            "credential; no calling session was stamped on this request",
+        )
+    try:
+        message_id = await broker.handle_session_room_message(caller, body.room_id, body.content)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    except RuntimeError as exc:
+        raise HTTPException(503, str(exc))
+    except PermissionError as exc:
+        raise HTTPException(403, str(exc))
+    return {"status": "sent", "message_id": message_id, "room_id": body.room_id}
 
 
 @app.post("/api/room/resend-prompt")
@@ -1657,11 +1797,9 @@ async def join_room(body: _RoomJoinRequest) -> dict:
             participant_id=body.participant_id,
             display_name=body.display_name,
             environment_id=body.environment_id,
-            role=body.role,
             room_id=body.room_id,
             capabilities=body.capabilities or None,
             surfaces=body.surfaces or None,
-            environment_action_authorities=body.environment_action_authorities,
             participant_type=body.participant_type,
             session_id=body.session_id,
             subscribes_to=body.subscribes_to or None,
@@ -1727,24 +1865,18 @@ async def close_room(body: _RoomCloseRequest) -> dict:
     return {"status": "closed", **closed}
 
 
-@app.post("/api/room/require-capability")
-async def require_room_capability(body: _RoomCapabilityRequest) -> dict:
-    """Verify a joined participant holds a control capability (403 otherwise)."""
-    try:
-        broker.require_room_capability(body.participant_id, body.capability)
-    except RuntimeError as exc:
-        raise HTTPException(503, str(exc))
-    except LookupError as exc:
-        raise HTTPException(404, str(exc))
-    except PermissionError as exc:
-        raise HTTPException(403, str(exc))
-    return {"status": "ok", "participant_id": body.participant_id, "capability": body.capability}
-
-
 @app.get("/api/room/participants")
 async def get_room_participants(environment_id: str | None = Query(default=None)) -> dict:
-    """Return the current participants in the active room session."""
-    return {"participants": broker.get_room_participants(environment_id=environment_id)}
+    """Return the current participants in the active room session.
+
+    ``connected_people`` is apart from ``participants`` on purpose: the verified people with a
+    live browser connection, ``[{"user_id", "display_name"}]``. They are not seated in the
+    room, so nothing that routes to its participants sees them.
+    """
+    return {
+        "participants": broker.get_room_participants(environment_id=environment_id),
+        "connected_people": broker.connected_people(),
+    }
 
 
 class _HelpAnswerRequest(BaseModel):
@@ -1776,36 +1908,6 @@ async def answer_help_request(request: Request, request_id: str, body: _HelpAnsw
     except RuntimeError as exc:
         raise HTTPException(409, str(exc)) from exc
     return {"status": "answered", "message_id": message_id}
-
-
-@app.post("/api/workflow/steps")
-async def activate_workflow_step(body: WorkflowStepRequest, response: Response) -> dict:
-    """Hold a workflow step on this session and hand its instructions to the harness.
-
-    202 when the step is new, 200 when this exact activation is already here (nothing
-    changes), 409 when a different step is open, 404 when this is not a step host.
-    """
-    try:
-        created, step = await broker.accept_workflow_step(body)
-    except WorkflowStepNotHostedError as exc:
-        raise HTTPException(404, str(exc)) from exc
-    except WorkflowStepConflictError as exc:
-        raise HTTPException(409, str(exc)) from exc
-    except WorkflowStepUnavailableError as exc:
-        raise HTTPException(503, str(exc)) from exc
-    response.status_code = status.HTTP_202_ACCEPTED if created else status.HTTP_200_OK
-    return step.status()
-
-
-@app.get("/api/workflow/steps/{activation_id}")
-async def get_workflow_step(activation_id: str) -> dict:
-    """The step's durable state: active, waiting, or closed with its ending."""
-    try:
-        return broker.get_workflow_step(activation_id).status()
-    except WorkflowStepNotHostedError as exc:
-        raise HTTPException(404, str(exc)) from exc
-    except LookupError as exc:
-        raise HTTPException(404, str(exc)) from exc
 
 
 @app.get("/api/communication/routes")
