@@ -2449,6 +2449,9 @@ class TestComputeHosts:
         assert config["pod_manager"]["adapter"].endswith("VmPodManager")
         assert config["pod_manager"]["runtime_backend"] == "vm"
         assert config["pod_manager"]["kwargs"]["pool_id"] == compute.pool_id
+        # The pool is the hosts that joined: no machine maximum strands any of them.
+        assert "max_machines" not in config["compute"]
+        assert "max_machines" not in config["pod_manager"]["kwargs"]
         # Without guestMetadata there is no credential delivery to configure.
         assert compute.credential_delivery is None
 

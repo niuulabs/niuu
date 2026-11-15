@@ -29,7 +29,7 @@ class LeaseRepository:
                 if existing.session_id == binding.session_id and existing.state in LIVE_SLOT_STATES:
                     return self.leases[existing.allocation_id], existing
         active = [item for item in self.leases.values() if item.state != LeaseState.RELEASED]
-        if len(active) >= limit:
+        if limit is not None and len(active) >= limit:
             raise ComputePoolFullError()
         self.leases[lease.id] = lease
         if binding is not None:
@@ -182,7 +182,7 @@ class Provider(MachineProvider):
         return True
 
 
-def pool_setup(max_machines: int = 2, provider=None):
+def pool_setup(max_machines: int | None = 2, provider=None):
     from unittest.mock import AsyncMock
 
     from niuu.adapters.memory_credential_store import MemoryCredentialStore

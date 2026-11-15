@@ -101,7 +101,6 @@ section:
 ```yaml
 compute:
   pool_id: valhalla-hosts
-  max_machines: 32                # at least the number of hosts you will register
   reuse_policy: reuse             # slots are cleaned and reused in place
   provider_binding: valhalla-hosts
   provider:
@@ -148,6 +147,9 @@ Startup fails if any of these hold:
 
 - `compute.hosts` is set without the registered-host provider, or the reverse.
 - There is no execution catalog.
+- `compute.max_machines` is set. A pool of registered hosts has no maximum: it is the
+  hosts that joined, and every one of them can be claimed. (A maximum an earlier release
+  stored in the pool's policy is dropped at startup, with one warning.)
 - A configured runtime needs a root daemon on the machine. `SshContainerVmRuntime`
   and the OpenShell runtimes run under root Docker, so registered hosts use the host
   runtime, which runs no daemon.
@@ -171,7 +173,7 @@ Any other combination fails at startup and names the fix.
 `~/.niuu/config.yaml`. This machine keeps running its own sessions. The CLI wraps the configured pod
 manager in `PlacementPodManager` as `local` and adds a `VmPodManager` on the
 registered-host pool as `pool`. It also renders the `compute:` section above with
-these defaults: pool `local-hosts`, profile `host`, `max_hosts: 16`,
+these defaults: pool `local-hosts`, profile `host`,
 `reuse_policy: reuse`, one `direct-ssh` connector (`allowed_sources: []`),
 `reserved_cpu: 2`, `reserved_memory_mib: 4096`, `min_free_disk_mib: 20480`, and the
 pairing key file under `~/.niuu`, and Forge's host data (its key, the hosts' pins,

@@ -371,8 +371,6 @@ computeHosts:
   poolId: hosts
   # -- The registered-host provider's profile
   profile: host
-  # -- How many hosts the pool may hold at once; a host beyond it waits as ready
-  maxHosts: 16
   # -- Host platforms that may join: linux, darwin
   platforms: [linux, darwin]
   # -- Forge's own directory for the hosts (its generated SSH key, pinned host keys,

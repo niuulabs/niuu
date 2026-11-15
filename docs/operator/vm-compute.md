@@ -15,7 +15,7 @@ Keep this operator configuration and its credentials access restricted.
 | Field | Meaning |
 | --- | --- |
 | `pool_id` | Stable pool identity, unique within the database. |
-| `max_machines` | Positive limit; provisioning, failed and draining claims count. |
+| `max_machines` | Positive limit; provisioning, failed and draining claims count. Required for a provider that makes machines; refused for registered hosts, whose pool is the hosts that joined ([compute-hosts.md](compute-hosts.md)). |
 | `database` | Existing PostgreSQL settings: `host`, `port`, `name`, `user`, `password`. Apply migration 000066 using the normal migration mechanism first. |
 | `provider.adapter` | `volundr.adapters.outbound.harvester.HarvesterMachineProvider`, or an installed class implementing `MachineProvider`. |
 | `provider.kwargs` | Provider-specific mapping described below. |

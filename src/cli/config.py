@@ -690,14 +690,6 @@ class HostsConfig(BaseModel):
         min_length=1,
         description="Provider profile of the hosts; the catalog's execution machine names it.",
     )
-    max_hosts: int = Field(
-        default=16,
-        gt=0,
-        description=(
-            "compute.max_machines: how many hosts the pool may hold at once. A host "
-            "beyond it waits as ready and unclaimed; raise it to use more hosts."
-        ),
-    )
     session_images: HostSessionImagesConfig = Field(
         default_factory=HostSessionImagesConfig,
         description="What Niuu's built-in host execution runs on joined machines.",
@@ -798,7 +790,6 @@ class HostsConfig(BaseModel):
         return ComputeConfig.model_validate(
             {
                 "pool_id": self.pool_id,
-                "max_machines": self.max_hosts,
                 "reuse_policy": "reuse",
                 "provider_binding": self.pool_id,
                 "provider": {
@@ -822,7 +813,6 @@ class HostsConfig(BaseModel):
                     "kwargs": {
                         "profile": self.profile,
                         "pool_id": self.pool_id,
-                        "max_machines": self.max_hosts,
                     },
                 },
             },

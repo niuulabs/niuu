@@ -31,9 +31,10 @@ ENVOY_IDENTITY = "volundr.adapters.outbound.identity.EnvoyHeaderIdentityAdapter"
 def _settings(tmp_path, *, hosts: bool = True, **overrides) -> Settings:
     compute = {
         "pool_id": "pool",
-        "max_machines": 1,
         "provider": {"adapter": "x.Y"},
     }
+    if not hosts:
+        compute["max_machines"] = 1
     if hosts:
         compute["hosts"] = {
             "join_url": "https://forge.example.test",

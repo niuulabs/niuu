@@ -55,9 +55,9 @@ class PostgresComputeLeaseRepository(ComputeLeaseRepository):
         return operation[1] if operation else self._pool
 
     async def reserve(
-        self, lease: ComputeLease, limit: int, binding: ComputeSlot | None = None
+        self, lease: ComputeLease, limit: int | None, binding: ComputeSlot | None = None
     ) -> tuple[ComputeLease, ComputeSlot | None]:
-        if limit < 1:
+        if limit is not None and limit < 1:
             raise ValueError("Compute pool limit must be positive")
         async with self._pool.acquire() as conn, conn.transaction():
             await conn.execute("SELECT pg_advisory_xact_lock($1)", _lock_key("pool", lease.pool_id))
@@ -103,11 +103,16 @@ class PostgresComputeLeaseRepository(ComputeLeaseRepository):
             if policy is not None and binding is None:
                 if await self._standby_free(conn, lease.pool_id, policy) >= policy.warm_min:
                     raise ComputeStandbyTargetMetError("Compute pool standby target already met")
-            count = await conn.fetchval(
-                "SELECT COUNT(*) FROM compute_leases WHERE pool_id = $1 AND state != 'released'",
-                lease.pool_id,
+            count = (
+                await conn.fetchval(
+                    "SELECT COUNT(*) FROM compute_leases "
+                    "WHERE pool_id = $1 AND state != 'released'",
+                    lease.pool_id,
+                )
+                if limit is not None
+                else None
             )
-            if count >= limit:
+            if count is not None and count >= limit:
                 raise ComputePoolFullError(
                     f"Compute pool {lease.pool_id} has no unreserved machines; raise its "
                     "maximum machines or release unused ones"

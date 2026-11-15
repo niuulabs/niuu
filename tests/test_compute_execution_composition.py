@@ -390,9 +390,11 @@ class FixedProvider(Provider):
 def _provider_config(**update) -> ComputeConfig:
     base = {
         "pool_id": "pool",
-        "max_machines": 2,
         "provider": {"adapter": "tests.Provider", "kwargs": {"label": "x"}},
     }
+    # Registered hosts have no machine maximum; a pool that makes machines needs one.
+    if "hosts" not in update:
+        base["max_machines"] = 2
     return ComputeConfig(**{**base, **update})
 
 
@@ -1056,9 +1058,11 @@ def test_the_inspector_uses_the_uid_base_of_the_hosts_own_platform(tmp_path):
 
 
 def _builtin_config(tmp_path, **update) -> ComputeConfig:
+    # Registered hosts have no machine maximum; without a hosts section the pool needs one.
+    if "hosts" not in update:
+        update = {"max_machines": 1, **update}
     return ComputeConfig(
         pool_id="hosts",
-        max_machines=1,
         provider_binding="registered-hosts",
         provider={"adapter": "tests.Provider"},
         execution_catalog={
@@ -1111,7 +1115,14 @@ async def test_the_built_in_catalog_composes_real_linux_and_mac_runtimes(tmp_pat
         assert runtime.slot_limits == linux.slot_limits
 
         hosts = module.build_registered_hosts(
-            ComputeConfig(**{**config.model_dump(), "hosts": HOSTS, "provider": config.provider}),
+            ComputeConfig(
+                **{
+                    **config.model_dump(),
+                    "max_machines": None,
+                    "hosts": HOSTS,
+                    "provider": config.provider,
+                }
+            ),
             MagicMock(),
             components,
         )

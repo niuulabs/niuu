@@ -1442,7 +1442,7 @@ class TestHostsSwitch:
         assert local["kwargs"]["max_concurrent"] is None
         assert pod_manager["kwargs"]["pool"] == {
             "adapter": "volundr.adapters.outbound.vm_pod_manager.VmPodManager",
-            "kwargs": {"profile": "host", "pool_id": "local-hosts", "max_machines": 16},
+            "kwargs": {"profile": "host", "pool_id": "local-hosts"},
         }
         compute = json.loads(env["COMPUTE"])
         assert compute["pool_id"] == compute["provider_binding"] == "local-hosts"

@@ -333,7 +333,6 @@ def _mini_settings(tmp_path):
     return Settings(
         compute={
             "pool_id": POOL,
-            "max_machines": 1,
             "provider": {"adapter": "x.Y"},
             "hosts": {
                 "connectors": [{"adapter": "x.Connector", "binding_id": "direct-ssh"}],

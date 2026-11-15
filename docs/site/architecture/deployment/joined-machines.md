@@ -72,10 +72,9 @@ chart); `niuu join` is for hosts that come and go.
 |---|---|---|---|
 | `hosts.enabled` | unset: on in mini without `compute:` | Serve the registered-hosts pool | `~/.niuu/config.yaml` |
 | `hosts.join_host` / `hosts.join_url` | empty | Address hosts reach this Forge at; loopback is refused | config file |
-| `hosts.max_hosts` | `16` | Hosts the pool may hold; one beyond waits ready and unclaimed | config file |
 | `hosts.allowed_sources` | `[]` (any) | `from=` networks on Forge's key on each host | config file |
 | `hosts.session_images.linux` / `.darwin` | `ghcr.io/niuulabs/openshell:dev`, `ghcr.io/niuulabs/skuld-darwin:dev` | What hosts run; tags are pinned by digest at Forge start | config file |
-| `computeHosts.*` | `enabled: false` | The same pool on Kubernetes (`joinUrl`, `maxHosts`, `slot`, `platforms`) | volundr chart values |
+| `computeHosts.*` | `enabled: false` | The same pool on Kubernetes (`joinUrl`, `slot`, `platforms`) | volundr chart values |
 | `hostConnect.enabled` | `false` | NAT endpoint; requires `replicaCount: 1`, `strategy.type: Recreate`, no autoscaling, a host-key Secret | volundr chart values |
 | `--slots`, `--isolation`, `--tag`, `--execution`, `--connector` | Forge's defaults | Fixed into the pairing code | `niuu remote join` flags |
 | `server.external_host` | empty | The Forge URL a Platform node offers | config file |

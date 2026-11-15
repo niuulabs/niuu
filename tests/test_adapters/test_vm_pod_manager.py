@@ -48,6 +48,23 @@ class ReadyProvider(Provider):
         return machine
 
 
+class FixedInventoryProvider(ReadyProvider):
+    """Claims from ``hosts`` registered machines, none of which can be made on demand."""
+
+    def __init__(self, hosts: int):
+        super().__init__()
+        self.hosts = hosts
+        self.claimable_calls = []
+
+    @property
+    def fixed_inventory(self):
+        return True
+
+    async def claimable(self, profile, selector):
+        self.claimable_calls.append((profile, selector))
+        return max(self.hosts - len(self.machines), 0)
+
+
 @pytest.fixture
 def setup():
     repository, provider, store = Repository(), ReadyProvider(), MemoryCredentialStore()
@@ -74,6 +91,33 @@ def setup():
     )
     session = Session(id=uuid4(), name="VM session", owner_id="owner", tenant_id="tenant")
     return manager, service, repository, provider, runtime, store, session
+
+
+async def test_a_pool_of_registered_hosts_has_room_for_every_host_that_can_be_claimed():
+    repository, provider = Repository(), FixedInventoryProvider(12)
+    service = ComputeLeaseService(
+        repository, provider, pool_id="pool", max_machines=None, bootstrap=MachineBootstrap()
+    )
+    manager = VmPodManager(profile="small", pool_id="pool")
+    manager.configure_compute(
+        service, repository, AsyncMock(), MachineBootstrap(), pool_id="pool", max_machines=None
+    )
+
+    capacity = await manager.capacity()
+    assert (capacity.limit, capacity.available) == (12, 12)
+    assert provider.claimable_calls[-1][0] == "small"
+
+    provider.hosts = 0
+    capacity = await manager.capacity()
+    assert capacity.available == 0
+    assert capacity.remedy == "register or resume a host"
+
+
+def test_a_vm_pod_manager_refuses_a_machine_maximum_below_one():
+    with pytest.raises(ValueError, match="positive max_machines"):
+        VmPodManager(profile="small", pool_id="pool", max_machines=0)
+    with pytest.raises(ValueError, match="profile and pool_id"):
+        VmPodManager(profile="", pool_id="pool")
 
 
 async def test_start_proxy_stop_preserves_before_disposal_and_resumes(setup):
