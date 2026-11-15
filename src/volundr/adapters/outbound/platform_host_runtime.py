@@ -83,8 +83,10 @@ class PlatformHostRuntime(VmRuntime):
         grants = {runtime.session_grants for runtime in children.values()}
         if len(grants) != 1:
             raise ValueError("Every platform's runtime must offer the same session grants")
-        separating = [runtime for runtime in children.values() if runtime.supports_slots]
-        if len({runtime.slot_limits for runtime in separating}) > 1:
+        # Slot counts are sized from one set of limits. A runtime whose slots have none (a
+        # Mac with shared slots: no cgroups) sizes nothing, so it need not match.
+        sized = [runtime for runtime in children.values() if _sized(runtime)]
+        if len({runtime.slot_limits for runtime in sized}) > 1:
             raise ValueError(
                 "The platforms whose runtimes separate slots must set the same slot limits"
             )
@@ -147,6 +149,9 @@ class PlatformHostRuntime(VmRuntime):
 
     @property
     def slot_limits(self) -> SlotLimits | None:
+        for runtime in self._all():
+            if _sized(runtime):
+                return runtime.slot_limits
         for runtime in self._all():
             if runtime.supports_slots:
                 return runtime.slot_limits
@@ -272,3 +277,13 @@ class PlatformHostRuntime(VmRuntime):
 def _only(runtime: VmRuntime) -> HostPlatform:
     (platform,) = runtime.host_platforms
     return platform
+
+
+def _sized(runtime: VmRuntime) -> bool:
+    """A runtime that separates slots and limits what each may use."""
+    limits = runtime.slot_limits
+    return (
+        runtime.supports_slots
+        and limits is not None
+        and any(value is not None for value in (limits.cpu, limits.memory_mib, limits.pids))
+    )

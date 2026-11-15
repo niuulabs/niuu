@@ -1111,6 +1111,23 @@ async def _close(components) -> None:
     )
 
 
+async def test_the_built_in_catalog_composes_shared_mac_slots_beside_linux(tmp_path):
+    """Both platforms separate slots; only Linux limits them, so Forge still starts."""
+    config = _builtin_config(
+        tmp_path, session_images={"linux": LINUX_PINNED, "darwin": DARWIN_PINNED}
+    )
+    config.execution_catalog.kwargs["darwin_shared_slots"] = True
+
+    components = await build(config)
+    try:
+        runtime = components.runtimes[components.default_plan.plan_digest]
+        linux = runtime.for_platform(HostPlatform.LINUX)
+        assert runtime.slot_platforms == {HostPlatform.LINUX, HostPlatform.DARWIN}
+        assert runtime.slot_limits == linux.slot_limits
+    finally:
+        await _close(components)
+
+
 async def test_the_built_in_catalog_composes_real_linux_and_mac_runtimes(tmp_path):
     from volundr.adapters.outbound.platform_host_runtime import PlatformHostRuntime
     from volundr.adapters.outbound.ssh_darwin_host_runtime import SshDarwinHostRuntime

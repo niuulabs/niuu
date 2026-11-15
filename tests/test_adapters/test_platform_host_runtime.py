@@ -293,12 +293,25 @@ def test_children_must_offer_the_same_grants():
 
 
 def test_slot_separating_children_must_share_limits():
-    other = SlotLimits(uid_base=1, cpu=None, memory_mib=None, pids=None)
+    other = SlotLimits(uid_base=1, cpu=1, memory_mib=None, pids=None)
     with pytest.raises(ValueError, match="same slot limits"):
         _runtime(
             FakeRuntime(LINUX, slots=True, limits=LIMITS),
             FakeRuntime(DARWIN, slots=True, limits=other),
         )
+
+
+def test_a_child_whose_slots_have_no_limits_need_not_match_and_sizes_nothing():
+    # A Mac with shared slots: its slots separate, but nothing limits them.
+    unlimited = SlotLimits(uid_base=61000, cpu=None, memory_mib=None, pids=None)
+    runtime = _runtime(
+        FakeRuntime(DARWIN, slots=True, limits=unlimited),
+        FakeRuntime(LINUX, slots=True, limits=LIMITS),
+    )
+    assert runtime.slot_limits == LIMITS
+    assert runtime.slot_platforms == frozenset({LINUX, DARWIN})
+    alone = _runtime(FakeRuntime(DARWIN, slots=True, limits=unlimited))
+    assert alone.slot_limits == unlimited
 
 
 def test_slot_limits_may_differ_when_only_one_child_separates_slots():
