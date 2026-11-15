@@ -13,6 +13,10 @@ agents post and passes it to the phone:
   in its own voice ("Reviewer posted a long review, want the gist?"); markdown is never
   read aloud.
 
+A post addressed to other agents (one that opens with ``@<agent>``, ``@everyone`` or
+``@whoever``, as an agent's message to a teammate is echoed in the team's room) is their
+conversation, not news for the person: it is context only, never spoken.
+
 Whether and when a note is spoken is the phone's quiet gate and rate rules, the same as a
 session call's updates: ``speak: true`` marks a note the phone may speak.
 
@@ -59,6 +63,12 @@ SPOKEN_LINE_KNOB = "notify.speak.max_chars"
 _HEADER_ROOM = 512
 
 _SPOKEN_LINE = re.compile(r"^\s*[*_]*spoken[*_]*\s*:\s*(?P<line>.+?)\s*$", re.IGNORECASE)
+
+
+#: A leading mention: ``@name`` (or the full-width ``＠`` some models write), up to a space.
+_LEADING_MENTION = re.compile(r"^\s*[@\uff20](?P<name>[^\s,:;]+)")
+#: Mentions that address agents without naming one (``mesh_ask``'s room echo).
+_AGENT_GROUP_MENTIONS = frozenset({"everyone", "whoever"})
 
 
 def split_spoken_line(text: str) -> tuple[str, str | None]:
@@ -439,8 +449,9 @@ class RoomVoiceBinding(VoiceCallBinding):
         if post.kind is PostKind.PERSON:
             return [(ROOM_NOTE, self._note(post, post.text, speak=False))]
         body, spoken = split_spoken_line(post.text)
-        if post.kind not in SPEAKABLE_KINDS:
-            # A notice is context, never spoken, whatever it ends with.
+        if post.kind not in SPEAKABLE_KINDS or self._addressed_to_agents(post.text):
+            # A notice is context, never spoken, whatever it ends with; so is one agent's
+            # message to others, which is their conversation, not news for the person.
             return [(ROOM_NOTE, self._note(post, body, speak=False))]
         if spoken is not None and len(spoken) > MAX_SPEAK_TEXT_CHARS:
             record_cap_hit(
@@ -479,6 +490,16 @@ class RoomVoiceBinding(VoiceCallBinding):
             "text": f"[{post.speaker} posted, {post.kind.value}] {self._clip(text)}",
             "speak": speak,
         }
+
+    def _addressed_to_agents(self, text: str) -> bool:
+        """Whether a post opens by addressing the room's agents (``@coder …``)."""
+        found = _LEADING_MENTION.match(text)
+        if found is None:
+            return False
+        name = found.group("name").rstrip(".!?").casefold()
+        if name in _AGENT_GROUP_MENTIONS:
+            return True
+        return any(member.name.casefold() == name for member in self._room.status().members)
 
     def _member(self, name: str) -> RoomMember | None:
         return next((m for m in self._room.status().members if m.name == name), None)

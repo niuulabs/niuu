@@ -229,6 +229,11 @@ them in post order, one at a time:
   in its own voice ("Reviewer posted a long review, want the gist?") and never reads it
   out. Markdown and code are never read aloud.
 - **Notices and people's posts** are context only.
+- **Agents talking to each other** is context only: a post that opens with `@<agent>`,
+  `@everyone` or `@whoever` (also the full-width `＠`), as an agent's `mesh_send`, `reply` or
+  `mesh_ask` to a teammate is echoed in the team's room. It is their conversation, not news
+  for the person, so it is never spoken, even with a `Spoken:` line. A post that names the
+  person, or mentions an agent later in the text, stays speakable.
 
 Whether and when a note is spoken is up to the phone: the same quiet gate and rate rules
 as a session call's updates. `speak: true` only marks a note the phone may speak.
@@ -300,7 +305,10 @@ What the phone does with them:
 2. **`speak`.** Queue it, first in, first out. When the live response is done and the person
    is not speaking:
    - send `session.update {voice: voices[<provider key>]}`;
-   - send a turn asking the model to read `text` exactly, word for word, as `member`;
+   - add `text` as a **user-role** conversation item asking the model to read it exactly,
+     word for word, as `member`, then a plain `response.create`. On Grok Voice 3.0 a
+     mid-call `response.create` whose line comes as a system item with reply instructions
+     is ignored (no `response.created`); the user-role item is said word for word;
    - right after that response's `response.done`, send `session.update` back to the host
      voice, so the person's next turn is answered in the host voice.
 

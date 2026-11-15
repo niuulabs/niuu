@@ -699,6 +699,38 @@ class TestFramesForEveryKind:
         assert "say" not in frames[0][1]
         assert frames[0][1]["text"] == "[Builder posted, notice] Handed off."
 
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "@Builder The owner is asking everyone to introduce themselves.",
+            "＠builder Hey Builder, I'm the reviewer.",
+            "  @Builder: can you take the tests?",
+            "@everyone what is everyone working on?",
+            "@whoever produces coverage: send it to me",
+            "@Builder handing off.\nSpoken: Over to Builder.",
+        ],
+    )
+    def test_a_post_addressed_to_other_agents_is_context_only(self, text):
+        frames = make_room_binding(_crew()).frames_for(make_post("p8", "Reviewer", text=text))
+
+        assert [f[0] for f in frames] == [ROOM_NOTE]
+        assert frames[0][1]["speak"] is False
+        assert "say" not in frames[0][1]
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "@Ada the tests pass now.",
+            "Ping @Builder when you are done; the tests pass.",
+            "someone@Builder.dev wrote in.",
+        ],
+    )
+    def test_a_post_for_the_person_stays_speakable(self, text):
+        frames = make_room_binding(_crew()).frames_for(make_post("p9", "Reviewer", text=text))
+
+        assert frames[0][1]["speak"] is True
+        assert "say" in frames[0][1]
+
     def test_a_note_longer_than_the_clip_is_cut_and_counted(self):
         frames = make_room_binding(_crew(), card_turn_max_chars=20).frames_for(
             make_post(text="q" * 50, kind=PostKind.NOTICE)
