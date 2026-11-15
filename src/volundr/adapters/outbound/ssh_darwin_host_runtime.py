@@ -408,6 +408,17 @@ class SshDarwinHostRuntime(HostModeRuntime):
         )
         await super().start(lease, bootstrap)
 
+    async def stop(self, lease: SlotLease, bootstrap: MachineBootstrap) -> None:
+        """End the session and remove its slot, with the bundle's programs.
+
+        Every program that ends a session runs under the bundle's Python, so the bundle is
+        fetched first: a start that failed before it arrived (or a Mac whose bundle cache
+        was emptied) would otherwise leave a slot no stop can ever release. The install is
+        a no-op when the digest is already unpacked, and a failed fetch raises.
+        """
+        await self._install(lease, bootstrap)
+        await super().stop(lease, bootstrap)
+
     async def write_files(
         self, lease: AllocationRef, bootstrap: MachineBootstrap, items: list[dict]
     ) -> None:

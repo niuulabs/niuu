@@ -24,12 +24,14 @@ from volundr.adapters.outbound import darwin_guest_programs as programs
 from volundr.adapters.outbound.host_checks import DARWIN_AUDIT_SH
 from volundr.adapters.outbound.host_session_programs import SESSION_BOOT
 from volundr.adapters.outbound.ssh_darwin_host_runtime import (
+    BUNDLE_CACHE,
     BUNDLE_MEDIA_TYPE,
     DarwinSlotLayout,
     SshDarwinHostRuntime,
     _group_mode,
     translate,
 )
+from volundr.adapters.outbound.ssh_guest_access import SshGuestAccess
 from volundr.adapters.outbound.ssh_vm_runtime import SlotNotCleanError
 from volundr.domain.compute import Machine, MachineBootstrap, MachineState
 from volundr.domain.compute_hosts import HostPlatform
@@ -531,6 +533,8 @@ async def test_stop_ends_the_jobs_archives_then_removes_the_slot_verified(mac):
 
     calls = _calls(runtime)
     commands = [_program(call) for call in calls]
+    assert BUNDLE_MEDIA_TYPE in commands[0]
+    calls, commands = calls[1:], commands[1:]
     assert commands[0] == runtime._python(
         programs.STOP,
         json.dumps(
@@ -548,6 +552,33 @@ async def test_stop_ends_the_jobs_archives_then_removes_the_slot_verified(mac):
     assert "-C /var/lib/niuu/slots/0/session" in commands[1]
     assert commands[2] == runtime._python(programs.SLOT, "down")
     runtime._guest_access.close_tunnel.assert_awaited_once_with(str(lease.id))
+
+
+async def test_a_stop_fetches_the_bundle_before_running_its_programs(mac):
+    """A start that failed before its bundle arrived must still be stoppable."""
+    runtime, bootstrap, lease = mac
+
+    await runtime.stop(lease, bootstrap)
+
+    commands = [_program(call) for call in _calls(runtime)]
+    install = SshGuestAccess.python_command(
+        programs.INSTALL, runtime._image, BUNDLE_CACHE, BUNDLE_MEDIA_TYPE
+    )
+    # The install runs under the Mac's own python3; what follows needs the bundle's.
+    assert commands[0] == install
+    assert runtime._python_binary not in commands[0]
+    assert runtime._python_binary in commands[1]
+
+
+async def test_a_stop_whose_bundle_cannot_be_fetched_raises_and_leaves_the_slot(mac):
+    runtime, bootstrap, lease = mac
+    runtime._guest_access.execute = AsyncMock(side_effect=RuntimeError("HTTP 404"))
+
+    with pytest.raises(RuntimeError, match="HTTP 404"):
+        await runtime.stop(lease, bootstrap)
+
+    assert len(_calls(runtime)) == 1
+    runtime._guest_access.close_tunnel.assert_not_awaited()
 
 
 async def test_a_stop_before_storage_was_prepared_keeps_the_previous_archive(mac):
