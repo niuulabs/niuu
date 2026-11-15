@@ -165,6 +165,21 @@ def processes(uid):
     out = subprocess.run(['ps', '-axo', 'uid=,pid='], check=True, capture_output=True,
         text=True).stdout.split()
     return [int(pid) for owner, pid in zip(out[::2], out[1::2]) if int(owner) == uid]
+#: What find says of a directory root may not read: TCC keeps some per-user caches from
+#: root over SSH unless sshd has Full Disk Access. The slot user cannot write there either.
+UNREADABLE = ('Operation not permitted', 'Permission denied')
+def remove_owned(base, uid):
+    # Remove what uid owns under base. A directory root may not read is no failure: the
+    # darwin audit that follows lists anything uid still owns. Any other error is.
+    r = subprocess.run(['find', base, '-xdev', '-uid', str(uid), '-prune', '-exec', 'rm', '-rf',
+        '{}', '+'], capture_output=True, text=True)
+    if r.returncode == 0:
+        return
+    errors = [line for line in r.stderr.splitlines() if line.strip()]
+    other = [line for line in errors if not line.rstrip().endswith(UNREADABLE)]
+    if other or not errors:
+        fail('slot-down', 'removing what uid ' + str(uid) + ' owns in ' + base + ' failed: '
+            + ('; '.join(other) or 'find exited ' + str(r.returncode)))
 def write_plist(path, job):
     path = pathlib.Path(path)
     temporary = path.with_name('.' + path.name)
@@ -262,8 +277,7 @@ for link in s['links']:
 for base in ('/private/tmp', '/private/var/tmp', '/private/var/folders', '/Users/Shared'):
     # Per-user temporary directories and caches outlive the user.
     if os.path.isdir(base):
-        subprocess.run(['find', base, '-xdev', '-uid', str(uid), '-prune', '-exec', 'rm', '-rf',
-            '{}', '+'], check=True)
+        remove_owned(base, uid)
 for path in (s['data_root'], s['run_root'], s['state_root']):
     subprocess.run(['rm', '-rf', path], check=True)
 if s['metadata_address']:

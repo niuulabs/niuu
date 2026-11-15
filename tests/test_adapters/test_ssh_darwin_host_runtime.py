@@ -10,6 +10,7 @@ import hashlib
 import io
 import json
 import os
+import shlex
 import subprocess
 import sys
 import tarfile
@@ -33,6 +34,7 @@ from volundr.adapters.outbound.ssh_darwin_host_runtime import (
 )
 from volundr.adapters.outbound.ssh_guest_access import SshGuestAccess
 from volundr.adapters.outbound.ssh_vm_runtime import SlotNotCleanError
+from volundr.adapters.outbound.vm_slot_supervisor import DETAIL_PREFIX, STAGE_PREFIX
 from volundr.domain.compute import Machine, MachineBootstrap, MachineState
 from volundr.domain.compute_hosts import HostPlatform
 from volundr.domain.guest_access import GuestCommandResult
@@ -269,6 +271,54 @@ def test_the_slot_layout_is_where_the_darwin_audit_looks():
     spec = layout.spec(stop_timeout=30, poll=2)
     assert spec["audit"] == DARWIN_AUDIT_SH
     assert spec["label"] == "world.niuu.slot.0"
+
+
+def _remove_owned(tmp_path, stderr: str, exit_code: int) -> subprocess.CompletedProcess:
+    """``remove_owned`` of the slot programs, against a ``find`` that answers as given."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    fake = bin_dir / "find"
+    fake.write_text(f"#!/bin/sh\nprintf '%s' {shlex.quote(stderr)} >&2\nexit {exit_code}\n")
+    fake.chmod(0o755)
+    program = programs._SLOT_COMMON + "\nremove_owned('/private/var/folders', 61000)\n"
+    return subprocess.run(
+        [sys.executable, "-I", "-c", program],
+        capture_output=True,
+        text=True,
+        env={**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}"},
+    )
+
+
+def test_slot_down_passes_over_directories_root_may_not_read(tmp_path):
+    result = _remove_owned(
+        tmp_path,
+        "find: /private/var/folders/zz/x/C/com.apple.a: Operation not permitted\n"
+        "find: /private/var/folders/zz/x/C/com.apple.b: Permission denied\n",
+        1,
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize(
+    ("stderr", "exit_code", "detail"),
+    [
+        ("rm: /private/var/folders/x: Directory not empty\n", 1, "Directory not empty"),
+        ("", 1, "find exited 1"),
+        (
+            "find: /a: Operation not permitted\nfind: /b: No such file or directory\n",
+            1,
+            "No such file or directory",
+        ),
+    ],
+)
+def test_slot_down_fails_on_any_other_find_error(tmp_path, stderr, exit_code, detail):
+    result = _remove_owned(tmp_path, stderr, exit_code)
+
+    assert result.returncode == 1
+    assert f"{STAGE_PREFIX}slot-down" in result.stderr
+    assert detail in result.stderr
+    assert "Operation not permitted" not in result.stderr.split(DETAIL_PREFIX)[-1]
 
 
 # -- translation -------------------------------------------------------------------------------
