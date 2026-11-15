@@ -1083,7 +1083,9 @@ class VmPodManager(PodManager):
             key=lambda machine: (-occupied(machine), machine.created_at),
         )
         for candidate in candidates:
-            if candidate.state != LeaseState.IDLE or candidate.profile != profile:
+            # A machine still provisioning or just ready takes sessions in its free slots
+            # too (``usable_slots`` says which states offer them); the start waits for it.
+            if candidate.profile != profile:
                 continue
             if not selector.accepts(candidate.machine.tags if candidate.machine else ()):
                 continue
@@ -1134,7 +1136,6 @@ class VmPodManager(PodManager):
                     # Re-check under the allocation lock: a concurrent start may have taken it.
                     if (
                         lease is None
-                        or lease.state != LeaseState.IDLE
                         or usable_slots(
                             lease, await repository.slots(lease.id), policy, datetime.now(UTC)
                         )

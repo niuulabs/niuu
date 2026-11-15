@@ -261,15 +261,23 @@ async def test_binding_requires_ownership_and_rechecks_idle_and_admission(setup)
         with pytest.raises(ComputeCapacityError, match="paused"):
             await repo.bind(idle, slot)
 
-    ready = idle.model_copy(update={"state": LeaseState.READY})
-    conn.fetchval.side_effect = [True, policy.model_dump_json(), ready.model_dump_json()]
-    async with repo.operation(idle.id):
-        with pytest.raises(ComputeLeaseBusyError, match="no longer idle"):
-            await repo.bind(idle, slot)
+    # A machine still being claimed by another session takes this one in a free slot.
+    for state in (LeaseState.PROVISIONING, LeaseState.READY):
+        claiming = idle.model_copy(update={"state": state})
+        conn.fetchval.side_effect = [True, policy.model_dump_json(), claiming.model_dump_json()]
+        async with repo.operation(idle.id):
+            assert (await repo.bind(idle, slot)).allocation.state == state
+
+    for state in (LeaseState.FAILED, LeaseState.DRAINING, LeaseState.QUARANTINED):
+        offers_none = idle.model_copy(update={"state": state})
+        conn.fetchval.side_effect = [True, policy.model_dump_json(), offers_none.model_dump_json()]
+        async with repo.operation(idle.id):
+            with pytest.raises(ComputeLeaseBusyError, match="no usable slot"):
+                await repo.bind(idle, slot)
 
     conn.fetchval.side_effect = [True, policy.model_dump_json(), None]
     async with repo.operation(idle.id):
-        with pytest.raises(ComputeLeaseBusyError, match="no longer idle"):
+        with pytest.raises(ComputeLeaseBusyError, match="is gone"):
             await repo.bind(idle, slot)
 
     await repo.quarantine(idle.model_copy(update={"state": LeaseState.QUARANTINED}))
