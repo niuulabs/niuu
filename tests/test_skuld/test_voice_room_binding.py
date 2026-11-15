@@ -252,6 +252,21 @@ class TestModelNote:
     def test_without_an_author_it_is_the_person(self):
         assert make_room_binding(_crew()).model_note(None).startswith("[The person is on")
 
+    def test_a_message_to_one_agent_says_only_it_received_it(self):
+        note = make_room_binding(_crew()).model_note(ADA)
+
+        assert "Only you received this message from Ada." in note
+        assert "Do not relay" not in note
+
+    def test_a_message_to_everyone_says_every_agent_received_it_and_not_to_relay_it(self):
+        note = make_room_binding(_crew()).model_note(ADA, everyone=True)
+
+        assert "Every agent in this room received this same message from Ada" in note
+        assert "Do not relay, forward or repeat it to the other agents" in note
+        assert "Answer Ada in the room." in note
+        assert "Only you" not in note
+        assert f"at most {MAX_SPEAK_TEXT_CHARS} characters" in note
+
 
 class TestSayToMember:
     async def _call(self, binding, **args):
@@ -350,7 +365,7 @@ class TestSayToEveryone:
 
         assert not outcome.is_error
         assert outcome.content.startswith("Delivered to every agent.")
-        assert room.said_everyone == [("Ship it.", ADA, binding.model_note(ADA))]
+        assert room.said_everyone == [("Ship it.", ADA, binding.model_note(ADA, everyone=True))]
 
     async def test_without_an_author_the_note_names_the_person(self):
         room = _crew()
@@ -358,7 +373,7 @@ class TestSayToEveryone:
 
         await self._call(binding, author=None, message="Ship it.")
 
-        assert room.said_everyone == [("Ship it.", None, binding.model_note(None))]
+        assert room.said_everyone == [("Ship it.", None, binding.model_note(None, everyone=True))]
 
     async def test_a_partial_failure_is_surfaced_as_an_error_with_who_missed_it(self):
         room = _crew()

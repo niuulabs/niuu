@@ -296,12 +296,24 @@ class RoomVoiceBinding(VoiceCallBinding):
                 return self._status()
         return self._read()
 
-    def model_note(self, author: MessageAuthor | None) -> str:
-        """What the agent's model reads ahead of a message the call sends."""
+    def model_note(self, author: MessageAuthor | None, *, everyone: bool = False) -> str:
+        """What the agent's model reads ahead of a message the call sends.
+
+        It says who received the message, so agents do not relay it to each other: a message
+        to everyone reached every agent at once, and one to a member reached only it."""
         who = author.label if author is not None else "The person"
+        them = author.label if author is not None else "the person"
+        if everyone:
+            received = (
+                f"Every agent in this room received this same message from {them} at the "
+                "same time. Do not relay, forward or repeat it to the other agents, and do not "
+                f"ask them to answer it: each answers for itself. Answer {them} in the room. "
+            )
+        else:
+            received = f"Only you received this message from {them}. "
         return (
-            f"[{who} is on a voice call in this room and hears replies read aloud. End your "
-            f"reply to them with one line 'Spoken: …': what to say aloud, at most "
+            f"[{who} is on a voice call in this room and hears replies read aloud. {received}"
+            f"End your reply to them with one line 'Spoken: …': what to say aloud, at most "
             f"{MAX_SPEAK_TEXT_CHARS} characters, plain words, no markdown.]\n\n"
         )
 
@@ -332,7 +344,7 @@ class RoomVoiceBinding(VoiceCallBinding):
         if not text:
             return ToolOutcome("Nothing to send: the message was empty.", is_error=True)
         outcome = await self._room.say_to_everyone(
-            text, author=author, model_note=self.model_note(author)
+            text, author=author, model_note=self.model_note(author, everyone=True)
         )
         return _send_result(outcome, "every agent")
 

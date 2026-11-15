@@ -246,6 +246,11 @@ same bound as notify's `speak` (`MAX_SPEAK_TEXT_CHARS`). A longer line is not cu
 announces the post instead, and the hit is counted (`notify.speak.max_chars`). Posts nobody
 asked for carry no spoken line, so the host announces them.
 
+The note also says who received the message, so agents do not pass it on to each other. A
+`say_to_everyone` message says every agent received the same message at the same time, and
+tells each not to relay, forward or repeat it to the others, and to answer the person in the
+room itself. A `say_to_member` message says only that agent received it.
+
 The note and the author reach a member only from the host of a room that member is seated
 in (`room.seats`), and only when the mesh verified that host if it requires attestation.
 A `model_note` from any other sender is refused. An `author` from any other sender is
