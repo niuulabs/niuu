@@ -473,7 +473,15 @@ export function needsCapacity(host: Pick<ComputeHost, 'health' | 'slots'>): bool
 // ---------------------------------------------------------------------------
 
 export type HostAction =
-  'open' | 'check' | 'drain' | 'drain_remove' | 'cancel_drain' | 'resume' | 'reprepare' | 'remove';
+  | 'open'
+  | 'check'
+  | 'edit_slots'
+  | 'drain'
+  | 'drain_remove'
+  | 'cancel_drain'
+  | 'resume'
+  | 'reprepare'
+  | 'remove';
 
 /**
  * What an operator may do to a host in its state. Remove and Re-prepare are only offered on
@@ -487,17 +495,21 @@ export function hostActions(
     host.sessions.length === 0 ? ['drain', 'remove'] : ['drain', 'drain_remove'];
   const follow: HostAction[] = needsCapacity(host) || host.state === 'pending' ? ['open'] : [];
   const reprepare: HostAction[] = host.sessions.length === 0 ? ['reprepare'] : [];
+  // Forge changes a host's slots only while no allocation holds it: a host that is out of
+  // service (a drain has emptied it) or one prepared but not yet claimed. An in-service host
+  // is drained first.
+  const resize: HostAction[] = host.slots !== null ? ['edit_slots'] : [];
   switch (host.state) {
     case 'pending':
       return [...follow, 'remove'];
     case 'ready':
-      return [...follow, 'check', ...reprepare, ...leave];
+      return [...follow, 'check', ...resize, ...reprepare, ...leave];
     case 'in_service':
       return ['check', ...reprepare, 'drain', 'drain_remove'];
     case 'draining':
       return host.removeWhenEmpty ? ['check'] : ['check', 'cancel_drain', 'drain_remove'];
     case 'out_of_service':
-      return ['check', ...reprepare, 'resume', 'remove'];
+      return ['check', ...resize, ...reprepare, 'resume', 'remove'];
     case 'quarantined':
       return ['check', ...reprepare, ...leave];
     case 'unreachable':

@@ -253,6 +253,25 @@ describe('ComputeHostsPanel', () => {
       expect(await within(await row('skinfaxi')).findByText('Ready')).toBeInTheDocument();
     });
 
+    it('edits the slots of an out-of-service host with a PATCH', async () => {
+      const out: ComputeHost = { ...skinfaxi, state: 'out_of_service', sessions: [], slots: 2 };
+      const { spies } = setup({ hosts: [out] });
+      await row('skinfaxi');
+      fireEvent.click(screen.getByRole('button', { name: 'Edit slots skinfaxi' }));
+      fireEvent.change(screen.getByLabelText('Sessions at once'), { target: { value: '3' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+      await waitFor(() =>
+        expect(spies.updateComputeHost).toHaveBeenCalledWith('forge', out.id, { slots: 3 }),
+      );
+      await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    });
+
+    it('does not offer Edit slots on an in-service host', async () => {
+      setup();
+      await row('hrimfaxi');
+      expect(screen.queryByRole('button', { name: 'Edit slots hrimfaxi' })).not.toBeInTheDocument();
+    });
+
     it('cancels a drain', async () => {
       const draining: ComputeHost = { ...skinfaxi, state: 'draining', service: 'draining' };
       const { spies } = setup({ hosts: [draining] });
