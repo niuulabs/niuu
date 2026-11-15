@@ -14,6 +14,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from niuu import cap_telemetry
+from niuu.domain.message_author import MessageAuthor
 from niuu.domain.peer_message import (
     PEER_MESSAGE_FRAME,
     PeerAddress,
@@ -28,7 +29,7 @@ from niuu.mesh.attestation import VERIFIED_SENDER_KEY
 from niuu.ports.cli.transport import TransportCapabilities
 from skuld import peer_inbox
 from skuld.broker import Broker
-from skuld.config import MeshConfig, SkuldSettings
+from skuld.config import MeshConfig, RoomSeat, SkuldSettings
 from skuld.forge_mcp.host import BrokerForgeMcpHost
 from skuld.mesh_adapter import SkuldMeshAdapter
 from skuld.peer_inbox import (
@@ -1032,13 +1033,29 @@ class TestDirectedRoomMessageEndToEnd:
     ends are the real shapes and a payload one end writes and the other refuses fails here.
     """
 
-    def _adapter(self, broker: Broker, peer_id: str, mesh=None) -> SkuldMeshAdapter:
+    def _adapter(
+        self, broker: Broker, peer_id: str, mesh=None, *, seats=(), attestation=None
+    ) -> SkuldMeshAdapter:
         return SkuldMeshAdapter(
             participant=SimpleNamespace(peer_id=peer_id, mesh=mesh, discovery=None),
-            config=MeshConfig(enabled=True),
+            # The fake mesh joining the two ends does not sign, so these two run unsigned
+            # unless a test turns verification on.
+            config=MeshConfig(enabled=True, attestation=attestation or {"required": False}),
             session_id=str(broker.session_id),
             peer_inbox=broker,
+            room_seats=seats,
         )
+
+    def _seated_member(self, tmp_path, *, host_session_id=SENDER_ID, **adapter) -> Broker:
+        """A member seated in room ``team-1``, hosted by ``host_session_id``."""
+        member = _inbox_broker(tmp_path / "member")
+        member._mesh_adapter = self._adapter(
+            member,
+            "member-peer",
+            seats=[RoomSeat(room_id="team-1", host_session_id=host_session_id)],
+            **adapter,
+        )
+        return member
 
     def _host(self, tmp_path, member: Broker, *, answer=None) -> tuple[Broker, list[dict]]:
         sent: list[dict] = []
@@ -1165,6 +1182,204 @@ class TestDirectedRoomMessageEndToEnd:
         assert answer["status"] == "refused"
         assert "verified" in answer["error"]
         assert member._peer_inbox == {}
+
+    async def test_the_host_carries_the_author_and_the_model_note(self, tmp_path) -> None:
+        member = self._seated_member(tmp_path)
+        host, sent = self._host(tmp_path, member)
+        owner = MessageAuthor(user_id="user-1", display_name="Ada")
+
+        await host.handle_directed_room_message(
+            "member-peer", "Review", request_id="r-1", author=owner, model_note="[voice call] "
+        )
+        await _settle()
+
+        assert sent[0]["author"] == {"user_id": "user-1", "display_name": "Ada"}
+        assert sent[0]["model_note"] == "[voice call] "
+
+    async def test_a_message_without_either_carries_neither(self, tmp_path) -> None:
+        member = self._seated_member(tmp_path)
+        host, sent = self._host(tmp_path, member)
+
+        await host.handle_directed_room_message("member-peer", "Review", request_id="r-1")
+        await _settle()
+
+        assert "author" not in sent[0] and "model_note" not in sent[0]
+        (held,) = member._peer_inbox.values()
+        assert held.author is None and held.model_note == ""
+        # Without an author it is the peer message it always was.
+        assert _sent_texts(member) == [render_for_harness(held.envelope)]
+
+    async def test_the_seated_hosts_person_is_the_author_of_the_members_turn(
+        self, tmp_path
+    ) -> None:
+        member = self._seated_member(tmp_path)
+        host, _ = self._host(tmp_path, member)
+        owner = MessageAuthor(user_id="user-1", display_name="Ada")
+
+        await host.handle_directed_room_message(
+            "member-peer", "Review the diff", request_id="r-1", author=owner, model_note="[call] "
+        )
+        await _settle()
+
+        (held,) = member._peer_inbox.values()
+        assert held.author == owner and held.injected is True
+        (turn,) = [t for t in member._conversation_turns if t.role == "user"]
+        # The person's own words, as their turn: not the host's, and not a peer envelope.
+        assert turn.content == "Review the diff"
+        assert turn.author == owner.to_dict()
+        # The model reads the host's note ahead of the message; the conversation never shows it.
+        assert _sent_texts(member) == ["[call] Review the diff"]
+        # The durable frame keeps both, so a restart still knows whose message it was.
+        frame = _peer_frames(member)[-1]
+        assert frame["author"] == owner.to_dict() and frame["model_note"] == "[call] "
+        restored = peer_inbox.PeerInboxEntry.from_frame(frame)
+        assert restored.author == owner and restored.model_note == "[call] "
+
+    async def test_a_note_without_an_author_is_still_the_hosts_turn_with_the_note(
+        self, tmp_path
+    ) -> None:
+        member = self._seated_member(tmp_path)
+        host, _ = self._host(tmp_path, member)
+
+        await host.handle_directed_room_message(
+            "member-peer", "Review", request_id="r-1", model_note="[call] "
+        )
+        await _settle()
+
+        (turn,) = [t for t in member._conversation_turns if t.role == "user"]
+        assert turn.author is None
+        assert _sent_texts(member) == ["[call] Review"]
+
+    async def test_an_author_from_a_host_the_member_is_not_seated_under_is_not_trusted(
+        self, tmp_path, caplog
+    ) -> None:
+        member = self._seated_member(tmp_path, host_session_id=OTHER_SENDER_ID)
+        host, _ = self._host(tmp_path, member)
+        owner = MessageAuthor(user_id="user-1", display_name="Ada")
+
+        with caplog.at_level("WARNING", logger="skuld.mesh_adapter"):
+            await host.handle_directed_room_message(
+                "member-peer", "Review", request_id="r-1", author=owner
+            )
+        await _settle()
+
+        # Not lost, not attributed to the person, and said loudly with who sent it.
+        (held,) = member._peer_inbox.values()
+        assert held.author is None
+        assert all(t.author is None for t in member._conversation_turns)
+        assert _sent_texts(member) == [render_for_harness(held.envelope)]
+        assert any(
+            SENDER_ID in r.getMessage() and "without the author" in r.getMessage()
+            for r in caplog.records
+        )
+
+    async def test_an_author_for_a_room_the_member_is_not_seated_in_is_not_trusted(
+        self, tmp_path
+    ) -> None:
+        member = _inbox_broker(tmp_path / "member")
+        member._mesh_adapter = self._adapter(
+            member,
+            "member-peer",
+            seats=[RoomSeat(room_id="another-room", host_session_id=SENDER_ID)],
+        )
+        host, _ = self._host(tmp_path, member)
+
+        await host.handle_directed_room_message(
+            "member-peer", "Review", request_id="r-1", author=MessageAuthor(user_id="u")
+        )
+        await _settle()
+
+        (held,) = member._peer_inbox.values()
+        assert held.author is None
+
+    async def test_a_model_note_from_a_host_the_member_is_not_seated_under_is_refused(
+        self, tmp_path
+    ) -> None:
+        member = _inbox_broker(tmp_path / "member")
+        member._mesh_adapter = self._adapter(member, "member-peer")
+        host, _ = self._host(tmp_path, member)
+
+        with pytest.raises(RuntimeError, match="model_note"):
+            await host.handle_directed_room_message(
+                "member-peer", "Review", request_id="r-1", model_note="[call] "
+            )
+
+        assert member._peer_inbox == {}
+
+    async def test_the_host_must_be_verified_when_the_mesh_verifies_senders(self, tmp_path) -> None:
+        member = self._seated_member(tmp_path, attestation={"required": True})
+        payload = {
+            "type": "directed_message",
+            "content": "Review",
+            "metadata": {"session_id": SENDER_ID, "room_id": "team-1", "delivery_id": "d-1"},
+            "author": {"user_id": "user-1", "display_name": "Ada"},
+        }
+
+        # A claimed host is not a vouching host: the author is not taken.
+        answer = await member._mesh_adapter._handle_rpc(payload)
+        assert answer["status"] == "accepted"
+        (held,) = member._peer_inbox.values()
+        assert held.author is None
+
+        # ...and a note, which is an instruction to the model, is refused.
+        answer = await member._mesh_adapter._handle_rpc(
+            {
+                **payload,
+                "metadata": {**payload["metadata"], "delivery_id": "d-2"},
+                "model_note": "[call] ",
+            }
+        )
+        assert answer["status"] == "refused" and "did not verify" in answer["error"]
+
+        # The verified seated host is trusted.
+        answer = await member._mesh_adapter._handle_rpc(
+            {
+                **payload,
+                "metadata": {**payload["metadata"], "delivery_id": "d-3"},
+                VERIFIED_SENDER_KEY: {"peer_id": "host-peer", "session_id": SENDER_ID},
+            }
+        )
+        assert answer["status"] == "accepted"
+        authors = [e.author for e in member._peer_inbox.values()]
+        assert authors.count(MessageAuthor(user_id="user-1", display_name="Ada")) == 1
+
+    @pytest.mark.parametrize(
+        "changes",
+        [{"author": "Ada"}, {"author": {"display_name": "Ada"}}, {"model_note": 3}],
+    )
+    async def test_a_malformed_author_or_note_from_the_seated_host_is_refused(
+        self, tmp_path, changes
+    ) -> None:
+        member = self._seated_member(tmp_path)
+
+        answer = await member._mesh_adapter._handle_rpc(
+            {
+                "type": "directed_message",
+                "content": "Review",
+                "metadata": {"session_id": SENDER_ID, "room_id": "team-1", "delivery_id": "d"},
+                **changes,
+            }
+        )
+
+        assert answer["status"] == "refused"
+        assert member._peer_inbox == {}
+
+    async def test_a_message_to_everyone_carries_the_author_and_note_to_each_member(
+        self, tmp_path
+    ) -> None:
+        host, _ = self._host(tmp_path, _inbox_broker(tmp_path / "member"))
+        owner = MessageAuthor(user_id="user-1", display_name="Ada")
+        host._author_for = MagicMock(return_value=owner)
+        host.handle_directed_room_message = AsyncMock(return_value="m")
+
+        await host._deliver_untargeted_to(
+            ["a", "b"], "hello", {}, "owner", None, model_note="[call] "
+        )
+
+        assert host.handle_directed_room_message.await_count == 2
+        for call in host.handle_directed_room_message.await_args_list:
+            assert call.kwargs["author"] == owner
+            assert call.kwargs["model_note"] == "[call] "
 
 
 class TestWhereATeamAgentsTurnsAreShown:

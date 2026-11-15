@@ -4042,6 +4042,22 @@ describe('teams', () => {
     });
   });
 
+  it('sends an agent its voices only when it has some', () => {
+    const body = __testables.buildStartTeamBody({
+      name: 'niuu',
+      source,
+      members: [
+        { model: 'gpt-5', lead: true, voices: { 'grok-voice': 'ara', 'openai-realtime': 'cedar' } },
+        { model: 'gpt-5', lead: false, voices: {} },
+        { model: 'gpt-5', lead: false },
+      ],
+    });
+    const sent = body.members as Array<Record<string, unknown>>;
+    expect(sent[0]).toMatchObject({ voices: { 'grok-voice': 'ara', 'openai-realtime': 'cedar' } });
+    expect(sent[1]).not.toHaveProperty('voices');
+    expect(sent[2]).not.toHaveProperty('voices');
+  });
+
   it('sends no task_to when the team starts without a task', () => {
     const body = __testables.buildStartTeamBody({
       name: 'niuu',

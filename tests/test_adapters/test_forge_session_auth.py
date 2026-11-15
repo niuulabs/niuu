@@ -64,6 +64,7 @@ class TestPolicyTable:
             ("GET", "/sessions/S/conversation", FORGE_SESSION_READ_SCOPE, Binding.OWNED),
             ("GET", "/sessions/S/status", FORGE_SESSION_READ_SCOPE, Binding.OWNED),
             ("GET", "/sessions/S/people", FORGE_SESSION_READ_SCOPE, Binding.OWN),
+            ("GET", "/sessions/S/members", FORGE_SESSION_READ_SCOPE, Binding.OWN),
             ("POST", "/sessions/S/person-questions", FORGE_NOTIFY_SCOPE, Binding.OWN),
             (
                 "POST",

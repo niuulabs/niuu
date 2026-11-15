@@ -2525,6 +2525,8 @@ def create_app(
                             runtime_backend, settings.pod_manager.room_role_source
                         ),
                         persona_provider=session_persona_provider,
+                        voice_enabled=settings.voice.enabled,
+                        voice_default_persona=settings.voice.default_persona,
                     ),
                     session_participant_service,
                     server_public_host=settings.server_public_host,

@@ -9,7 +9,7 @@ the cause, never everyone reported offline.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from uuid import UUID
 
 from volundr.domain.models import Principal, Session, SessionStatus
@@ -20,7 +20,7 @@ from volundr.domain.services.session import (
     SessionService,
 )
 from volundr.domain.services.session_participants import SessionParticipantService
-from volundr.domain.team import TEAM_KEY, TEAM_MEMBER_KEY
+from volundr.domain.team import TEAM_KEY, TEAM_MEMBER_KEY, member_voices
 from volundr.domain.workflow_session import session_persona_name
 
 #: The role and status the session's owner is listed with.
@@ -65,6 +65,9 @@ class AgentMember:
     definition: str | None
     status: str
     lead: bool
+    #: The voices the agent speaks with on a team call, per persona voice key; empty when it
+    #: has none (its lines are then spoken in the host's voice).
+    voices: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -219,4 +222,5 @@ def _agent(session: Session, *, lead: bool) -> AgentMember:
         definition=session.session_definition,
         status=session.status.value,
         lead=lead,
+        voices=member_voices(session.workload_config),
     )

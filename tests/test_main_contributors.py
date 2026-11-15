@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock
 
+import pytest
+
 from volundr.config import SessionContributorConfig, Settings
 from volundr.domain.ports import SessionPersonaProvider
 from volundr.main import _create_contributors
@@ -83,3 +85,59 @@ def test_create_contributors_keeps_a_configured_team_room_single() -> None:
     names = [contributor.name for contributor in _create_contributors(settings)]
 
     assert names.count("team_room") == 1
+
+
+def _team_room(settings: Settings, **ports: object):
+    return next(c for c in _create_contributors(settings, **ports) if c.name == "team_room")
+
+
+def test_the_team_room_hands_a_team_root_its_voices_only_when_voice_is_on() -> None:
+    voice = {
+        "enabled": True,
+        "default_persona": "narrator",
+        "providers": {
+            "openai": {
+                "adapter": "volundr.adapters.outbound.realtime_voice.OpenAIRealtimeMinter",
+                "credential_name": "openai-realtime",
+            }
+        },
+    }
+    on = Settings(voice=voice)
+
+    assert _team_room(Settings())._voice_enabled is False
+    assert _team_room(on, persona_provider=AsyncMock(spec=SessionPersonaProvider))._voice_enabled
+
+
+_VOICE_ON = {
+    "enabled": True,
+    "default_persona": "narrator",
+    "providers": {
+        "openai": {
+            "adapter": "volundr.adapters.outbound.realtime_voice.OpenAIRealtimeMinter",
+            "credential_name": "openai-realtime",
+        }
+    },
+}
+_TEAM_ROOM = "volundr.adapters.outbound.contributors.team_room.TeamRoomContributor"
+
+
+def test_a_configured_team_room_without_voice_is_refused_while_voice_is_on() -> None:
+    settings = Settings(
+        voice=_VOICE_ON, session_contributors=[SessionContributorConfig(adapter=_TEAM_ROOM)]
+    )
+
+    with pytest.raises(RuntimeError, match="voice_enabled: true"):
+        _create_contributors(settings, persona_provider=AsyncMock(spec=SessionPersonaProvider))
+
+
+def test_a_configured_team_room_with_voice_is_kept() -> None:
+    settings = Settings(
+        voice=_VOICE_ON,
+        session_contributors=[
+            SessionContributorConfig(adapter=_TEAM_ROOM, kwargs={"voice_enabled": True})
+        ],
+    )
+
+    room = _team_room(settings, persona_provider=AsyncMock(spec=SessionPersonaProvider))
+
+    assert room.voice_enabled is True

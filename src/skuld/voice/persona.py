@@ -122,16 +122,16 @@ def resolve_voice_persona(
     if chosen is None and default_persona is not None:
         if _voice_section(default_persona) is None:
             raise VoicePersonaError(
-                f"voice.default_persona {default_persona.get('id')!r} has no voice: section "
-                "with voices; give it one, or name another persona in Forge's "
+                f"voice_channel.default_persona {default_persona.get('id')!r} has no voice: "
+                "section with voices; give it one, or name another persona in Forge's "
                 "voice.default_persona"
             )
         chosen = default_persona
     if chosen is None:
         raise VoicePersonaError(
-            "voice.enabled is true but neither the session's persona nor voice.default_persona "
+            "voice_channel.enabled is true but neither the session's persona nor its default "
             "has a voice: section; Forge sends the default persona at launch, so set Forge's "
-            "voice.default_persona, or set SKULD__VOICE__ENABLED=false"
+            "voice.default_persona, or set SKULD__VOICE_CHANNEL__ENABLED=false"
         )
     persona = PortablePersonaDefinition.from_dict(chosen)
     voice = persona.definition["voice"]

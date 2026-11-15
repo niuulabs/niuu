@@ -312,7 +312,7 @@ class TestBuildVoiceChannel:
             },
             volundr_api_url="http://forge.test",
             forge_mcp={"token": "forge-session-token"},
-            voice={"enabled": True, "default_persona": persona_document(), **voice},
+            voice_channel={"enabled": True, "default_persona": persona_document(), **voice},
         )
 
     def _broker(self, settings: SkuldSettings) -> FakeBroker:

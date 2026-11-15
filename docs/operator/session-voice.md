@@ -108,14 +108,14 @@ run arbitrary code, so only Forge holds the key and only short-lived secrets lea
    In mini mode, set the same `voice:` section in Forge's config file.
 
 From then on, every session Forge launches runs the channel. Forge sets
-`SKULD__VOICE__ENABLED=true` and hands the default persona to Skuld as
-`SKULD__VOICE__DEFAULT_PERSONA`. Sessions that are already running get the channel at
+`SKULD__VOICE_CHANNEL__ENABLED=true` and hands the default persona to Skuld as
+`SKULD__VOICE_CHANNEL__DEFAULT_PERSONA`. Sessions that are already running get the channel at
 their next start. A launch fails, naming the persona, when `defaultPersona` is not in the
 owner's catalog or has no `voice:` section.
 
 The Skuld chart's `voice:` values tune the channel: display name, time zone, the realtime
 model per provider, and the waits and limits in the table below. Null keeps the broker
-defaults. A misspelt `SKULD__VOICE__…` setting stops the broker instead of being ignored.
+defaults. A misspelt `SKULD__VOICE_CHANNEL__…` setting stops the broker instead of being ignored.
 
 ## What the call can do
 
@@ -179,3 +179,169 @@ The app already speaks this wire to a resident. To call a session, it reads the 
 `send_to_this_session`, `this_session_status` and `read_this_session_in_full` instead of
 its own device-side session tools. Ringing the phone from a session is not part of this
 channel: `call.presence` and `push.register` are answered as not registered.
+
+## Team calls
+
+A call can also be bound to a room: a Forge team's room (`POST /api/v1/forge/teams`), or a
+workflow run's room. The room's host is the team's root session. It runs no agent of its
+own, so the call there is the person's voice in the room: it speaks to the agents, and the
+agents speak back in their own voices. The call is set up the same way as a session call:
+the host advertises its `voice_endpoint` while it runs, only the owner is served, and Forge
+mints the credential.
+
+The broker picks the binding when it starts. A broker that hosts a routed room
+(`room.enabled` and `room.routed`) binds the call to the room. Every other broker binds it
+to its own session. Both are implementations of `VoiceCallBinding`
+(`src/skuld/voice/binding.py`).
+
+### What the call starts with
+
+The call's instructions open with a **room card**:
+
+- the roster: each agent's name in the room, its persona, whether it leads and whether it
+  is seated now, and the people in the room;
+- the room's latest posts (`voice.card_recent_turns`; the card says how many it leaves out,
+  and a long post is cut and counted, as on a session card).
+
+A team's roster is the team as Forge launched it (`SKULD__VOICE_CHANNEL__MEMBERS`), joined with who
+is seated now. A run's room has no such list, so its roster is the agents seated in it.
+
+### What the call can do in a room
+
+| Tool | What it does |
+|---|---|
+| `say_to_member` | Sends the person's message to one agent by its name in the room. It is a directed room message authored as the owner: the agent records it as the owner's own message, and the room shows it like a typed one. |
+| `say_to_everyone` | Sends it to every agent at once, as the team's room delivers an untargeted message (`untargeted_delivery: everyone`). Offered in a team's room only. A run's room takes messages for one agent at a time. A partial delivery is reported as failed, naming the agents it missed. |
+| `room_status` | Who is in the room now, and what each agent last said. |
+| `read_room` | The room's whole conversation, within one tool result. |
+
+### Hearing the agents
+
+While a phone is on the call (between its `session.start` and `session.end`, or until its
+socket closes), every post the room keeps reaches the phone as frames. The phone receives
+them in post order, one at a time:
+
+- **Every post becomes a `room.note`:** context for the voice model, never read out.
+- **A post that ends with a `Spoken:` line** also becomes a `speak` frame: the line is said
+  in the agent's own voice.
+- **A speakable post without such a line** (an answer, a question, an error) has
+  `speak: true` and a `say` instruction. The host voice then mentions it in one sentence
+  in its own voice ("Reviewer posted a long review, want the gist?") and never reads it
+  out. Markdown and code are never read aloud.
+- **Notices and people's posts** are context only.
+- **Agents talking to each other** is context only: a post that opens with `@<agent>`,
+  `@everyone` or `@whoever` (also the full-width `＠`), as an agent's `mesh_send`, `reply` or
+  `mesh_ask` to a teammate is echoed in the team's room. It is their conversation, not news
+  for the person, so it is never spoken, even with a `Spoken:` line. A post that names the
+  person, or mentions an agent later in the text, stays speakable.
+
+Whether and when a note is spoken is up to the phone: the same quiet gate and rate rules
+as a session call's updates. `speak: true` only marks a note the phone may speak.
+
+**Agents' spoken lines.** While someone is on the call, every message the call sends tells
+the agent so, in a note only the agent's model reads (`model_note`; never shown in the room).
+The note asks the agent to end its reply to the person with one line:
+`Spoken: <what to say aloud>`, at most 600 characters, plain words, no markdown. That is the
+same bound as notify's `speak` (`MAX_SPEAK_TEXT_CHARS`). A longer line is not cut: the host
+announces the post instead, and the hit is counted (`notify.speak.max_chars`). Posts nobody
+asked for carry no spoken line, so the host announces them.
+
+The note also says who received the message, so agents do not pass it on to each other. A
+`say_to_everyone` message says every agent received the same message at the same time, and
+tells each not to relay, forward or repeat it to the others, and to answer the person in the
+room itself. A `say_to_member` message says only that agent received it.
+
+The note and the author reach a member only from the host of a room that member is seated
+in (`room.seats`), and only when the mesh verified that host if it requires attestation.
+A `model_note` from any other sender is refused. An `author` from any other sender is
+dropped with a warning, and the message is delivered without it.
+
+### Voices
+
+Each agent speaks in its persona's voice for the call's provider (`voice.voices`:
+`grok-voice`, `openai-realtime`). `POST /teams` can override it per agent:
+
+```json
+{"members": [
+  {"model": "claude-sonnet-4-6", "persona_name": "reviewer", "lead": true,
+   "voices": {"grok-voice": "rex", "openai-realtime": "ash"}},
+  {"model": "claude-sonnet-4-6", "persona_name": "coder", "voices": {"grok-voice": "leo"}}
+]}
+```
+
+Grok has five built-in voices: eve, ara, rex, sal and leo. A custom voice id is accepted as
+it is. The launch refuses a team, with 422 and before anything is created, when:
+
+- two agents share a voice on the same key;
+- an agent has the host's voice, which comes from the persona named by
+  `voice.default_persona`;
+- `voices` is given while voice is off.
+
+An agent with no voice for the call's provider is spoken in the host voice, and the phone
+names it first. `GET /sessions/{id}/members` shows each agent's resolved `voices`.
+
+### The `speak` and `room.note` frames (for the Lexi app)
+
+Both are sent by the session on its own initiative, in the wire's `{type, id, payload}` shape,
+only to a phone that is on a call. They are never replies.
+
+```json
+{"type": "room.note", "id": "room.note-…", "payload": {
+  "postId": "…", "member": "reviewer", "persona": "reviewer", "kind": "answer",
+  "text": "[reviewer posted, answer] …", "speak": true,
+  "say": "In one short sentence in your own voice, tell the person that reviewer posted a long reply (812 words), and offer the gist. Do not read it out."}}
+```
+
+```json
+{"type": "speak", "id": "speak-…", "payload": {
+  "postId": "…", "member": "reviewer", "persona": "reviewer", "kind": "answer",
+  "text": "The tests pass; one flaky case, I've pinned it.",
+  "voices": {"grok-voice": "rex", "openai-realtime": "ash"}}}
+```
+
+`kind` is one of `answer`, `question`, `error`, `notice` or `person`. A `speak` frame always
+follows the `room.note` of the same post, so the model already holds the context.
+
+What the phone does with them:
+
+1. **`room.note`.** Add `text` to the model's context. When `speak` is true and the quiet
+   gate allows, let the host respond following `say`. With `speak: false`, add the context
+   and nothing else.
+2. **`speak`.** Queue it, first in, first out. When the live response is done and the person
+   is not speaking:
+   - send `session.update {voice: voices[<provider key>]}`;
+   - add `text` as a **user-role** conversation item asking the model to read it exactly,
+     word for word, as `member`, then a plain `response.create`. On Grok Voice 3.0 a
+     mid-call `response.create` whose line comes as a system item with reply instructions
+     is ignored (no `response.created`); the user-role item is said word for word;
+   - right after that response's `response.done`, send `session.update` back to the host
+     voice, so the person's next turn is answered in the host voice.
+
+   With no voice for the provider, keep the host voice and say "<member> says:" before the
+   line. Probed on Grok Voice 3.0: one session switched eve → rex → eve → leo, and each
+   line came out in the asked voice and word for word.
+3. **A switch while a line is playing.** Never switch voices mid-response. A `speak` that
+   arrives while another line, or the host, is speaking waits in the queue. Switch only
+   between responses.
+4. **Server VAD with a live mic.** If the person starts speaking during an agent's line,
+   cancel that response, restore the host voice at once and drop the rest of that line. The
+   person's turn is answered by the host. Keep the queued lines, but speak the next one only
+   once the person has finished and the host's answer is done.
+5. **Long lines.** A spoken line is at most 600 characters, and the server never sends a
+   longer one: it sends the host announcement instead. The phone needs no limit of its own.
+
+These three cases (a switch while a line plays, server VAD with a live mic, long lines) were
+not part of the probe. The server's ordering and bounds are covered by tests. The phone's
+behaviour above is the spec for the Lexi build, which is a separate change in
+`~/git/xteo/lexi-ios`.
+
+### A workflow run's room
+
+The same binding serves a Ting run's room, whose root is a routed host with no agent. Its
+steps and gates are notices, so they are context only. Two differences:
+
+- **No `say_to_everyone`.** The run's room refuses untargeted messages for its harness
+  agents (`untargeted_delivery: refuse`), so the tool is not offered.
+- **Host voice only.** The run's agents' voices are not handed to the run's root today
+  (`SKULD__VOICE_CHANNEL__MEMBERS` comes from a team launch), so their `speak` frames carry no
+  voices, and the phone says their lines in the host voice, naming each agent first.

@@ -2235,7 +2235,7 @@ class TestVoiceTuning:
     """voice: the session voice channel's tuning; Forge turns the channel on per launch."""
 
     def test_unset_renders_no_voice_section(self):
-        assert "voice" not in _skuld_config()
+        assert "voice_channel" not in _skuld_config()
 
     def test_set_values_reach_the_broker_settings(self):
         from skuld.config import VoiceConfig
@@ -2252,7 +2252,7 @@ class TestVoiceTuning:
             "--set",
             "voice.models.gpt-realtime=gpt-realtime-2.1",
         )
-        voice = VoiceConfig.model_validate(config["voice"])
+        voice = VoiceConfig.model_validate(config["voice_channel"])
         assert voice.enabled is False
         assert voice.time_zone == "Europe/Amsterdam"
         assert voice.card_recent_turns == 4

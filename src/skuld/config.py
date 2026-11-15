@@ -1480,6 +1480,22 @@ class PeerInboxConfig(BaseModel):
     )
 
 
+class VoiceMemberConfig(BaseModel):
+    """One agent of a team's room, as a team call speaks it (``voice.members``)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    persona: str = Field(default="", description="The persona the agent plays; empty for none.")
+    lead: bool = Field(default=False, description="True for the one agent that leads the team.")
+    voices: dict[str, str] = Field(
+        description=(
+            "The agent's voice per persona voice key (grok-voice, openai-realtime): its "
+            "persona's voice.voices with the team launch's override applied. A call on a "
+            "provider the agent has no voice for speaks its lines in the host's voice and says so."
+        ),
+    )
+
+
 class VoiceConfig(BaseModel):
     """The session voice channel: a realtime voice call with the session's owner.
 
@@ -1493,12 +1509,14 @@ class VoiceConfig(BaseModel):
     its ``voice.enabled`` is set. Only the session's owner is served.
     """
 
-    #: A misspelt knob (SKULD__VOICE__…) is an error, not a setting that silently does nothing.
+    #: A misspelt knob (SKULD__VOICE_CHANNEL__…) is an error, not a setting that does nothing.
+    #: Its own name (not ``voice``) because mini mode's services share one config file, and
+    #: Forge's ``voice:`` section there is Forge's.
     model_config = ConfigDict(extra="forbid")
 
     enabled: bool = Field(
         default=False,
-        description="Serve the voice channel (SKULD__VOICE__ENABLED; Forge sets it).",
+        description="Serve the voice channel (SKULD__VOICE_CHANNEL__ENABLED; Forge sets it).",
     )
     default_persona: dict[str, Any] | None = Field(
         default=None,
@@ -1506,12 +1524,20 @@ class VoiceConfig(BaseModel):
             "Portable persona document (schema_version, id, revision, definition) whose "
             "voice: section the call uses when the session's own persona has none, or the "
             "session plays no persona. Forge resolves it from its voice.default_persona at "
-            "launch (SKULD__VOICE__DEFAULT_PERSONA, JSON). Enabled with neither is fatal."
+            "launch (SKULD__VOICE_CHANNEL__DEFAULT_PERSONA, JSON). Enabled with neither is fatal."
         ),
     )
     display_name: str = Field(
         default="",
         description="Name the voice introduces itself by; empty uses the persona's name.",
+    )
+    members: dict[str, VoiceMemberConfig] = Field(
+        default_factory=dict,
+        description=(
+            "On a team's room host: each agent by its name in the room, with its voices "
+            "(SKULD__VOICE_CHANNEL__MEMBERS, JSON; Forge renders it at the team's launch). "
+            "Empty on every other session."
+        ),
     )
     time_zone: str = Field(
         default="UTC", description="IANA time zone for the date and time in the call's prompt."
@@ -1877,7 +1903,7 @@ class SkuldSettings(BaseSettings):
     mcp_servers: list[dict[str, Any]] = Field(default_factory=list)
     forge_mcp: ForgeMcpConfig = Field(default_factory=ForgeMcpConfig)
     memory: MemoryConfig = Field(default_factory=MemoryConfig)
-    voice: VoiceConfig = Field(default_factory=VoiceConfig)
+    voice_channel: VoiceConfig = Field(default_factory=VoiceConfig)
     preview: PreviewConfig = Field(default_factory=PreviewConfig)
     secret_requests: SecretRequestsConfig = Field(default_factory=SecretRequestsConfig)
     ask: AskConfig = Field(default_factory=AskConfig)
@@ -1951,7 +1977,7 @@ class SkuldSettings(BaseSettings):
     @model_validator(mode="after")
     def _voice_can_serve(self) -> "SkuldSettings":
         """The voice channel mints through Forge as the session and records into its log."""
-        if not self.voice.enabled:
+        if not self.voice_channel.enabled:
             return self
         missing = [
             remedy
@@ -1979,9 +2005,9 @@ class SkuldSettings(BaseSettings):
         ]
         if missing:
             raise ValueError(
-                "voice.enabled is true but the voice channel cannot serve without "
+                "voice_channel.enabled is true but the voice channel cannot serve without "
                 + "; ".join(missing)
-                + ". Fix these, or set SKULD__VOICE__ENABLED=false"
+                + ". Fix these, or set SKULD__VOICE_CHANNEL__ENABLED=false"
             )
         return self
 

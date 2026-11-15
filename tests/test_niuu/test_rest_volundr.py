@@ -2019,6 +2019,43 @@ def test_mesh_identity_refusals_pass_through_with_their_status() -> None:
 
 
 @respx.mock
+def test_voice_client_secret_reaches_the_session_owner_and_is_never_cached() -> None:
+    """A session's broker mints its call's voice credential via the root; its Forge answers."""
+    client = _client([_instance("alpha", base_url="http://alpha")])
+    respx.get("http://alpha/api/v1/forge/sessions/s1").mock(
+        return_value=Response(200, json={"id": "s1"})
+    )
+    path = "/api/v1/forge/sessions/s1/voice/client-secrets"
+    route = respx.post(f"http://alpha{path}").mock(
+        return_value=Response(200, json={"token": "t"}, headers={"cache-control": "no-store"})
+    )
+    body = b'{"provider": "xai", "model": "grok-voice-3.0", "voice": "Ara"}'
+    response = client.post(path, headers=_headers(), content=body)
+    assert response.status_code == 200
+    assert response.json() == {"token": "t"}
+    assert response.headers["cache-control"] == "no-store"
+    assert route.calls.last.request.content == body
+
+
+@respx.mock
+def test_voice_client_secret_refusals_pass_through_with_their_status() -> None:
+    client = _client([_instance("alpha", base_url="http://alpha")])
+    respx.get("http://alpha/api/v1/forge/sessions/s1").mock(
+        return_value=Response(200, json={"id": "s1"})
+    )
+    respx.post("http://alpha/api/v1/forge/sessions/s1/voice/client-secrets").mock(
+        return_value=Response(409, json={"detail": "no credential 'xai'"})
+    )
+    response = client.post(
+        "/api/v1/forge/sessions/s1/voice/client-secrets",
+        headers=_headers(),
+        json={"provider": "xai"},
+    )
+    assert response.status_code == 409
+    assert response.json() == {"detail": "no credential 'xai'"}
+
+
+@respx.mock
 def test_memory_context_reaches_the_session_owner_and_is_never_cached() -> None:
     """The memory gateway asks the root about a session; the Forge that owns it answers."""
     client = _client([_instance("alpha", base_url="http://alpha")])

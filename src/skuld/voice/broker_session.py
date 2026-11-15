@@ -131,7 +131,7 @@ class BrokerVoiceSession(VoiceSessionPort):
         if self._broker._enqueue_event_log(frame) is None:
             raise VoiceRecordError(
                 "the session's durable event log is off, so a voice call cannot be recorded; "
-                "voice.enabled needs event_log_enabled and volundr_api_url"
+                "voice_channel.enabled needs event_log_enabled and volundr_api_url"
             )
 
 
@@ -147,10 +147,39 @@ def _questions(pending: dict[str, dict[str, Any]]) -> list[str]:
     return texts
 
 
+def _binding(broker: Any, session: BrokerVoiceSession, tools: SessionVoiceTools) -> Any:
+    """What the call is bound to: the room this broker hosts, else this session.
+
+    A broker that hosts a routed room runs no agent (a team's root, a workflow run's root):
+    its call speaks to the room's agents. Every other broker runs the session's agent.
+    """
+    config = broker._settings.voice_channel
+    if broker._settings.room.enabled and broker._settings.room.routed:
+        from skuld.voice.broker_room import BrokerVoiceRoom
+        from skuld.voice.room_binding import RoomVoiceBinding
+
+        room = BrokerVoiceRoom(broker)
+        broker._voice_room = room
+        return RoomVoiceBinding(
+            room,
+            tool_timeout_seconds=config.tool_timeout_seconds,
+            full_read_max_chars=config.full_read_max_chars,
+            card_recent_turns=config.card_recent_turns,
+            card_turn_max_chars=config.card_turn_max_chars,
+        )
+    # The call is bound to this session.
+    return SessionVoiceBinding(
+        session,
+        tools,
+        card_recent_turns=config.card_recent_turns,
+        card_turn_max_chars=config.card_turn_max_chars,
+    )
+
+
 def build_voice_channel(broker: Any) -> SessionVoiceChannel:
     """Compose the session's voice channel; raises with the remedy when it cannot serve."""
     settings = broker._settings
-    config = settings.voice
+    config = settings.voice_channel
     persona = resolve_voice_persona(
         settings.session.persona, config.default_persona, display_name=config.display_name
     )
@@ -161,13 +190,7 @@ def build_voice_channel(broker: Any) -> SessionVoiceChannel:
         full_read_max_chars=config.full_read_max_chars,
     )
     composer = VoicePromptComposer(persona, models=config.models, time_zone=config.time_zone)
-    # The call is bound to this session. A team call on a room host binds to its room.
-    binding = SessionVoiceBinding(
-        session,
-        tools,
-        card_recent_turns=config.card_recent_turns,
-        card_turn_max_chars=config.card_turn_max_chars,
-    )
+    binding = _binding(broker, session, tools)
     channel = SessionVoiceChannel(
         binding=binding,
         composer=composer,

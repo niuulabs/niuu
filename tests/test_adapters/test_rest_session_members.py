@@ -174,6 +174,7 @@ class TestMembersRoute:
                     "definition": "skuldClaude",
                     "status": "running",
                     "lead": True,
+                    "voices": {},
                 },
                 {
                     "session_id": str(worker.id),
@@ -183,6 +184,7 @@ class TestMembersRoute:
                     "definition": "skuldCodex",
                     "status": "running",
                     "lead": False,
+                    "voices": {},
                 },
             ],
             "people": [
@@ -209,6 +211,34 @@ class TestMembersRoute:
                 },
             ],
         }
+
+    async def test_an_agents_voices_are_its_personas_over_which_the_launch_overrides(self, forge):
+        root = await forge.session("team", workload_config={TEAM_KEY: {"task_to": None}})
+        voiced = await forge.session(
+            "planner",
+            workload_config={
+                TEAM_MEMBER_KEY: {"lead": True, "name": "planner", "voices": {"grok-voice": "rex"}},
+                "persona_definition": {
+                    "id": "architect",
+                    "definition": {
+                        "voice": {"voices": {"grok-voice": "eve", "openai-realtime": "marin"}}
+                    },
+                },
+            },
+        )
+        mute = await forge.session(
+            "coder", workload_config={TEAM_MEMBER_KEY: {"lead": False, "name": "coder"}}
+        )
+        await forge.repository.attach_to_unit(voiced.id, root.id, 8000)
+        await forge.repository.attach_to_unit(mute.id, root.id, 8000)
+
+        response = forge.members(root, "ada")
+
+        assert response.status_code == 200
+        assert [a["voices"] for a in response.json()["agents"]] == [
+            {"grok-voice": "rex", "openai-realtime": "marin"},
+            {},
+        ]
 
     async def test_a_plain_stopped_session_is_one_agent_and_nobody_is_online(self, forge):
         session = await forge.session("solo", status=SessionStatus.STOPPED)

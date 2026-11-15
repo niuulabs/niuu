@@ -542,6 +542,8 @@ class Broker(
 
         #: The session voice channel (``skuld.voice``), built at startup when enabled.
         self._voice_channel = None
+        #: The hosted room as a room call sees it, when the channel is bound to the room.
+        self._voice_room = None
         self._room_role_resolver = None
         if self._settings.ws_auth.room_role_source == "remote":
             from skuld.room_role_port import RoomRoleResolverPort
@@ -872,6 +874,9 @@ class Broker(
             }
         )
         self._save_conversation_history()
+        if self._voice_room is not None:
+            # A room call hears every post the room keeps, once it is durable.
+            self._voice_room.observe_turn(turn)
         return entry
 
     def _serialize_in_progress_turn(self) -> dict | None:
@@ -1144,6 +1149,9 @@ class Broker(
             session_id=self.session_id,
             peer_inbox=self,
             consumes_event_types=self._mesh_topics.consumes,
+            # The rooms this session is seated in: the hosts whose word about who a
+            # directed message is from it takes.
+            room_seats=tuple(self._settings.room.seats),
             # Flock members share the workspace, not this broker's loopback secret:
             # their present-file comes over the mesh they already speak.
             rpc_handlers={
@@ -1704,6 +1712,8 @@ class Broker(
             if request is None:
                 return
             await self._report_peer_help_needed_activity(request, frame)
+            if self._voice_room is not None:
+                self._voice_room.observe_question(peer_id, frame)
 
         if event_type == "task_started":
             metadata = frame.get("metadata", {})
@@ -3551,8 +3561,13 @@ class Broker(
         data: dict,
         actual_role: str,
         sender_ws: WebSocket | None,
+        *,
+        model_note: str = "",
     ) -> None:
         """Deliver an untargeted browser message as a directed message to each of ``targets``.
+
+        The sender's verified author and the caller's ``model_note`` (read by each target's
+        model ahead of the message, never shown) go to every target.
 
         Each target takes the single-target path (reply-context guard, directed delivery), so a
         message for everyone is exactly N directed messages. Every target is tried: an unknown
@@ -3589,6 +3604,7 @@ class Broker(
                     request_id=request_id,
                     metadata=metadata,
                     author=self._author_for(sender_ws),
+                    model_note=model_note,
                 )
             except LookupError as exc:
                 if sender_ws:
@@ -4582,8 +4598,15 @@ class Broker(
         request_id: str | None = None,
         metadata: dict[str, Any] | None = None,
         author: MessageAuthor | None = None,
+        model_note: str = "",
     ) -> str:
-        """Record and route a directed human message to a room participant."""
+        """Record and route a directed human message to a room participant.
+
+        ``author`` is the verified person it is from; to a mesh member it is carried on the
+        directed message, so the member records the turn as theirs. ``model_note`` is text
+        only the member's model reads, ahead of the message (carried the same way). A
+        participant reached another way (a local room peer) is given neither.
+        """
         if self._room_bridge is None:
             raise RuntimeError("Room mode is not enabled")
         if not target_peer_id.strip():
@@ -4652,6 +4675,8 @@ class Broker(
                             "room_id": self._settings.room.environment_id,
                             "delivery_id": msg_id,
                         },
+                        author=author,
+                        model_note=model_note,
                     )
                     status = str(response.get("status") or "error").strip().lower()
                     telemetry.set_attributes({**attributes, "skuld.room.status": status})
@@ -4957,7 +4982,7 @@ class Broker(
                 and not self._settings.room.enabled
                 and not self._settings.workflow_steps.enabled
                 and not self._settings.peer_inbox.enabled
-                and not self._settings.voice.enabled
+                and not self._settings.voice_channel.enabled
             )
             or not self.volundr_api_url
             or not self._settings.event_log_enabled
@@ -5036,7 +5061,7 @@ class Broker(
 
     def _start_voice_channel(self) -> None:
         """Build the voice channel (fatal when enabled and it cannot serve)."""
-        if not self._settings.voice.enabled:
+        if not self._settings.voice_channel.enabled:
             return
         from skuld.voice.broker_session import build_voice_channel
 

@@ -1,8 +1,8 @@
 """Session voice contributor: turns on Skuld's voice channel for every session.
 
 When Forge runs with ``voice.enabled`` every session it launches gets
-``SKULD__VOICE__ENABLED=true``, and the persona document the channel falls back to
-(``SKULD__VOICE__DEFAULT_PERSONA``): the persona the operator named in
+``SKULD__VOICE_CHANNEL__ENABLED=true``, and the persona document the channel falls back to
+(``SKULD__VOICE_CHANNEL__DEFAULT_PERSONA``): the persona the operator named in
 ``voice.default_persona``, resolved from the owner's own catalog at launch. Skuld serves the
 channel (``/voice``) for the session's owner, and plays the voice of the session's own
 persona when that persona has a ``voice:`` section, the default otherwise. Skuld decides
@@ -33,8 +33,10 @@ from volundr.domain.ports import (
 from volundr.domain.session_launch_facts import VOICE_CHANNEL_FACT
 
 #: Skuld's ``voice.enabled`` / ``voice.default_persona`` settings, in their environment form.
-VOICE_ENABLED_ENV = "SKULD__VOICE__ENABLED"
-VOICE_DEFAULT_PERSONA_ENV = "SKULD__VOICE__DEFAULT_PERSONA"
+VOICE_ENABLED_ENV = "SKULD__VOICE_CHANNEL__ENABLED"
+VOICE_DEFAULT_PERSONA_ENV = "SKULD__VOICE_CHANNEL__DEFAULT_PERSONA"
+#: Skuld's ``voice.members`` setting: a team room host's agents and their voices (JSON).
+VOICE_MEMBERS_ENV = "SKULD__VOICE_CHANNEL__MEMBERS"
 
 
 class SessionVoiceContributor(SessionContributor):

@@ -90,6 +90,9 @@ ROUTE_POLICIES: tuple[RoutePolicy, ...] = (
     RoutePolicy("GET", f"{_S}/status", _READ, Binding.OWNED),
     # The people on the session's own project (``find_people``): the session itself only.
     RoutePolicy("GET", f"{_S}/people", _READ, Binding.OWN),
+    # Who is in the session (a team's agents and people): a team's room host reads its own
+    # team's roster, with the voices of its agents, for a team call.
+    RoutePolicy("GET", f"{_S}/members", _READ, Binding.OWN),
     # A question to one of them (``ask_person``) and the report of who answered it: the
     # session itself only, recorded as the agent's own notification.
     RoutePolicy("POST", f"{_S}/person-questions", FORGE_NOTIFY_SCOPE, Binding.OWN),

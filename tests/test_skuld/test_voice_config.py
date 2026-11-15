@@ -16,7 +16,7 @@ def _ready(**overrides):
         "session": {"owner_id": OWNER},
         "volundr_api_url": "http://forge.test",
         "forge_mcp": {"token": "forge-session-token"},
-        "voice": {"enabled": True},
+        "voice_channel": {"enabled": True},
     }
     values.update(overrides)
     return values
@@ -60,23 +60,23 @@ class TestVoiceConfig:
 
 class TestSettingsPrerequisites:
     def test_voice_off_needs_nothing(self):
-        assert SkuldSettings().voice.enabled is False
+        assert SkuldSettings().voice_channel.enabled is False
 
     def test_enabled_with_everything_present_loads(self):
         settings = SkuldSettings(**_ready())
 
-        assert settings.voice.enabled is True
+        assert settings.voice_channel.enabled is True
 
     def test_enabled_with_nothing_names_every_missing_prerequisite(self):
         with pytest.raises(ValidationError) as refused:
-            SkuldSettings(voice={"enabled": True})
+            SkuldSettings(voice_channel={"enabled": True})
 
         message = str(refused.value)
-        assert "voice.enabled is true but the voice channel cannot serve without" in message
+        assert "voice_channel.enabled is true but the voice channel cannot serve without" in message
         assert "a Forge session credential" in message
         assert "volundr_api_url" in message
         assert "session.owner_id" in message
-        assert "SKULD__VOICE__ENABLED=false" in message
+        assert "SKULD__VOICE_CHANNEL__ENABLED=false" in message
 
     @pytest.mark.parametrize(
         ("override", "named"),
@@ -110,7 +110,7 @@ class TestSettingsPrerequisites:
         settings = SkuldSettings(**_ready(forge_mcp={"token_file": str(token_file)}))
 
         assert settings.forge_mcp.token == "file-session-token"
-        assert settings.voice.enabled is True
+        assert settings.voice_channel.enabled is True
 
     def test_an_unreadable_token_file_is_fatal_before_voice_can_start(self):
         with pytest.raises(ValidationError, match="cannot be read"):
@@ -120,26 +120,51 @@ class TestSettingsPrerequisites:
 class TestDefaultPersonaFromEnvironment:
     def test_a_json_string_parses_into_the_persona_document(self, monkeypatch):
         document = persona_document()
-        monkeypatch.setenv("SKULD__VOICE__DEFAULT_PERSONA", json.dumps(document))
+        monkeypatch.setenv("SKULD__VOICE_CHANNEL__DEFAULT_PERSONA", json.dumps(document))
 
         settings = SkuldSettings()
 
-        assert settings.voice.default_persona == document
+        assert settings.voice_channel.default_persona == document
 
     def test_the_rest_of_the_voice_config_comes_from_the_environment_too(self, monkeypatch):
-        monkeypatch.setenv("SKULD__VOICE__ENABLED", "true")
-        monkeypatch.setenv("SKULD__VOICE__DEFAULT_PERSONA", json.dumps(persona_document()))
+        monkeypatch.setenv("SKULD__VOICE_CHANNEL__ENABLED", "true")
+        monkeypatch.setenv("SKULD__VOICE_CHANNEL__DEFAULT_PERSONA", json.dumps(persona_document()))
         monkeypatch.setenv("SKULD__VOLUNDR_API_URL", "http://forge.test")
         monkeypatch.setenv("SKULD__SESSION__OWNER_ID", OWNER)
         monkeypatch.setenv("SKULD__FORGE_MCP__TOKEN", "forge-session-token")
 
         settings = SkuldSettings()
 
-        assert settings.voice.enabled is True
-        assert settings.voice.default_persona["id"] == "sidekick"
+        assert settings.voice_channel.enabled is True
+        assert settings.voice_channel.default_persona["id"] == "sidekick"
 
     def test_malformed_json_is_refused_not_ignored(self, monkeypatch):
-        monkeypatch.setenv("SKULD__VOICE__DEFAULT_PERSONA", "{not json")
+        monkeypatch.setenv("SKULD__VOICE_CHANNEL__DEFAULT_PERSONA", "{not json")
 
-        with pytest.raises(ValidationError, match="voice.default_persona"):
+        with pytest.raises(ValidationError, match="voice_channel.default_persona"):
             SkuldSettings()
+
+
+class TestSharedMiniConfig:
+    """Mini mode: every service reads one ~/.niuu/config.yaml (NIUU_CONFIG)."""
+
+    def test_forges_voice_section_in_the_shared_file_does_not_stop_skuld(
+        self, tmp_path, monkeypatch
+    ):
+        shared = tmp_path / "config.yaml"
+        shared.write_text(
+            "voice:\n"
+            "  enabled: true\n"
+            "  default_persona: lexi\n"
+            "  providers:\n"
+            "    xai:\n"
+            "      adapter: volundr.adapters.outbound.realtime_voice.XaiRealtimeMinter\n"
+            "      credential_name: xai\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setitem(SkuldSettings.model_config, "yaml_file", [shared])
+
+        settings = SkuldSettings()
+
+        assert settings.voice_channel.enabled is False
+        assert settings.voice_channel.default_persona is None

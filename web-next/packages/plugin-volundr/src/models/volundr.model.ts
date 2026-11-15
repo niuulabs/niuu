@@ -440,6 +440,12 @@ export interface StartTeamMember {
   definition?: string;
   personaName?: string;
   lead: boolean;
+  /**
+   * The agent's voice on a team call per persona voice key (`grok-voice`, `openai-realtime`),
+   * over its persona's own. Any voice id the provider accepts; no two agents, and no agent and
+   * the room's host, may share one. Refused by a Forge without voice.
+   */
+  voices?: Record<string, string>;
 }
 
 /**
