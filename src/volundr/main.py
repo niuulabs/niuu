@@ -209,7 +209,7 @@ from volundr.composition_builders import (  # noqa: F401
     with_oauth_device_runner,
 )
 from volundr.config import ALLOW_ALL_IDENTITY_ADAPTERS, Settings
-from volundr.domain.models import SessionStatus
+from volundr.domain.models import IntegrationType, SessionStatus
 from volundr.domain.notifications import NotificationSinkInfo
 from volundr.domain.ports import OpenShellCredentialGrantPort
 from volundr.domain.presented_files import PresentedFileQuota
@@ -1677,6 +1677,17 @@ def create_app(
                 secret_cleanup=secret_request_service,
                 mesh_identity=mesh_identity_service,
                 project_memory=project_memory_resolver,
+                runtime_providers={
+                    key: definition.compatible_providers
+                    for key, definition in settings.session_definitions.items()
+                },
+                default_definition=settings.default_definition,
+                integration_vendors={
+                    definition.slug: definition.model_vendor
+                    for definition in integration_registry.get_definitions_by_type(
+                        IntegrationType.AI_PROVIDER
+                    )
+                },
             )
             # A workflow run's unit starts its members with it: every pod manager that hosts
             # one resolves their launches (each member's own spec and credential) from here.

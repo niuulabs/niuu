@@ -18,6 +18,7 @@ except ImportError:
     _catalog_failed = None  # type: ignore[assignment]
 
 from niuu.cap_telemetry import record_degraded
+from niuu.domain.model_runtime import normalize_model_vendor
 from niuu.domain.models import is_push_device
 from niuu.domain.services.forge_session_token import (
     ForgeSessionTokenService,
@@ -220,6 +221,9 @@ class SessionService:
         secret_cleanup: SessionSecretCleanup | None = None,
         mesh_identity: MeshIdentityRetirer | None = None,
         project_memory: ProjectMemoryResolver | None = None,
+        runtime_providers: Mapping[str, Iterable[str]] | None = None,
+        default_definition: str = "",
+        integration_vendors: Mapping[str, str] | None = None,
     ):
         if forge_session_projection is not None and not forge_session_projection.supports(
             runtime_backend
@@ -229,6 +233,19 @@ class SessionService:
                 f"backend {runtime_backend!r}; configure a projection for that backend"
             )
         self._repository = repository
+        # Which model vendors each session definition runs (its compatible_providers; empty
+        # means any) and which vendor each model sign-in serves (its definition's
+        # model_vendor), so a launch attaches only the sign-ins its runtime can use.
+        self._runtime_providers = {
+            key: frozenset(normalize_model_vendor(v) for v in vendors)
+            for key, vendors in (runtime_providers or {}).items()
+        }
+        self._default_definition = default_definition
+        self._integration_vendors = {
+            slug: normalize_model_vendor(vendor)
+            for slug, vendor in (integration_vendors or {}).items()
+            if vendor
+        }
         self._presented_file_store = presented_file_store
         self._secret_cleanup = secret_cleanup
         self._mesh_identity = mesh_identity
@@ -1671,11 +1688,13 @@ class SessionService:
         principal: Principal | None,
         integration_ids: list[str] | None,
         workload_config: dict,
+        definition: str | None,
     ) -> list[IntegrationConnection]:
         """The integration connections a launch of ``session`` attaches.
 
-        The ids the caller named, or every enabled connection of the principal when it named
-        none. The fetched connections are kept so contributors don't fetch them again.
+        The ids the caller named, or, when it named none, every enabled connection of the
+        principal that the session's runtime can use (``_runtime_uses``). The fetched
+        connections are kept so contributors don't fetch them again.
         """
         # Auto-include all enabled integrations when none are specified.
         # Keep the fetched connections so contributors don't re-fetch by ID.
@@ -1697,7 +1716,9 @@ class SessionService:
             all_connections = await self._integration_repo.list_connections(
                 principal.user_id,
             )
-            resolved_connections = [c for c in all_connections if c.enabled]
+            resolved_connections = [
+                c for c in all_connections if c.enabled and self._runtime_uses(c, definition)
+            ]
         # Registered push devices are delivery targets, not session integrations: their
         # token must never be injected into a pod, even when a client selects "all".
         resolved_connections = [c for c in resolved_connections if not is_push_device(c)]
@@ -1729,6 +1750,22 @@ class SessionService:
             ]
         return resolved_connections
 
+    def _runtime_uses(self, connection: IntegrationConnection, definition: str | None) -> bool:
+        """Whether a session of ``definition`` can use ``connection``.
+
+        A model sign-in serves only the runtimes that accept its vendor: a Claude session has
+        no use for a Codex login, and attaching it would make the launch depend on that
+        login's health. Every other connection, and every connection of a runtime that
+        accepts any vendor, is used.
+        """
+        if not self._integration_vendors:
+            return True
+        vendor = self._integration_vendors.get(connection.slug)
+        if not vendor:
+            return True
+        accepted = self._runtime_providers.get(definition or self._default_definition)
+        return not accepted or vendor in accepted
+
     async def _build_spec(
         self,
         session: Session,
@@ -1759,7 +1796,7 @@ class SessionService:
             session, workload_config, launch_spec, workload_type
         )
         resolved_connections = await self._resolve_connections(
-            session, principal, integration_ids, workload_config
+            session, principal, integration_ids, workload_config, definition
         )
         workflow_child_local_mount = _is_workflow_child_local_mount(session, workload_config)
 
@@ -1945,7 +1982,7 @@ class SessionService:
             launch = HostedLaunch.model_validate(member.workload_config.get(HOSTED_LAUNCH_KEY))
             member_config = without_forge_mcp(member.workload_config)
             connections = await self._resolve_connections(
-                member, principal, launch.integration_ids or None, member_config
+                member, principal, launch.integration_ids or None, member_config, launch.definition
             )
             contexts.append(
                 UnitMemberContext(

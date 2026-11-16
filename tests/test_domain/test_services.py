@@ -830,6 +830,89 @@ class TestSessionServiceStart:
         assert stored.workload_config["integration_ids"] == ["ai"]
         await asyncio.gather(*service._provisioning_tasks.values())
 
+    @pytest.mark.parametrize(
+        ("definition", "attached"),
+        [
+            # A Claude runtime takes the Claude sign-in and the model server, never Codex.
+            ("skuldClaudeInteractive", ["github", "claude", "model-server"]),
+            # No definition named: the configured default decides, as it does the runtime.
+            (None, ["github", "claude", "model-server"]),
+            ("skuldCodex", ["github", "codex", "model-server"]),
+            # A runtime that accepts any vendor takes every sign-in.
+            ("skuldOpenCode", ["github", "claude", "codex", "model-server"]),
+        ],
+    )
+    async def test_auto_attached_model_sign_ins_are_the_runtimes_own(
+        self, repository, pod_manager, monkeypatch, definition, attached
+    ):
+        # A Claude session must not depend on the health of a Codex login it never uses.
+        from types import SimpleNamespace
+
+        integrations = AsyncMock()
+        integrations.list_connections.return_value = [
+            SimpleNamespace(id="github", enabled=True, slug="github"),
+            SimpleNamespace(id="claude", enabled=True, slug="claude-code"),
+            SimpleNamespace(id="codex", enabled=True, slug="codex"),
+            SimpleNamespace(id="model-server", enabled=True, slug="model-server"),
+        ]
+        service = SessionService(
+            repository,
+            pod_manager,
+            integration_repo=integrations,
+            runtime_providers={
+                "skuldClaudeInteractive": ["anthropic", "local"],
+                "skuldCodex": ["Codex", "local"],
+                "skuldOpenCode": [],
+            },
+            default_definition="skuldClaudeInteractive",
+            integration_vendors={
+                "claude-code": "anthropic",
+                "codex": "openai",
+                "model-server": "local",
+                "github": "",
+            },
+        )
+        monkeypatch.setattr(service, "_poll_readiness", AsyncMock())
+        session = await service.create_session(name="coordinator", model="claude-opus-5-5")
+        await service._provision_background(
+            session, SimpleNamespace(user_id="owner"), definition, None, False
+        )
+        stored = await repository.get(session.id)
+        assert stored.workload_config["integration_ids"] == attached
+        await asyncio.gather(*service._provisioning_tasks.values())
+
+    async def test_a_named_model_sign_in_is_attached_whatever_the_runtime(
+        self, repository, pod_manager, monkeypatch
+    ):
+        # Only the automatic selection is narrowed: an integration the caller names is
+        # attached, and validated, as it was.
+        from types import SimpleNamespace
+
+        codex = SimpleNamespace(id="codex", owner_id="owner", enabled=True, slug="codex")
+        integrations = AsyncMock()
+        integrations.get_connection.return_value = codex
+        service = SessionService(
+            repository,
+            pod_manager,
+            integration_repo=integrations,
+            runtime_providers={"skuldClaude": ["anthropic"]},
+            integration_vendors={"codex": "openai"},
+        )
+        monkeypatch.setattr(service, "_poll_readiness", AsyncMock())
+        session = await service.create_session(name="named", model="claude-opus-5-5")
+        await service._provision_background(
+            session,
+            SimpleNamespace(user_id="owner"),
+            "skuldClaude",
+            None,
+            False,
+            integration_ids=["codex"],
+        )
+        stored = await repository.get(session.id)
+        assert stored.workload_config["integration_ids"] == ["codex"]
+        integrations.list_connections.assert_not_called()
+        await asyncio.gather(*service._provisioning_tasks.values())
+
     async def test_provisioning_timeout_reports_error_and_cleans_up(
         self, repository, pod_manager, monkeypatch
     ):
