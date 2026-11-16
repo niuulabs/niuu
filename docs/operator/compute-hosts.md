@@ -718,7 +718,8 @@ than a slot address; with shared slots, every slot's `18080 + n` and `8081 + n`.
 and tagged `dev-<sha>` with an attested digest only once the tests pass: CPython (with
 the same stdlib security backports as the Linux images' Python) with niuu, Node and the agent CLIs
 (Claude Code, Codex, OpenCode, Grok, pi, Muse) at the versions of the Skuld image,
-OpenBao's agent and uv, every download pinned by SHA-256. Forge fetches it onto the Mac
+tmux (built from source, for the interactive Claude transport), OpenBao's agent and uv,
+every download pinned by SHA-256. Forge fetches it onto the Mac
 with an anonymous registry pull, checks both digests, and unpacks it once per digest
 under `/var/lib/niuu/host-bundles`; it removes older ones when no session runs. The
 bundle is about 1 GB.

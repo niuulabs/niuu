@@ -9,7 +9,8 @@
 #   site/        the niuu wheel and its locked dependencies (uv.lock, hashes required)
 #   node/        Node.js, for the npm CLIs
 #   tools/       the agent CLIs from containers/skuld/npm-tools (package-lock integrity)
-#   bin/         the agent CLIs; fallback/ uv and node; libexec/ Skuld, its Python, bao
+#   bin/         the agent CLIs and tmux; fallback/ uv and node; libexec/ Skuld, its
+#                Python, bao
 #   bundle.json  its format and platform, which the darwin install checks
 #
 # Every download is pinned by version and SHA-256; npm and uv verify the lockfiles' hashes.
@@ -34,6 +35,17 @@ BAO_SHA256=2b4fc131910f4b075b2e1c9a9de67c461489491a8f03fbdc73387294d67d9547
 # Muse as in containers/skuld/install-muse.sh, from the same release manifest.
 MUSE_VERSION=1.3.0-R3233.1
 MUSE_SHA256=4395928df3527ced7613f18d74aa7bb1c383290c01ae5bbf792d996fa949452e
+# tmux, which the Linux image installs from apt: Skuld's interactive Claude transport runs
+# Claude Code in it. Built from source with libevent and utf8proc linked in statically, so
+# it needs only the Mac's own libraries (macOS's wcwidth is wrong for much of Unicode,
+# which utf8proc replaces), for the oldest macOS the bundle's Node supports.
+TMUX_VERSION=3.8
+TMUX_SHA256=e79c699c7e949dccd0a4a125e17b8d1261e311b16979dbc8eb34542f3966d82e
+LIBEVENT_VERSION=2.1.13-stable
+LIBEVENT_SHA256=f7e9383b8c0baa81b687e5b5eecc01beefaf1b19b64151d95ed61647fe7a315c
+UTF8PROC_VERSION=2.12.0
+UTF8PROC_SHA256=a393fbef160835fb315bc3e91ba8d86f7a73a7cec9e6198b6c60b848b498bfeb
+MACOS_MINIMUM=13.5
 
 ROOT=$(pwd)
 [ -f "$ROOT/uv.lock" ] && [ -d "$ROOT/containers/skuld/npm-tools" ] || {
@@ -113,6 +125,40 @@ fetch "https://lookaside.facebook.com/lookaside/muse/download/?channel=muse&vers
   "$MUSE_SHA256" "$B/bin/muse"
 chmod 0755 "$B/bin/muse"
 
+fetch "https://github.com/libevent/libevent/releases/download/release-$LIBEVENT_VERSION/libevent-$LIBEVENT_VERSION.tar.gz" \
+  "$LIBEVENT_SHA256" "$WORK/downloads/libevent.tar.gz"
+fetch "https://github.com/JuliaStrings/utf8proc/releases/download/v$UTF8PROC_VERSION/utf8proc-$UTF8PROC_VERSION.tar.gz" \
+  "$UTF8PROC_SHA256" "$WORK/downloads/utf8proc.tar.gz"
+fetch "https://github.com/tmux/tmux/releases/download/$TMUX_VERSION/tmux-$TMUX_VERSION.tar.gz" \
+  "$TMUX_SHA256" "$WORK/downloads/tmux.tar.gz"
+DEPS="$WORK/tmux-deps"
+mkdir -p "$DEPS/lib" "$DEPS/include"
+for archive in libevent utf8proc tmux; do
+  tar -xzf "$WORK/downloads/$archive.tar.gz" -C "$WORK/downloads"
+done
+JOBS=$(sysctl -n hw.ncpu)
+(
+  export MACOSX_DEPLOYMENT_TARGET="$MACOS_MINIMUM"
+  cd "$WORK/downloads/libevent-$LIBEVENT_VERSION"
+  ./configure --quiet --prefix="$DEPS" --disable-shared --enable-static --disable-openssl \
+    --disable-samples --disable-libevent-regress --disable-debug-mode
+  make -s -j"$JOBS" && make -s install
+  cd "$WORK/downloads/utf8proc-$UTF8PROC_VERSION"
+  make -s -j"$JOBS" libutf8proc.a
+  cp libutf8proc.a "$DEPS/lib/" && cp utf8proc.h "$DEPS/include/"
+  cd "$WORK/downloads/tmux-$TMUX_VERSION"
+  # No pkg-config: only the libraries named here, never a runner's Homebrew ones.
+  PKG_CONFIG=/usr/bin/false CPPFLAGS="-I$DEPS/include" \
+    LIBEVENT_CFLAGS="-I$DEPS/include" LIBEVENT_LIBS="$DEPS/lib/libevent_core.a" \
+    LIBUTF8PROC_CFLAGS="-I$DEPS/include" LIBUTF8PROC_LIBS="$DEPS/lib/libutf8proc.a" \
+    ./configure --quiet --prefix="$WORK/tmux" --enable-utf8proc --disable-jemalloc
+  make -s -j"$JOBS" && make -s install
+) >"$WORK/tmux-build.log" 2>&1 || { cat "$WORK/tmux-build.log" >&2; echo "building tmux failed" >&2; exit 1; }
+install -m 0755 "$WORK/tmux/bin/tmux" "$B/bin/tmux"
+# Relocatable means it loads nothing but the Mac's own libraries.
+foreign=$(otool -L "$B/bin/tmux" | tail -n +2 | awk '{print $1}' | grep -v -E '^/(usr/lib|System/Library)/' || true)
+[ -z "$foreign" ] || { echo "tmux links libraries a Mac does not have: $foreign" >&2; exit 1; }
+
 # Wrappers: each finds the bundle from its own path, so the bundle runs wherever it is
 # unpacked, and never picks an interpreter from the Mac's PATH. bin/ holds the agent CLIs
 # (first on a session's PATH), fallback/ the tools Nix or the Mac may provide instead (last
@@ -148,6 +194,20 @@ for command in $(for a in $AGENTS muse; do echo "bin/$a"; done) libexec/bao \
   "$B/$command" --version >/dev/null || { echo "$command does not run" >&2; exit 1; }
 done
 "$B/libexec/python" -c 'import skuld.broker, volundr.guest_agent'
+# tmux as Skuld drives it: a detached server on its own socket, a pane, its capture. The
+# socket's directory is short, since a Unix socket's path is limited to 104 bytes.
+probe=$(mktemp -d /tmp/skuld-tmux.XXXXXX)
+env -i PATH=/usr/bin:/bin HOME="$probe" TERM=xterm-256color LANG=en_US.UTF-8 \
+  "$B/bin/tmux" -S "$probe/s" new-session -d -s probe \
+  "printf 'tmux-ok\\n'; '$B/bin/tmux' -S '$probe/s' wait-for -S printed; sleep 30"
+"$B/bin/tmux" -S "$probe/s" wait-for printed
+captured=$("$B/bin/tmux" -S "$probe/s" capture-pane -p -t probe:0)
+"$B/bin/tmux" -S "$probe/s" kill-server
+rm -rf "$probe"
+case $captured in
+  *tmux-ok*) ;;
+  *) echo "bin/tmux does not run a pane" >&2; exit 1 ;;
+esac
 
 # What the darwin runtime's install checks before it unpacks the bundle on a Mac.
 SOURCE=$(git -C "$ROOT" rev-parse HEAD)

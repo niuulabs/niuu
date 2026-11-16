@@ -713,7 +713,7 @@ keep the credential agents in the machine's Docker).
 
 **Runtime.** `SshDarwinHostRuntime` takes everything the Linux runtimes take from the
 Skuld image from a **session bundle** instead: a relocatable CPython with niuu, Node and
-the agent CLIs from the image's npm lockfile, OpenBao's agent, Muse and uv, built on a
+the agent CLIs from the image's npm lockfile, tmux, OpenBao's agent, Muse and uv, built on a
 macOS runner (`containers/skuld-darwin/build-bundle.sh`) and published as an OCI artifact,
 `ghcr.io/niuulabs/skuld-darwin`, for every dev commit. The runtime pins it by digest
 (`skuld_bundle`), fetches it onto the Mac with an anonymous pull that checks the manifest
