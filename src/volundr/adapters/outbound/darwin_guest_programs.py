@@ -324,6 +324,7 @@ START = (
     _SLOT_COMMON
     + SLOT_STORAGE
     + r"""
+import shutil
 # A failure names its step and a reason this program wrote: a failed command's exit
 # code, never its output or arguments. Anything unforeseen names its step and type.
 stage = ['payload']
@@ -393,7 +394,27 @@ stage[0] = 'agents'
 def native(c):
     environment = {'PATH': d['native_path'], 'HOME': d['agent_home'], 'TMPDIR': d['agent_tmp'],
         **c['environment']}
-    return c['command'] + c['args'], environment
+    command = c['command'] + c['args']
+    # launchd runs ProgramArguments[0] as given, never searching the job's own PATH (a
+    # bare name exits 78, EX_CONFIG, on every relaunch): name the program by its path.
+    program = command[0] if '/' in command[0] else shutil.which(command[0],
+        path=environment['PATH'])
+    if not program or not os.access(program, os.X_OK):
+        fail('host-agents', 'Agent ' + c['name'] + ' runs ' + command[0] + ', which is not an '
+            'executable on its PATH (' + environment['PATH'] + ') on this Mac')
+    return [program, *command[1:]], environment
+def job(name):
+    # launchd's view of a loaded job: its pid while it runs, and its last exit code.
+    shown = subprocess.run(['launchctl', 'print', 'system/' + name], capture_output=True,
+        text=True)
+    pid, code = None, None
+    for line in shown.stdout.splitlines():
+        key, _, value = line.strip().partition(' = ')
+        if key == 'pid' and value.isdigit():
+            pid = int(value)
+        elif key == 'last exit code':
+            code = value
+    return pid, code
 pathlib.Path(d['agent_home']).mkdir(parents=True, exist_ok=True)
 pathlib.Path(d['agent_tmp']).mkdir(parents=True, exist_ok=True)
 for c in p.get('init_containers', []):
@@ -406,7 +427,10 @@ for c in p.get('init_containers', []):
 for c in p.get('sidecars', []):
     sidecar = label + '.' + c['name']
     if loaded(sidecar):
-        continue
+        if job(sidecar)[0]:
+            continue
+        # Loaded but not running (an earlier start's job that could not run): replace it.
+        bootout(sidecar, d['stop_timeout'], d['poll'])
     command, environment = native(c)
     plist = '/Library/LaunchDaemons/' + sidecar + '.plist'
     write_plist(plist, {
@@ -417,6 +441,17 @@ for c in p.get('sidecars', []):
         'StandardErrorPath': str(logs / (c['name'] + '.log')),
     })
     subprocess.run(['launchctl', 'bootstrap', 'system', plist], check=True)
+    # A job launchd cannot run is relaunched forever without a word; the session would
+    # start without it (the credential agent: its tokens would never be refreshed).
+    deadline = time.monotonic() + d['start_timeout']
+    while not job(sidecar)[0] and time.monotonic() < deadline:
+        time.sleep(d['poll'])
+    pid, code = job(sidecar)
+    if not pid:
+        fail('host-agents', 'Agent ' + c['name'] + ' is not running ' + str(d['start_timeout'])
+            + 's after it was loaded (launchd last exit code: ' + str(code) + '); see '
+            + str(logs / (c['name'] + '.log')) + ' on the Mac, or raise '
+            'compute.runtime.kwargs.session_start_timeout_seconds')
 # After the agents, as on Linux: the init containers render the session's secrets,
 # the integration's Git token among them, which the clone reads.
 stage[0] = 'workspace'

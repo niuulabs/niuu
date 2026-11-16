@@ -1095,6 +1095,14 @@ prepared`), a failed command's exit code (`git clone of the session's repository
 exited 128`, never the repository's URL or the command's output), or Skuld's exit
 and the path of its log on the VM.
 
+On a Mac, the session's long-running agents (the credential agent, which refreshes
+the session's ServiceAccount token before it expires, and OpenBao's agent) are
+launchd jobs. launchd runs a job's program as given and never searches the job's
+own `PATH`, so the start names each program by its path on the Mac, then waits up to
+`session_start_timeout_seconds` for the job to run. An agent that is not running
+fails the start at `host-agents` with launchd's last exit code and its log on the
+Mac; a job left loaded but not running by an earlier start is replaced.
+
 **Draining.** Under **Replace VM**, a machine takes new sessions until it has served
 **Sessions before replacement** (`max_sessions_per_machine`; unset means one per
 slot) or reached **Machine lifetime (seconds)** (`max_machine_age_seconds`; unset
