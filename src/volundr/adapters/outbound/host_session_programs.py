@@ -64,16 +64,18 @@ def prepare_storage(root, marker, uid, repo, branch, keep_owners=(), git=None):
         args = ['git', *config, 'clone', *(['--branch', branch] if branch else []), '--', repo,
             str(workspace)]
         subprocess.run(args, env=env, **as_slot)
-    if repo and git:
-        # What the session's own Git reads the token with, on every fetch and push.
-        for key, value in git['settings']:
-            subprocess.run(['git', 'config', '--file', str(workspace / '.git' / 'config'),
-                key, value], env=plain, **as_slot)
     # -h: a link the session left in its storage names its own path, never a target.
-    # Container storage keeps the owners its subordinate ids gave it.
+    # Container storage keeps the owners its subordinate ids gave it. A restored
+    # workspace is root's until here (the restore drops the archive's owners).
     prune = [a for path in keep_owners for a in ('-path', str(root / path), '-prune', '-o')]
     subprocess.run(['find', str(root), *prune, '-exec', 'chown', '-h', '%d:%d' % (uid, uid),
         '{}', '+'], check=True)
+    if repo and git:
+        # What the session's own Git reads the token with, on every fetch and push:
+        # written as the slot, into a repository the slot now owns, cloned or restored.
+        for key, value in git['settings']:
+            subprocess.run(['git', 'config', '--file', str(workspace / '.git' / 'config'),
+                key, value], env=plain, **as_slot)
     return workspace, home
 def integration_git(g, repo, token, token_file):
     # The attached integration's token as root reads it (the agent writes it as its own

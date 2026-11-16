@@ -153,7 +153,7 @@ def test_prepare_storage_clones_as_the_slot_with_the_token_in_its_environment_on
 
     namespace["prepare_storage"](tmp_path, "m", os.getuid(), REPO, "main", (), git)
 
-    clone, *configs, chown = calls
+    clone, chown, *configs = calls
     args, kwargs = clone
     assert args[args.index("clone") :] == [
         "clone",
@@ -176,6 +176,24 @@ def test_prepare_storage_clones_as_the_slot_with_the_token_in_its_environment_on
     ]
     assert all("NIUU_GIT_TOKEN" not in c[1]["env"] for c in configs)
     assert chown[0][0] == "find"
+
+
+def test_a_restored_repository_is_the_slots_before_its_git_settings_are_written(
+    tmp_path, monkeypatch
+):
+    # A restart restores the stopped session's workspace as root, owners dropped, and
+    # clones nothing: the slot can only write .git/config once the storage is handed over.
+    namespace, calls = _storage(tmp_path, monkeypatch)
+    (tmp_path / "workspace" / ".git").mkdir(parents=True)
+    git = {"username": "x-access-token", "token": TOKEN, "settings": [("user.name", "Ada")]}
+
+    namespace["prepare_storage"](tmp_path, "m", os.getuid(), REPO, "main", (), git)
+
+    assert [c[0][:3] for c in calls] == [
+        ["find", str(tmp_path), "-exec"],
+        ["git", "config", "--file"],
+    ]
+    assert calls[1][1]["user"] == os.getuid()
 
 
 def test_prepare_storage_without_an_integration_clones_plain_git(tmp_path, monkeypatch):
