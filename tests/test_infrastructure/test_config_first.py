@@ -41,10 +41,6 @@ ALLOWLIST = {
     ): "tmux child protocol marker",
     ("skuld/transports/tmux_interactive.py", "SKULD__TMUX_SOCKET_DIR"): "tmux OS socket bootstrap",
     (
-        "volundr/adapters/outbound/skuld_room.py",
-        "OPENSHELL_INTERNAL_GATEWAY_URL",
-    ): "provider-injected runtime endpoint",
-    (
         "volundr/adapters/outbound/ssh_guest_access.py",
         "LD_PRELOAD",
     ): "preserve NSS wrapper state for SSH transport subprocesses",
