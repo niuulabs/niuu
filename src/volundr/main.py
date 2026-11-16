@@ -1593,6 +1593,8 @@ def create_app(
             )
             session_room_port = SkuldRoomAdapter(
                 repository,
+                broker_target=pod_manager.broker_target,
+                openshell_internal_gateway_url=settings.openshell_internal_gateway_url,
                 internal_base_url=settings.session_room.internal_base_url,
             )
             communication_ingress = CommunicationIngressService(

@@ -135,3 +135,68 @@ async def test_stop_session_deactivates_communication_routes():
 
     assert stopped.status == SessionStatus.STOPPED
     assert route_repository.deactivated == [session.id]
+
+
+class _FailingCommunicationPort:
+    async def list_communication_targets(self, session_id):
+        raise ValueError(f"Session {session_id} has no ready VM broker")
+
+
+class _FailingRouteRepository(_FakeCommunicationRouteRepository):
+    async def upsert_route(self, route):
+        raise ConnectionError("database unreachable")
+
+
+def _degraded(monkeypatch) -> list[tuple[str, str]]:
+    seen: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        "volundr.domain.services.session.record_degraded",
+        lambda path, message: seen.append((path, message)),
+    )
+    return seen
+
+
+async def test_a_session_whose_routes_cannot_be_discovered_runs_and_says_so(monkeypatch):
+    session = _provisioning_session()
+    repository = _FakeSessionRepository(session)
+    route_repository = _FakeCommunicationRouteRepository()
+    degraded = _degraded(monkeypatch)
+    service = SessionService(
+        repository,
+        _FakePodManager(),
+        communication_route_repository=route_repository,
+        session_communication_port=_FailingCommunicationPort(),
+    )
+
+    await service._poll_readiness(session, skip_initial_delay=True)
+
+    assert repository.session.status == SessionStatus.RUNNING
+    assert route_repository.upserted == []
+    [(path, message)] = degraded
+    assert path == "volundr.session.communication_routes"
+    assert str(session.id) in message and "no ready VM broker" in message
+
+
+async def test_a_route_that_cannot_be_saved_is_counted_not_dropped_quietly(monkeypatch):
+    session = _provisioning_session()
+    repository = _FakeSessionRepository(session)
+    degraded = _degraded(monkeypatch)
+    service = SessionService(
+        repository,
+        _FakePodManager(),
+        communication_route_repository=_FailingRouteRepository(),
+        session_communication_port=_FakeSessionCommunicationPort(
+            [
+                SessionCommunicationTarget(
+                    platform=CommunicationPlatform.TELEGRAM, conversation_id="-100123"
+                )
+            ]
+        ),
+    )
+
+    await service._poll_readiness(session, skip_initial_delay=True)
+
+    assert repository.session.status == SessionStatus.RUNNING
+    [(path, message)] = degraded
+    assert path == "volundr.session.communication_routes"
+    assert "telegram:-100123" in message and "database unreachable" in message

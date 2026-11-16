@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import os
-from dataclasses import dataclass
-from urllib.parse import urlparse, urlunparse
+from urllib.parse import urlsplit, urlunsplit
 from uuid import UUID
 
 import httpx
@@ -18,36 +16,40 @@ from volundr.domain.models import (
     SessionCommunicationTarget,
 )
 from volundr.domain.ports import SessionCommunicationPort, SessionRepository, SessionRoomPort
-
-DEFAULT_OPENSHELL_INTERNAL_GATEWAY_URL = "http://openshell.openshell.svc.cluster.local:8080"
-OPENSHELL_SERVICE_HOST_SUFFIX = ".openshell.localhost"
-
-
-@dataclass(frozen=True)
-class _SkuldRequestTarget:
-    base_url: str
-    headers: dict[str, str]
+from volundr.domain.session_broker import (
+    OPENSHELL_SERVICE_HOST_SUFFIX,
+    BrokerTargetLookup,
+    broker_base_url,
+    broker_target_request,
+    server_side_http_proxy_target,
+)
 
 
 class SkuldRoomAdapter(SessionRoomPort, SessionCommunicationPort):
-    """Use the live session proxy to talk to internal Skuld room endpoints."""
+    """Talk to a live session's Skuld room endpoints, as every Forge call to a broker does.
+
+    A pod manager whose chat endpoint is Forge's own public session proxy (VM and
+    registered-host sessions) names the broker's target (``broker_target``): Forge dials
+    it directly, never its own ingress, which would want a caller's token. Otherwise the
+    broker is at the chat endpoint, with OpenShell service hosts routed through the
+    in-cluster gateway and ``internal_base_url`` replacing a public origin the platform
+    process cannot reach (``volundr.domain.session_broker``).
+    """
 
     def __init__(
         self,
         session_repository: SessionRepository,
         *,
+        broker_target: BrokerTargetLookup,
+        openshell_internal_gateway_url: str,
         timeout: float = 10.0,
-        openshell_internal_gateway_url: str | None = None,
         internal_base_url: str = "",
     ) -> None:
         self._session_repository = session_repository
+        self._broker_target = broker_target
         self._timeout = timeout
         self._internal_base_url = internal_base_url.rstrip("/")
-        self._openshell_internal_gateway_url = (
-            openshell_internal_gateway_url
-            or os.environ.get("OPENSHELL_INTERNAL_GATEWAY_URL")
-            or DEFAULT_OPENSHELL_INTERNAL_GATEWAY_URL
-        ).rstrip("/")
+        self._openshell_internal_gateway_url = openshell_internal_gateway_url.rstrip("/")
 
     async def send_room_message(
         self,
@@ -139,57 +141,40 @@ class SkuldRoomAdapter(SessionRoomPort, SessionCommunicationPort):
         return targets
 
     async def _post(self, session_id: UUID, suffix: str, payload: dict) -> dict:
-        target = await self._resolve_request_target(session_id)
+        url, headers = await self._request(session_id, suffix)
         async with httpx.AsyncClient(timeout=self._timeout) as client:
-            response = await client.post(
-                f"{target.base_url}{suffix}",
-                json=payload,
-                headers=target.headers,
-            )
+            response = await client.post(url, json=payload, headers=headers)
             response.raise_for_status()
             return response.json()
 
     async def _get(self, session_id: UUID, suffix: str, *, credential: str | None = None) -> dict:
-        target = await self._resolve_request_target(session_id)
-        headers = dict(target.headers)
+        url, headers = await self._request(session_id, suffix)
         if credential:
             headers["Authorization"] = credential
         async with httpx.AsyncClient(timeout=self._timeout) as client:
-            response = await client.get(f"{target.base_url}{suffix}", headers=headers)
+            response = await client.get(url, headers=headers)
             response.raise_for_status()
             return response.json()
 
-    async def _resolve_request_target(self, session_id: UUID) -> _SkuldRequestTarget:
+    async def _request(self, session_id: UUID, suffix: str) -> tuple[str, dict[str, str]]:
+        """The URL and routing headers that reach ``suffix`` on the session's broker."""
         session = await self._session_repository.get(session_id)
         if session is None:
             raise LookupError(f"Session not found: {session_id}")
         if not session.chat_endpoint:
             raise ValueError(f"Session {session_id} has no active endpoint")
-        base_url = session.chat_endpoint.replace("wss://", "https://").replace("ws://", "http://")
-        if base_url.endswith("/session"):
-            base_url = base_url[: -len("/session")]
-        parsed = urlparse(base_url)
-        if _is_openshell_service_host(parsed.hostname):
-            gateway = urlparse(self._openshell_internal_gateway_url)
-            return _SkuldRequestTarget(
-                base_url=urlunparse(
-                    (
-                        gateway.scheme or "http",
-                        gateway.netloc,
-                        parsed.path.rstrip("/"),
-                        "",
-                        "",
-                        "",
-                    )
-                ),
-                headers={"Host": parsed.netloc},
+        target = await self._broker_target(session)
+        if target is not None:
+            return broker_target_request(target, *suffix.strip("/").split("/"))
+        url = broker_base_url(session.chat_endpoint) + suffix
+        host = urlsplit(url).hostname or ""
+        if self._internal_base_url and not host.endswith(OPENSHELL_SERVICE_HOST_SUFFIX):
+            internal = urlsplit(self._internal_base_url)
+            parsed = urlsplit(url)
+            url = urlunsplit(
+                (internal.scheme or "http", internal.netloc, parsed.path, parsed.query, "")
             )
-        if self._internal_base_url:
-            internal = urlparse(self._internal_base_url)
-            base_url = urlunparse(
-                (internal.scheme or "http", internal.netloc, parsed.path.rstrip("/"), "", "", "")
-            )
-        return _SkuldRequestTarget(base_url=base_url, headers={})
+        return server_side_http_proxy_target(url, gateway_url=self._openshell_internal_gateway_url)
 
 
 def _parse_participants(payload: dict) -> list[RoomParticipantInfo]:
@@ -234,7 +219,3 @@ def _normalize_optional_str(value: object) -> str | None:
     if value in (None, ""):
         return None
     return str(value)
-
-
-def _is_openshell_service_host(hostname: str | None) -> bool:
-    return bool(hostname and hostname.endswith(OPENSHELL_SERVICE_HOST_SUFFIX))

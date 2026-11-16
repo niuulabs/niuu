@@ -1079,6 +1079,14 @@ When ssh itself fails (exit 255), the guest stage and the session error carry th
 OpenSSH client's own reason (a timeout, a refused key, a changed host key). Nothing
 else from the guest command's stderr is shown, since it may carry credentials.
 
+Forge's own calls to a VM or host session's broker (room messages, the room roster,
+the session's channel routes) go through the session's tunnel, never out through
+Forge's public `/s/<id>` route, which wants a caller's token. When a session reaches
+running, Forge reads its channel routes (Telegram, Slack); a session whose routes
+cannot be read or saved keeps running, logs the reason at error and counts it on
+`degraded.volundr.session.communication_routes` in Forge's `/health`: replies on its
+channels will not reach it until it is restarted.
+
 A host-mode session whose Skuld does not start, on Linux or a Mac, names the step
 that failed (`host-workspace`, `host-containers`, `host-nix`, `host-mounts`,
 `host-agents` on a Mac, `host-launch`) and

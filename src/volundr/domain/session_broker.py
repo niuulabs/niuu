@@ -11,9 +11,11 @@ these helpers so they cannot drift apart.
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from urllib.parse import quote, urlsplit, urlunsplit
 
 from niuu.ports.session_proxy import SessionProxyTarget
+from volundr.domain.models import Session
 
 DEFAULT_OPENSHELL_INTERNAL_GATEWAY_URL = "http://openshell.openshell.svc.cluster.local:8080"
 OPENSHELL_SERVICE_HOST_SUFFIX = ".openshell.localhost"
@@ -21,6 +23,8 @@ OPENSHELL_SERVICE_HOST_SUFFIX = ".openshell.localhost"
 BROKER_API_SEGMENT = "api"
 PRESENTED_FILE_ROUTE = ("files", "presented")
 _CHAT_PATH_SUFFIX = "/session"
+#: ``PodManager.broker_target``: None means the broker is at the chat endpoint.
+BrokerTargetLookup = Callable[[Session], Awaitable[SessionProxyTarget | None]]
 
 
 def broker_base_url(chat_endpoint: str) -> str:

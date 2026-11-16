@@ -6,6 +6,7 @@ import httpx
 import pytest
 import respx
 
+from niuu.ports.session_proxy import SessionProxyTarget
 from volundr.adapters.outbound.skuld_room import SkuldRoomAdapter
 from volundr.domain.models import GitSource, Session
 
@@ -18,6 +19,22 @@ class _FakeSessionRepository:
         if self._session and self._session.id == session_id:
             return self._session
         return None
+
+
+GATEWAY = "http://openshell.openshell.svc.cluster.local:8080"
+
+
+async def _at_chat_endpoint(session):
+    return None
+
+
+def _adapter(session, *, broker_target=_at_chat_endpoint, **kwargs) -> SkuldRoomAdapter:
+    return SkuldRoomAdapter(
+        _FakeSessionRepository(session),
+        broker_target=broker_target,
+        openshell_internal_gateway_url=GATEWAY,
+        **kwargs,
+    )
 
 
 def _session() -> Session:
@@ -37,7 +54,7 @@ async def test_send_room_message_posts_to_internal_skuld_endpoint():
     route = respx.post(f"http://127.0.0.1:8080/s/{session.id}/api/room/message").mock(
         return_value=httpx.Response(200, json={"status": "sent"})
     )
-    adapter = SkuldRoomAdapter(_FakeSessionRepository(session))
+    adapter = _adapter(session)
 
     await adapter.send_room_message(
         session.id,
@@ -56,7 +73,7 @@ async def test_send_directed_room_message_posts_to_internal_skuld_endpoint():
     route = respx.post(f"http://127.0.0.1:8080/s/{session.id}/api/room/direct").mock(
         return_value=httpx.Response(200, json={"status": "sent"})
     )
-    adapter = SkuldRoomAdapter(_FakeSessionRepository(session))
+    adapter = _adapter(session)
 
     await adapter.send_directed_room_message(
         session.id,
@@ -87,7 +104,7 @@ async def test_list_room_participants_uses_internal_skuld_endpoint():
             },
         )
     )
-    adapter = SkuldRoomAdapter(_FakeSessionRepository(session))
+    adapter = _adapter(session)
 
     participants = await adapter.list_room_participants(session.id)
 
@@ -107,7 +124,7 @@ async def test_list_room_participants_ignores_connected_people():
             },
         )
     )
-    adapter = SkuldRoomAdapter(_FakeSessionRepository(session))
+    adapter = _adapter(session)
 
     participants = await adapter.list_room_participants(session.id)
 
@@ -129,7 +146,7 @@ async def test_read_room_carries_participants_and_connected_people():
             },
         )
     )
-    adapter = SkuldRoomAdapter(_FakeSessionRepository(session))
+    adapter = _adapter(session)
 
     roster = await adapter.read_room(session.id)
 
@@ -148,7 +165,7 @@ async def test_read_room_presents_the_callers_credential_to_the_broker():
     route = respx.get(f"http://127.0.0.1:8080/s/{session.id}/api/room/participants").mock(
         return_value=httpx.Response(200, json={"participants": [], "connected_people": []})
     )
-    adapter = SkuldRoomAdapter(_FakeSessionRepository(session))
+    adapter = _adapter(session)
 
     await adapter.read_room(session.id, credential="Bearer user-token")
 
@@ -161,7 +178,7 @@ async def test_read_room_refuses_a_broker_that_reports_no_connected_people():
     respx.get(f"http://127.0.0.1:8080/s/{session.id}/api/room/participants").mock(
         return_value=httpx.Response(200, json={"participants": []})
     )
-    adapter = SkuldRoomAdapter(_FakeSessionRepository(session))
+    adapter = _adapter(session)
 
     with pytest.raises(ValueError, match="connected_people.*older than this Forge"):
         await adapter.read_room(session.id)
@@ -175,7 +192,7 @@ async def test_read_room_refuses_a_connected_person_without_a_user_id():
             200, json={"participants": [], "connected_people": [{"display_name": "Ghost"}]}
         )
     )
-    adapter = SkuldRoomAdapter(_FakeSessionRepository(session))
+    adapter = _adapter(session)
 
     with pytest.raises(ValueError, match="no user_id"):
         await adapter.read_room(session.id)
@@ -190,7 +207,7 @@ async def test_list_room_participants_refuses_a_participant_without_a_type():
             json={"participants": [{"peer_id": "peer-coder", "persona": "coder"}]},
         )
     )
-    adapter = SkuldRoomAdapter(_FakeSessionRepository(session))
+    adapter = _adapter(session)
 
     with pytest.raises(ValueError, match="peer-coder.*participant_type"):
         await adapter.list_room_participants(session.id)
@@ -215,7 +232,7 @@ async def test_list_communication_targets_uses_internal_skuld_endpoint():
             },
         )
     )
-    adapter = SkuldRoomAdapter(_FakeSessionRepository(session))
+    adapter = _adapter(session)
 
     targets = await adapter.list_communication_targets(session.id)
 
@@ -234,7 +251,7 @@ async def test_openshell_service_endpoint_uses_gateway_with_host_header():
     route = respx.get(
         "http://openshell.openshell.svc.cluster.local:8080/api/room/participants"
     ).mock(return_value=httpx.Response(200, json={"participants": []}))
-    adapter = SkuldRoomAdapter(_FakeSessionRepository(session))
+    adapter = _adapter(session)
 
     participants = await adapter.list_room_participants(session.id)
 
@@ -252,9 +269,44 @@ async def test_internal_base_url_replaces_public_origin():
     route = respx.get(f"http://127.0.0.1:18080/s/{session.id}/api/communication/routes").mock(
         return_value=httpx.Response(200, json={"routes": []})
     )
-    adapter = SkuldRoomAdapter(
-        _FakeSessionRepository(session), internal_base_url="http://127.0.0.1:18080/"
-    )
+    adapter = _adapter(session, internal_base_url="http://127.0.0.1:18080/")
 
     assert await adapter.list_communication_targets(session.id) == []
     assert route.called
+
+
+@respx.mock
+async def test_a_vm_session_is_reached_at_its_broker_target_never_forges_own_ingress():
+    session = _session()
+    session.chat_endpoint = f"wss://forge-hosts.example.test/s/{session.id}/session"
+    public = respx.get(url__startswith="https://forge-hosts.example.test/").mock(
+        return_value=httpx.Response(401)
+    )
+    route = respx.get("http://127.0.0.1:41234/api/communication/routes").mock(
+        return_value=httpx.Response(200, json={"routes": []})
+    )
+    asked = []
+
+    async def broker_target(seen):
+        asked.append(seen.id)
+        return SessionProxyTarget("http://127.0.0.1:41234", "127.0.0.1", 41234)
+
+    adapter = _adapter(
+        session, broker_target=broker_target, internal_base_url="http://127.0.0.1:18080"
+    )
+
+    assert await adapter.list_communication_targets(session.id) == []
+    assert asked == [session.id]
+    assert route.called and not public.called
+    assert route.calls[0].request.headers["host"] == "127.0.0.1:41234"
+
+
+@respx.mock
+async def test_a_broker_target_that_cannot_be_reached_raises():
+    session = _session()
+
+    async def broker_target(seen):
+        raise ValueError(f"Session {seen.id} has no ready VM broker")
+
+    with pytest.raises(ValueError, match="no ready VM broker"):
+        await _adapter(session, broker_target=broker_target).list_communication_targets(session.id)

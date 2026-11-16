@@ -27,7 +27,6 @@ from uuid import UUID
 import httpx
 
 from niuu.domain.notifications import MAX_IMAGE_BYTES, NOTIFICATION_IMAGE_MIME_TYPES
-from niuu.ports.session_proxy import SessionProxyTarget
 from volundr.domain.models import Session
 from volundr.domain.notification_ports import NotificationImageFetcher
 from volundr.domain.notifications import (
@@ -38,6 +37,7 @@ from volundr.domain.notifications import (
 from volundr.domain.session_broker import (
     BROKER_API_SEGMENT,
     PRESENTED_FILE_ROUTE,
+    BrokerTargetLookup,
     broker_base_url,
     broker_target_request,
     presented_file_url,
@@ -45,8 +45,6 @@ from volundr.domain.session_broker import (
 )
 
 SessionLookup = Callable[[UUID], Awaitable[Session | None]]
-#: ``PodManager.broker_target``: None means the broker is at the chat endpoint.
-BrokerTargetLookup = Callable[[Session], Awaitable[SessionProxyTarget | None]]
 HostResolver = Callable[[str, int], Awaitable[list[str]]]
 
 _HTTPS = "https"

@@ -17,6 +17,7 @@ except ImportError:
     _catalog_started = None  # type: ignore[assignment]
     _catalog_failed = None  # type: ignore[assignment]
 
+from niuu.cap_telemetry import record_degraded
 from niuu.domain.models import is_push_device
 from niuu.domain.services.forge_session_token import (
     ForgeSessionTokenService,
@@ -2458,13 +2459,16 @@ class SessionService:
         ):
             return
 
+        # The session is running whatever its routes do, so a failure here continues; but
+        # its Telegram/Slack replies will not reach it, so it is an error and counted.
         try:
             targets = await self._session_communication_port.list_communication_targets(session.id)
-        except Exception:
-            logger.warning(
-                "Failed to discover communication targets for session %s",
-                session.id,
-                exc_info=True,
+        except Exception as exc:
+            record_degraded(
+                "volundr.session.communication_routes",
+                f"Session {session.id} is running without its communication routes: "
+                f"discovering them failed ({type(exc).__name__}: {exc}); replies on its "
+                "channels will not reach it until it is restarted",
             )
             return
 
@@ -2487,14 +2491,12 @@ class SessionService:
             )
             try:
                 await self._communication_route_repository.upsert_route(route)
-            except Exception:
-                logger.warning(
-                    "Failed to upsert communication route for session %s (%s:%s/%s)",
-                    session.id,
-                    target.platform.value,
-                    target.conversation_id,
-                    target.thread_id,
-                    exc_info=True,
+            except Exception as exc:
+                record_degraded(
+                    "volundr.session.communication_routes",
+                    f"Session {session.id} is running without its route "
+                    f"{target.platform.value}:{target.conversation_id}/{target.thread_id}: "
+                    f"saving it failed ({type(exc).__name__}: {exc})",
                 )
 
     async def stop_session(
