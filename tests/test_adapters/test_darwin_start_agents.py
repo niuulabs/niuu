@@ -70,12 +70,15 @@ class Mac:
         launchctl.chmod(0o755)
 
     def add_python(self) -> Path:
-        python = self.bundle / "python"
+        # A name only the bundle has: the runner's own PATH may hold a ``python``.
+        python = self.bundle / "niuu-bundle-python"
         python.write_text("#!/bin/sh\nexit 0\n")
         python.chmod(0o755)
         return python
 
-    def start(self, *, command: str = "python", runs: bool = True) -> subprocess.CompletedProcess:
+    def start(
+        self, *, command: str = "niuu-bundle-python", runs: bool = True
+    ) -> subprocess.CompletedProcess:
         program = (
             programs.START.replace("'/Library/LaunchDaemons/'", repr(str(self.state) + "/"))
             # Handing the job's plist to root needs root; launchd's view is what is tested.
@@ -162,7 +165,7 @@ def test_an_agent_whose_program_is_on_no_path_fails_the_start(mac):
     error = _stage_error(mac.start())
 
     assert error.stage == "host-agents"
-    assert "runs python, which is not an executable on its PATH" in error.diagnostic
+    assert "runs niuu-bundle-python, which is not an executable on its PATH" in error.diagnostic
     assert not (mac.state / f"{AGENT}.plist").exists()
 
 
