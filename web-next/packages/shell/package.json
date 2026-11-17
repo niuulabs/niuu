@@ -41,7 +41,7 @@
     "@tanstack/react-router": "^1.170.46",
     "@types/react": "^19.3.0",
     "autoprefixer": "^10.6.2",
-    "postcss": "^8.5.32",
+    "postcss": "^8.5.33",
     "postcss-import": "^17.0.1",
     "react": "^19.3.1",
     "tailwindcss": "^4.3.5",
