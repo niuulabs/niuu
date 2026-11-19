@@ -4,8 +4,8 @@
   "dependencies": {
     "npm": "11.21.2",
     "@isaacs/nonrecursive-glob-match": "1.1.0",
-    "glob": "14.0.4",
-    "minimatch": "11.0.5",
+    "glob": "14.0.6",
+    "minimatch": "11.0.8",
     "path-scurry": "3.0.0"
   }
 }
