@@ -874,6 +874,10 @@ def _restore(tmp_path: Path, *flags: str) -> subprocess.CompletedProcess:
         link = tarfile.TarInfo("./home/.nix-profile")
         link.type, link.linkname = tarfile.SYMTYPE, "/home/skuld/.local/state/nix/profiles/profile"
         archive.addfile(link)
+        relative = tarfile.TarInfo("./workspace/.uv-cache/bin/python3.11")
+        relative.type = tarfile.SYMTYPE
+        relative.linkname = "../../../../../../tmp/scratch/python/bin/python3.11"
+        archive.addfile(relative)
         hard = tarfile.TarInfo("./home/shadow")
         hard.type, hard.linkname = tarfile.LNKTYPE, "/etc/shadow"
         archive.addfile(hard)
@@ -903,7 +907,45 @@ def test_absolute_symbolic_links_restore_only_where_asked_and_hard_links_never(t
     assert os.readlink(tmp_path / "host/session/home/.nix-profile") == (
         "/home/skuld/.local/state/nix/profiles/profile"
     )
+    # A relative link out of the storage (a uv cache's interpreter) is kept as written too.
+    assert os.readlink(tmp_path / "host/session/workspace/.uv-cache/bin/python3.11") == (
+        "../../../../../../tmp/scratch/python/bin/python3.11"
+    )
     assert refused.returncode != 0 and "AbsoluteLinkError" in _reported(refused)
+
+
+def test_a_host_restore_never_writes_through_a_link_out_of_the_storage(tmp_path):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w") as archive:
+        link = tarfile.TarInfo("./workspace/escape")
+        link.type, link.linkname = tarfile.SYMTYPE, "../../outside"
+        archive.addfile(link)
+        through = tarfile.TarInfo("./workspace/escape/planted")
+        through.size = len(b"planted")
+        archive.addfile(through, io.BytesIO(b"planted"))
+    root = tmp_path / "session"
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            ssh_vm_runtime._PREPARE,
+            "key",
+            "restore",
+            "[]",
+            str(root),
+            "absolute-links",
+        ],
+        input=buffer.getvalue(),
+        capture_output=True,
+    )
+
+    assert result.returncode == 1
+    assert "workspace/escape/planted" in _reported(result)
+    assert not (outside / "planted").exists()
+    assert not (root / ".allocation").exists()
 
 
 def _reported(result: subprocess.CompletedProcess) -> str:

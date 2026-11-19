@@ -294,7 +294,8 @@ def failure(exc):
     member=getattr(exc,'tarinfo',None)
     return (member.name+': ' if member is not None else '')+type(exc).__name__+': '+str(exc)
 # argv: storage key, restore|empty, exclusions, a slot's storage root, and
-# 'absolute-links' where the session's links to absolute paths are restored too.
+# 'absolute-links' where the session's symbolic links are restored as written, including
+# ones that point outside the storage (a host session's).
 root=pathlib.Path(sys.argv[4]) if len(sys.argv)>4 else pathlib.Path('/var/lib/niuu/session')
 absolute_links=len(sys.argv)>5 and sys.argv[5]=='absolute-links'
 allocation=sys.argv[1]
@@ -319,9 +320,11 @@ def restore_member(member,destination):
         return None
     if any(name == p or p in name.parents for p in excludes):
         return None
-    if absolute_links and member.issym() and member.linkname.startswith('/'):
-        # Restored as written, never followed: tar_filter still refuses any member
-        # whose own path resolves outside the root.
+    if absolute_links and member.issym():
+        # A host session's links name host paths, absolute or relative (a uv cache's
+        # interpreter links into wherever it was built). Restored as written, never
+        # followed: tar_filter still refuses any member whose own path resolves outside
+        # the root, so nothing is written through such a link.
         return tarfile.tar_filter(member,destination)
     return tarfile.data_filter(member,destination)
 if sys.argv[2]=='restore':
