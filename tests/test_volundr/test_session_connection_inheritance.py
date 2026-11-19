@@ -9,7 +9,9 @@ orchestrator launch failure). These tests prove such a launch never looks up aga
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime
+from uuid import UUID, uuid4
 
 import httpx
 import pytest
@@ -23,7 +25,7 @@ from niuu.domain.services.token_scope import (
     FORGE_SESSION_LIFECYCLE_SCOPE,
     FORGE_SESSION_READ_SCOPE,
 )
-from tests.support.forge_session import OWNER, TENANT, build_forge_app
+from tests.support.forge_session import OWNER, PREFIX, TENANT, build_forge_app
 from volundr.domain.models import (
     GitSource,
     IntegrationConnection,
@@ -42,6 +44,7 @@ from volundr.domain.session_connections import (
 
 NOW = datetime(2026, 11, 19, tzinfo=UTC).isoformat()
 OWNER_TOKEN = "owner-bearer"
+RUN = str(uuid4())
 USER = Principal(user_id=OWNER, email="", tenant_id=TENANT, roles=["volundr:developer"])
 
 
@@ -303,3 +306,74 @@ class TestRecord:
     def test_a_record_forge_did_not_write_raises(self, record):
         with pytest.raises(ResolvedConnectionsRecordError, match="restart the session"):
             resolved_connections_of({RESOLVED_CONNECTIONS_KEY: record})
+
+
+async def test_restarting_a_session_keeps_its_own_connections():
+    """A peer the orchestrator restarts keeps what it had, even what the caller lacks."""
+    forge = Forge(_record("claude"), _record("linear", "issue_tracker"))
+    orchestrator = await forge.orchestrator(integration_ids=["claude"])
+    peer = await forge.launch("peer", USER, OWNER_TOKEN, integration_ids=["linear"])
+    assert forge.attached(peer) == ["linear"]
+    await forge.app.set_status(peer.id, SessionStatus.STOPPED)
+    lookups = len(forge.api.calls)
+
+    _present_bearer(None)
+    service = forge.app.session_service
+    await service.start_session(peer.id, principal=_session_credential(orchestrator.id))
+    await service._provisioning_tasks[peer.id]
+
+    restarted = await forge.app.sessions.get(peer.id)
+    assert restarted.status != SessionStatus.FAILED, restarted.error
+    assert forge.attached(restarted) == ["linear"]
+    assert len(forge.api.calls) == lookups
+
+
+async def test_a_forge_without_connections_launches_session_children_with_none():
+    app = build_forge_app()
+    caller = await app.session("orchestrator")
+    child = await app.session("child")
+    await app.session_service.start_session(child.id, principal=_session_credential(caller.id))
+    await app.session_service._provisioning_tasks[child.id]
+
+    stored = await app.sessions.get(child.id)
+    assert stored.status != SessionStatus.FAILED, stored.error
+    assert resolved_connections_of(stored.workload_config) == []
+
+
+async def test_a_credential_naming_no_session_is_refused_by_name():
+    forge = Forge(_record("claude"))
+    principal = _session_credential("not-a-session")
+    started = await forge.launch("child", principal, None)
+    assert started.status == SessionStatus.FAILED
+    assert "must name the session it belongs to, got 'not-a-session'" in started.error
+
+
+def test_a_held_member_cannot_be_created_with_a_record():
+    """A hosted member is stored at create and built later; a request cannot plant one."""
+    forge = build_forge_app()
+    forged = with_resolved_connections({}, [IntegrationConnection(**_parsed(_record("stolen")))])
+    root = forge.client.post(
+        f"{PREFIX}/sessions",
+        json={
+            "name": "wf-run",
+            "hosts_members": True,
+            "workflow_run_id": RUN,
+            "workflow_run_room": True,
+            "workflow_orchestration": "engine",
+        },
+    ).json()
+    response = forge.client.post(
+        f"{PREFIX}/sessions",
+        json={
+            "name": "member",
+            "hosted_by": root["id"],
+            "workflow_run_id": RUN,
+            "workflow_member": "coder",
+            "definition": "skuldClaude",
+            "workload_config": forged,
+        },
+    )
+    assert response.status_code == 201, response.text
+
+    member = asyncio.run(forge.sessions.get(UUID(response.json()["id"])))
+    assert RESOLVED_CONNECTIONS_KEY not in member.workload_config

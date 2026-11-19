@@ -1144,5 +1144,6 @@ A session launched by another session with its Forge session credential (an
 orchestrator using the Forge MCP) carries no owner bearer, so it never calls the
 Connections API. It attaches the connections recorded on the calling session's
 current launch: all of them the runtime can use, or the `integration_ids` it
-names, each of which must be among them. A connection added or disabled after
+names, each of which must be among them. A session restarted that way keeps the
+connections its own last launch recorded. A connection added or disabled after
 the caller started applies to its children once the caller is restarted.

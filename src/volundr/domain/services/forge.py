@@ -29,6 +29,7 @@ from volundr.domain.services.session import (
     SessionStateError,
 )
 from volundr.domain.session_broker import broker_base_url
+from volundr.domain.session_connections import without_resolved_connections
 from volundr.domain.workflow_session import (
     PERSONA_DEFINITION_KEY,
     PERSONA_NAME_KEY,
@@ -286,7 +287,8 @@ class ForgeService:
             description=_seeded_description(data),
             **(project_options or {}),
         )
-        workload_config = dict(data.workload_config or {})
+        # The record of a launch's connections is written by the launch, never by a caller.
+        workload_config = without_resolved_connections(data.workload_config or {})
         persona_name = getattr(data, "persona_name", "")
         if persona_name:
             workload_config[PERSONA_NAME_KEY] = persona_name

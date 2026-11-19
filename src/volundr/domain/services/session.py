@@ -1399,15 +1399,16 @@ class SessionService:
         if workload_type == "session" and session.workload_type != "session":
             workload_type = session.workload_type
         require_workload_type_available(workload_type)
+        if workload_config and RESOLVED_CONNECTIONS_KEY in workload_config:
+            # A caller cannot supply the record of connections; a restart keeps the stored
+            # one, which only a launch writes (``_build_spec``).
+            workload_config = without_resolved_connections(workload_config)
         if not workload_config and session.workload_config:
             workload_config = dict(session.workload_config)
         if workload_config and LAUNCH_FACTS_KEY in workload_config:
             # The previous launch's facts end with it, and a caller cannot set them: the
             # launch records what its own contributors establish (``_record_launch_facts``).
             workload_config = without_launch_facts(workload_config)
-        if workload_config and RESOLVED_CONNECTIONS_KEY in workload_config:
-            # Likewise the previous launch's connections: this launch records its own.
-            workload_config = without_resolved_connections(workload_config)
         if self._execution_resolver is not None:
             workload_config = await self._resolve_execution_config(
                 session, workload_config or {}, launch_spec
@@ -1709,7 +1710,7 @@ class SessionService:
         """
         if principal is not None and principal.token_use == FORGE_SESSION_TOKEN_USE:
             resolved_connections = await self._inherited_connections(
-                session, principal, integration_ids, definition
+                session, principal, integration_ids, workload_config, definition
             )
         else:
             resolved_connections = await self._looked_up_connections(
@@ -1728,28 +1729,36 @@ class SessionService:
         session: Session,
         principal: Principal,
         integration_ids: list[str] | None,
+        workload_config: dict,
         definition: str | None,
     ) -> list[IntegrationConnection]:
         """The connections of a launch made with a session's own Forge credential.
 
-        They come from the record of the calling session's current launch, never from a
-        new lookup: the session credential is not the owner's, so a shared Connections API
-        would refuse it, and a session must not hand the sessions it launches connections
-        it was never given. The named ids must all be in that record; with none named,
-        every recorded connection the runtime can use is attached. A connection disabled
-        since the caller's launch stays attached until the caller is restarted.
+        They come from a launch's record, never from a new lookup: the session credential
+        is not the owner's, so a shared Connections API would refuse it, and a session
+        must not hand the sessions it launches connections it was never given. A session
+        that was launched before (a restart) keeps what its own last launch recorded; a
+        new one takes the record of the calling session. The named ids must all be in that
+        record; with none named, every recorded connection the runtime can use is attached.
+        A connection disabled since that launch stays attached until it is relaunched by
+        its owner. A Forge with no integration repository has no connections to give.
         """
-        caller_id = principal.bound_session_id
-        if not caller_id:
-            raise ValueError("A Forge session credential must name the session it belongs to")
-        caller = await self._repository.get(UUID(caller_id))
-        if caller is None:
-            raise ValueError(f"Session {caller_id} that launched this one no longer exists")
-        recorded = resolved_connections_of(caller.workload_config)
+        if self._integration_repo is None:
+            if integration_ids:
+                raise ValueError(
+                    "Selected integrations require a configured integration repository"
+                )
+            return []
+        source = f"session {session.id}"
+        recorded = resolved_connections_of(workload_config)
+        if recorded is None:
+            caller = await self._calling_session(principal)
+            source = f"session {caller.id}"
+            recorded = resolved_connections_of(caller.workload_config)
         if recorded is None:
             raise ValueError(
-                f"Session {caller_id} was started before Forge recorded the connections of "
-                "its launch, so the sessions it launches cannot use them; restart it"
+                f"{source.capitalize()} was started before Forge recorded the connections "
+                "of its launch, so the sessions it launches cannot use them; restart it"
             )
         if not integration_ids:
             return [c for c in recorded if self._runtime_uses(c, definition)]
@@ -1757,13 +1766,13 @@ class SessionService:
         missing = [cid for cid in integration_ids if cid not in by_id]
         if missing:
             raise ValueError(
-                f"Integration connections {missing} are not among those session {caller_id} "
-                "was launched with; a session can give the sessions it launches only its own "
+                f"Integration connections {missing} are not among those {source} was "
+                "launched with; a session can give the sessions it launches only its own "
                 "connections"
             )
         selected = [by_id[cid] for cid in integration_ids]
         # As for a looked-up selection: a saved one can predate the owner's Git
-        # integration, so attach the caller's sources unless the selection names one.
+        # integration, so attach the recorded sources unless the selection names one.
         if session.repo and not any(
             c.integration_type == IntegrationType.SOURCE_CONTROL for c in selected
         ):
@@ -1773,6 +1782,20 @@ class SessionService:
                 if c.integration_type == IntegrationType.SOURCE_CONTROL and c not in selected
             )
         return selected
+
+    async def _calling_session(self, principal: Principal) -> Session:
+        """The session a Forge session credential belongs to."""
+        try:
+            caller_id = UUID(principal.bound_session_id or "")
+        except ValueError as exc:
+            raise ValueError(
+                "A Forge session credential must name the session it belongs to, got "
+                f"{principal.bound_session_id!r}"
+            ) from exc
+        caller = await self._repository.get(caller_id)
+        if caller is None:
+            raise ValueError(f"Session {caller_id} that launched this one no longer exists")
+        return caller
 
     async def _looked_up_connections(
         self,
