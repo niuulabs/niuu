@@ -810,7 +810,15 @@ def test_restore_excludes_runtime_cache_but_rejects_other_escaping_links(tmp_pat
     args = [sys.executable, "-c", program, "new-allocation", "restore", '["home/.codex/tmp"]']
     rejected = subprocess.run(args, input=archive("workspace/escape"), capture_output=True)
     assert rejected.returncode != 0
-    assert b"AbsoluteLinkError" in rejected.stderr
+    with pytest.raises(VmRuntimeStageError) as failed:
+        SshGuestAccess._raise_command_error(
+            rejected.returncode,
+            rejected.stderr,
+            safe_error_prefix=vm_slot_supervisor.STAGE_PREFIX,
+            safe_detail_prefix=vm_slot_supervisor.DETAIL_PREFIX,
+        )
+    assert failed.value.stage == "workspace-restore"
+    assert "AbsoluteLinkError" in failed.value.diagnostic
     assert not (root / ".allocation").exists()
     restored = subprocess.run(
         args, input=archive("home/.codex/tmp/arg0/apply_patch"), capture_output=True

@@ -863,6 +863,9 @@ async def test_a_host_session_restores_its_links_to_absolute_paths(host):
         "/var/lib/niuu/slots/2/session",
         "absolute-links",
     )
+    # A failed prepare reaches Forge as its stage and reason, not only an exit code.
+    assert _calls(runtime)[2].kwargs["safe_error_prefix"] == vm_slot_supervisor.STAGE_PREFIX
+    assert _calls(runtime)[2].kwargs["safe_detail_prefix"] == vm_slot_supervisor.DETAIL_PREFIX
 
 
 def _restore(tmp_path: Path, *flags: str) -> subprocess.CompletedProcess:
@@ -896,11 +899,62 @@ def test_absolute_symbolic_links_restore_only_where_asked_and_hard_links_never(t
     refused = _restore(tmp_path / "container")
 
     # The hard link to a path outside the session still fails the restore.
-    assert kept.returncode != 0 and b"shadow" in kept.stderr
+    assert kept.returncode != 0 and "shadow" in _reported(kept)
     assert os.readlink(tmp_path / "host/session/home/.nix-profile") == (
         "/home/skuld/.local/state/nix/profiles/profile"
     )
-    assert refused.returncode != 0 and b"AbsoluteLinkError" in refused.stderr
+    assert refused.returncode != 0 and "AbsoluteLinkError" in _reported(refused)
+
+
+def _reported(result: subprocess.CompletedProcess) -> str:
+    """What a failed restore tells Forge, read exactly as SshGuestAccess reads it."""
+    with pytest.raises(VmRuntimeStageError) as failed:
+        SshGuestAccess._raise_command_error(
+            result.returncode,
+            result.stderr,
+            safe_error_prefix=vm_slot_supervisor.STAGE_PREFIX,
+            safe_detail_prefix=vm_slot_supervisor.DETAIL_PREFIX,
+        )
+    assert failed.value.stage == "workspace-restore"
+    return failed.value.diagnostic
+
+
+def test_a_failed_restore_names_the_member_and_the_reason(tmp_path):
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w") as archive:
+        fifo = tarfile.TarInfo("./home/.services/control")
+        fifo.type = tarfile.FIFOTYPE
+        archive.addfile(fifo)
+    root = tmp_path / "session"
+
+    result = subprocess.run(
+        [sys.executable, "-c", ssh_vm_runtime._PREPARE, "key", "restore", "[]", str(root)],
+        input=buffer.getvalue(),
+        capture_output=True,
+    )
+
+    assert result.returncode == 1
+    reported = _reported(result)
+    assert reported.startswith("./home/.services/control: SpecialFileError")
+    assert not (root / ".allocation").exists()
+
+
+def test_a_restore_into_another_allocations_storage_says_so(tmp_path):
+    root = tmp_path / "session"
+    root.mkdir()
+    (root / ".allocation").write_text("someone-else")
+
+    result = _prepare(root, "empty")
+
+    with pytest.raises(VmRuntimeStageError) as failed:
+        SshGuestAccess._raise_command_error(
+            result.returncode,
+            result.stderr,
+            safe_error_prefix=vm_slot_supervisor.STAGE_PREFIX,
+            safe_detail_prefix=vm_slot_supervisor.DETAIL_PREFIX,
+        )
+    assert failed.value.stage == "workspace-allocation"
+    assert "another allocation than key" in failed.value.diagnostic
     assert not (tmp_path / "container/session/home/.nix-profile").is_symlink()
 
 
@@ -981,4 +1035,4 @@ def test_prepare_marks_fresh_storage_once_and_checks_it_after(tmp_path):
     assert (root / ".allocation").read_text() == "key"
     assert _prepare(root, "empty").returncode == 0
     (root / ".allocation").write_text("other")
-    assert b"allocation mismatch" in _prepare(root, "empty").stderr
+    assert b"NIUU_SLOT_STAGE:workspace-allocation" in _prepare(root, "empty").stderr

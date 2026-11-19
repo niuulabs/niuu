@@ -277,8 +277,22 @@ for u in missing:
     "__DETAIL__", vm_slot_supervisor.DETAIL_PREFIX
 )
 
-_PREPARE = r"""
-import json,os,pathlib,sys,tarfile
+_PREPARE = (
+    r"""
+import base64,json,os,pathlib,sys,tarfile
+STAGE,DETAIL,LIMIT='__STAGE__','__DETAIL__',__LIMIT__
+def fail(stage,detail):
+    # One printable line, base64 as SshGuestAccess reads it, so Forge can say what failed:
+    # without it a refused member or an OS error is only "exit code 1".
+    line=' '.join(''.join(c if ' '<=c<='~' else ' ' for c in detail).split())
+    if len(line)>LIMIT:
+        line=line[:LIMIT-len(' [truncated]')]+' [truncated]'
+    print(STAGE+stage,file=sys.stderr)
+    print(DETAIL+base64.b64encode(line.encode()).decode(),file=sys.stderr)
+    sys.exit(1)
+def failure(exc):
+    member=getattr(exc,'tarinfo',None)
+    return (member.name+': ' if member is not None else '')+type(exc).__name__+': '+str(exc)
 # argv: storage key, restore|empty, exclusions, a slot's storage root, and
 # 'absolute-links' where the session's links to absolute paths are restored too.
 root=pathlib.Path(sys.argv[4]) if len(sys.argv)>4 else pathlib.Path('/var/lib/niuu/session')
@@ -295,7 +309,7 @@ except FileNotFoundError:
 if existing is not None:
     with os.fdopen(existing) as current:
         if current.read() != allocation:
-            raise RuntimeError('Workspace allocation mismatch')
+            fail('workspace-allocation','the storage holds another allocation than '+allocation)
     sys.exit(0)
 excludes=[pathlib.PurePosixPath(p) for p in json.loads(sys.argv[3])]
 def restore_member(member,destination):
@@ -313,12 +327,19 @@ def restore_member(member,destination):
 if sys.argv[2]=='restore':
     # Through the held descriptor on Linux (the guest); macOS runs this only in tests.
     held='/proc/self/fd/%d' % fd if sys.platform=='linux' else str(root)
-    with tarfile.open(fileobj=sys.stdin.buffer,mode='r|') as archive:
-        archive.extractall(held,filter=restore_member)
+    try:
+        with tarfile.open(fileobj=sys.stdin.buffer,mode='r|') as archive:
+            archive.extractall(held,filter=restore_member)
+    except Exception as exc:
+        # The archive stays as it was: the marker is written only after a whole restore.
+        fail('workspace-restore',failure(exc))
 marker=os.open('.allocation',os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o644,dir_fd=fd)
 with os.fdopen(marker,'w') as written:
     written.write(allocation)
-"""
+""".replace("__STAGE__", vm_slot_supervisor.STAGE_PREFIX)
+    .replace("__DETAIL__", vm_slot_supervisor.DETAIL_PREFIX)
+    .replace("__LIMIT__", str(vm_slot_supervisor.DIAGNOSTIC_LIMIT))
+)
 
 #: Wait until Forge's end of the tunnel accepts on the guest. argv: host, port, the
 #: seconds to wait, the seconds between tries.
@@ -1705,12 +1726,16 @@ class SshContainerVmRuntime(BrokeredCredentialPodManager, VmRuntime):
                     bootstrap,
                     self._python(_PREPARE, *self._prepare_arguments(lease, "restore")),
                     stdin=src,
+                    safe_error_prefix=vm_slot_supervisor.STAGE_PREFIX,
+                    safe_detail_prefix=vm_slot_supervisor.DETAIL_PREFIX,
                 )
         else:
             await self._guest_access.execute(
                 lease,
                 bootstrap,
                 self._python(_PREPARE, *self._prepare_arguments(lease, "empty")),
+                safe_error_prefix=vm_slot_supervisor.STAGE_PREFIX,
+                safe_detail_prefix=vm_slot_supervisor.DETAIL_PREFIX,
             )
 
     # -- The members of a run's unit ------------------------------------------------------
