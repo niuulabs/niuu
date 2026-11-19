@@ -98,6 +98,12 @@ from volundr.domain.services.forge_session_launch import (
 )
 from volundr.domain.services.session_startup import SessionStartupRecorder
 from volundr.domain.session_changes import SessionChanges
+from volundr.domain.session_connections import (
+    RESOLVED_CONNECTIONS_KEY,
+    resolved_connections_of,
+    with_resolved_connections,
+    without_resolved_connections,
+)
 from volundr.domain.session_launch_facts import LAUNCH_FACTS_KEY, without_launch_facts
 from volundr.domain.session_read_state import SessionReadState, SessionReadStateChange
 from volundr.domain.session_runtimes import SessionRuntimeOffer, requested_grants
@@ -1399,6 +1405,9 @@ class SessionService:
             # The previous launch's facts end with it, and a caller cannot set them: the
             # launch records what its own contributors establish (``_record_launch_facts``).
             workload_config = without_launch_facts(workload_config)
+        if workload_config and RESOLVED_CONNECTIONS_KEY in workload_config:
+            # Likewise the previous launch's connections: this launch records its own.
+            workload_config = without_resolved_connections(workload_config)
         if self._execution_resolver is not None:
             workload_config = await self._resolve_execution_config(
                 session, workload_config or {}, launch_spec
@@ -1693,9 +1702,86 @@ class SessionService:
         """The integration connections a launch of ``session`` attaches.
 
         The ids the caller named, or, when it named none, every enabled connection of the
-        principal that the session's runtime can use (``_runtime_uses``). The fetched
-        connections are kept so contributors don't fetch them again.
+        principal that the session's runtime can use (``_runtime_uses``). A launch made
+        with a session's own Forge credential takes them from that session's launch
+        instead (``_inherited_connections``). The fetched connections are kept so
+        contributors don't fetch them again.
         """
+        if principal is not None and principal.token_use == FORGE_SESSION_TOKEN_USE:
+            resolved_connections = await self._inherited_connections(
+                session, principal, integration_ids, definition
+            )
+        else:
+            resolved_connections = await self._looked_up_connections(
+                session, principal, integration_ids, definition
+            )
+        if _is_workflow_child_local_mount(session, workload_config):
+            resolved_connections = [
+                connection
+                for connection in resolved_connections
+                if connection.integration_type != IntegrationType.SOURCE_CONTROL
+            ]
+        return resolved_connections
+
+    async def _inherited_connections(
+        self,
+        session: Session,
+        principal: Principal,
+        integration_ids: list[str] | None,
+        definition: str | None,
+    ) -> list[IntegrationConnection]:
+        """The connections of a launch made with a session's own Forge credential.
+
+        They come from the record of the calling session's current launch, never from a
+        new lookup: the session credential is not the owner's, so a shared Connections API
+        would refuse it, and a session must not hand the sessions it launches connections
+        it was never given. The named ids must all be in that record; with none named,
+        every recorded connection the runtime can use is attached. A connection disabled
+        since the caller's launch stays attached until the caller is restarted.
+        """
+        caller_id = principal.bound_session_id
+        if not caller_id:
+            raise ValueError("A Forge session credential must name the session it belongs to")
+        caller = await self._repository.get(UUID(caller_id))
+        if caller is None:
+            raise ValueError(f"Session {caller_id} that launched this one no longer exists")
+        recorded = resolved_connections_of(caller.workload_config)
+        if recorded is None:
+            raise ValueError(
+                f"Session {caller_id} was started before Forge recorded the connections of "
+                "its launch, so the sessions it launches cannot use them; restart it"
+            )
+        if not integration_ids:
+            return [c for c in recorded if self._runtime_uses(c, definition)]
+        by_id = {connection.id: connection for connection in recorded}
+        missing = [cid for cid in integration_ids if cid not in by_id]
+        if missing:
+            raise ValueError(
+                f"Integration connections {missing} are not among those session {caller_id} "
+                "was launched with; a session can give the sessions it launches only its own "
+                "connections"
+            )
+        selected = [by_id[cid] for cid in integration_ids]
+        # As for a looked-up selection: a saved one can predate the owner's Git
+        # integration, so attach the caller's sources unless the selection names one.
+        if session.repo and not any(
+            c.integration_type == IntegrationType.SOURCE_CONTROL for c in selected
+        ):
+            selected.extend(
+                c
+                for c in recorded
+                if c.integration_type == IntegrationType.SOURCE_CONTROL and c not in selected
+            )
+        return selected
+
+    async def _looked_up_connections(
+        self,
+        session: Session,
+        principal: Principal | None,
+        integration_ids: list[str] | None,
+        definition: str | None,
+    ) -> list[IntegrationConnection]:
+        """The connections of a launch, looked up in the integration repository."""
         # Auto-include all enabled integrations when none are specified.
         # Keep the fetched connections so contributors don't re-fetch by ID.
         resolved_connections: list[IntegrationConnection] = []
@@ -1741,13 +1827,6 @@ class SessionService:
                 integration_type=IntegrationType.SOURCE_CONTROL,
             )
             resolved_connections.extend(c for c in source_connections if c.enabled)
-
-        if _is_workflow_child_local_mount(session, workload_config):
-            resolved_connections = [
-                connection
-                for connection in resolved_connections
-                if connection.integration_type != IntegrationType.SOURCE_CONTROL
-            ]
         return resolved_connections
 
     def _runtime_uses(self, connection: IntegrationConnection, definition: str | None) -> bool:
@@ -1800,13 +1879,13 @@ class SessionService:
         )
         workflow_child_local_mount = _is_workflow_child_local_mount(session, workload_config)
 
+        # Recorded on every launch, so the sessions this one launches with its own
+        # credential attach exactly what it was given (``_inherited_connections``).
+        workload_config = with_resolved_connections(workload_config, resolved_connections)
         if resolved_connections or workflow_child_local_mount:
-            workload_config = {
-                **(workload_config or {}),
-                "integration_ids": [c.id for c in resolved_connections],
-            }
-            session = session.model_copy(update={"workload_config": workload_config})
-            await self._repository.update(session)
+            workload_config["integration_ids"] = [c.id for c in resolved_connections]
+        session = session.model_copy(update={"workload_config": workload_config})
+        await self._repository.update(session)
 
         context = SessionContext(
             principal=principal,
@@ -1825,7 +1904,9 @@ class SessionService:
             # empty workload config must still read as empty to them.
             # Nor the record of the previous launch's facts: a contributor reports what
             # this launch establishes and never reads what an earlier one did.
-            workload_config=without_launch_facts(without_forge_mcp(workload_config)),
+            workload_config=without_resolved_connections(
+                without_launch_facts(without_forge_mcp(workload_config))
+            ),
             unit_members=await self._unit_member_contexts(session, principal),
         )
 
@@ -1980,7 +2061,7 @@ class SessionService:
         contexts: list[UnitMemberContext] = []
         for member in await self._repository.list_hosted(session.id):
             launch = HostedLaunch.model_validate(member.workload_config.get(HOSTED_LAUNCH_KEY))
-            member_config = without_forge_mcp(member.workload_config)
+            member_config = without_resolved_connections(without_forge_mcp(member.workload_config))
             connections = await self._resolve_connections(
                 member, principal, launch.integration_ids or None, member_config, launch.definition
             )

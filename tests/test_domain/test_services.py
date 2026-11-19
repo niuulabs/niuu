@@ -1,6 +1,7 @@
 """Tests for domain services."""
 
 import asyncio
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from uuid import uuid4
@@ -24,6 +25,7 @@ from volundr.domain.models import (
     CleanupTarget,
     GitProviderType,
     GitSource,
+    IntegrationConnection,
     IntegrationType,
     LocalMountSource,
     Principal,
@@ -44,6 +46,33 @@ from volundr.domain.services import (
 # Type aliases for shorter signatures
 Repo = InMemorySessionRepository
 Pods = MockPodManager
+
+
+OWNER_PRINCIPAL = Principal(user_id="owner", email="owner@test.local", tenant_id="t", roles=[])
+
+
+def _connection(
+    id: str,
+    *,
+    enabled: bool = True,
+    slug: str = "",
+    owner_id: str = "owner",
+    integration_type: IntegrationType = IntegrationType.AI_PROVIDER,
+) -> IntegrationConnection:
+    """A real connection: a launch records every field of what it attached."""
+    now = datetime.now(UTC)
+    return IntegrationConnection(
+        id=id,
+        owner_id=owner_id,
+        integration_type=integration_type,
+        adapter="",
+        credential_name=f"{id}-credential",
+        config={},
+        enabled=enabled,
+        created_at=now,
+        updated_at=now,
+        slug=slug,
+    )
 
 
 class TestSessionServiceCreate:
@@ -789,20 +818,14 @@ class TestSessionServiceStart:
     async def test_resolved_connections_survive_provisioning(
         self, repository, pod_manager, monkeypatch, launch_fails
     ):
-        from types import SimpleNamespace
-
         integrations = AsyncMock()
-        integrations.list_connections.return_value = [
-            SimpleNamespace(id="subscription", enabled=True)
-        ]
+        integrations.list_connections.return_value = [_connection(id="subscription", enabled=True)]
         service = SessionService(repository, pod_manager, integration_repo=integrations)
         monkeypatch.setattr(service, "_poll_readiness", AsyncMock())
         if launch_fails:
             monkeypatch.setattr(pod_manager, "start", AsyncMock(side_effect=RuntimeError("failed")))
         session = await service.create_session(name="subscription", model="claude-sonnet-5")
-        await service._provision_background(
-            session, SimpleNamespace(user_id="owner"), None, None, False
-        )
+        await service._provision_background(session, OWNER_PRINCIPAL, None, None, False)
         stored = await repository.get(session.id)
         assert stored.workload_config["integration_ids"] == ["subscription"]
         expected = SessionStatus.FAILED if launch_fails else SessionStatus.PROVISIONING
@@ -813,19 +836,15 @@ class TestSessionServiceStart:
     async def test_push_devices_are_never_session_integrations(
         self, repository, pod_manager, monkeypatch
     ):
-        from types import SimpleNamespace
-
         integrations = AsyncMock()
         integrations.list_connections.return_value = [
-            SimpleNamespace(id="ai", enabled=True, slug="anthropic"),
-            SimpleNamespace(id="phone", enabled=True, slug="push-device"),
+            _connection(id="ai", enabled=True, slug="anthropic"),
+            _connection(id="phone", enabled=True, slug="push-device"),
         ]
         service = SessionService(repository, pod_manager, integration_repo=integrations)
         monkeypatch.setattr(service, "_poll_readiness", AsyncMock())
         session = await service.create_session(name="no-phone", model="claude-sonnet-5")
-        await service._provision_background(
-            session, SimpleNamespace(user_id="owner"), None, None, False
-        )
+        await service._provision_background(session, OWNER_PRINCIPAL, None, None, False)
         stored = await repository.get(session.id)
         assert stored.workload_config["integration_ids"] == ["ai"]
         await asyncio.gather(*service._provisioning_tasks.values())
@@ -846,14 +865,12 @@ class TestSessionServiceStart:
         self, repository, pod_manager, monkeypatch, definition, attached
     ):
         # A Claude session must not depend on the health of a Codex login it never uses.
-        from types import SimpleNamespace
-
         integrations = AsyncMock()
         integrations.list_connections.return_value = [
-            SimpleNamespace(id="github", enabled=True, slug="github"),
-            SimpleNamespace(id="claude", enabled=True, slug="claude-code"),
-            SimpleNamespace(id="codex", enabled=True, slug="codex"),
-            SimpleNamespace(id="model-server", enabled=True, slug="model-server"),
+            _connection(id="github", enabled=True, slug="github"),
+            _connection(id="claude", enabled=True, slug="claude-code"),
+            _connection(id="codex", enabled=True, slug="codex"),
+            _connection(id="model-server", enabled=True, slug="model-server"),
         ]
         service = SessionService(
             repository,
@@ -874,9 +891,7 @@ class TestSessionServiceStart:
         )
         monkeypatch.setattr(service, "_poll_readiness", AsyncMock())
         session = await service.create_session(name="coordinator", model="claude-opus-5-5")
-        await service._provision_background(
-            session, SimpleNamespace(user_id="owner"), definition, None, False
-        )
+        await service._provision_background(session, OWNER_PRINCIPAL, definition, None, False)
         stored = await repository.get(session.id)
         assert stored.workload_config["integration_ids"] == attached
         await asyncio.gather(*service._provisioning_tasks.values())
@@ -886,9 +901,7 @@ class TestSessionServiceStart:
     ):
         # Only the automatic selection is narrowed: an integration the caller names is
         # attached, and validated, as it was.
-        from types import SimpleNamespace
-
-        codex = SimpleNamespace(id="codex", owner_id="owner", enabled=True, slug="codex")
+        codex = _connection(id="codex", owner_id="owner", enabled=True, slug="codex")
         integrations = AsyncMock()
         integrations.get_connection.return_value = codex
         service = SessionService(
@@ -902,7 +915,7 @@ class TestSessionServiceStart:
         session = await service.create_session(name="named", model="claude-opus-5-5")
         await service._provision_background(
             session,
-            SimpleNamespace(user_id="owner"),
+            OWNER_PRINCIPAL,
             "skuldClaude",
             None,
             False,
@@ -935,20 +948,18 @@ class TestSessionServiceStart:
         monkeypatch,
         explicit_git,
     ):
-        from types import SimpleNamespace
-
         from volundr.domain.models import IntegrationType, Principal
 
-        ai = SimpleNamespace(
+        ai = _connection(
             id="ai", owner_id="owner", enabled=True, integration_type=IntegrationType.AI_PROVIDER
         )
-        github = SimpleNamespace(
+        github = _connection(
             id="github",
             owner_id="owner",
             enabled=True,
             integration_type=IntegrationType.SOURCE_CONTROL,
         )
-        disabled = SimpleNamespace(id="disabled", enabled=False)
+        disabled = _connection(id="disabled", enabled=False)
         integrations = AsyncMock()
         integrations.get_connection.side_effect = lambda cid: {"ai": ai, "github": github}[cid]
         integrations.list_connections.return_value = [github, disabled]
@@ -986,13 +997,13 @@ class TestSessionServiceStart:
         repository,
         pod_manager,
     ):
-        ai = SimpleNamespace(
+        ai = _connection(
             id="ai",
             owner_id="owner",
             enabled=True,
             integration_type=IntegrationType.AI_PROVIDER,
         )
-        github = SimpleNamespace(
+        github = _connection(
             id="github",
             owner_id="owner",
             enabled=True,

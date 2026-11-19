@@ -1139,3 +1139,10 @@ Use the central Connections service's actual URL. A selected connection must
 exist, belong to the launching user, and be enabled. Launches retain their
 resolved connection IDs for restarts. Claude subscription connections select
 subscription authentication; credential injection errors fail provisioning.
+
+A session launched by another session with its Forge session credential (an
+orchestrator using the Forge MCP) carries no owner bearer, so it never calls the
+Connections API. It attaches the connections recorded on the calling session's
+current launch: all of them the runtime can use, or the `integration_ids` it
+names, each of which must be among them. A connection added or disabled after
+the caller started applies to its children once the caller is restarted.

@@ -8,7 +8,7 @@ import pytest
 
 from volundr.composition_builders import integration_database_pool
 from volundr.config import Settings
-from volundr.domain.models import Session
+from volundr.domain.models import Principal, Session
 from volundr.domain.services.session import SessionService
 
 
@@ -54,7 +54,7 @@ async def test_foreign_connection_rejected_before_session_launch():
     with pytest.raises(ValueError, match="Integration connection not found"):
         await service._start_with_pipeline(
             Session(name="test", model="test"),
-            SimpleNamespace(user_id="owner"),
+            Principal(user_id="owner", email="", tenant_id="t", roles=[]),
             None,
             None,
             False,
