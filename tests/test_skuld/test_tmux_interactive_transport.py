@@ -15,6 +15,7 @@ from unittest.mock import patch
 
 import pytest
 
+from skuld.delivery_errors import DeliveryNotAcceptedError
 from skuld.transports.tmux_interactive import (
     TmuxInteractiveTransport,
     _PaneState,
@@ -42,6 +43,9 @@ class FakeTmuxInteractiveTransport(TmuxInteractiveTransport):
         # A running REPL shows its input prompt; tests that model a booting or
         # menu-showing pane override this.
         self.capture_stdout = "❯ "
+        # What the pane shows once a message is pasted (a test of the post-paste screen
+        # sets this; delivery itself first checks that the prompt is showing).
+        self.capture_after_paste: str | None = None
         self.pane_lines = ["%1\t0\tmain\t1\tclaude\t200\t50\t2\t47"]
         # pane_id -> the pane's `#{pane_start_command}` (what `display-message` returns). Lets a
         # test give a teammate pane a real `--agent-name`; unmapped panes report an empty command.
@@ -82,6 +86,8 @@ class FakeTmuxInteractiveTransport(TmuxInteractiveTransport):
         if command == "load-buffer":
             self.loaded_buffers.append(Path(args[-1]).read_text(encoding="utf-8"))
             return _TmuxResult(0)
+        if command == "paste-buffer" and self.capture_after_paste is not None:
+            self.capture_stdout = self.capture_after_paste
         if command == "capture-pane":
             return _TmuxResult(0, self.capture_stdout)
         return _TmuxResult(0)
@@ -318,7 +324,7 @@ async def test_paste_represses_enter_while_composer_still_holds_text(tmp_path: P
             if args and args[0] == "send-keys" and args[-1] == "Enter"
         )
 
-    transport.capture_stdout = "╭──────╮\n│ ❯ fix the fold bug please │\n╰──────╯\n"
+    transport.capture_after_paste = "╭──────╮\n│ ❯ fix the fold bug please │\n╰──────╯\n"
     await transport.send_message("fix the fold bug please")
     # initial Enter + one retry per backoff hop (the fake composer never clears); the confirm
     # loop runs in the background so send_message itself stays non-blocking.
@@ -335,7 +341,7 @@ async def test_paste_confirm_never_presses_enter_into_open_menu(tmp_path: Path) 
     await _collect_events(transport)
     await transport.start()
 
-    transport.capture_stdout = "Do you want to proceed?\n❯ 1. Allow\n  2. Deny\n"
+    transport.capture_after_paste = "Do you want to proceed?\n❯ 1. Allow\n  2. Deny\n"
     await transport.send_message("run the migration")
     await asyncio.sleep(1.0)  # past the first two backoff hops
     enters = [
@@ -354,7 +360,7 @@ async def test_paste_confirm_stops_after_composer_clears(tmp_path: Path) -> None
     await _collect_events(transport)
     await transport.start()
 
-    transport.capture_stdout = "⏺ Working on it…\n"
+    transport.capture_after_paste = "⏺ Working on it…\n"
     await transport.send_message("hello there")
     await asyncio.sleep(1.0)  # past the first two backoff hops
     enters = [
@@ -418,7 +424,7 @@ async def test_paste_confirm_stops_when_message_is_echoed_in_v2_1_history(
     await _collect_events(transport)
     await transport.start()
 
-    transport.capture_stdout = "\n".join(["❯ hello there", "", "● Here's what I see next."])
+    transport.capture_after_paste = "\n".join(["❯ hello there", "", "● Here's what I see next."])
     await transport.send_message("hello there")
     await asyncio.sleep(1.0)  # past every backoff hop
     enters = [
@@ -2553,3 +2559,67 @@ async def test_a_dead_teammate_pane_does_not_stop_the_transport(tmp_path: Path) 
     await transport._refresh_panes(emit_events=True)
     assert not [e for e in events if e["type"] == "transport_stopped"]
     assert transport._alive is True
+
+
+# Claude Code's own onboarding dialog, as it sat on a Mac host session's pane
+# (2026-11-19): it fires no hook, and two messages pasted into it were lost.
+_AUTO_MODE_DIALOG = """\
+⏺ Stopped watching Artifact: https://claude.ai/artifact/x (idle)
+▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔
+   Teach auto mode about your environment?
+
+   Claude Code reads this project, your recent Claude sessions, and optionally your shell
+   history and other repositories.
+
+     How you use Claude here     Mixed
+   ❯ Also scan shell history     false
+     Also scan your other repos  false
+
+     Continue
+
+   ←/→ to change · Enter to continue · Esc to cancel
+"""
+
+
+@pytest.mark.asyncio
+async def test_message_is_refused_while_claude_shows_a_dialog_instead_of_its_prompt(
+    tmp_path: Path,
+) -> None:
+    transport = FakeTmuxInteractiveTransport(str(tmp_path), sdk_port=8081)
+    await _collect_events(transport)
+    await transport.start()
+    transport.capture_stdout = _AUTO_MODE_DIALOG
+
+    with pytest.raises(
+        DeliveryNotAcceptedError,
+        match="not showing its prompt.*Teach auto mode about your environment\\?",
+    ):
+        await transport.send_message("Use that token on the other repos, it works")
+
+    assert not any(args[0] == "paste-buffer" for args, _ in transport.commands)
+    assert not transport.is_turn_active
+    await transport.stop()
+
+
+@pytest.mark.asyncio
+async def test_message_is_typed_once_claude_shows_its_prompt_again(tmp_path: Path) -> None:
+    transport = FakeTmuxInteractiveTransport(str(tmp_path), sdk_port=8081)
+    await _collect_events(transport)
+    await transport.start()
+    transport.capture_stdout = _AUTO_MODE_DIALOG
+    with pytest.raises(DeliveryNotAcceptedError):
+        await transport.send_message("hello")
+
+    transport.capture_stdout = "❯ "
+    await transport.send_message("hello")
+
+    assert sum(1 for args, _ in transport.commands if args[0] == "paste-buffer") == 1
+    assert transport.is_turn_active
+    await transport.stop()
+
+
+def test_screen_headline_without_a_rule_is_the_last_row() -> None:
+    assert TmuxInteractiveTransport._screen_headline("first\n\n  Press Enter  \n\n") == (
+        "Press Enter"
+    )
+    assert TmuxInteractiveTransport._screen_headline("") == ""

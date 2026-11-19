@@ -53,6 +53,8 @@ from skuld.transports.tool_shims import ensure_codex_tool_shims
 logger = logging.getLogger("skuld.transport")
 
 _ANSI_RE = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1B\\))")
+# Characters a full-width rule is drawn with (Claude Code draws one above a dialog).
+_RULE_CHARS = frozenset("▔▁─━═")
 
 # Describe input capability only. Project/session instructions own objectives, planning,
 # delegation and communication style; the transport must not prescribe that workflow.
@@ -1159,6 +1161,8 @@ class TmuxInteractiveTransport(CLITransport):
                 await self._capture_pane_text()
             ):
                 await self._wait_for_repl_ready()
+            if not self._turn_active:
+                await self._require_composer()
             if self._turn_active:
                 # Mid-turn steer: keep the SAME turn alive. Refresh the idle
                 # clock so the completion watchdog doesn't fire in the gap
@@ -1191,6 +1195,40 @@ class TmuxInteractiveTransport(CLITransport):
             (msg_id, request_id, self._normalize_prompt(content))
         )
         logger.info("tmux deliver: pasted %d chars into pane OK", len(content))
+
+    async def _require_composer(self) -> None:
+        """Refuse to type a new turn unless Claude Code is showing its prompt.
+
+        Claude Code can put up a screen of its own that fires no hook (an onboarding
+        dialog such as "Teach auto mode about your environment?", a settings menu).
+        Text pasted there drives the menu instead of starting a turn, so the message is
+        lost while Forge shows it delivered and waits for a turn that never comes.
+        """
+        screen = self._clean_terminal_text(await self._capture_pane_text())
+        if self._repl_looks_ready(screen):
+            return
+        headline = self._screen_headline(screen)
+        logger.error(
+            "tmux deliver: Claude Code is not showing its prompt (%r); message NOT typed",
+            headline,
+        )
+        raise DeliveryNotAcceptedError(
+            "Claude Code is not showing its prompt, so the message was not typed: its "
+            f"terminal shows {headline!r}. Answer or close that screen in the session's "
+            "terminal, then send the message again"
+        )
+
+    @staticmethod
+    def _screen_headline(screen: str) -> str:
+        """The title of what the terminal shows: the first row below its last full rule
+        (Claude Code draws one above a dialog), else its last non-empty row."""
+        rows = [row.strip() for row in screen.splitlines()]
+        rules = [index for index, row in enumerate(rows) if row and set(row) <= _RULE_CHARS]
+        below = rows[rules[-1] + 1 :] if rules else []
+        for row in below:
+            if row:
+                return row
+        return next((row for row in reversed(rows) if row), "")
 
     @staticmethod
     def _normalize_prompt(text: str) -> str:
