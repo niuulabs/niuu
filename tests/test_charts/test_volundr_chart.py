@@ -2746,3 +2746,10 @@ class TestSessionVoice:
             *_voice_args("voice.enabled=true", "voice.defaultPersona=lexi"), *WORKLOAD_SIGNING_KEY
         )
         assert "voice.enabled needs voice.providers" in stderr
+
+
+def test_claude_code_interactive_is_the_chart_default():
+    values = yaml.safe_load((CHART_DIR / "values.yaml").read_text())
+    assert values["defaultDefinition"] == "skuldClaudeInteractive"
+    default_spec = next(spec for spec in values["launchSpecs"] if spec.get("isDefault"))
+    assert default_spec["sessionDefinition"] == "skuldClaudeInteractive"

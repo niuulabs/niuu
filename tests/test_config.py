@@ -1272,3 +1272,11 @@ def test_a_launch_spec_for_a_custom_workload_type_is_accepted():
     settings = Settings(launch_specs=[{"name": "batch", "workload_type": "batch"}])
 
     assert [spec.workload_type for spec in settings.launch_specs] == ["batch"]
+
+
+def test_claude_code_interactive_is_the_default_definition():
+    from volundr.config import Settings, _default_launch_specs
+
+    assert Settings.model_fields["default_definition"].default == "skuldClaudeInteractive"
+    default_spec = next(spec for spec in _default_launch_specs() if spec.is_default)
+    assert default_spec.session_definition == "skuldClaudeInteractive"

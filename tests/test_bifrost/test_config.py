@@ -78,7 +78,7 @@ class TestBifrostConfig:
         fable = next((m for m in models if m.id == "claude-fable-5-1"), None)
         assert fable is not None, "claude-fable-5-1 missing from default model catalog"
         assert fable.name == "Claude Fable 5.1"
-        assert fable.session_definition == "skuldClaude"
+        assert fable.session_definition == "skuldClaudeInteractive"
         assert fable.tier == ManagedModelTier.FRONTIER
         assert not [m for m in models if m.id == "claude-fable-5"], (
             "claude-fable-5 must not remain as a second Fable row"
@@ -94,7 +94,7 @@ class TestBifrostConfig:
         opus = next((m for m in models if m.id == "claude-opus-5-5"), None)
         assert opus is not None, "claude-opus-5-5 missing from default model catalog"
         assert opus.name == "Claude Opus 5.5"
-        assert opus.session_definition == "skuldClaude"
+        assert opus.session_definition == "skuldClaudeInteractive"
         assert opus.tier == ManagedModelTier.FRONTIER
         assert opus.effort_levels == ["low", "medium", "high", "xhigh", "max"]
         assert opus.default_effort == "xhigh"
@@ -395,3 +395,12 @@ class TestPatModeRequiresRevocationDecision:
         BifrostConfig(auth_mode=AuthMode.OPEN)  # must not raise
         BifrostConfig(auth_mode=AuthMode.MESH)  # must not raise
         BifrostConfig(auth_mode=AuthMode.OIDC)  # must not raise
+
+
+def test_every_claude_model_defaults_to_claude_code_interactive():
+    # Claude sessions run Claude Code interactive (tmux) by default on every Forge.
+    from bifrost.config import _default_models
+
+    claude = [m for m in _default_models() if m.vendor == "anthropic"]
+    assert claude
+    assert {m.session_definition for m in claude} == {"skuldClaudeInteractive"}

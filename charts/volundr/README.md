@@ -263,7 +263,7 @@ launchSpecs:
   - name: standard-claude
     description: "Default Claude Code session"
     workloadType: session
-    sessionDefinition: skuldClaude
+    sessionDefinition: skuldClaudeInteractive
     model: "claude-sonnet-4-6"
     cliTool: claude
     resourceConfig:

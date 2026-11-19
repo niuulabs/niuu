@@ -226,7 +226,7 @@ function buildEditorState(mode: EditorMode, base: VolundrLaunchSpec | null): Spe
           ? cloneName
           : (systemEditName ?? 'new-template'),
     description: base?.description ?? '',
-    sessionDefinition: base?.sessionDefinition ?? 'skuldClaude',
+    sessionDefinition: base?.sessionDefinition ?? 'skuldClaudeInteractive',
     runtime,
     sourceMode: sourceMode(runtime.source),
     mcpNames: runtime.mcpServers.map((server) => server.name).join(', '),

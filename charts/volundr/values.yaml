@@ -855,7 +855,7 @@ launchSpecs:
   - name: standard-claude
     description: "Default Claude Code session with modest resources."
     isDefault: true
-    sessionDefinition: skuldClaude
+    sessionDefinition: skuldClaudeInteractive
     workloadType: session
     model: "claude-sonnet-4-6"
     cliTool: claude
@@ -1653,7 +1653,7 @@ existingSecrets:
   anthropic: volundr-anthropic-api
 
 # -- Fallback session definition when none is specified in the request
-defaultDefinition: "skuldClaude"
+defaultDefinition: "skuldClaudeInteractive"
 
 # Session definition templates
 # These define session types for workload instantiation

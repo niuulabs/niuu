@@ -107,7 +107,7 @@ export function useLaunchWizard({ open, initialLaunchSpecRef, initialForm }: Lau
     mcpServers: [],
     envVars: [],
     setupScripts: [],
-    definition: 'skuldClaude',
+    definition: 'skuldClaudeInteractive',
     model: 'sonnet-primary',
     cpu: '2',
     mem: '8Gi',

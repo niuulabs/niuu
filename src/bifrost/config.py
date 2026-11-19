@@ -233,7 +233,7 @@ def _default_models() -> list[ManagedModelConfig]:
             ),
             # Claude Fable 5.1 is $10 in / $50 out per 1M tokens (blended shown).
             cost_per_million_tokens=30.0,
-            session_definition="skuldClaude",
+            session_definition="skuldClaudeInteractive",
             supports_tools=True,
             supports_thinking=True,
         ),
@@ -253,7 +253,7 @@ def _default_models() -> list[ManagedModelConfig]:
             ),
             # Claude Opus 5.5 is $4 in / $20 out per 1M tokens (blended shown).
             cost_per_million_tokens=12.0,
-            session_definition="skuldClaude",
+            session_definition="skuldClaudeInteractive",
             supports_tools=True,
             supports_thinking=True,
         ),
@@ -269,7 +269,7 @@ def _default_models() -> list[ManagedModelConfig]:
             ),
             # Claude Sonnet 5 is $3 in / $15 out per 1M tokens (blended shown).
             cost_per_million_tokens=9.0,
-            session_definition="skuldClaude",
+            session_definition="skuldClaudeInteractive",
             supports_tools=True,
             supports_thinking=True,
         ),

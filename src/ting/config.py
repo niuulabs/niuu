@@ -306,7 +306,7 @@ class DispatchConfig(BaseModel):
             "Default session_definition (runtime) key when a dispatch request "
             "doesn't specify one — e.g. 'skuldClaude', 'skuldCodex', "
             "'skuldOpenCode'. Empty falls through to volundr's "
-            "defaultDefinition (typically skuldClaude)."
+            "defaultDefinition (typically skuldClaudeInteractive)."
         ),
     )
     auto_continue: bool = Field(

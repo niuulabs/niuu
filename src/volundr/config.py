@@ -604,7 +604,7 @@ def _default_launch_specs() -> list[LaunchSpecConfig]:
             name="standard-claude",
             description="Default Claude Code session with modest resources.",
             is_default=True,
-            session_definition="skuldClaude",
+            session_definition="skuldClaudeInteractive",
             workload_type="session",
             model="claude-sonnet-4-6",
             resource_config={"cpu": "1", "memory": "2Gi"},
@@ -3923,7 +3923,7 @@ class Settings(BaseSettings):
     )
     bifrost: VolundrBifrostConfig = Field(default_factory=VolundrBifrostConfig)
     default_definition: str = Field(
-        default="skuldClaude",
+        default="skuldClaudeInteractive",
         description="Fallback definition key when no explicit definition is specified.",
     )
     launch_specs: list[LaunchSpecConfig] = Field(

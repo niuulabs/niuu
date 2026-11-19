@@ -387,7 +387,7 @@ describe('LaunchCatalogPage', () => {
     fireEvent.click(screen.getByRole('button', { name: /new/i }));
     expect(screen.getByText('Create catalog spec')).toBeInTheDocument();
     expect(screen.getByDisplayValue('new-template')).toBeInTheDocument();
-    expect(screen.getByDisplayValue('skuldClaude')).toBeInTheDocument();
+    expect(screen.getByDisplayValue('skuldClaudeInteractive')).toBeInTheDocument();
     expect(screen.getByPlaceholderText('one command per line')).toBeInTheDocument();
   });
 

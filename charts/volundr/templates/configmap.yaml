@@ -384,7 +384,7 @@ data:
       retention_days: {{ .Values.chronicle.retentionDays }}
       {{- end }}
 
-    default_definition: {{ .Values.defaultDefinition | default "skuldClaude" | quote }}
+    default_definition: {{ .Values.defaultDefinition | default "skuldClaudeInteractive" | quote }}
     {{- if .Values.sessionDefinitions }}
     session_definitions:
       {{- range $key, $def := .Values.sessionDefinitions }}
