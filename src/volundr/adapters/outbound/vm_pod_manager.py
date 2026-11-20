@@ -291,6 +291,11 @@ class VmPodManager(PodManager):
                 )
             return None
         if pinned is not None:
+            successor = None if existing is not None else self._successor_of_retired(session)
+            if successor is not None:
+                self._require_same_selection(successor, explicit, legacy, resolver)
+                await self._validate_plan(successor)
+                return successor
             plan = await self.execution_for(session)
             self._require_same_selection(plan, explicit, legacy, resolver)
             if existing is not None:
@@ -320,8 +325,35 @@ class VmPodManager(PodManager):
         lease = await repository.active_for_session(self._pool_id, session.id)
         return lease is not None and lease.execution_plan is None
 
-    async def execution_for(self, session: Session) -> ResolvedExecutionPlan:
+    def _successor_of_retired(self, session: Session) -> ResolvedExecutionPlan | None:
+        """The plan a stopped session starts on when a release retired its pinned revision.
+
+        The built-in host catalog's revision follows its content, so a Forge release or a
+        change to the pool's configuration retires the revision every stopped session is
+        pinned to, and that revision never comes back. A session that holds no machine
+        starts on the one revision of the same execution this Forge now offers, as stop
+        does for a running one. ``None`` when the pinned revision is still offered (its
+        content is then verified, and a change refused), or when the execution is offered
+        under no revision or several.
+        """
         resolver = self._require_execution_resolver()
+        reference, _ = self._pinned_reference(session)
+        offered = resolver.plans()
+        if any(plan.execution == reference for plan in offered):
+            return None
+        successors = [plan for plan in offered if plan.execution.id == reference.id]
+        if len(successors) != 1:
+            return None
+        logger.info(
+            "Session %s was pinned to %s, which this Forge no longer offers; it starts on %s",
+            session.id,
+            reference,
+            successors[0].execution,
+        )
+        return successors[0]
+
+    def _pinned_reference(self, session: Session) -> tuple[CatalogRef, str]:
+        """The session's pinned execution and plan digest."""
         raw = session.workload_config.get("_compute_execution")
         if not isinstance(raw, dict) or set(raw) != {
             "execution_id",
@@ -342,6 +374,11 @@ class VmPodManager(PodManager):
             raise ExecutionPlanMismatchError(
                 "Pinned compute execution reference is missing or malformed"
             ) from exc
+        return reference, expected_digest
+
+    async def execution_for(self, session: Session) -> ResolvedExecutionPlan:
+        resolver = self._require_execution_resolver()
+        reference, expected_digest = self._pinned_reference(session)
         plan = resolver.resolve_pinned(reference, expected_digest)
         _, repository, _ = self._configured()
         existing = await repository.active_for_session(self._pool_id, session.id)

@@ -1,5 +1,6 @@
 """Resolved execution plans stay pinned across VM warm/cold lifecycle operations."""
 
+import logging
 from pathlib import Path
 from unittest.mock import AsyncMock
 from uuid import uuid4
@@ -14,7 +15,7 @@ from tests.test_adapters.test_vm_pod_manager import ReadyProvider, Repository
 from volundr.adapters.outbound.file_execution_catalog import FileExecutionCatalog
 from volundr.adapters.outbound.vm_pod_manager import VmPodManager
 from volundr.domain.compute import ComputePoolPolicy, MachineBootstrap
-from volundr.domain.execution_catalog import ExecutionCatalogError
+from volundr.domain.execution_catalog import ExecutionCatalogError, ExecutionPlanMismatchError
 from volundr.domain.host_preparation import HostPreparation, HostPreparationResult
 from volundr.domain.models import PodSpecAdditions, Session, SessionSpec, SessionStatus
 from volundr.domain.services.compute_leases import ComputeLeaseService
@@ -572,3 +573,98 @@ async def test_a_session_whose_revision_a_release_retired_is_stopped_by_its_succ
     assert "stop" not in runtime.calls
     assert "runs vm@2026-09-18, which this Forge no longer offers" in caplog.text
     assert "vm@next-release stops it" in caplog.text
+
+
+def _release_next_revision(tmp_path: Path, resolver: ExecutionPlanResolver):
+    """Offer the execution under a new revision only, as the built-in host catalog does
+    when a release or the pool's configuration changes its content."""
+    execution_path = tmp_path / "executions" / "vm.yaml"
+    execution = yaml.safe_load(execution_path.read_text(encoding="utf-8"))
+    execution["revision"] = "next-release"
+    _yaml(execution_path, execution)
+    catalog_path = tmp_path / "catalog.yaml"
+    catalog = yaml.safe_load(catalog_path.read_text(encoding="utf-8"))
+    catalog["default_execution"] = {"id": "vm", "revision": "next-release"}
+    catalog["legacy_compute_profiles"] = {"small": {"id": "vm", "revision": "next-release"}}
+    _yaml(catalog_path, catalog)
+    return resolver.resolve()
+
+
+async def test_a_stopped_session_whose_revision_a_release_retired_starts_on_its_successor(
+    tmp_path: Path, caplog
+):
+    manager, _, repository, _, _, preparation, resolver, plan, session = _setup(tmp_path)
+    session = session.model_copy(
+        update={"workload_config": {"_compute_execution": manager.execution_reference(plan)}}
+    )
+    successor_plan = _release_next_revision(tmp_path, resolver)
+    successor = RecordingPlanRuntime("successor")
+    manager.configure_execution(
+        resolver,
+        {successor_plan.plan_digest: successor},
+        {successor_plan.plan_digest: preparation},
+    )
+
+    with caplog.at_level(logging.INFO, logger="volundr.adapters.outbound.vm_pod_manager"):
+        selected = await manager.resolve_execution(session)
+
+    assert selected == successor_plan
+    assert "it starts on vm@next-release" in caplog.text
+    restarted = session.model_copy(
+        update={"workload_config": {"_compute_execution": manager.execution_reference(selected)}}
+    )
+    await manager.start(restarted, SessionSpec(values={}, pod_spec=PodSpecAdditions()))
+    assert next(iter(repository.leases.values())).execution_plan == successor_plan
+    assert "start" in successor.calls
+
+
+async def test_a_session_still_holding_its_machine_keeps_refusing_a_retired_revision(
+    tmp_path: Path,
+):
+    manager, _, _, _, _, preparation, resolver, plan, session = _setup(tmp_path)
+    session = session.model_copy(
+        update={"workload_config": {"_compute_execution": manager.execution_reference(plan)}}
+    )
+    await manager.start(session, SessionSpec(values={}, pod_spec=PodSpecAdditions()))
+    successor_plan = _release_next_revision(tmp_path, resolver)
+    manager.configure_execution(
+        resolver,
+        {successor_plan.plan_digest: RecordingPlanRuntime("successor")},
+        {successor_plan.plan_digest: preparation},
+    )
+
+    with pytest.raises(ExecutionPlanMismatchError, match="unavailable or has changed"):
+        await manager.resolve_execution(session)
+
+
+async def test_a_stopped_session_naming_its_retired_revision_is_refused(tmp_path: Path):
+    manager, _, _, _, _, preparation, resolver, _, session = _setup(tmp_path)
+    successor_plan = _release_next_revision(tmp_path, resolver)
+    manager.configure_execution(
+        resolver,
+        {successor_plan.plan_digest: RecordingPlanRuntime("successor")},
+        {successor_plan.plan_digest: preparation},
+    )
+
+    # Its execution_profile asks for the exact revision that is gone.
+    with pytest.raises(ExecutionPlanMismatchError, match="execution_profile does not match"):
+        await manager.resolve_execution(session)
+
+
+async def test_a_stopped_session_whose_pinned_revision_changed_content_is_refused(
+    tmp_path: Path,
+):
+    manager, _, _, _, _, _, _, _, session = _setup(tmp_path)
+    session = session.model_copy(
+        update={
+            "workload_config": {"_compute_execution": session.workload_config["_compute_execution"]}
+        }
+    )
+    # The same revision with other content is changed in place, never a successor.
+    runtime_path = tmp_path / "runtimes" / "openshell.yaml"
+    configured = yaml.safe_load(runtime_path.read_text(encoding="utf-8"))
+    configured["capabilities"].append("changed-in-place")
+    _yaml(runtime_path, configured)
+
+    with pytest.raises(ExecutionPlanMismatchError, match="changed"):
+        await manager.resolve_execution(session)
