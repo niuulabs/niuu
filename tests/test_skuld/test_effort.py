@@ -232,3 +232,32 @@ def test_a_model_with_its_own_default_effort_launches_there():
     assert preferred_effort(levels, "claude-fable-5-2") == "high"
     assert preferred_effort(levels, "claude-fable-5-1") == "xhigh"
     assert preferred_effort(levels) == "xhigh"
+
+
+def test_every_codex_catalog_model_has_its_native_effort_levels():
+    """Forge's effort table matches Codex's own model catalog (fixtures/codex/model-efforts.json).
+
+    A model missing here makes a session launched at any effort fail at startup
+    ("Unsupported effort 'ultra'. Available: no configurable levels"), as gpt-6.2-astra did.
+    Refresh the fixture from ~/.codex*/models_cache.json when Codex ships new models.
+    """
+    from pathlib import Path
+
+    from niuu.domain.reasoning import MODEL_EFFORTS
+
+    catalog = json.loads(
+        (Path(__file__).parents[1] / "fixtures" / "codex" / "model-efforts.json").read_text()
+    )["models"]
+    mismatched = {
+        slug: (levels, list(MODEL_EFFORTS.get(slug, ())))
+        for slug, levels in catalog.items()
+        if list(MODEL_EFFORTS.get(slug, ())) != levels
+    }
+    assert mismatched == {}
+
+
+@pytest.mark.parametrize("model", ["gpt-6.2-astra", "gpt-6.2-sol", "gpt-6.1-sol"])
+async def test_newer_codex_models_launch_at_ultra_by_default(tmp_path, model):
+    t = CodexWebSocketTransport(str(tmp_path), model=model)
+    assert (await t.get_effort())["current"] == "ultra"
+    assert validate_effort("ultra", (await t.get_effort())["levels"]) == "ultra"
