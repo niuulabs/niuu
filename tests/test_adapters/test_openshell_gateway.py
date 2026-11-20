@@ -4866,3 +4866,45 @@ async def test_start_hands_the_mesh_setting_to_the_sandbox(
     await manager.start(session, SessionSpec(values={}, pod_spec=PodSpecAdditions()))
 
     assert client.created["env"]["SKULD__MESH__ATTESTATION__REQUIRED"] == "false"
+
+
+_ROUTER_AUTH = {
+    "adapter": "skuld.preview_adapters.WorkloadJwtRouterAuth",
+    "kwargs": {
+        "issuer": "https://issuer.example/api/v1/tokens/workload",
+        "audience": "volundr-api",
+        "jwks_uri": "https://issuer.example/api/v1/tokens/workload/jwks",
+    },
+}
+
+
+def _sandbox_env(adapter, **kwargs) -> dict[str, str]:
+    manager = adapter.OpenShellGatewayPodManager(client=Mock(), service_port=9200, **kwargs)
+    return manager._build_env(
+        Session(id=uuid4(), name="preview", owner_id="owner-1", tenant_id="tenant-1"),
+        SessionSpec(values={}, pod_spec=PodSpecAdditions()),
+    )
+
+
+def test_a_sandbox_serves_no_previews_without_the_router_credential_check(monkeypatch):
+    adapter = _import_adapter(monkeypatch)
+
+    env = _sandbox_env(adapter)
+
+    assert env["SKULD__PREVIEW__ENABLED"] == "false"
+    assert "SKULD__PREVIEW__ROUTER_AUTH" not in env
+
+
+def test_a_sandbox_offers_its_users_listeners_as_previews(monkeypatch):
+    adapter = _import_adapter(monkeypatch)
+
+    env = _sandbox_env(adapter, preview_router_auth=_ROUTER_AUTH, preview_excluded_ports=[7000])
+
+    assert env["SKULD__PREVIEW__ENABLED"] == "true"
+    assert json.loads(env["SKULD__PREVIEW__ROUTER_AUTH"]) == _ROUTER_AUTH
+    # The sandbox's supervisor and proxy run as root in its namespace: only the
+    # sandbox user's listeners are the session's, never Skuld's own port.
+    assert json.loads(env["SKULD__PREVIEW__PORT_SCANNER"]) == {
+        "adapter": "skuld.preview_adapters.ProcNetListeningPortScanner",
+        "kwargs": {"excluded_ports": [7000, 9200], "same_user_only": True},
+    }

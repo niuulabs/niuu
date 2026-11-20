@@ -1237,6 +1237,8 @@ class OpenShellGatewayPodManager(
         hosted_member_restart_wait_seconds: float = DEFAULT_RESTART_WAIT_SECONDS,
         hosted_member_poll_seconds: float = DEFAULT_POLL_SECONDS,
         hosted_member_request_seconds: float = DEFAULT_REQUEST_SECONDS,
+        preview_router_auth: dict[str, Any] | None = None,
+        preview_excluded_ports: list[int] | None = None,
         **_extra: object,
     ) -> None:
         self._harness = MemberHarnessControl(
@@ -1318,6 +1320,15 @@ class OpenShellGatewayPodManager(
             _with_read_write_path(sandbox_policy or {"version": 1}, UNIT_WORKSPACE_DIRECTORY)
         )
         self._service_port = int(service_port)
+        # Live preview: Skuld's ``preview.router_auth`` adapter for the credential Forge's
+        # preview router presents (normally ``skuld.preview_adapters.WorkloadJwtRouterAuth``
+        # for Forge's workload issuer, whose JWKS the sandbox policy must let Skuld reach).
+        # The sandbox is the session, so every listener of its user is offered except
+        # Skuld's own and ``preview_excluded_ports``. Unset: no previews.
+        self._preview_router_auth = dict(preview_router_auth or {})
+        self._preview_excluded_ports = sorted(
+            {self._service_port} | {int(port) for port in preview_excluded_ports or []}
+        )
         self._service_name = service_name
         self._command_log_path = command_log_path
         self._cpu = cpu
@@ -5335,6 +5346,7 @@ class OpenShellGatewayPodManager(
             spec.values.get("volundr", {}).get("apiUrl") or self._volundr_api_url
         )
         env.update(mesh_environment(self._mesh))
+        env.update(self._preview_env())
 
         sandbox_env = {key: value for key, value in env.items() if _safe_env_var(key, value)}
 
@@ -5372,6 +5384,28 @@ class OpenShellGatewayPodManager(
             sandbox_env["SKULD__PERSISTENT_HOME_PATH"] = home_path
 
         return sandbox_env
+
+    def _preview_env(self) -> dict[str, str]:
+        """Skuld live-preview settings for a session's sandbox (see ``__init__``).
+
+        The sandbox's supervisor and proxy run as root in its network namespace, so only
+        the sandbox user's listeners (the agent and whatever it started) are offered.
+        """
+        if not self._preview_router_auth:
+            return {"SKULD__PREVIEW__ENABLED": "false"}
+        return {
+            "SKULD__PREVIEW__ENABLED": "true",
+            "SKULD__PREVIEW__PORT_SCANNER": json.dumps(
+                {
+                    "adapter": "skuld.preview_adapters.ProcNetListeningPortScanner",
+                    "kwargs": {
+                        "excluded_ports": self._preview_excluded_ports,
+                        "same_user_only": True,
+                    },
+                }
+            ),
+            "SKULD__PREVIEW__ROUTER_AUTH": json.dumps(self._preview_router_auth),
+        }
 
     def _workspace_bootstrap_script(self, session: Session, spec: SessionSpec) -> str:
         if session.source.type != "git" or not session.source.repo:

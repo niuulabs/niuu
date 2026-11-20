@@ -71,6 +71,7 @@ current list, the scan interval and any scan failure (`scan_failures`,
 | Where the session runs | Scanner | What counts as the session's |
 |---|---|---|
 | Kubernetes pod, session VM | `ProcNetListeningPortScanner` (`/proc/net/tcp`, `tcp6`) | Every listener in the network namespace, except Skuld's own sockets and `excluded_ports` (the skuld chart excludes the pod's nginx, broker, Envoy, authz, terminal, mesh and resident ports automatically, plus `preview.excludedPorts`, `[5432]` by default) |
+| OpenShell sandbox | `ProcNetListeningPortScanner`, `same_user_only` | Listeners of the sandbox user (the agent and what it started), except Skuld's own port and the pod manager's `preview_excluded_ports`; the sandbox's supervisor and proxy run as root. Set the OpenShell pod manager's `preview_router_auth`, and let the sandbox policy reach the workload JWKS from Skuld's Python |
 | Mini mode (a shared laptop or host) | `LsofSessionPortScanner` (`lsof`, `ps`) | Listeners of Skuld's descendants, and of processes whose environment carries the session's `SKULD__SESSION__ID` (a server the agent started with `nohup … &` is re-parented by the OS but keeps that environment) |
 
 A listener bound to one specific non-loopback address is not offered: Skuld
