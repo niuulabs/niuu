@@ -1054,8 +1054,14 @@ def _presented_staging_dir() -> Path:
         root = Path(configured).expanduser()
         root.mkdir(mode=_PRESENTED_DIR_MODE, parents=True, exist_ok=True)
         return root.resolve(strict=True)
-    home = Path(broker._settings.home_path).resolve(strict=True)
-    return resolve_contained_path(home, ".forge-presented")
+    home = Path(broker._settings.home_path)
+    if not home.is_dir():
+        raise FileNotFoundError(
+            f"the session home {home} does not exist, and present-file stages under "
+            f"{home}/.forge-presented: set home_dir (SKULD__HOME_DIR) to the session's "
+            "home, or presented_files_dir to a staging directory"
+        )
+    return resolve_contained_path(home.resolve(strict=True), ".forge-presented")
 
 
 def _rebuild_presented_registry() -> None:
@@ -1088,8 +1094,9 @@ def _rebuild_presented_registry() -> None:
             preferred = [item for item in files if item.name == "content"]
             if preferred or files:
                 _presented_registry[entry.name] = str((preferred or files)[0])
-    except (OSError, UnsafePathError) as exc:  # pragma: no cover - best-effort recovery
-        logger.warning("present-file: registry rebuild failed: %s", repr(exc))
+    except (OSError, UnsafePathError) as exc:
+        # The broker keeps serving; every present-file raises the same reason.
+        logger.error("present-file: registry rebuild failed: %s", exc)
 
 
 def _schedule_presented_retry(file_id: str, staged: Path, *, name: str, mime: str) -> None:
@@ -1110,7 +1117,7 @@ def _resume_presented_uploads() -> int:
     try:
         root = _presented_staging_dir()
     except (OSError, UnsafePathError) as exc:
-        logger.warning("present-file: cannot scan staging for uploads: %s", repr(exc))
+        logger.error("present-file: cannot scan staging for uploads: %s", exc)
         return 0
     pending = [item for item in pending_uploads(root) if _PRESENTED_ID_RE.fullmatch(item[0])]
     if not pending:
@@ -1263,8 +1270,8 @@ async def present_host_file(
         shutil.copyfile(safe_source, partial)
         os.replace(partial, dest)
     except (OSError, UnsafePathError) as exc:
-        logger.warning("present-file: staging copy failed: %s", repr(exc))
-        raise HTTPException(500, "could not stage file") from None
+        logger.error("present-file: staging copy failed: %s", exc)
+        raise HTTPException(500, f"could not stage file: {exc}") from None
     _presented_registry[file_id] = str(dest)
 
     # F2: hand Forge a durable copy so the file outlives this broker; its URL goes in

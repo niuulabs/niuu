@@ -349,3 +349,48 @@ async def test_a_flock_member_cannot_present_outside_the_workspace(client, tmp_p
     assert "relative" in absolute["error"] and "outside the session workspace" in escaped["error"]
     assert escaped["http_status"] == 400
     assert client.logged == []
+
+
+def test_a_missing_home_names_itself_and_the_remedy(tmp_path, monkeypatch, module_broker_runtime):
+    """A Mac host session once ran with Skuld's home at the cluster layout
+    (/volundr/sessions/<id>/home), which does not exist there: every present-file failed
+    with a bare "could not stage file". The answer must say why."""
+    from skuld import broker as bmod
+    from skuld import broker_api as api_mod
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    report = workspace / "plan.md"
+    report.write_text("# rev 4")
+    missing = tmp_path / "volundr" / "sessions" / "s1" / "home"
+    monkeypatch.setattr(bmod.broker, "workspace_dir", str(workspace))
+    monkeypatch.setattr(bmod.broker._settings, "home_dir", str(missing))
+    monkeypatch.setattr(bmod.broker._settings, "presented_files_dir", "")
+    api_mod._presented_registry.clear()
+    client = TestClient(bmod.app, headers={"authorization": module_broker_runtime.authorization})
+
+    response = client.post("/api/present-file", json={"path": str(report)})
+
+    assert response.status_code == 500
+    detail = response.json()["detail"]
+    assert detail.startswith("could not stage file: ")
+    assert f"the session home {missing} does not exist" in detail
+    assert "SKULD__HOME_DIR" in detail
+
+
+def test_registry_rebuild_with_a_missing_home_logs_the_reason_as_an_error(
+    tmp_path, monkeypatch, caplog
+):
+    from skuld import broker as bmod
+    from skuld import broker_api as api_mod
+
+    monkeypatch.setattr(bmod.broker._settings, "home_dir", str(tmp_path / "missing-home"))
+    monkeypatch.setattr(bmod.broker._settings, "presented_files_dir", "")
+
+    with caplog.at_level("ERROR", logger="skuld.broker"):
+        api_mod._rebuild_presented_registry()
+
+    assert any(
+        record.levelname == "ERROR" and "does not exist" in record.getMessage()
+        for record in caplog.records
+    )

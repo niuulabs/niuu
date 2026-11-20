@@ -552,6 +552,9 @@ class SshDarwinHostRuntime(HostModeRuntime):
             "SKULD__SESSION__SYSTEM_PROMPT", ""
         ).replace("{slot_user}", layout.name)
         environment["TMPDIR"] = layout.tmp
+        # Skuld's own idea of the home (present-file staging, the Files tab) would otherwise
+        # be the cluster layout under persistence_mount_path, which does not exist here.
+        environment["SKULD__HOME_DIR"] = layout.home
         # The slot's own loopback port: every slot shares the Mac's network.
         environment["SKULD__PORT"] = str(layout.skuld_port)
         if SECRETS_TARGET in places:

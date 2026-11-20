@@ -521,6 +521,8 @@ async def test_start_fetches_the_bundle_makes_the_slot_then_starts_the_session(m
     assert environment["HOME"] == "/var/lib/niuu/slots/0/session/home"
     assert environment["WORKSPACE_DIR"] == "/var/lib/niuu/slots/0/session/workspace"
     assert environment["TMPDIR"] == "/var/lib/niuu/slots/0/tmp"
+    # Skuld's home is the slot's, not the cluster layout under /volundr/sessions.
+    assert environment["SKULD__HOME_DIR"] == environment["HOME"]
     assert (
         environment["PATH"].split(":")[1] == "/var/lib/niuu/slots/0/session/home/.nix-profile/bin"
     )
