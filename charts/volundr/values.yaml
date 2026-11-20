@@ -1706,6 +1706,10 @@ sessionDefinitions:
         transportAdapter: "skuld.transports.sdk.SDKTransport"
         # -- Skip tool permission prompts (--dangerously-skip-permissions)
         skipPermissions: true
+        # -- Claude Code --permission-mode for this unattended session: bypassPermissions
+        # (no prompts at all), auto (Claude's classifier asks before risky actions, and
+        # its questions block the session until someone answers them) or acceptEdits.
+        claudePermissionMode: bypassPermissions
         # -- Enable Claude Code experimental Agent Teams
         agentTeams: false
 
@@ -1836,6 +1840,10 @@ sessionDefinitions:
         transportAdapter: "skuld.transports.tmux_interactive.TmuxInteractiveTransport"
         # -- Skip tool permission prompts (--dangerously-skip-permissions)
         skipPermissions: true
+        # -- Claude Code --permission-mode for this unattended session: bypassPermissions
+        # (no prompts at all), auto (Claude's classifier asks before risky actions, and
+        # its questions block the session until someone answers them) or acceptEdits.
+        claudePermissionMode: bypassPermissions
         # -- Enable Claude Code experimental Agent Teams
         agentTeams: true
 

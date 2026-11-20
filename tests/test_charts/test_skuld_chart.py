@@ -2258,3 +2258,19 @@ class TestVoiceTuning:
         assert voice.card_recent_turns == 4
         assert voice.send_confirm_seconds == 10
         assert voice.models["grok"] == "grok-voice-3.0"
+
+
+@pytest.mark.skipif(shutil.which("helm") is None, reason="Helm is required")
+@pytest.mark.parametrize("chart", ["skuld", "skuld-planner"])
+def test_claude_permission_mode_reaches_runtime_configuration(chart):
+    from skuld.config import SkuldSettings
+
+    config = _rendered_skuld_config(chart, "--set", "broker.claudePermissionMode=bypassPermissions")
+    assert config["claude_permission_mode"] == "bypassPermissions"
+    assert SkuldSettings(**config).claude_permission_mode == "bypassPermissions"
+
+
+@pytest.mark.skipif(shutil.which("helm") is None, reason="Helm is required")
+@pytest.mark.parametrize("chart", ["skuld", "skuld-planner"])
+def test_no_claude_permission_mode_leaves_skulds_default(chart):
+    assert "claude_permission_mode" not in _rendered_skuld_config(chart)

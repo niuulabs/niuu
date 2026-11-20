@@ -341,8 +341,11 @@ node left the default.
 
 A definition can override the node for its own sessions with `defaults.broker.claudePermissionMode`; clients
 cannot set it per request. Kubernetes-backed Forge pods do not read the node config file, so there the definition
-key is the way to set it. Brokers read the setting when they start: running sessions pick up a change on their
-next stop/start.
+key is the way to set it. The Volundr chart's Claude definitions (`skuldClaude`, `skuldClaudeInteractive`) set
+`bypassPermissions`: in auto mode Claude Code asks before some actions (reading outside the working directories,
+for one), and in the interactive transport each such question stops the session until someone answers it. The
+Skuld chart renders the key into the broker's config as `claude_permission_mode`. Brokers read the setting when
+they start: running sessions pick up a change on their next stop/start.
 
 Claude Code sessions should run in tmux (`TmuxInteractiveTransport`) so they stay steerable. Point
 the default definition at it:

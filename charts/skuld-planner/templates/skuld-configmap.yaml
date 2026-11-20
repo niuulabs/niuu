@@ -25,6 +25,9 @@ data:
     mcp_servers: {{ .Values.mcpServers | default list | toJson }}
     transport: {{ .Values.broker.transport | default "sdk" | quote }}
     skip_permissions: {{ .Values.broker.skipPermissions }}
+    {{- with .Values.broker.claudePermissionMode }}
+    claude_permission_mode: {{ . | quote }}
+    {{- end }}
     agent_teams: {{ .Values.broker.agentTeams | default false }}
     cli_type: {{ .Values.broker.cliType | default "claude" | quote }}
     host: "0.0.0.0"

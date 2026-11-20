@@ -92,6 +92,9 @@ unit (see skuld.memberValues). Every line is indented four spaces, to sit under 
     tmux_native_text_poll_s: {{ .Values.broker.tmuxNativeTextPollSeconds | default 0.005 }}
     remote_control_permission_mode: {{ .Values.broker.remoteControlPermissionMode | default "" | quote }}
     skip_permissions: {{ .Values.broker.skipPermissions }}
+    {{- with .Values.broker.claudePermissionMode }}
+    claude_permission_mode: {{ . | quote }}
+    {{- end }}
     agent_teams: {{ .Values.broker.agentTeams | default false }}
     cli_type: {{ .Values.broker.cliType | default "claude" | quote }}
     history_read_timeout_seconds: {{ .Values.broker.historyReadTimeoutSeconds | default 2.0 }}

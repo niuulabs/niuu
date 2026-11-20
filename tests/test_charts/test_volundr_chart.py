@@ -2753,3 +2753,12 @@ def test_claude_code_interactive_is_the_chart_default():
     assert values["defaultDefinition"] == "skuldClaudeInteractive"
     default_spec = next(spec for spec in values["launchSpecs"] if spec.get("isDefault"))
     assert default_spec["sessionDefinition"] == "skuldClaudeInteractive"
+
+
+@pytest.mark.parametrize("definition", ["skuldClaude", "skuldClaudeInteractive"])
+def test_claude_sessions_run_without_permission_prompts(definition):
+    """Forge's Claude sessions are unattended: auto mode's questions would block them."""
+    values = yaml.safe_load((CHART_DIR / "values.yaml").read_text())
+    broker = values["sessionDefinitions"][definition]["defaults"]["broker"]
+    assert broker["skipPermissions"] is True
+    assert broker["claudePermissionMode"] == "bypassPermissions"

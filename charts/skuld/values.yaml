@@ -322,9 +322,12 @@ broker:
   remoteControlPermissionMode: ""
   # -- Maximum size, in bytes, accepted by the present-file endpoint.
   maxPresentedFileBytes: 52428800
-  # -- Skip tool permission prompts and use full access (Claude bypassPermissions,
-  # Codex approvalPolicy=never with danger-full-access)
+  # -- Skip tool permission prompts and use full access (Codex approvalPolicy=never with
+  # danger-full-access; Claude runs with claudePermissionMode)
   skipPermissions: true
+  # -- Claude Code --permission-mode when skipPermissions is on: bypassPermissions, auto or
+  # acceptEdits. Empty leaves Skuld's own default (auto). Forge's session definitions set it.
+  claudePermissionMode: ""
   # -- Enable Claude Code experimental Agent Teams (Claude only)
   agentTeams: true
 
