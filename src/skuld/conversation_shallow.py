@@ -304,3 +304,29 @@ def elide_turns(turns: Any, *, inline_limit: int = INLINE_BYTE_LIMIT) -> Any:
     if not isinstance(turns, list):
         return turns
     return [elide_turn(t, inline_limit=inline_limit) for t in turns]
+
+
+def _encoded_size(value: Any) -> int:
+    """Compact UTF-8 JSON size, as a history page encodes it."""
+    return len(json.dumps(value, separators=(",", ":"), ensure_ascii=False).encode("utf-8"))
+
+
+def elide_part_deep(block: Any) -> Any:
+    """Elide a tool_result body or tool_use input whenever its placeholder is smaller.
+
+    The deep pass for a single turn too big for a history page (LEX-2017). The block
+    keeps its place, its tool id and its lazy-load key; only the payload moves behind
+    the per-tool endpoint. There is no threshold to guess: a placeholder is used exactly
+    when it encodes smaller than what it replaces.
+    """
+    candidate = elide_tool_use_block(elide_tool_result_block(block, inline_limit=0), inline_limit=0)
+    if candidate is block or _encoded_size(candidate) >= _encoded_size(block):
+        return block
+    return candidate
+
+
+def elide_turn_deep(turn: Any) -> Any:
+    """Return a copy of a serialized turn with every part deep-elided (``elide_part_deep``)."""
+    if not isinstance(turn, dict) or not isinstance(turn.get("parts"), list):
+        return turn
+    return {**turn, "parts": [elide_part_deep(part) for part in turn["parts"]]}

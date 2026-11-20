@@ -1,5 +1,7 @@
 """Tests for WorkloadConfigContributor."""
 
+import pytest
+
 from volundr.adapters.outbound.contributors.workload_config import WorkloadConfigContributor
 from volundr.domain.models import GitSource, Session
 from volundr.domain.ports import SessionContext
@@ -81,3 +83,41 @@ class TestWorkloadConfigContributor:
         )
 
         assert result.values == {}
+
+
+class TestLaunchEnv:
+    """LEX-2045: the stored launch env becomes the broker's env at every launch."""
+
+    async def test_launch_env_becomes_env_vars(self):
+        result = await WorkloadConfigContributor().contribute(
+            _session(),
+            SessionContext(
+                workload_config={
+                    "launch_env": {
+                        "CLAUDE_CODE_SUBAGENT_MODEL": "opus",
+                        "CLAUDE_CODE_AUTO_COMPACT_WINDOW": "150000",
+                    }
+                }
+            ),
+        )
+
+        assert result.values == {
+            "envVars": [
+                {"name": "CLAUDE_CODE_SUBAGENT_MODEL", "value": "opus"},
+                {"name": "CLAUDE_CODE_AUTO_COMPACT_WINDOW", "value": "150000"},
+            ]
+        }
+
+    async def test_an_empty_launch_env_adds_nothing(self):
+        result = await WorkloadConfigContributor().contribute(
+            _session(), SessionContext(workload_config={"launch_env": {}})
+        )
+
+        assert result.values == {}
+
+    @pytest.mark.parametrize("raw", [["X"], {"X": 1}, {"": "v"}])
+    async def test_a_malformed_launch_env_fails_the_launch(self, raw):
+        with pytest.raises(ValueError, match="launch_env"):
+            await WorkloadConfigContributor().contribute(
+                _session(), SessionContext(workload_config={"launch_env": raw})
+            )

@@ -1,6 +1,6 @@
 """Conversation persistence models shared by the Skuld broker surfaces."""
 
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 
 CONVERSATION_HISTORY_DIR = ".skuld"
@@ -26,6 +26,10 @@ class ConversationTurn:
     # senders that are not a verified person, and for turns recorded before
     # authorship existed.
     author: dict | None = None
+    # Who sent a user-role turn (LEX-1910, ``niuu.domain.message_sender``), set by the
+    # server from the message's path. ``None`` on the model's own turns (the role says
+    # it) and on user turns recorded before senders were labelled.
+    sender: dict | None = None
 
 
 CHRONICLE_SUMMARY_PROMPT = """\
@@ -40,3 +44,12 @@ Respond ONLY with the JSON object, no markdown fencing, no commentary.
 """
 
 SUMMARY_TIMEOUT_SECONDS = 15
+
+
+def turn_record(turn: ConversationTurn) -> dict:
+    """A turn as stored and sent: an unlabelled turn has no ``sender`` key (LEX-1910),
+    the same as its rebuild from the durable log."""
+    record = asdict(turn)
+    if record["sender"] is None:
+        del record["sender"]
+    return record

@@ -9,6 +9,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from httpx import ConnectError, Response
 
+from niuu.domain.broker_contract import BROKER_CONTRACT
 from tests.conftest import (
     InMemorySessionRepository,
     MockPodManager,
@@ -67,6 +68,34 @@ def test_loaded_identity_not_api_revision(runtime, digest, state):
     assert health.call_count == 1
 
 
+@pytest.mark.parametrize(
+    "reported,state",
+    [(BROKER_CONTRACT, "met"), (BROKER_CONTRACT + 1, "met"), (BROKER_CONTRACT - 1, "below")],
+)
+@respx.mock
+def test_contract_compares_the_broker_level_with_this_release(runtime, reported, state):
+    client, session, _ = runtime
+    respx.get("http://broker/health").mock(
+        return_value=Response(
+            200, json={"session_id": str(session.id), "broker_contract": reported}
+        )
+    )
+    result = client.get(f"/api/v1/forge/sessions/{session.id}/runtime-version").json()
+    assert result["contract"] == {"required": BROKER_CONTRACT, "state": state}
+    assert result["current"]["broker_contract"] == reported
+
+
+@respx.mock
+def test_a_broker_reporting_no_contract_predates_it(runtime):
+    """LEX-1957: a pre-sender broker (forge-relay-58debfa5) reports no level, so it is below."""
+    client, session, _ = runtime
+    respx.get("http://broker/health").mock(
+        return_value=Response(200, json={"session_id": str(session.id), "revision": "old"})
+    )
+    result = client.get(f"/api/v1/forge/sessions/{session.id}/runtime-version").json()
+    assert result["contract"] == {"required": BROKER_CONTRACT, "state": "below"}
+
+
 @respx.mock
 def test_unknown_probe_is_not_stopped(runtime):
     client, session, _ = runtime
@@ -74,6 +103,7 @@ def test_unknown_probe_is_not_stopped(runtime):
     result = client.get(f"/api/v1/forge/sessions/{session.id}/runtime-version")
     assert result.json()["state"] == "unavailable"
     assert result.json()["current"] is None
+    assert result.json()["contract"]["state"] == "unknown"
 
 
 @respx.mock
@@ -91,6 +121,12 @@ def test_missing_and_stopped(runtime):
     repo._sessions[session.id] = session.model_copy(update={"chat_endpoint": None})
     assert (
         client.get(f"/api/v1/forge/sessions/{session.id}/runtime-version").json()["state"]
+        == "not_running"
+    )
+    assert (
+        client.get(f"/api/v1/forge/sessions/{session.id}/runtime-version").json()["contract"][
+            "state"
+        ]
         == "not_running"
     )
 

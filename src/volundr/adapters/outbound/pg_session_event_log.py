@@ -24,6 +24,7 @@ from niuu.domain.text_projection import (
 )
 from niuu.domain.work_facts import (
     HOOK_KIND,
+    SUBAGENT_START_HOOK,
     TOOL_CLOSE_HOOKS,
     TOOL_OPEN_HOOK,
     TURN_END_HOOK,
@@ -39,7 +40,13 @@ from volundr.domain.history_import import (
 )
 from volundr.domain.models import SessionLogEntry
 from volundr.domain.ports import SessionEventLogRepository, _log_entries_conflict
-from volundr.domain.session_usage import fold_usage, observation, parse_json, projection_key
+from volundr.domain.session_usage import (
+    fold_usage,
+    observation,
+    parse_json,
+    projection_key,
+    runtime_choice,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +73,16 @@ _FINAL_OUTPUT_SQL = """i.kind = 'conversation.turn' AND i.payload->>'type' = 'co
            AND LENGTH(BTRIM(COALESCE(i.payload->'turn'->>'content', ''))) > 0
            AND LENGTH(COALESCE(i.payload->'turn'->>'id', '')) > 0"""
 
+# niuu.domain.work_facts.is_side_query_hook, in SQL: a Claude Code side query's hook
+# (an agent_id with no agent_type, not a SubagentStart) is never work (LEX-2026).
+# Only non-empty JSON strings count as an id or a type, exactly as in Python; never NULL.
+_SIDE_QUERY_HOOK_SQL = f"""COALESCE(jsonb_typeof(i.payload->'payload'->'agent_id'), '') = 'string'
+                    AND COALESCE(i.payload->'payload'->>'agent_id', '') <> ''
+                    AND NOT (
+                        COALESCE(jsonb_typeof(i.payload->'payload'->'agent_type'), '') = 'string'
+                        AND COALESCE(i.payload->'payload'->>'agent_type', '') <> '')
+                    AND h.hook <> '{SUBAGENT_START_HOOK}'"""
+
 _INSERT_SQL = f"""WITH locked_session AS MATERIALIZED (
            SELECT id FROM sessions WHERE id = $1 FOR UPDATE
        ), inserted AS (
@@ -78,7 +95,8 @@ _INSERT_SQL = f"""WITH locked_session AS MATERIALIZED (
        ), facts AS (
            SELECT i.*, ({_FINAL_OUTPUT_SQL}) AS is_final,
                (i.kind IN ({_sql_list(WORK_KINDS)})
-                OR (i.kind = '{HOOK_KIND}' AND h.hook IN ({_sql_list(WORK_HOOKS)}))) AS is_work,
+                OR (i.kind = '{HOOK_KIND}' AND h.hook IN ({_sql_list(WORK_HOOKS)})
+                    AND NOT ({_SIDE_QUERY_HOOK_SQL}))) AS is_work,
                h.hook
            FROM inserted i
            CROSS JOIN LATERAL (
@@ -241,7 +259,11 @@ class PostgresSessionEventLog(SessionEventLogRepository):
         # The COUNT guard preserves orphan-log writes (there is deliberately no FK).
         entries = sorted(entries, key=lambda e: (str(e.session_id), e.seq))
         args = [self._entry_to_args(e) for e in entries]
-        has_usage = any(observation(e.payload, seq=e.seq, at=e.ts) is not None for e in entries)
+        has_usage = any(
+            observation(e.payload, seq=e.seq, at=e.ts) is not None
+            or runtime_choice(e.payload) is not None
+            for e in entries
+        )
         try:
             await self._append_batch(args, entries, has_usage=has_usage)
         except asyncpg.exceptions.UntranslatableCharacterError:
@@ -265,12 +287,52 @@ class PostgresSessionEventLog(SessionEventLogRepository):
         # apply it twice. Ordinary frames retain the existing executemany path.
         async with self._pool.acquire() as conn:
             async with conn.transaction():
+                # A resent batch must not apply an old switch again over a newer
+                # choice (a PUT): only frames this insert stores are recorded.
+                choices = [e for e in entries if runtime_choice(e.payload) is not None]
+                stored = (
+                    {
+                        (row["session_id"], row["seq"])
+                        for row in await conn.fetch(
+                            """SELECT session_id, seq FROM session_event_log
+                           WHERE (session_id, seq) IN (
+                             SELECT * FROM unnest($1::uuid[], $2::bigint[]))""",
+                            [e.session_id for e in choices],
+                            [e.seq for e in choices],
+                        )
+                    }
+                    if choices
+                    else set()
+                )
                 await conn.executemany(_INSERT_SQL, args)
                 by_session: dict[UUID, list[int]] = {}
                 for entry in entries:
                     by_session.setdefault(entry.session_id, []).append(entry.seq)
                 for sid, seqs in by_session.items():
                     await self._project_usage(conn, sid, seqs)
+                for entry in choices:
+                    if (entry.session_id, entry.seq) not in stored:
+                        await self._record_runtime_choice(conn, entry)
+
+    async def _record_runtime_choice(
+        self, conn: asyncpg.Connection, entry: SessionLogEntry
+    ) -> None:
+        """An applied model/effort switch becomes the session's launch choice (LEX-2022)."""
+        choice = runtime_choice(entry.payload)
+        if choice is None:
+            return
+        model, effort = choice
+        await conn.execute(
+            """UPDATE sessions SET
+                 model = COALESCE($2, model),
+                 workload_config = CASE WHEN $3::text IS NULL THEN workload_config
+                   ELSE jsonb_set(COALESCE(workload_config, '{}'::jsonb),
+                                  '{reasoningEffort}', to_jsonb($3::text)) END
+               WHERE id = $1""",
+            entry.session_id,
+            model,
+            effort,
+        )
 
     async def _project_usage(self, conn: asyncpg.Connection, sid: UUID, seqs: list[int]) -> None:
         row = await conn.fetchrow("SELECT session_usage FROM sessions WHERE id=$1 FOR UPDATE", sid)

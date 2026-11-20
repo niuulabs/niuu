@@ -20,10 +20,21 @@ from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, Res
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from niuu.domain.broker_contract import BROKER_CONTRACT, contract_state
 from niuu.domain.conversation_timeline import resolve_timeline_turn
 from niuu.domain.guild_membership import GuildMembership
 from niuu.domain.history_paging import InvalidHistoryCursorError
 from niuu.domain.json_text import json_text_safe
+from niuu.domain.message_sender import (
+    SENDER_NODE_HEADER,
+    SenderError,
+    is_owner_by_voice,
+    parse_claimed_sender,
+    sender_for_request_id,
+    session_sender,
+    text_for_model,
+    user_sender,
+)
 from niuu.domain.notifications import notification_visible_to
 from niuu.domain.peer_envelope import (
     STAMPED_BODY_KEYS,
@@ -50,7 +61,7 @@ from niuu.domain.session_description import (
     SHORT_DESCRIPTION_MAX_CHARS,
     SessionDescriptionPatch,
 )
-from niuu.domain.session_endpoint import public_session_endpoint
+from niuu.domain.session_endpoint import BROKER_UNAVAILABLE_HEADER, public_session_endpoint
 from niuu.domain.session_voice import (
     SESSION_VOICE_ENDPOINT_KIND,
     SESSION_VOICE_PROTOCOL,
@@ -59,12 +70,13 @@ from niuu.domain.session_voice import (
 from niuu.domain.text_projection import projection_revision
 from niuu.forge_mcp.models import ForgeMcpGrant
 from niuu.room_access import ROOM_CALLER_SESSION_HEADER, ROOM_ROLE_HEADER
-from skuld.conversation_shallow import SHALLOW_DETAIL, elide_turns, is_elided_input
+from skuld.conversation_shallow import SHALLOW_DETAIL, elide_turn, elide_turns, is_elided_input
 from skuld.conversation_snapshot import (
     ConversationSnapshotTooLargeError,
     prepare_history_page,
     prepare_recent_snapshot,
 )
+from skuld.delivery_errors import NATIVE_CONTROL_PENDING_CODE
 from skuld.tool_result_preview import (
     PREVIEW_EDGE_LIMIT,
     PREVIEW_MAX_EDGE,
@@ -102,6 +114,7 @@ from volundr.domain.history_import import (
     HistoryImportSessionNotFoundError,
     HistoryImportValidationError,
 )
+from volundr.domain.launch_env import LAUNCH_ENV_KEY
 from volundr.domain.models import (
     Chronicle,
     ChronicleStatus,
@@ -127,6 +140,7 @@ from volundr.domain.models import (
     WorkspaceStatus,
     require_workload_type_available,
 )
+from volundr.domain.notifications import NotificationNotFoundError
 from volundr.domain.pinned_persona import pinned_persona_document
 from volundr.domain.ports import (
     DeviceTokenRepository,
@@ -150,6 +164,14 @@ from volundr.domain.push import (
     PushTokenKind,
     UnsupportedTokenKindError,
     token_fingerprint,
+)
+from volundr.domain.questions import (
+    MAX_DEVICE_ID_CHARS,
+    MAX_DEVICE_LABEL_CHARS,
+    AnsweredBy,
+    NotAQuestionError,
+    QuestionAnsweredError,
+    QuestionClosedError,
 )
 from volundr.domain.services import (
     ChronicleAccessDeniedError,
@@ -184,6 +206,7 @@ from volundr.domain.services.forge_session_launch import (
     ForgeMcpGrantChangeRefusedError,
     ForgeMcpGrantEscalationError,
 )
+from volundr.domain.services.notifications import QuestionStoreUnavailableError
 from volundr.domain.services.permission_auto_approval import (
     evaluate_permission_auto_approval,
 )
@@ -222,6 +245,9 @@ logger = logging.getLogger(__name__)
 # number; the broker — not this grace — owns the delivery durability guarantee, so
 # a short grace is correct: a no-ACK is reported as pending/accepted, never "sent".
 SEND_MESSAGE_ACK_GRACE_SECONDS = 3.0
+# Bound on a Forge → broker native-control call (list or dismiss, LEX-1936): both are
+# in-memory on the broker except one menu observation (Skuld's menu render wait).
+NATIVE_CONTROL_CALL_TIMEOUT_SECONDS = 20.0
 
 # Default disk root for generated tool-result image previews (the mini-mode
 # host's ~/.niuu tree). volundr.main passes Settings.preview_cache_dir instead;
@@ -299,6 +325,25 @@ def _execution_catalog_http_error(
         status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
         detail="Compute execution catalog is unavailable",
     )
+
+
+def _refused_session_launch(error: Exception) -> HTTPException:
+    """A 409 for a create/start Forge cannot do, its reason in the journal too (LEX-1858).
+
+    The reason was only in the response, so a burst of refusals left no trace of whether
+    the host's slot cap or a session's state was the cause.
+    """
+    if isinstance(error, SessionCapacityError):
+        capacity = error.capacity
+        logger.warning(
+            "Session launch refused (409, slot cap): %d of %d running; %s",
+            capacity.active,
+            capacity.limit,
+            error,
+        )
+    else:
+        logger.warning("Session launch refused (409, session state): %s", error)
+    return HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error))
 
 
 def _public_session_endpoint(
@@ -888,6 +933,14 @@ class SessionCreate(BaseModel):
         max_length=100_000,
         description="Initial user message sent when the CLI starts",
     )
+    initial_prompt_sender: str | dict | None = Field(
+        default=None,
+        description=(
+            "Who wrote initial_prompt (LEX-1910): 'user', 'voice_call', 'automation', "
+            "'unknown' or a sender object. A session creating a session is recorded as "
+            "that session and must omit it."
+        ),
+    )
     issue_id: str | None = Field(
         default=None,
         max_length=255,
@@ -1104,6 +1157,23 @@ class SessionUpdate(BaseModel):
         max_length=100,
         description="New LLM model identifier",
     )
+    reasoning_effort: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=32,
+        description=(
+            "Native effort the session launches at from now on (workload_config.reasoningEffort); "
+            "it must be one of the model's effort levels. It does not change a running CLI."
+        ),
+    )
+    launch_env: dict[str, str | int] | None = Field(
+        default=None,
+        description=(
+            "Environment the session's CLI starts with from now on (workload_config.launch_env), "
+            "replacing the stored map; {} clears it. Names must be allowlisted in "
+            "session_launch_env and values meet their rule. It does not change a running CLI."
+        ),
+    )
     branch: str | None = Field(
         default=None,
         min_length=1,
@@ -1191,6 +1261,33 @@ class RelayedSessionMessage(BaseModel):
     urgent: bool = False
     peer: dict[str, Any] | None = None
     sender: RelayedMessageSender
+
+
+def _sender_frame(content: str, request_id: str, sender: dict[str, Any]) -> dict[str, Any]:
+    """The broker frame for a posted message (LEX-1910).
+
+    ``content`` is what the model receives: the sender's header line first when the
+    sender is not the user. ``display_content`` is the message as sent, which a broker
+    that reads ``sender`` records on the turn; a broker that predates it ignores both
+    keys and still hands the model the header.
+
+    A voice call is the owner speaking (LEX-2013), so it needs no warning from a broker
+    that predates ``sender``: its message goes unheaded and the broker writes the
+    header in its own words. A broker checks a written header against its own
+    wording and refuses a mismatch, so writing the voice header here would refuse
+    every voice message at a broker launched before that wording changed.
+    """
+    if is_owner_by_voice(sender):
+        return {"type": "user", "content": content, "request_id": request_id, "sender": sender}
+    frame: dict[str, Any] = {
+        "type": "user",
+        "content": text_for_model(sender, content),
+        "request_id": request_id,
+        "sender": sender,
+    }
+    if frame["content"] != content:
+        frame["display_content"] = content
+    return frame
 
 
 def relay_refusal(sender: RelayedMessageSender, target: Session) -> str | None:
@@ -1513,6 +1610,19 @@ def _session_team_member(session: Session) -> SessionTeamMember | None:
     return SessionTeamMember(lead=marker.get("lead") is True)
 
 
+def _launch_env(session: Session) -> dict[str, str]:
+    stored = (session.workload_config or {}).get(LAUNCH_ENV_KEY)
+    if not isinstance(stored, dict):
+        return {}
+    return {str(name): str(value) for name, value in stored.items()}
+
+
+def _launch_effort(session: Session) -> str | None:
+    """The stored launch effort, or None when the session launches at the model default."""
+    effort = str((session.workload_config or {}).get("reasoningEffort") or "").strip()
+    return effort or None
+
+
 class SessionResponse(BaseModel):
     """Response model for a session."""
 
@@ -1522,7 +1632,33 @@ class SessionResponse(BaseModel):
 
     id: UUID = Field(description="Unique session identifier")
     name: str = Field(description="Human-readable session name")
-    model: str = Field(description="LLM model identifier")
+    model: str = Field(
+        description=(
+            "LLM model in effect: the one the runtime last reported, else the launch model"
+        )
+    )
+    launch_model: str = Field(
+        default="",
+        description=(
+            "Model the session launches with on its next start or restart (the stored "
+            "launch record that PUT /sessions/{id} sets); `model` is the one in effect now"
+        ),
+    )
+    launch_effort: str | None = Field(
+        default=None,
+        description=(
+            "Native effort the next start or restart launches at "
+            "(workload_config.reasoningEffort, set by PUT /sessions/{id} reasoning_effort); "
+            "null when the model's default is used"
+        ),
+    )
+    launch_env: dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "Environment the next start or restart gives the session's CLI "
+            "(workload_config.launch_env, set by PUT /sessions/{id} launch_env)"
+        ),
+    )
     persona_name: str = Field(default="", description="Persona attached at launch")
     workflow_run_id: str | None = Field(
         default=None,
@@ -1738,8 +1874,9 @@ class SessionResponse(BaseModel):
     open_controls: list[dict] | None = Field(
         default=None,
         description=(
-            "Open human gates as [{request_id, kind, opened_at}] from the broker's control "
-            "state; null means unknown, never 'none open'"
+            "Open human gates as [{request_id, kind, opened_at, tool_use_id?}] from the "
+            "broker's control state; tool_use_id is the CLI's id for the call when known "
+            "(LEX-1979); null means unknown, never 'none open'"
         ),
     )
 
@@ -1793,6 +1930,9 @@ class SessionResponse(BaseModel):
             coordination=session.coordination,
             name=session.name,
             model=session.effective_model,
+            launch_model=session.model,
+            launch_effort=_launch_effort(session),
+            launch_env=_launch_env(session),
             persona_name=session_persona_name(session.workload_config),
             workflow_run_id=session.workload_config.get(WORKFLOW_RUN_ID_KEY),
             workflow_member=session.workload_config.get(WORKFLOW_MEMBER_KEY),
@@ -2078,6 +2218,44 @@ class HelpAnswerRequest(BaseModel):
 
     answer: str
     source: str = "external"
+
+
+class QuestionAnswerRequest(BaseModel):
+    """Body of ``POST /notifications/{id}/answer`` (LEX-1932)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    request_id: str = Field(
+        pattern=r"^[A-Za-z0-9._:-]{1,200}$",
+        description="The answer's message id at the asking session; the same id is a retry.",
+    )
+    device_id: str = Field(
+        min_length=1,
+        max_length=MAX_DEVICE_ID_CHARS,
+        pattern=r"^[^\x00]+$",
+        description="The answering install's opaque id (the app keeps one per install).",
+    )
+    device_label: str = Field(
+        min_length=1,
+        max_length=MAX_DEVICE_LABEL_CHARS,
+        pattern=r"^[^\x00]*\S[^\x00]*$",
+        description='What the app shows: "iPhone", "iPad", "Mac".',
+    )
+    content: str = Field(
+        min_length=1,
+        pattern=r"\S",
+        description="The message the asking session receives, as the app writes it.",
+    )
+    answers: list[dict[str, Any]] | None = Field(
+        default=None, description="The structured answer per ask item, kept as sent."
+    )
+
+
+class _BrokerNotServingError(Exception):
+    """The session proxy says the broker is not serving (``x-niuu-broker-unavailable``)."""
+
+    def __str__(self) -> str:
+        return f"broker not serving ({self.args[0]})"
 
 
 class ErrorResponse(BaseModel):
@@ -3357,6 +3535,15 @@ def create_router(
         ordinary human PATs and workload tokens are unaffected.
         """
         principal = await _optional_principal(request)
+        # Always, prompt or not: a flock derives its first prompt later, and the
+        # body's value must never reach the session unchecked.
+        data = data.model_copy(
+            update={
+                "initial_prompt_sender": await _named_sender(
+                    request, principal, data.initial_prompt_sender
+                )
+            }
+        )
         try:
             started = await project_result(
                 forge.create_and_start_session(data, principal=principal)
@@ -3371,20 +3558,14 @@ def create_router(
                 detail=str(e),
             )
         except SessionCapacityError as e:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=str(e),
-            )
+            raise _refused_session_launch(e)
         except WorkloadTypeRemovedError as e:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail=str(e),
             )
         except SessionStateError as e:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=str(e),
-            )
+            raise _refused_session_launch(e)
         except MemoryMountClashError as e:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
         except MemoryDirectoryUnavailableError as e:
@@ -3536,7 +3717,12 @@ def create_router(
 
     @router.get("/sessions/{session_id}/runtime-version", tags=["Sessions"])
     async def get_runtime_version(request: Request, session_id: UUID) -> dict:
-        """Inspect the loaded gateway, without restarting it or trusting stored activity."""
+        """Inspect the loaded gateway, without restarting it or trusting stored activity.
+
+        ``contract`` says whether the loaded broker meets this release's broker contract
+        (``niuu.domain.broker_contract``): ``met``, ``below`` (restart it onto this
+        release), ``not_running`` (its next start is current) or ``unknown`` (no probe).
+        """
         session = await forge.get_session(session_id)
         if session is None:
             raise HTTPException(status_code=404, detail="Session not found")
@@ -3545,9 +3731,15 @@ def create_router(
             await forge.ensure_access(session, principal, "read")
         except SessionAccessDeniedError:
             raise HTTPException(status_code=403, detail="Access denied") from None
-        result = {"available": runtime_build, "current": None, "state": "unavailable"}
+        result = {
+            "available": runtime_build,
+            "current": None,
+            "state": "unavailable",
+            "contract": {"required": BROKER_CONTRACT, "state": "unknown"},
+        }
         if not session.chat_endpoint:
             result["state"] = "not_running"
+            result["contract"]["state"] = "not_running"
             return result
         live_session, base_url = await forge.get_session_proxy_target(session_id)
         try:
@@ -3563,7 +3755,12 @@ def create_router(
                     status_code=502, detail="Gateway identity does not match session"
                 )
             result["current"] = {
-                key: health.get(key) for key in ("revision", "build", "source_sha256", "dirty")
+                key: health.get(key)
+                for key in ("revision", "build", "source_sha256", "dirty", "broker_contract")
+            }
+            result["contract"] = {
+                "required": BROKER_CONTRACT,
+                "state": contract_state(health.get("broker_contract")),
             }
             current_hash = health.get("source_sha256")
             available_hash = (runtime_build or {}).get("source_sha256")
@@ -3676,11 +3873,15 @@ def create_router(
                 session_id=session_id,
                 name=data.name,
                 model=data.model,
+                reasoning_effort=data.reasoning_effort,
+                launch_env=data.launch_env,
                 branch=data.branch,
                 tracker_issue_id=data.tracker_issue_id,
                 principal=principal,
             )
             return await _session_response(session)
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
         except SessionAccessDeniedError:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
@@ -3900,20 +4101,14 @@ def create_router(
                 detail=f"Session not found: {session_id}",
             )
         except SessionCapacityError as e:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=str(e),
-            )
+            raise _refused_session_launch(e)
         except WorkloadTypeRemovedError as e:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail=str(e),
             )
         except SessionStateError as e:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=str(e),
-            )
+            raise _refused_session_launch(e)
         except MemoryMountClashError as e:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
         except MemoryDirectoryUnavailableError as e:
@@ -4755,14 +4950,21 @@ def create_router(
         session_id: UUID = Path(description="Unique session identifier"),
         body: dict = ...,
     ) -> Response:
-        """Send a user message to a running session via its WebSocket.
+        """Send a message to a running session via its WebSocket.
+
+        The message records its sender (LEX-1910): a session credential is that
+        session; otherwise the body's ``sender`` (``user``, ``voice_call``,
+        ``automation``, ``unknown`` or an object). With no ``sender``, a request id
+        a Lexi client mints is the user's and anything else is an unknown sender.
 
         INV-7 delivery contract: the response distinguishes delivered from
         not-delivered. 200 ``status=delivered`` means the transport accepted the
         message; 202 ``status=pending`` means the broker accepted it and its bounded
         retry is still driving delivery (NOT a confirmed send); a terminal transport
-        rejection raises 502; an unreachable pod raises 409. ``unconfirmed`` is never
-        returned as success.
+        rejection raises 502; an unreachable pod raises 409. While the agent waits on a
+        native control (a terminal permission menu or question) nothing is typed and the
+        answer is 409 ``detail.code=native_control_pending`` naming the card
+        (``control_request_id``). ``unconfirmed`` is never returned as success.
         """
         content = body.get("content", "")
         if not isinstance(content, str) or not content.strip():
@@ -4778,10 +4980,206 @@ def create_router(
         if not isinstance(req_id, str) or not re.fullmatch(r"[A-Za-z0-9._:-]{1,200}", req_id):
             raise HTTPException(status_code=400, detail="Invalid request_id")
 
-        # Verify the caller owns this session
         principal = await extract_principal(request)
         session = await _message_target(session_id, principal)
         frame = await _message_frame(principal, session, content, req_id, body)
+        return await _deliver_session_frame(request, session_id, session, req_id, frame)
+
+    @router.post(
+        "/notifications/{notification_id}/answer",
+        dependencies=[Depends(require_scope(FORGE_SESSION_MESSAGE_SCOPE))],
+        tags=["Notifications"],
+        responses={
+            404: {"model": ErrorResponse},
+            409: {"description": "question_answered (with the first answer) or question_closed"},
+            422: {"model": ErrorResponse},
+            502: {"model": ErrorResponse},
+        },
+    )
+    async def answer_question(
+        request: Request,
+        body: QuestionAnswerRequest,
+        notification_id: UUID = Path(description="The question's notification id"),
+    ) -> Response:
+        """Answer a notice question once, for every device (LEX-1932).
+
+        The first answer is recorded, the question's notification is resolved
+        ("Answered on <device_label>") and ``content`` is delivered to the asking
+        session as a message with ``request_id`` (the delivery contract of
+        ``POST /sessions/{id}/messages``). Repeating the same ``request_id`` delivers
+        that answer again, idempotently. A different answer is refused with 409
+        ``question_answered`` carrying the first; a resolved or withdrawn question
+        with 409 ``question_closed``. The response's ``question`` is its state.
+        """
+        principal = await extract_principal(request)
+        if principal.token_use == FORGE_SESSION_TOKEN_USE:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="A question is answered by its user, not by a session",
+            )
+        service = getattr(request.app.state, "notification_service", None)
+        if service is None:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Notifications are not enabled on this Forge",
+            )
+        device = AnsweredBy(device_id=body.device_id, device_label=body.device_label)
+
+        async def deliverable(notification: Any) -> None:
+            # Refused before anything is recorded: an answer that could never reach the
+            # asking session must not close the question for every device.
+            try:
+                asker, _ = await forge.get_session_proxy_target(notification.session_id)
+            except LookupError:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=f"The asking session {notification.session_id} no longer exists",
+                ) from None
+            except ValueError:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=(
+                        f"The asking session {notification.session_id} is not running; "
+                        "nothing was recorded, answer again once it runs"
+                    ),
+                ) from None
+            if asker.owner_id and asker.owner_id != principal.user_id:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Not authorized to message the asking session",
+                )
+
+        try:
+            notification, record, _ = await service.answer_question(
+                principal,
+                notification_id,
+                request_id=body.request_id,
+                device=device,
+                content=body.content,
+                answers=body.answers,
+                before_claim=deliverable,
+            )
+        except NotificationNotFoundError as exc:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+        except NotAQuestionError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)
+            ) from exc
+        except QuestionStoreUnavailableError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)
+            ) from exc
+        except QuestionAnsweredError as exc:
+            return JSONResponse(
+                status_code=status.HTTP_409_CONFLICT,
+                content={
+                    "detail": {
+                        "code": "question_answered",
+                        "message": "This question is already answered; the first answer stands",
+                        "question": exc.record.wire(service.question_ref(notification_id)),
+                    }
+                },
+            )
+        except QuestionClosedError as exc:
+            return JSONResponse(
+                status_code=status.HTTP_409_CONFLICT,
+                content={
+                    "detail": {
+                        "code": "question_closed",
+                        "message": str(exc),
+                        "question": (
+                            exc.record.wire(service.question_ref(notification_id))
+                            if exc.record is not None
+                            else None
+                        ),
+                    }
+                },
+            )
+        question = record.wire(service.question_ref(notification_id))
+        if notification.session_id is None or record.answer is None or not record.answer.content:
+            raise ValueError("answer_question returned a question without an answer to deliver")
+        try:
+            # The recorded answer, so a retry delivers exactly what every device was told.
+            delivered = await _deliver_session_message(
+                request,
+                principal,
+                notification.session_id,
+                content=record.answer.content,
+                req_id=body.request_id,
+                sender=user_sender(),
+            )
+        except HTTPException as exc:
+            # Recorded but not delivered: the same request_id delivers it again.
+            logger.error(
+                "Answer to question %s is recorded but not delivered to session %s (%s): "
+                "the answering device must retry with request_id %s",
+                notification_id,
+                notification.session_id,
+                exc.detail,
+                body.request_id,
+            )
+            raise HTTPException(
+                status_code=exc.status_code,
+                detail={
+                    "code": "answer_not_delivered",
+                    "message": (
+                        f"The answer is recorded but not delivered ({exc.detail}); "
+                        "retry with the same request_id"
+                    ),
+                    "question": question,
+                },
+                headers=exc.headers,
+            ) from exc
+        payload = json.loads(bytes(delivered.body)) if delivered.body else {}
+        return JSONResponse(
+            status_code=delivered.status_code,
+            content={**(payload if isinstance(payload, dict) else {}), "question": question},
+        )
+
+    async def _named_sender(
+        request: Request, principal: Principal | None, claimed: object
+    ) -> dict[str, Any] | None:
+        """Who is writing to a session, set from the path and never from the text.
+
+        A session credential is that session; otherwise the sender the caller names,
+        or ``None`` when it names none.
+        """
+        if principal is not None and principal.token_use == FORGE_SESSION_TOKEN_USE:
+            if claimed is not None:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="A session's messages are sent as that session; omit sender",
+                )
+            caller = await forge.get_session(UUID(principal.bound_session_id))
+            if caller is None:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=f"Sending session not found: {principal.bound_session_id}",
+                )
+            return session_sender(
+                session_id=str(caller.id),
+                name=caller.name or "",
+                host=request.headers.get(SENDER_NODE_HEADER, ""),
+            )
+        if claimed is None:
+            return None
+        try:
+            return parse_claimed_sender(claimed)
+        except SenderError as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+    async def _deliver_session_message(
+        request: Request,
+        principal: Principal,
+        session_id: UUID,
+        *,
+        content: str,
+        req_id: str,
+        sender: dict[str, Any],
+    ) -> Response:
+        """Deliver ``content`` to a session the caller owns as ``sender``'s user turn (LEX-1910)."""
+        session = await _message_target(session_id, principal)
+        frame = _sender_frame(content, req_id, sender)
         return await _deliver_session_frame(request, session_id, session, req_id, frame)
 
     async def _message_target(session_id: UUID, principal: Principal) -> Session:
@@ -4823,8 +5221,10 @@ def create_router(
         """The WebSocket frame for a message: an envelope from a session, a user turn otherwise.
 
         A session caller's envelope is stamped here from its verified credential and the
-        live session row; the sender is never read from the body. A person keeps the plain
-        user turn.
+        live session row; the sender is never read from the body. Anyone else sends a user
+        turn labelled with its sender (LEX-1910): the body's ``sender`` (``user``,
+        ``voice_call``, ``automation``, ``unknown`` or an object), else the user for a
+        request id a Lexi client mints and an unknown sender for any other.
         """
         if principal.token_use != FORGE_SESSION_TOKEN_USE:
             if "peer" in body:
@@ -4832,7 +5232,18 @@ def create_router(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail="peer is for a session credential relaying a room message",
                 )
-            return {"type": "user", "content": content, "request_id": req_id}
+            claimed = body.get("sender")
+            try:
+                sender = (
+                    sender_for_request_id(req_id)
+                    if claimed is None
+                    else parse_claimed_sender(claimed)
+                )
+            except SenderError as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
+                ) from exc
+            return _sender_frame(content, req_id, sender)
         forged = sorted(STAMPED_BODY_KEYS & body.keys())
         if forged:
             raise HTTPException(
@@ -4894,6 +5305,9 @@ def create_router(
         frame: dict[str, Any],
     ) -> Response:
         """Send ``frame`` to the session's broker and answer from its delivery ACK."""
+        # The sender the frame records (LEX-1910), echoed in the answer; a peer envelope
+        # carries its own.
+        sender = frame.get("sender")
         import ssl
 
         from websockets.asyncio.client import connect
@@ -4991,6 +5405,7 @@ def create_router(
                         "delivery": "pending",
                         "session_id": str(session_id),
                         "request_id": req_id,
+                        **({"sender": sender} if sender is not None else {}),
                         "message": "Delivery is unconfirmed; check this request before retrying.",
                     },
                 )
@@ -5022,9 +5437,37 @@ def create_router(
                     "status": "failed",
                     "delivery": "failed",
                     "request_id": req_id,
+                    **({"sender": sender} if sender is not None else {}),
                     "session_id": str(session_id),
                     "code": code,
                     "message": delivery.get("content") or "Message was not accepted",
+                },
+            )
+
+        # Refused because a native control (permission menu, question) is open: the
+        # broker typed nothing. 409 with the card that blocks it, never 202 (LEX-1936).
+        if (
+            isinstance(delivery, dict)
+            and delivery.get("type") == "user_delivery_failed"
+            and delivery.get("code") == NATIVE_CONTROL_PENDING_CODE
+        ):
+            return JSONResponse(
+                status_code=status.HTTP_409_CONFLICT,
+                content={
+                    "status": "failed",
+                    "delivery": "failed",
+                    "session_id": str(session_id),
+                    "request_id": req_id,
+                    **({"sender": sender} if sender is not None else {}),
+                    "detail": {
+                        "code": NATIVE_CONTROL_PENDING_CODE,
+                        "message": delivery.get("error")
+                        or "The session is waiting on a native control",
+                        "control_request_id": delivery.get("control_request_id") or None,
+                        "control_kind": delivery.get("control_kind"),
+                        "control_opened_at": delivery.get("control_opened_at"),
+                        "menu_state": delivery.get("menu_state"),
+                    },
                 },
             )
 
@@ -5049,6 +5492,7 @@ def create_router(
                     "status": "pending",
                     "session_id": str(session_id),
                     "request_id": req_id,
+                    **({"sender": sender} if sender is not None else {}),
                     "delivery": "pending",
                 },
             )
@@ -5061,6 +5505,7 @@ def create_router(
                 "status": "delivered",
                 "session_id": str(session_id),
                 "request_id": req_id,
+                **({"sender": sender} if sender is not None else {}),
                 "delivery": str(delivery.get("status") or "delivered"),
             },
         )
@@ -5191,7 +5636,9 @@ def create_router(
             0,
             ge=0,
             description="Optional recent-activity byte budget; 0 returns the complete page. "
-            "Oversized single turns are marked history_preview and remain loadable on demand.",
+            "The budget only drops older WHOLE turns: every returned turn is complete. A single "
+            "turn larger than the budget is returned whole, or paged by part ranges with "
+            "`part_paging=1` (LEX-1937).",
         ),
         after_id: str | None = Query(
             None,
@@ -5207,6 +5654,16 @@ def create_router(
         history_protocol: int = Query(0),
         cursor: str | None = Query(None),
         turn_id: str | None = Query(None),
+        part_paging: bool = Query(
+            False,
+            description=(
+                "history_protocol=2 only (LEX-1937): page WITHIN a turn larger than the byte "
+                "budget instead of returning it whole. Such a page holds one turn whose "
+                "`part_window` {offset, end, total} names the complete parts it carries; its "
+                "`older_cursor` continues with the turn's preceding parts. `content` rides "
+                "only the fragment that holds the turn's last part."
+            ),
+        ),
         tail: int = Query(
             0,
             ge=0,
@@ -5262,6 +5719,7 @@ def create_router(
                 history_protocol=0,
                 cursor=None,
                 turn_id=None,
+                part_paging=False,
                 tail=limit,
                 since_turn=None,
             )
@@ -5280,6 +5738,8 @@ def create_router(
             limit = 0
         if cursor and history_protocol != 2:
             raise HTTPException(400, "cursor requires history_protocol=2")
+        if part_paging and history_protocol != 2:
+            raise HTTPException(400, "part_paging requires history_protocol=2")
         if history_protocol == 2 and (before or after >= 0 or after_id or turn_id):
             raise HTTPException(
                 400, "Protocol2 cursors cannot be mixed with legacy seek parameters"
@@ -5307,7 +5767,7 @@ def create_router(
                 if turn is None:
                     raise HTTPException(404, "History item no longer exists in this projection")
                 return {
-                    "turn": json_text_safe(turn),
+                    "turn": json_text_safe(elide_turn(turn) if shallow else turn),
                     "projection_revision": payload.get("projection_revision")
                     or projection_revision(all_turns),
                 }
@@ -5329,6 +5789,7 @@ def create_router(
                         max_turns=limit,
                         max_bytes=max_bytes,
                         cursor=cursor,
+                        part_paging=part_paging,
                     )
                 except InvalidHistoryCursorError as exc:
                     raise HTTPException(
@@ -5498,6 +5959,8 @@ def create_router(
                     )
                 if history_protocol == 2:
                     params.update(history_protocol=2, limit=limit, max_bytes=max_bytes)
+                    if part_paging:
+                        params["part_paging"] = 1
                     if cursor:
                         params["cursor"] = cursor
                 if turn_id is not None:
@@ -5509,6 +5972,20 @@ def create_router(
                         params=params,
                     )
                     if history_protocol == 2 and response.status_code != 200:
+                        unavailable = response.headers.get(BROKER_UNAVAILABLE_HEADER)
+                        if unavailable and not cursor:
+                            # The broker is not serving (starting, restarting, gone): a
+                            # first page keeps no turn space yet, so the durable log
+                            # serves it, as it does an unpaged read.
+                            raise _BrokerNotServingError(unavailable)
+                        if unavailable:
+                            # A cursor belongs to the broker's turn space: no other
+                            # source may answer it. Typed, so the client retries.
+                            raise HTTPException(
+                                status.HTTP_503_SERVICE_UNAVAILABLE,
+                                {"code": "history_busy", "recovery": "retry"},
+                                headers={"Retry-After": "1"},
+                            )
                         # A typed stale/busy response must not silently select a
                         # different history source and pretend its cursor worked.
                         try:
@@ -5653,7 +6130,12 @@ def create_router(
                     )
                     if isinstance(live, dict) and live.get("turns") == []:
                         empty_live = (live, fetch_ms)
-        except (ValueError, httpx.HTTPStatusError, httpx.RequestError) as e:
+        except (
+            ValueError,
+            httpx.HTTPStatusError,
+            httpx.RequestError,
+            _BrokerNotServingError,
+        ) as e:
             logger.info(
                 "Falling back to workspace transcript for session %s: %s",
                 _sanitize_log(session_id),
@@ -5777,6 +6259,7 @@ def create_router(
             history_protocol=0,
             cursor=None,
             turn_id=turn_id,
+            part_paging=False,
             tail=0,
             since_turn=None,
         )
@@ -5793,6 +6276,7 @@ def create_router(
             history_protocol=0,
             cursor=None,
             turn_id=None,
+            part_paging=False,
             tail=0,
             since_turn=None,
         )
@@ -6133,6 +6617,152 @@ def create_router(
                 ) from None
             preview_cache.put(sid, cache_key, jpeg, edge)
             return _jpeg_response(jpeg)
+
+    async def _native_controls_target(request: Request, session_id: UUID) -> tuple[Principal, str]:
+        """Owner or admin of a live session; never a session credential (LEX-1936).
+
+        Inspecting or dismissing another agent's terminal controls is the operator's
+        decision, so a ``forge_session`` token is refused here even with grants (the
+        routes are also absent from the session-token allow-list).
+        """
+        principal = await extract_principal(request)
+        if principal.token_use == FORGE_SESSION_TOKEN_USE:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Native controls are handled by the session's owner, not by a session",
+            )
+        try:
+            session, base_url = await forge.get_session_proxy_target(session_id)
+        except LookupError:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Session not found: {session_id}",
+            ) from None
+        except ValueError:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"Session {session_id} is not running",
+            ) from None
+        try:
+            await forge.ensure_access(session, principal, "update")
+        except SessionAccessDeniedError:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Only the session owner or an admin may handle its native controls",
+            ) from None
+        return principal, base_url
+
+    async def _native_controls_call(
+        request: Request,
+        session_id: UUID,
+        base_url: str,
+        method: str,
+        *parts: str,
+        json_body: dict[str, Any] | None = None,
+    ) -> Response:
+        headers = {ROOM_ROLE_HEADER: "owner"}
+        auth = request.headers.get("authorization")
+        if auth:
+            headers["Authorization"] = auth
+        proxy_url, routing_headers = _http_proxy_target(
+            _session_proxy_url(base_url, "api", "native-controls", *parts)
+        )
+        headers.update(routing_headers)
+        try:
+            async with httpx.AsyncClient(timeout=NATIVE_CONTROL_CALL_TIMEOUT_SECONDS) as client:
+                response = await client.request(method, proxy_url, headers=headers, json=json_body)
+        except httpx.RequestError as e:
+            reconciled = await forge.reconcile_session(session_id)
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    f"Session {session_id} is no longer reachable; reconciled to "
+                    f"{reconciled.status.value if reconciled else 'unknown'}: {e}"
+                ),
+            ) from e
+        try:
+            content = response.json()
+        except ValueError:
+            content = {"detail": response.text}
+        return JSONResponse(status_code=response.status_code, content=content)
+
+    @router.get(
+        "/sessions/{session_id}/native-controls",
+        tags=["Sessions"],
+        responses={403: {"model": ErrorResponse}, 404: {"model": ErrorResponse}},
+    )
+    async def list_native_controls(
+        request: Request,
+        session_id: UUID = Path(description="Unique session identifier"),
+    ) -> Response:
+        """Open native-control cards of a live session: age and menu state (LEX-1936)."""
+        _, base_url = await _native_controls_target(request, session_id)
+        return await _native_controls_call(request, session_id, base_url, "GET")
+
+    @router.post(
+        "/sessions/{session_id}/native-controls/{request_id}/dismiss",
+        tags=["Sessions"],
+        responses={
+            403: {"model": ErrorResponse},
+            404: {"model": ErrorResponse},
+            409: {"model": ErrorResponse},
+        },
+    )
+    async def dismiss_native_control(
+        request: Request,
+        session_id: UUID = Path(description="Unique session identifier"),
+        request_id: str = Path(description="The native control card's request_id"),
+    ) -> Response:
+        """Dismiss a native-control card the automatic checks keep open (audited).
+
+        Owner or admin only. The card closes for every client with
+        ``dismiss_reason=dismissed_by_operator``. A menu that is still on screen keeps
+        refusing messages; answer it in the terminal.
+        """
+        principal, base_url = await _native_controls_target(request, session_id)
+        logger.warning(
+            "AUDIT native control %s on session %s: dismissal requested by %s",
+            _sanitize_log(request_id),
+            session_id,
+            _sanitize_log(principal.user_id),
+        )
+        return await _native_controls_call(
+            request,
+            session_id,
+            base_url,
+            "POST",
+            request_id,
+            "dismiss",
+            json_body={"dismissed_by": principal.user_id},
+        )
+
+    @router.post(
+        "/sessions/{session_id}/native-controls/reconcile",
+        tags=["Sessions"],
+        responses={
+            403: {"model": ErrorResponse},
+            404: {"model": ErrorResponse},
+            409: {"model": ErrorResponse},
+        },
+    )
+    async def reconcile_native_questions(
+        request: Request,
+        session_id: UUID = Path(description="Unique session identifier"),
+    ) -> Response:
+        """Check a live session's open questions against its CLI session file now (LEX-1979).
+
+        Owner or admin only. Closes each question the CLI answered, never showed, or no
+        longer shows (audited, and pushed to every client); keeps one whose menu is on
+        screen. Answers ``{checked, closed, kept}``; 409 when the transport keeps no
+        session file or it cannot be read.
+        """
+        principal, base_url = await _native_controls_target(request, session_id)
+        logger.warning(
+            "AUDIT session %s: question reconcile requested by %s",
+            session_id,
+            _sanitize_log(principal.user_id),
+        )
+        return await _native_controls_call(request, session_id, base_url, "POST", "reconcile")
 
     @router.get(
         "/sessions/{session_id}/help/requests",
@@ -6594,10 +7224,7 @@ def create_router(
                 detail=str(e),
             ) from e
         except SessionCapacityError as e:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=str(e),
-            ) from e
+            raise _refused_session_launch(e) from e
         return await _session_response(session)
 
     @router.get(

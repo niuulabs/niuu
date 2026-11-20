@@ -83,8 +83,19 @@ class TestHookRows:
         assert pub.forms_bursts and not pub.subagent
 
     def test_subagent_and_title_from_input(self):
-        pub = _one(_hook({"url": URL}, {"title": "From input"}, agent_id="a1"))
+        pub = _one(
+            _hook(
+                {"url": URL}, {"title": "From input"}, agent_id="a1", agent_type="general-purpose"
+            )
+        )
         assert pub.subagent and pub.title == "From input" and pub.provider_seq is None
+
+    def test_a_side_query_publishes_nothing(self):
+        """LEX-2026: Claude Code's side queries (agent_id, no agent_type) never publish."""
+        assert (
+            publications_from_entry(_hook({"url": URL}, agent_id="a0a9ec517ee04652e"), CATALOG)
+            == []
+        )
 
     def test_typed_create_classifies_by_type_url(self):
         pub = _one(_hook({"url": URL, "created_from_type": True, "type": {"url": SLIDES}}))

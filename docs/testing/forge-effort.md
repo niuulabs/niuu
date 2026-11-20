@@ -5,6 +5,7 @@ harness and model together; they are not interchangeable token budgets.
 
 | Harness / model | Offered levels | Preferred launch level |
 | --- | --- | --- |
+| Claude tmux / Fable 5.2 | low, medium, high, xhigh, max | high |
 | Claude tmux / Fable 5.1, Opus 5 | low, medium, high, xhigh, max | xhigh |
 | Codex / Astra, Sol | low, medium, high, xhigh, max, ultra | xhigh |
 | Grok / 4.6 | low, medium, high, xhigh | xhigh |

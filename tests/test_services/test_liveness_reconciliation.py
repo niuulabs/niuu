@@ -561,3 +561,56 @@ class TestReconcileActiveSessions:
         )
 
         assert updated.error is None
+
+
+class TestOrphanSlots:
+    """LEX-1858: a session stopped without its runtime being told keeps a slot. It is
+    reported, never killed automatically (the 2026-09-13 startup-cleanup incident)."""
+
+    async def test_liveness_leaves_the_runtime_alone(self, service, repo, pod_manager):
+        stale = _session(SessionStatus.RUNNING, datetime.now(UTC) - timedelta(seconds=3600))
+        await repo.create(stale)
+
+        await service.reconcile_liveness(stale_after_seconds=600)
+
+        assert pod_manager.stop_calls == []
+
+    async def test_orphan_slots_are_reported_not_stopped(self, service, repo, pod_manager, caplog):
+        caplog.set_level("WARNING", logger="volundr.domain.services.session")
+        now = datetime.now(UTC)
+        stopped = _session(SessionStatus.STOPPED, now)
+        archived = _session(SessionStatus.ARCHIVED, now)
+        running = _session(SessionStatus.RUNNING, now)
+        for s in (stopped, archived, running):
+            await repo.create(s)
+        unknown = str(uuid4())
+
+        async def holding() -> list[str]:
+            return [str(stopped.id), str(archived.id), str(running.id), unknown, "not-a-uuid"]
+
+        pod_manager.active_session_ids = holding
+
+        assert await service.report_orphan_slots() == 3
+        assert pod_manager.stop_calls == []
+        assert f"session {stopped.id} is stopped but its runtime still holds a slot" in (
+            caplog.text
+        )
+        assert f"session {unknown} is unknown to this Forge but its runtime" in caplog.text
+        assert str(running.id) not in caplog.text
+
+        caplog.clear()
+        assert await service.report_orphan_slots() == 3
+        assert caplog.text == ""  # named once, not on every pass
+
+    async def test_the_reconcile_pass_reports_orphans(self, service, pod_manager, caplog):
+        caplog.set_level("WARNING", logger="volundr.domain.services.session")
+        unknown = str(uuid4())
+
+        async def holding() -> list[str]:
+            return [unknown]
+
+        pod_manager.active_session_ids = holding
+
+        await service.reconcile_active_sessions()
+
+        assert f"session {unknown} is unknown to this Forge" in caplog.text

@@ -40,6 +40,7 @@ fullnameOverride: ""
 sessionUsage:
   model_windows:
     claude-opus-5-5: 1000000
+    claude-fable-5-2: 1000000
     claude-fable-5-1: 1000000
     claude-sonnet-5-5: 1000000
 # -- Base domain for auto-generated hostnames (overridden by global.domain)
@@ -1446,6 +1447,15 @@ gateway:
 #   kwargs   – forwarded to the constructor as **kwargs (ports are
 #              injected automatically by the factory)
 #
+# Environment variables a session may set for its CLI (workload_config.launch_env,
+# PUT /sessions/{id} launch_env), each with its rule: a whole-value `pattern`, or an
+# integer `min_int`/`max_int`. Empty keeps Volundr's defaults
+# (CLAUDE_CODE_SUBAGENT_MODEL, CLAUDE_CODE_AUTO_COMPACT_WINDOW 100000-1000000; LEX-2045).
+# Setting it replaces the whole list.
+#   sessionLaunchEnv:
+#     CLAUDE_CODE_SUBAGENT_MODEL: {pattern: "[A-Za-z0-9][A-Za-z0-9._\\[\\]-]{0,99}"}
+#     CLAUDE_CODE_AUTO_COMPACT_WINDOW: {min_int: 100000, max_int: 1000000}
+sessionLaunchEnv: {}
 sessionContributors:
   - adapter: "volundr.adapters.outbound.contributors.core.CoreSessionContributor"
     kwargs:

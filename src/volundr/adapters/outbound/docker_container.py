@@ -448,6 +448,10 @@ class DockerContainerPodManager(BrokeredCredentialPodManager, LocalProcessPodMan
                 env["SKULD__SESSION__PERSONA"] = json.dumps(persona, separators=(",", ":"))
             if initial_prompt:
                 env["SKULD__SESSION__INITIAL_PROMPT"] = initial_prompt
+            if session_vals.get("initialPromptSender") is not None:
+                env["SKULD__SESSION__INITIAL_PROMPT_SENDER"] = json.dumps(
+                    session_vals["initialPromptSender"]
+                )
         env.update(workflow_session_environment(spec.values))
         del workspace
         return env

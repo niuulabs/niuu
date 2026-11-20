@@ -84,6 +84,29 @@ class TestBifrostConfig:
             "claude-fable-5 must not remain as a second Fable row"
         )
 
+    def test_fable_5_2_joins_at_high_effort(self):
+        # Claude Fable 5.2 (2026-11-09) is listed next to Fable 5.1, which stays for the
+        # sessions already on it; Opus 5.5 stays the default (LEX-2021). Fable 5.2's own
+        # default effort is high.
+        from bifrost.config import _default_models
+        from bifrost.pricing import BUILTIN_PRICING
+        from niuu.domain.model_catalog import ManagedModelTier
+        from volundr.config import SessionUsageConfig
+
+        models = _default_models()
+        fable = next((m for m in models if m.id == "claude-fable-5-2"), None)
+        assert fable is not None, "claude-fable-5-2 missing from default model catalog"
+        assert fable.name == "Claude Fable 5.2"
+        assert fable.session_definition == "skuldClaudeInteractive"
+        assert fable.tier == ManagedModelTier.FRONTIER
+        assert fable.effort_levels == ["low", "medium", "high", "xhigh", "max"]
+        assert fable.default_effort == "high"
+        assert {m.id for m in models} >= {"claude-fable-5-1", "claude-opus-5-5"}
+        price = BUILTIN_PRICING["claude-fable-5-2"]
+        assert (price.input_per_million, price.output_per_million) == (8.0, 40.0)
+        assert (price.cache_creation_per_million, price.cache_read_per_million) == (10.0, 0.2)
+        assert SessionUsageConfig().model_windows["claude-fable-5-2"] == 1_000_000
+
     def test_opus_entry_is_opus_5_5(self):
         # Claude Opus 5.5 (2026-09-22) is the catalogue's only Opus row. Older Opus ids
         # stay served by Anthropic; they just no longer appear as choices here.

@@ -167,6 +167,23 @@ class NotificationLink(BaseModel):
 #: relays another host's question by naming that host.
 QUESTION_REF_PATTERN = r"^question:[^:]+:[0-9a-f-]{36}$"
 
+
+def question_ref(host: str, notification_id: uuid.UUID | str) -> str:
+    """The question reference for ``notification_id`` recorded on ``host``."""
+    return f"question:{host}:{notification_id}"
+
+
+def parse_question_ref(ref: str) -> tuple[str, uuid.UUID] | None:
+    """``(host, notification id)`` of a question ref, or ``None`` when it is not one."""
+    if re.fullmatch(QUESTION_REF_PATTERN, ref) is None:
+        return None
+    _, host, raw_id = ref.split(":", 2)
+    try:
+        return host, uuid.UUID(raw_id)
+    except ValueError:
+        return None
+
+
 #: The notice fields that carry question signals (F11b), stored in the notification's
 #: ``metadata`` and served on the read wire.
 QUESTION_FIELDS = ("question", "about_question", "ask")

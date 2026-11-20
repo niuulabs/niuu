@@ -68,11 +68,22 @@ class EffortControlMixin:
         if not self._transport.capabilities.runtime_options:
             raise ValueError("This harness does not expose runtime options")
         async with self._effort_lock:
+            failure: Exception | None = None
             if options is not None:
-                await self._transport.send_control("set_runtime_options", options=options)
+                try:
+                    await self._transport.send_control("set_runtime_options", options=options)
+                except Exception as exc:  # re-raised below, after any partial change is reported
+                    failure = exc
             state = await self._transport.get_runtime_options(refresh=refresh)
-            if options is not None:
-                current = state["current"]
+            current = state["current"]
+            # A model switch that succeeded before its effort step failed is still a
+            # switch: record and publish it, then raise the failure (LEX-2022).
+            changed = options is not None and (
+                failure is None
+                or current["model"] != self.model
+                or current["effort"] != self._restored_effort()
+            )
+            if changed:
                 self.model = current["model"]
                 self._runtime_service_tier = current.get("service_tier")
                 self._save_effort(current["effort"])
@@ -80,10 +91,12 @@ class EffortControlMixin:
             frame = {
                 "type": "runtime_options",
                 "request_id": request_id,
-                "applied": options is not None,
+                "applied": changed,
                 **state,
             }
             await self._emit_broker_frame(frame)
+            if failure is not None:
+                raise failure
             return frame
 
     async def handle_effort(self, argument: str = "", *, request_id: str | None = None) -> dict:
@@ -101,7 +114,13 @@ class EffortControlMixin:
                 if state.get("current") != value:
                     raise RuntimeError("The harness did not confirm the requested effort")
                 self._save_effort(value)
-            frame = {"type": "effort_status", "request_id": request_id, **state}
+            # ``applied`` marks a confirmed change, as opposed to a read (LEX-2022).
+            frame = {
+                "type": "effort_status",
+                "request_id": request_id,
+                "applied": bool(argument),
+                **state,
+            }
             await self._emit_broker_frame(frame)
             return frame
 

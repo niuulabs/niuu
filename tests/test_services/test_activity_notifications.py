@@ -14,13 +14,17 @@ from volundr.domain.services import SessionService
 class RecordingRecorder(NotificationRecorder):
     def __init__(self) -> None:
         self.calls: list[dict] = []
+        self.urgency: list[bool] = []
         self.retired: list = []
 
     async def retire_attention(self, session):
         self.retired.append(session.id)
         return 1
 
-    async def record_attention(self, session, *, state_since, kind, prompt, request_id):
+    async def record_attention(
+        self, session, *, state_since, kind, prompt, request_id, urgent=False
+    ):
+        self.urgency.append(urgent)
         self.calls.append(
             {
                 "session_id": session.id,
@@ -73,6 +77,34 @@ async def test_new_request_records_attention_with_state_since(service, recorder)
             "request_id": "perm-1",
         }
     ]
+
+
+async def test_person_only_prompt_records_urgent_attention_at_once(service, recorder):
+    """LEX-1936: a safety prompt the CLI auto-denies in ~2 minutes is urgent."""
+    session = await _session(service)
+    await service.update_activity(
+        session.id,
+        SessionActivityState.AWAITING_INPUT,
+        {
+            "kind": "permission",
+            "prompt": "Only a person may approve this: Run `rm $V/$n`? Claude Code denies "
+            "it by itself after about 120 seconds unless someone answers.",
+            "request_id": "tty-1-c3b257b9",
+            "person_only": True,
+            "urgent": True,
+            "auto_deny_after_seconds": 120.0,
+        },
+    )
+    assert recorder.urgency == [True]
+    assert "120 seconds" in recorder.calls[0]["prompt"]
+
+
+async def test_ordinary_attention_is_not_urgent(service, recorder):
+    session = await _session(service)
+    await service.update_activity(
+        session.id, SessionActivityState.AWAITING_INPUT, {"request_id": "q1"}
+    )
+    assert recorder.urgency == [False]
 
 
 async def test_repeats_and_heartbeats_record_nothing_new(service, recorder):

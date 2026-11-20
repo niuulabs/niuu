@@ -860,6 +860,8 @@ class TestSendMessage:
         sent = route.calls[0].request
         body = json.loads(sent.content)
         assert body["content"] == "Fix the test"
+        # LEX-1910: Ting's messages are automation, never the owner typing.
+        assert body["sender"] == {"kind": "agent", "sub_kind": "automation", "name": "ting"}
 
     @pytest.mark.asyncio
     @respx.mock

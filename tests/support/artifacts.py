@@ -398,7 +398,10 @@ def manifest_log_rows(manifest: dict, host: str) -> list[SessionLogEntry]:
             "tool_response": response,
         }
         if pub["subagent"]:
+            # A real subagent names its type; an untyped agent_id is a Claude Code side
+            # query, whose tools never run (LEX-2026: none of ~50k real PostToolUse lacks it).
             inner["agent_id"] = "agent-1"
+            inner["agent_type"] = "general-purpose"
         rows.append(hook_row(pub["session_id"], pub["seq"], _ts(pub["at"]), inner))
     noise_session = str(session_uuid(f"noise-{host}"))
     at = _ts(manifest["window"]["start"]) + timedelta(days=1)

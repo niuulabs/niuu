@@ -59,6 +59,16 @@ class FakeTmuxInteractiveTransport(TmuxInteractiveTransport):
     def _tmux_binary_exists(self) -> bool:
         return True
 
+    async def handle_claude_hook(self, payload: dict[str, Any]) -> bool:
+        handled = await super().handle_claude_hook(payload)
+        # A permission card goes out once its live menu has been read (LEX-1950); tests
+        # read the card right after the hook, as a client sees it a moment later.
+        await self.permission_cards_sent()
+        return handled
+
+    async def permission_cards_sent(self) -> None:
+        await asyncio.gather(*list(self._permission_cards))
+
     async def _run_socket_sweep_loop(self) -> None:
         # SAFETY: the periodic sweep is exercised directly via sweep_stale_sockets() in its own
         # unit test against a TEMP dir; the auto-started loop is a no-op in tests so start() never
@@ -343,6 +353,7 @@ async def test_paste_confirm_never_presses_enter_into_open_menu(tmp_path: Path) 
 
     transport.capture_after_paste = "Do you want to proceed?\n❯ 1. Allow\n  2. Deny\n"
     await transport.send_message("run the migration")
+    transport.capture_stdout = "Do you want to proceed?\n❯ 1. Allow\n  2. Deny\n"
     await asyncio.sleep(1.0)  # past the first two backoff hops
     enters = [
         args

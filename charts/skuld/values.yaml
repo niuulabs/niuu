@@ -39,6 +39,8 @@ session:
   persona: {}
   # -- Initial user message sent when the CLI starts
   initialPrompt: ""
+  # -- Who wrote initialPrompt (LEX-1910), set by Forge: {kind, sub_kind, name, id, host}
+  initialPromptSender: null
 
 # -- MCP server configurations supplied by session contributors. Use credential references, not tokens.
 mcpServers: []
@@ -283,6 +285,9 @@ broker:
   historyHydrationMaxFrames: 100000
   historyHydrationMaxBytes: 67108864
   effortControlTimeoutSeconds: 15
+  # Seconds Claude's model/effort confirm dialog must stay unchanged before the broker
+  # answers it (a key sent as it first draws can be lost).
+  effortConfirmSettleSeconds: 1
   # PI paths refer to the session container, not the API host.
   pi:
     binary: pi
@@ -300,6 +305,18 @@ broker:
   tmuxNativeTextWaitSeconds: 0.1
   # -- Interval between native transcript reads while that wait is open
   tmuxNativeTextPollSeconds: 0.005
+  # -- How often open native-control cards are re-checked; a card the CLI already
+  # resolved (tool result in the transcript) or whose menu is gone is dismissed
+  tmuxNativeControlSweepIntervalSeconds: 30.0
+  # -- Checks in a row (at most one per sweep interval) that must see no menu before a
+  # question card is dismissed; a permission card closes on one
+  tmuxNativeControlAbsentChecks: 3
+  # -- Claude prompt suggestions in Forge-launched CLIs (each one is a forked model query
+  # per turn); false sets CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=0 for the CLI only (LEX-2026)
+  tmuxPromptSuggestions: false
+  # -- Claude Code's own auto-deny timeout for a person-only safety prompt (stated in the
+  # attention notification; not enforced by Skuld)
+  tmuxPersonOnlyPromptTimeoutSeconds: 120.0
   museBin: ""
   # -- (DEPRECATED) AI CLI backend: "claude" (Claude Code, default) or "codex" (OpenAI Codex).
   # Use broker.transportAdapter instead. Kept for backward compatibility during rollout.

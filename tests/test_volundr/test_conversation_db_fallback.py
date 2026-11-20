@@ -1151,7 +1151,7 @@ async def test_unknown_session_conversation_404_not_empty_body() -> None:
     assert resp.status_code == 404
 
 
-async def test_recent_rest_budget_and_on_demand_full_message(monkeypatch):
+async def test_recent_rest_budget_drops_older_whole_turns_only(monkeypatch):
     event_log = InMemorySessionEventLog()
     client, repository = _build_client(
         Session(name="recent", model="m", status=SessionStatus.STOPPED), event_log
@@ -1171,16 +1171,17 @@ async def test_recent_rest_budget_and_on_demand_full_message(monkeypatch):
     path = _CONV_PATH.format(sid=session.id)
     recent = client.get(path, params={"detail": "shallow", "limit": 15, "max_bytes": 4096})
     assert recent.status_code == 200
-    assert len(recent.content) <= 4096
     body = recent.json()
     assert body["total_turns"] == 50
+    # Older whole turns were dropped; the one turn larger than the budget is whole.
     assert body["window_offset"] == 49
     assert body["turns"][0]["in_progress"] is True
-    assert body["turns"][0]["history_preview"] is True
+    assert body["turns"][0]["content"] == live_body["turns"][-1]["content"]
+    assert "history_preview" not in body and "history_preview" not in body["turns"][0]
     assert body["is_active"] is True
-    expanded = client.get(path, params={"detail": "shallow", "limit": 1}).json()
-    assert expanded["turns"][0]["content"] == live_body["turns"][-1]["content"]
-    assert not expanded["turns"][0].get("history_preview", False)
+    small = client.get(path, params={"detail": "shallow", "limit": 15, "max_bytes": 200_000})
+    assert len(small.content) <= 200_000
+    assert [t["id"] for t in small.json()["turns"]] == [str(i) for i in range(48, 50)]
     older = client.get(path, params={"detail": "shallow", "limit": 15, "before": 1}).json()
     assert older["window_offset"] == 34
     assert [t["id"] for t in older["turns"]] == [str(i) for i in range(34, 49)]

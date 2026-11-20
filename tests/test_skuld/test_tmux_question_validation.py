@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import copy
 import json
 
@@ -385,25 +384,16 @@ async def _workflow_gate(transport, events):
             "permission_mode": "auto",
         }
     )
-    for _ in range(200):
-        cards = _ask_user_questions(events)
-        if len(cards) == 2:
-            return cards
-        await asyncio.sleep(0.01)
-    raise AssertionError(f"the live Workflow menu was never offered: {cards}")
+    # One card, sent once the menu is read, offering the menu's own rows (LEX-1950).
+    [card] = _ask_user_questions(events)
+    return card
 
 
 async def test_custom_gate_menu_is_offered_with_its_live_rows(bridge):
     """Regression: KSE fleet (30 Sep). Workflow's own gate was unanswerable for 44 min."""
     transport, events = bridge
     transport.capture_stdout = WORKFLOW_MENU
-    generic, live = await _workflow_gate(transport, events)
-    assert generic["request_id"] == live["request_id"]
-    assert [o["label"] for o in generic["questions"][0]["options"]] == [
-        "Allow",
-        "Allow & don't ask again",
-        "Deny",
-    ]
+    live = await _workflow_gate(transport, events)
     assert [o["label"] for o in live["questions"][0]["options"]] == [
         "Yes, run it",
         "View raw script",
@@ -423,7 +413,7 @@ async def test_custom_gate_menu_is_offered_with_its_live_rows(bridge):
 async def test_generic_deny_picks_a_custom_gate_s_own_no_row(bridge):
     transport, events = bridge
     transport.capture_stdout = WORKFLOW_MENU
-    _, live = await _workflow_gate(transport, events)
+    live = await _workflow_gate(transport, events)
     transport.steps.append(("3", "❯\n"))
     await transport.send_control(
         "ask_user_answer", request_id=live["request_id"], answers=[{"answer": "Deny"}]
@@ -443,7 +433,7 @@ async def test_generic_deny_picks_a_custom_gate_s_own_no_row(bridge):
 async def test_a_custom_gate_refuses_what_its_menu_cannot_do(bridge, answer, error):
     transport, events = bridge
     transport.capture_stdout = WORKFLOW_MENU
-    _, live = await _workflow_gate(transport, events)
+    live = await _workflow_gate(transport, events)
     with pytest.raises(ValueError, match=error):
         await transport.send_control(
             "ask_user_answer", request_id=live["request_id"], answers=[{"answer": answer}]
@@ -452,9 +442,13 @@ async def test_a_custom_gate_refuses_what_its_menu_cannot_do(bridge, answer, err
     assert live["request_id"] in transport._pending_tty_prompts
 
 
-async def test_the_standard_permission_menu_keeps_the_generic_card(bridge):
+async def test_the_standard_permission_menu_card_offers_its_live_rows(bridge):
     transport, events = bridge
     transport.capture_stdout = PERMISSION_MENU
     await hook(transport, "PermissionRequest", tool="Bash")
-    await asyncio.sleep(0.2)
-    assert len(_ask_user_questions(events)) == 1
+    [card] = _ask_user_questions(events)
+    assert [o["label"] for o in card["questions"][0]["options"]] == [
+        "Yes",
+        "Yes, and don't ask again for AskUserQuestion",
+        "No, and tell Claude what to do differently (esc)",
+    ]

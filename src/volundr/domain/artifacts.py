@@ -39,6 +39,7 @@ from niuu.domain.presented_files import (
     PRESENTED_VERSION_LABEL_FIELD,
     presented_artifact_provider_key,
 )
+from niuu.domain.work_facts import is_side_query_hook
 from volundr.domain.models import SessionLogEntry
 from volundr.domain.presented_files import presented_file_path, recorded_durable_url
 
@@ -535,6 +536,8 @@ def _from_hook(
 ) -> PublicationCandidate | None:
     if payload.get("hook_event_name") != "PostToolUse":
         return None
+    if is_side_query_hook(payload):
+        return None  # a Claude Code side query publishes nothing (LEX-2026)
     inner = payload.get("payload")
     if not isinstance(inner, dict) or inner.get("tool_name") != ARTIFACT_TOOL_NAME:
         return None

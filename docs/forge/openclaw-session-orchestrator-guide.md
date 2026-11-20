@@ -801,6 +801,12 @@ The turn blocks until a client answers:
 A controller that cannot meaningfully answer should surface the question to a
 human rather than auto-answering.
 
+In a Claude tmux session (LEX-2016) an answer may cover only some of the questions: name
+each question it answers, and list the rest in `"skipped": ["..."]`. A user message sent
+while a question is open closes the question the way Claude's own menu does ("Chat about
+this") and is then delivered; only a permission prompt refuses a message. See
+`docs/forge/native-control-events.md`.
+
 ### What to send
 
 The simplest valid user frame is:
@@ -949,17 +955,47 @@ If your controller does not want to maintain a direct WebSocket, you can still d
 POST /api/v1/forge/sessions/{session_id}/messages
 Content-Type: application/json
 
-{"content":"Implement the requested change."}
+{"content":"Implement the requested change.","sender":"automation"}
 ```
 
 This is a proxy. Under the hood, the platform connects to the live session WebSocket for you and sends the user frame.
+
+#### Who sent it (`sender`)
+
+Every message records its sender, set by the server from the path it took and
+never parsed from its text (LEX-1910, `niuu.domain.message_sender`). The turn,
+its `user_confirmed` frame and the durable log carry it as a top-level `sender`
+object; clients read it before anything else:
+
+| `sender` | Set when |
+|---|---|
+| `{"kind": "user"}` | the owner's Lexi client sends `"sender": "user"`, or (until every client sends it) uses a client request id: iOS UPPERCASE UUID, web/Mac `<epoch ms>-<base36>`, `forge-ios-`/`forge-web-`/`forge-mac-` |
+| `{"kind": "agent", "sub_kind": "session", "id", "name", "host"}` | a session calls Forge MCP `send_message` (its credential says which session; `"via": "guild"` when relayed from another node) |
+| `{"kind": "agent", "sub_kind": "voice_call", "id": <call id>}` | the owner speaking in a Lexi voice call, relayed by the voice agent: the caller sends `"voice_call"` or that object, or (until the voice agent sends it) uses a `voice-call-` request id, which names no call (LEX-2013) |
+| `{"kind": "agent", "sub_kind": "automation", "name": <driver>}` | a script or driver sends `"automation"` or that object |
+| `{"kind": "agent", "sub_kind": "unknown"}` | no `sender`, no client request id and no `voice-call-` request id. Never the user |
+
+A REST body cannot claim a session sender (400: only `send_message` sets it),
+nor `assistant`. For every sender except the user, the text the model receives
+starts with one header line, for example
+`[Message from automation lexi-errturn-m6, not typed by the user]`, then a blank
+line and the message. A voice call is the owner, so its header says so:
+`[From the user by voice: Lexi voice call <id>, relayed by the voice agent]`. Forge sends
+a voice message to the broker unheaded and the broker writes that header, so a broker
+launched before LEX-2013 still accepts it and heads it in its older words until it restarts.
+A slash command (`/clear`) is delivered unheaded so it still runs. The stored turn keeps the message as sent. `POST /sessions` takes
+`initial_prompt_sender` the same way for the first prompt; without one, the first
+prompt carries no sender.
 
 Expected response:
 
 ```json
 {
-  "status": "sent",
-  "session_id": "<id>"
+  "status": "delivered",
+  "session_id": "<id>",
+  "request_id": "<id>",
+  "delivery": "delivered",
+  "sender": {"kind": "agent", "sub_kind": "automation"}
 }
 ```
 
@@ -1040,6 +1076,56 @@ or `turn_id`. It overrides `history_protocol` and `limit`, so a client can send
 it and answers with its protocol-2 recent page, which is also the newest turns.
 Without `tail`, the response is unchanged. Check for `tail` (or
 `history_protocol: 2`) in the response before trusting it as a tail.
+
+### Bounded history pages: turns are never cut (LEX-1937)
+
+`?history_protocol=2&detail=shallow&limit=N&max_bytes=B` returns a recent page;
+its `older_cursor` / `refresh_cursor` / `continuation_cursor` continue it. The
+rule for the byte budget is:
+
+- **The budget only drops older whole turns.** Every returned turn is complete:
+  `content`, `reasoning`, metadata and every part and tool call. Only the usual
+  shallow elision applies (heavy `tool_result` content and `tool_use` input become
+  lazy placeholders, loaded through `/tool-result/{tool_use_id}`).
+- **A single turn larger than the budget is elided deeper, then returned whole**
+  (LEX-2017). Without `part_paging`, every `tool_result` body and `tool_use` input
+  whose placeholder is smaller than it becomes one (the same placeholder shapes,
+  loaded through the same `/tool-result/{tool_use_id}`), whatever its size; every
+  part and tool call stays. `AskUserQuestion` inputs stay whole. If even that does
+  not fit, the shallow turn is returned whole as before (the page is then larger
+  than `max_bytes`). A WebSocket replay whose frame would exceed
+  `conversation_snapshot_max_bytes` is not sent; protocol 2 sends a `history_gap`
+  (`snapshot_too_large`) and older clients get `conversation_history_too_large`,
+  and both read the page over REST.
+- **Within-turn paging, opt-in with `part_paging=1`** (REST, or the protocol-2
+  WebSocket query). When one turn alone exceeds the budget, the page holds only
+  that turn, restricted to the largest suffix of its complete parts that fits
+  (at least one part; a part is never cut, so one part bigger than the budget is
+  sent on its own). The turn carries
+  `"part_window": {"offset": o, "end": e, "total": n}`, and the page keeps
+  `window_offset = k`, `window_end = k + 1` (so `window_end - window_offset ==
+  len(turns)` still holds). Its `older_cursor` names the same turn's parts
+  `[0, o)`; following it returns the preceding parts, packed together with any
+  earlier whole turns that fit, until `offset` is 0, after which `older_cursor`
+  continues with earlier turns as usual. A page never starts on a `tool_result`
+  whose `tool_use` is in an older page: a call and its result arrive together.
+  `content` and `reasoning` ride only the fragment that holds the turn's last
+  part (`end == total`); older fragments carry the identity, role, timestamps and
+  metadata. A client merges fragments by turn `id`, prepending parts. A refresh
+  of a fragment's `refresh_cursor` returns the same part range; a refresh of an
+  interval whose last turn has grown past the budget returns its newest parts
+  and a `continuation_cursor` for the rest. Cursors with a part range are the
+  six-element protocol-2 cursor plus `[part_start, part_end]`; existing cursors
+  are unchanged.
+- **`history_preview` is legacy.** The server no longer sets it (or
+  `history_ref`, `preview_omitted_parts`, `history_metadata_preview`): nothing is
+  cut, so there is no preview. Old clients treat its absence as a complete turn.
+  The full item read (`?turn_id=<id>` or `/conversation/turns/{id}`) still works;
+  with `detail=shallow` it now keeps heavy tool results lazy.
+
+Without `part_paging`, a client never receives a `part_window`, so clients that
+predate it (web-next, earlier iOS/Mac builds) keep working: they get the whole turn,
+deep-elided when that is what fits.
 
 ### Image tool-result previews
 

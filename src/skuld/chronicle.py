@@ -4,7 +4,6 @@ import asyncio
 import json
 import logging
 import time
-from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -12,7 +11,7 @@ from typing import Any
 from niuu.domain.outcome import parse_outcome_block
 from niuu.utils import import_class
 from skuld.channels import TelegramChannel, TelegramChannelError
-from skuld.conversation_models import CHRONICLE_SUMMARY_PROMPT, SUMMARY_TIMEOUT_SECONDS
+from skuld.conversation_models import CHRONICLE_SUMMARY_PROMPT, SUMMARY_TIMEOUT_SECONDS, turn_record
 from skuld.event_log import FORGE_SESSIONS_PATH
 from sleipnir.domain.catalog import ravn_session_ended
 from volundr.log_aggregate import aggregate_workspace_logs
@@ -395,7 +394,7 @@ class ChronicleMixin:
         """Write a workspace-backed archive snapshot for stopped-session reads."""
         try:
             transcript_payload = {
-                "turns": [asdict(turn) for turn in self._conversation_turns],
+                "turns": [turn_record(turn) for turn in self._conversation_turns],
                 "is_active": False,
                 "last_activity": "",
             }

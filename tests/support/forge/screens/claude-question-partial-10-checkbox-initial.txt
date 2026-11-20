@@ -1,0 +1,16 @@
+←  ☐ Toppings  ☐ Size  ✔ Submit  →
+
+Which toppings?
+
+❯ 1. [ ] Cheese
+         Cheese topping
+  2. [ ] Ham
+         Ham topping
+  3. [ ] Olives
+         Olives topping
+  4. [ ] Type something
+     Next
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  5. Chat about this
+
+Enter to select · Tab/Arrow keys to navigate · Esc to cancel

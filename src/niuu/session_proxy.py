@@ -18,6 +18,7 @@ from starlette.responses import JSONResponse, Response
 from identity.adapters.http_auth import extract_principal
 from niuu.config import NiuuSettings
 from niuu.domain.models import Principal
+from niuu.domain.session_endpoint import BROKER_UNAVAILABLE_HEADER
 from niuu.domain.session_voice import SESSION_VOICE_PATH
 from niuu.ports.session_proxy import SessionProxyTarget
 from niuu.room_access import (
@@ -32,6 +33,28 @@ logger = logging.getLogger(__name__)
 #: The room role the voice channel needs: it is the session owner's call, so a participant
 #: or viewer never reaches it, whatever the broker would admit.
 _VOICE_ROOM_ROLE = "owner"
+
+#: How long the proxy waits for a session broker's HTTP answer (the existing value; a hit
+#: is logged and answered 504).
+PROXY_READ_TIMEOUT_SECONDS = 30.0
+
+
+def _log_broker_failure(session_id: str, method: str, path: str, reason: str, detail: str) -> None:
+    """One line saying why a proxied read to a session broker failed (LEX-1847)."""
+    logger.warning(
+        "Session %s broker failed %s %s: %s (%s)", session_id, method, path, reason, detail
+    )
+
+
+def _broker_detail(response: httpx.Response) -> str:
+    """The broker's own error detail, when it gave one."""
+    try:
+        payload = response.json()
+    except ValueError:
+        return response.reason_phrase or "no detail"
+    if isinstance(payload, dict) and payload.get("detail"):
+        return str(payload["detail"])
+    return response.reason_phrase or "no detail"
 
 
 def _configured_cors_origins() -> list[str]:
@@ -779,6 +802,7 @@ async def _proxy_ws(
                 ("history", {"recent"}),
                 ("history_protocol", {"2"}),
                 ("history_delivery", {"none"}),
+                ("part_paging", {"1"}),
             ):
                 value = websocket.query_params.get(key)
                 if value in allowed:
@@ -967,7 +991,7 @@ async def _proxy_http(
     body = await request.body()
 
     try:
-        async with httpx.AsyncClient(timeout=30) as client:
+        async with httpx.AsyncClient(timeout=PROXY_READ_TIMEOUT_SECONDS) as client:
             resp = await client.request(
                 method=request.method,
                 url=url,
@@ -975,15 +999,46 @@ async def _proxy_http(
                 headers=headers,
                 content=body if body else None,
             )
+        if resp.status_code >= 500:
+            _log_broker_failure(
+                session_id,
+                request.method,
+                proxy_path,
+                f"broker answered {resp.status_code}",
+                _broker_detail(resp),
+            )
         return Response(
             content=resp.content,
             status_code=resp.status_code,
             headers=dict(resp.headers),
         )
-    except httpx.ConnectError:
+    except httpx.TimeoutException as exc:
+        _log_broker_failure(
+            session_id,
+            request.method,
+            proxy_path,
+            f"no answer within {PROXY_READ_TIMEOUT_SECONDS:g} s",
+            type(exc).__name__,
+        )
+        return JSONResponse(
+            {"detail": "Skuld broker did not answer in time"},
+            status_code=504,
+            headers={BROKER_UNAVAILABLE_HEADER: "timeout"},
+        )
+    except httpx.ConnectError as exc:
+        _log_broker_failure(session_id, request.method, proxy_path, "could not connect", str(exc))
         return JSONResponse(
             {"detail": "Skuld broker not ready"},
             status_code=502,
+            headers={BROKER_UNAVAILABLE_HEADER: "connect"},
+        )
+    except httpx.TransportError as exc:
+        # A broker that dropped mid-response (crash, protocol error): name it too.
+        _log_broker_failure(session_id, request.method, proxy_path, "transport failed", repr(exc))
+        return JSONResponse(
+            {"detail": "Skuld broker connection failed"},
+            status_code=502,
+            headers={BROKER_UNAVAILABLE_HEADER: "transport"},
         )
 
 

@@ -9,7 +9,7 @@ import re
 import socket
 import time
 import uuid
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
@@ -39,7 +39,7 @@ from niuu.forge_mcp.models import (
 from niuu.forge_mcp.ports import ForgeClient, ForgeMcpHost
 from niuu.observability import get_observability
 from niuu.ports.mesh import PeerNotFoundError
-from skuld.conversation_models import ConversationTurn
+from skuld.conversation_models import ConversationTurn, turn_record
 from skuld.mesh_follows import MeshFollowError, follow_for
 from skuld.mesh_topics import (
     InvalidTopicError,
@@ -246,7 +246,7 @@ class BrokerForgeMcpHost(ForgeMcpHost):
         if entry is None:
             raise ForgeApiError("the durable log refused the notification turn", status=503)
         receipt = broker._watch_event_log_entry(entry)
-        await broker._channels.broadcast({"type": "conversation.turn", "turn": asdict(turn)})
+        await broker._channels.broadcast({"type": "conversation.turn", "turn": turn_record(turn)})
         stored = await broker._await_event_log_receipt(
             receipt, broker._settings.forge_mcp.notify_confirm_timeout_s
         )
@@ -280,7 +280,7 @@ class BrokerForgeMcpHost(ForgeMcpHost):
         if entry is None:
             raise ForgeApiError("the durable log refused the report turn", status=503)
         receipt = broker._watch_event_log_entry(entry)
-        await broker._channels.broadcast({"type": "conversation.turn", "turn": asdict(turn)})
+        await broker._channels.broadcast({"type": "conversation.turn", "turn": turn_record(turn)})
         stored = await broker._await_event_log_receipt(
             receipt, broker._settings.forge_mcp.notify_confirm_timeout_s
         )
@@ -1235,7 +1235,7 @@ class BrokerForgeMcpHost(ForgeMcpHost):
         # Same durable path as present-file: history + durable log first, then live.
         if broker._append_turn(turn) is None:
             raise ForgeApiError("the durable log refused the secret request turn", status=503)
-        await broker._channels.broadcast({"type": "conversation.turn", "turn": asdict(turn)})
+        await broker._channels.broadcast({"type": "conversation.turn", "turn": turn_record(turn)})
 
     async def _await_secret_answer(
         self, session_id: str, request_id: str, name: str, request: dict[str, Any]

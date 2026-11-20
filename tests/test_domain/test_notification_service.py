@@ -11,6 +11,7 @@ from niuu.domain.models import IntegrationConnection, IntegrationType, Principal
 from niuu.domain.notifications import (
     NotificationDraft,
     NotificationKind,
+    NotificationSeverity,
     build_notification_turn,
     notification_id,
     turn_dedupe_key,
@@ -296,6 +297,30 @@ class TestAttention:
             request_id="",
         )
         assert len(created.title) == 200 and len(created.body) == 4000
+
+    async def test_urgent_attention_says_so_but_keeps_quiet_hours(self):
+        """LEX-1936: a prompt that auto-denies in ~2 minutes is flagged in its title, but
+        stays warning: it fails closed, so it never overrides the owner's quiet hours."""
+        service, _ = _service()
+        urgent = await service.record_attention(
+            _session(),
+            state_since=datetime.now(UTC),
+            kind="permission",
+            prompt="Only a person may approve this",
+            request_id="tty-1-x",
+            urgent=True,
+        )
+        assert urgent.severity == NotificationSeverity.WARNING
+        assert urgent.title.endswith("needs your input now (denied by itself in about 2 minutes)")
+        normal = await service.record_attention(
+            _session(),
+            state_since=datetime.now(UTC),
+            kind="permission",
+            prompt="Run ls?",
+            request_id="tty-2-x",
+        )
+        assert normal.severity == NotificationSeverity.WARNING
+        assert normal.title.endswith("needs your input")
 
 
 class TestAttentionPushRule:

@@ -39,6 +39,7 @@ from niuu.domain.notifications import (
     notification_id,
     notification_image_url,
     notification_visible_to,
+    question_ref,
     severity_rank,
 )
 from niuu.domain.person_question import ASKED_PERSON_KEY
@@ -230,6 +231,20 @@ class Notification(BaseModel):
             return None
         return {"kind": kind, "request_id": _metadata_text(self.metadata, "request_id")}
 
+    def question_ref(self, host: str) -> str | None:
+        """The question this item is or is about (LEX-1932), else ``None``.
+
+        A question (``question: true``) is ``question:<host>:<its id>``; a notice that
+        refers to one (``about_question``) names that ref. Its alert collapses under the
+        ref, so a remind, replace or resolve replaces the question's alert in place.
+        """
+        if self.metadata.get("question") is True:
+            return question_ref(host, self.id)
+        about = self.metadata.get("about_question")
+        if isinstance(about, dict) and isinstance(about.get("id"), str):
+            return about["id"]
+        return None
+
     def wire(self) -> dict[str, Any]:
         """The ``NotificationResponse`` JSON without the per-reader ``read`` flag.
 
@@ -351,10 +366,16 @@ class NotificationQuery:
     unresolved: bool | None = None
     #: One owner's notifications only (the push gateway's delivery view).
     owner_id: str | None = None
+    #: Only these notifications (LEX-1932: the app re-reads its open questions by id).
+    ids: tuple[UUID, ...] = ()
 
     def __post_init__(self) -> None:
         if self.limit < 1:
             raise ValueError("limit must be at least 1")
+        if len(self.ids) > self.limit:
+            raise ValueError(
+                f"At most limit={self.limit} ids per page; raise limit or split the ids"
+            )
         if self.before is not None and self.after is not None:
             raise ValueError("Use either before or after, not both")
 

@@ -66,6 +66,7 @@ from niuu.mesh.config import MeshSettings
 from personas.config import PersonaSourceConfig
 from skuld.tool_result_preview import PREVIEW_EDGE_LIMIT, PREVIEW_MAX_EDGE, PREVIEW_MIN_EDGE
 from volundr.compute.config import ComputeConfig
+from volundr.domain.launch_env import LaunchEnvRule
 from volundr.domain.mcp_hosts import normalize_internal_host_pattern
 from volundr.domain.model_gateway import MODEL_GATEWAY_TOKEN_ENV
 from volundr.domain.models import (
@@ -1041,6 +1042,14 @@ class PushBackgroundConfig(BaseModel):
         ge=1,
         le=10,
         description="apns-priority of a background push. APNs refuses 10 for this type.",
+    )
+    questions: bool = Field(
+        default=True,
+        description=(
+            "LEX-1932: with enabled, a silent push to every iOS device of the owner for "
+            "each question state change (answered, resolved, withdrawn), so every device "
+            "drops the question. Event-driven, not spaced by min_interval_seconds."
+        ),
     )
 
 
@@ -3368,6 +3377,7 @@ class SessionUsageConfig(BaseModel):
     model_windows: dict[str, Annotated[int, Field(strict=True, gt=0, le=2**53 - 1)]] = Field(
         default_factory=lambda: {
             "claude-opus-5-5": 1_000_000,
+            "claude-fable-5-2": 1_000_000,
             "claude-fable-5-1": 1_000_000,
             "claude-sonnet-5-5": 1_000_000,
         },
@@ -3917,6 +3927,21 @@ class Settings(BaseSettings):
     external_sessions: ExternalSessionsConfig = Field(default_factory=ExternalSessionsConfig)
     telegram_ingress: TelegramIngressConfig = Field(default_factory=TelegramIngressConfig)
     session_contributors: list[SessionContributorConfig] = Field(default_factory=list)
+    session_launch_env: dict[str, LaunchEnvRule] = Field(
+        default_factory=lambda: {
+            # Model the CLI's helpers (subagents) use unless the caller names one.
+            "CLAUDE_CODE_SUBAGENT_MODEL": LaunchEnvRule(
+                pattern=r"[A-Za-z0-9][A-Za-z0-9._\[\]-]{0,99}"
+            ),
+            # Context size at which the CLI auto-compacts; Claude Code accepts 100k-1M.
+            "CLAUDE_CODE_AUTO_COMPACT_WINDOW": LaunchEnvRule(min_int=100_000, max_int=1_000_000),
+        },
+        description=(
+            "Environment variables a session may set for its CLI (workload_config.launch_env, "
+            "set at create or by PUT /sessions/{id} launch_env), each with the rule its value "
+            "must meet. Any other name is refused. Applied at every start and restart (LEX-2045)."
+        ),
+    )
     session_definitions: dict[str, SessionDefinitionConfig] = Field(
         default_factory=default_session_definitions,
         description="Session definitions keyed by name (e.g. skuldClaude, skuldCodex).",

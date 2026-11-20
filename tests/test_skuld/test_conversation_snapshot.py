@@ -174,24 +174,26 @@ def test_recent_window_preserves_absolute_offsets_and_live_tail():
 
 
 @pytest.mark.parametrize("text", ["界😀" * 100_000, '\x00\n"' * 100_000])
-def test_single_huge_live_turn_is_bounded_preview_without_changing_source(text):
+def test_single_huge_live_turn_is_served_whole_never_cut(text):
     frame = {
         "turns": [
+            {"id": "older", "content": "dropped whole", "parts": []},
             {
                 "id": "active",
                 "in_progress": True,
                 "content": text,
                 "parts": [{"type": "text", "text": text}],
-            }
+            },
         ]
     }
     original = copy.deepcopy(frame)
     recent = prepare_recent_snapshot(frame, max_bytes=4096, max_turns=15)
-    assert snapshot_byte_size(recent) <= 4096
-    assert recent["history_preview"]
-    assert recent["turns"][0]["history_preview"]
-    assert recent["turns"][0]["in_progress"]
-    assert text.endswith(recent["turns"][0]["content"])
+    # The budget dropped the older turn; the newest turn is never cut to fit.
+    assert snapshot_byte_size(recent) > 4096
+    assert recent["window_offset"] == 1 and recent["total_turns"] == 2
+    assert recent["turns"] == [frame["turns"][1]]
+    assert "history_preview" not in recent
+    assert "history_preview" not in recent["turns"][0]
     assert frame == original
 
 
@@ -253,15 +255,82 @@ async def test_recent_broker_replay_is_opt_in_bounded_and_keeps_live_receive_loo
         [],
     ],
 )
-def test_recent_huge_turn_preview_keeps_source_and_does_not_fabricate_questions(parts):
+def test_recent_huge_turn_keeps_every_part_and_question_whole(parts):
     frame = {"turns": [{"id": "last", "content": "\x00" * 10000, "parts": parts}]}
     original = copy.deepcopy(frame)
     recent = prepare_recent_snapshot(frame, max_bytes=2048, max_turns=15)
-    assert snapshot_byte_size(recent) <= 2048
-    assert recent["turns"][0]["history_preview"]
-    if parts and parts[0].get("name") == "AskUserQuestion":
-        assert recent["turns"][0]["parts"] == []
+    assert recent["turns"] == frame["turns"]
+    assert not any("history_preview" in item for item in (recent, *recent["turns"]))
     assert frame == original
+
+
+async def test_ws_replay_of_a_turn_over_the_frame_limit_is_a_rest_gap_not_a_cut(tmp_path):
+    broker = _broker(
+        tmp_path, conversation_snapshot_max_bytes=4096, conversation_recent_max_bytes=4096
+    )
+    broker._transport = AsyncMock()
+    broker._transport.is_alive = True
+    broker._transport.capabilities = TransportCapabilities()
+    broker._conversation_turns = [
+        ConversationTurn(id="huge", role="assistant", content="x" * 20_000, parts=[])
+    ]
+    sent = []
+    receive = AsyncMock(
+        side_effect=[{"type": "websocket.connect"}, {"type": "websocket.disconnect", "code": 1000}]
+    )
+    socket = WebSocket(
+        {"type": "websocket", "headers": [], "query_string": b"history=recent"},
+        receive,
+        AsyncMock(side_effect=sent.append),
+    )
+    await broker.handle_websocket(socket)
+    frames = [json.loads(item["text"]) for item in sent if item.get("type") == "websocket.send"]
+    assert not any(frame.get("type") == "conversation_history" for frame in frames)
+    assert any(frame.get("code") == "conversation_history_too_large" for frame in frames)
+    assert receive.await_count == 2
+
+
+async def test_ws_protocol2_part_paging_replays_complete_parts_of_a_huge_turn(tmp_path):
+    broker = _broker(
+        tmp_path, conversation_snapshot_max_bytes=8192, conversation_recent_max_bytes=8192
+    )
+    broker._transport = AsyncMock()
+    broker._transport.is_alive = True
+    broker._transport.capabilities = TransportCapabilities()
+    parts = []
+    for i in range(60):
+        parts.append(
+            {"type": "tool_use", "id": f"c{i}", "name": "Bash", "input": {"command": "ls"}}
+        )
+        parts.append({"type": "tool_result", "tool_use_id": f"c{i}", "content": "r" * 400})
+    broker._conversation_turns = [
+        ConversationTurn(id="long", role="assistant", content="done", parts=parts)
+    ]
+    sent = []
+    receive = AsyncMock(
+        side_effect=[{"type": "websocket.connect"}, {"type": "websocket.disconnect", "code": 1000}]
+    )
+    socket = WebSocket(
+        {
+            "type": "websocket",
+            "headers": [],
+            "query_string": b"history_protocol=2&part_paging=1",
+        },
+        receive,
+        AsyncMock(side_effect=sent.append),
+    )
+    await broker.handle_websocket(socket)
+    frames = [json.loads(item["text"]) for item in sent if item.get("type") == "websocket.send"]
+    page = next(frame for frame in frames if frame.get("type") == "conversation_history")
+    assert snapshot_byte_size(page) <= 8192
+    turn = page["turns"][0]
+    window = turn["part_window"]
+    assert 0 < window["offset"] < window["end"] == window["total"] == 120
+    assert turn["parts"] == parts[window["offset"] :]
+    assert turn["parts"][0]["type"] == "tool_use"
+    assert turn["content"] == "done"
+    assert page["older_cursor"] and page["has_more_before"]
+    assert "history_preview" not in turn
 
 
 @pytest.mark.parametrize(

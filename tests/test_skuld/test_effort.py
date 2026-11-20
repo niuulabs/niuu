@@ -15,6 +15,7 @@ from skuld.transports.grok import GrokACPTransport
 from skuld.transports.muse import MuseMSPTransport
 from skuld.transports.pi import PiProtocolError, PiRpcTransport
 from skuld.transports.tmux_interactive import TmuxInteractiveTransport
+from tests.support.claude_pickers import effort_ack, effort_slider
 
 
 @pytest.fixture
@@ -176,8 +177,10 @@ async def test_muse_and_claude_launch_and_change(tmp_path, claude_model):
     assert args[args.index("--effort") + 1] == "xhigh"
     claude._wait_for_repl_ready = AsyncMock()
     claude._send_slash_command = AsyncMock()
+    claude._send_key = AsyncMock()
+    claude._pane_poll_interval_s = 0
     claude._capture_pane_text = AsyncMock(
-        return_value="Set effort level to high\nSet effort level to low"
+        side_effect=[effort_slider("xhigh"), effort_slider("low"), effort_ack("low")]
     )
     await claude._set_effort("low")
     assert (await claude.get_effort())["current"] == "low"
@@ -221,3 +224,40 @@ def test_catalog_metadata_and_host_only_additions():
     assert validate_effort("extra-high", ["xhigh"]) == "xhigh"
     with pytest.raises(ValueError):
         ManagedModelConfig(id="invalid", name="invalid", effort_levels=[], default_effort="high")
+
+
+def test_a_model_with_its_own_default_effort_launches_there():
+    # Claude Fable 5.2 defaults to high (LEX-2021); other Claude models keep extra high.
+    levels = ["low", "medium", "high", "xhigh", "max"]
+    assert preferred_effort(levels, "claude-fable-5-2") == "high"
+    assert preferred_effort(levels, "claude-fable-5-1") == "xhigh"
+    assert preferred_effort(levels) == "xhigh"
+
+
+def test_every_codex_catalog_model_has_its_native_effort_levels():
+    """Forge's effort table matches Codex's own model catalog (fixtures/codex/model-efforts.json).
+
+    A model missing here makes a session launched at any effort fail at startup
+    ("Unsupported effort 'ultra'. Available: no configurable levels"), as gpt-6.2-astra did.
+    Refresh the fixture from ~/.codex*/models_cache.json when Codex ships new models.
+    """
+    from pathlib import Path
+
+    from niuu.domain.reasoning import MODEL_EFFORTS
+
+    catalog = json.loads(
+        (Path(__file__).parents[1] / "fixtures" / "codex" / "model-efforts.json").read_text()
+    )["models"]
+    mismatched = {
+        slug: (levels, list(MODEL_EFFORTS.get(slug, ())))
+        for slug, levels in catalog.items()
+        if list(MODEL_EFFORTS.get(slug, ())) != levels
+    }
+    assert mismatched == {}
+
+
+@pytest.mark.parametrize("model", ["gpt-6.2-astra", "gpt-6.2-sol", "gpt-6.1-sol"])
+async def test_newer_codex_models_launch_at_ultra_by_default(tmp_path, model):
+    t = CodexWebSocketTransport(str(tmp_path), model=model)
+    assert (await t.get_effort())["current"] == "ultra"
+    assert validate_effort("ultra", (await t.get_effort())["levels"]) == "ultra"

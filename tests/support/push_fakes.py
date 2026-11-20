@@ -15,6 +15,7 @@ from volundr.domain.push import (
     ApnsPush,
     ApnsResult,
     GuildNotification,
+    GuildQuestionEvent,
     PushEnvironment,
     PushTokenKind,
 )
@@ -24,6 +25,8 @@ from volundr.domain.push_ports import (
     GuildFeedError,
     GuildFeedPage,
     GuildNode,
+    GuildNodeHasNoFeedError,
+    GuildQuestionPage,
     PushDelivery,
     PushDeliveryRepository,
     PushDeliveryStatus,
@@ -142,6 +145,13 @@ class FakeGuildFeed(GuildFeed):
         self.after_calls: list[tuple[str, int]] = []
         self.events: asyncio.Queue[str | Exception | None] = asyncio.Queue()
         self.closed = False
+        #: LEX-1932: each node's question changes; a node missing here has no route.
+        self.question_feeds: dict[str, list[GuildQuestionEvent]] = {}
+        self.question_calls: list[tuple[str, int]] = []
+        self.question_down: dict[str, GuildFeedError] = {}
+
+    def add_question_event(self, event: GuildQuestionEvent) -> None:
+        self.question_feeds.setdefault(event.instance_id, []).append(event)
 
     def add(self, *notifications: GuildNotification) -> None:
         for notification in notifications:
@@ -189,6 +199,21 @@ class FakeGuildFeed(GuildFeed):
             items=items,
             position=max((item.seq for item in items), default=position),
             node_pushes_alerts=node in self.self_pushing,
+        )
+
+    async def question_events(self, node: str, position: int, *, limit: int) -> GuildQuestionPage:
+        self.question_calls.append((node, position))
+        self._fail(node)
+        if node in self.question_down:
+            raise self.question_down[node]
+        if node not in self.question_feeds:
+            raise GuildNodeHasNoFeedError(f"Guild node {node}'s question events do not exist")
+        events = sorted(self.question_feeds[node], key=lambda item: item.seq)
+        items = [item for item in events if item.seq > position][:limit]
+        return GuildQuestionPage(
+            items=items,
+            position=items[-1].seq if items else position,
+            head=max((item.seq for item in events), default=0),
         )
 
     async def notification_events(self) -> AsyncIterator[str]:

@@ -1,0 +1,13 @@
+←  ☐ Colour  ☐ Size  ✔ Submit  →
+
+Pick a colour?
+
+❯ 1. Red
+     Red
+  2. Blue
+     Blue
+  3. Type something.
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  4. Chat about this
+
+Enter to select · Tab/Arrow keys to navigate · Esc to cancel

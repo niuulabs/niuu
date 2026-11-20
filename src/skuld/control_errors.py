@@ -22,3 +22,7 @@ def control_error_frame(error: object, message: Any = None, *, code: str | None 
     if isinstance(request_id, str) and request_id:
         frame["request_id"] = request_id
     return frame
+
+
+class NativeControlsUnsupportedError(RuntimeError):
+    """The session's transport surfaces no native-control cards to list or dismiss."""

@@ -8,13 +8,13 @@ Live clients should open at the latest activity and keep receiving events while 
 - Opted-in brokers send at most `conversation_recent_max_turns` (default 15) and `conversation_recent_max_bytes` (default 262144), also respecting the existing socket ceiling. `total_turns`, absolute `window_offset`, `head_seq`, and projection revision retain their meaning. An in-progress trailing turn counts as one turn.
 - Legacy clients continue receiving the complete-snapshot contract. Existing brokers can keep running during deployment; the new app handles their `conversation_history_too_large` response by fetching recent REST activity automatically.
 - REST accepts optional `max_bytes` alongside `limit`, `before`, and `after`. Default zero preserves complete requested pages. Seam mismatch still returns empty turns with `window_offset=-1`.
-- The projection elides tool payloads using existing lazy references, then removes oldest whole turns until it fits. An exceptionally large single turn is an explicit `history_preview`: newest text/parts, stable identity and activity metadata. Omitted tools are never fabricated as successful results or partial actionable questions. Full persisted content is untouched.
+- The projection elides tool payloads using existing lazy references, then removes oldest whole turns until it fits. A turn is never cut (LEX-1937): one turn larger than the budget is returned whole, or — with `part_paging=1` — paged by ranges of complete parts. The server no longer emits `history_preview`; see "Bounded history pages" in `docs/forge/openclaw-session-orchestrator-guide.md`. Full persisted content is untouched.
 - The app asks for bounded activity on initial load and automatic refresh. It skips oversized disk caches, does not persist previews as complete history, and keeps already-visible rows across contiguous refreshes. Older-page and preview expansion are explicit requests; an expanded span remains visible during subsequent refreshes.
 
 ## Acceptance tests
 
 1. Reconnect to a long running session: newest tool/text sequence appears, older count is accurate, no large-history warning, live events continue.
-2. Test 100+ turns and a single enormous active turn, including multibyte and JSON-escaped text. Measure actual serialized bytes, retain cursor/absolute offsets, and compare source objects before/after.
+2. Test 100+ turns and a single enormous active turn, including multibyte and JSON-escaped text: the turn comes back whole (or, with `part_paging=1`, as complete part ranges that rebuild it exactly). Measure with `python -m tests.perf.bench_long_turn_history`.
 3. Expand older history and a preview. Confirm complete stored text, correct page boundaries, and uninterrupted active state, questions, and tools.
 4. Reconnect through a predeployment broker: recent REST recovery works without restarting the native process.
 5. Repair the durable projection or mismatch an incremental seam: reject the stale cache and refetch a recent canonical window.

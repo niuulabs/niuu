@@ -128,6 +128,10 @@ class TestBrokerComposition:
 
         assert hosted["args"] == plain["args"]
 
+    def test_the_confirm_settle_reaches_the_transport(self, tmp_path) -> None:
+        kwargs = _broker(tmp_path, effort_confirm_settle_s=2.5)._build_transport_kwargs()
+        assert kwargs["effort_confirm_settle_s"] == 2.5
+
     def test_skill_is_materialized_outside_the_workspace(self, tmp_path) -> None:
         tools = _broker(tmp_path)._session_tools()
         [plugin] = tools.claude_plugin_dirs

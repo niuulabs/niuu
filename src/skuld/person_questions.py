@@ -20,7 +20,7 @@ from __future__ import annotations
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
@@ -34,7 +34,7 @@ from niuu.domain.person_question import (
 )
 from niuu.forge_mcp.models import ForgeApiError
 from skuld.control_errors import control_error_frame
-from skuld.conversation_models import ConversationTurn
+from skuld.conversation_models import ConversationTurn, turn_record
 from skuld.forge_mcp.forge_client import HttpForgeClient
 from skuld.peer_inbox import AnswerWait
 
@@ -120,7 +120,7 @@ class PersonQuestionMixin:
         # Same durable path as present-file: history + durable log first, then live.
         if self._append_turn(turn) is None:
             raise ForgeApiError("the durable log refused the person question turn", status=503)
-        await self._channels.broadcast({"type": "conversation.turn", "turn": asdict(turn)})
+        await self._channels.broadcast({"type": "conversation.turn", "turn": turn_record(turn)})
 
     def person_question(self, question_id: str) -> PersonQuestion | None:
         """The question put to a person with this id, from the conversation that records it."""

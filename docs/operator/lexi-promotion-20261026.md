@@ -924,6 +924,8 @@ Each has a recommendation; none blocks the switch unless Damien says so.
    model explicitly (`--model`), so the saved default only affects a bare
    `claude` on the box. Tell Damien. Follow up with a per-session config dir only
    if a bare `claude` on Thor/m6 matters. Smoke row 11 sets it back.
+   *Superseded by LEX-2022 (2026-11-09):* the broker now switches through the
+   pickers' "this session only" key and never writes the saved default.
 6. **Resident asks** (B1c.6.3). Ravn's `notify` tool does not advertise
    `question`/`ask`. *Recommendation:* out of B3; a Ravn decision, and it changes
    nothing on either host.

@@ -18,6 +18,7 @@ from httpx import Response
 from identity.adapters.identity import AllowAllIdentityAdapter
 from niuu.adapters.inbound.rest_volundr import create_volundr_router
 from niuu.domain.guild_membership import GuildMembership
+from niuu.domain.peer_message import PeerKind, PeerMessage
 from tests.support.forge_session import OWNER, TENANT, bearer, build_forge_app
 from tests.test_niuu.test_rest_volundr import StubInstanceService, _instance
 from volundr.domain.projects import SessionCoordination
@@ -461,3 +462,59 @@ class TestMemberToHub:
         )
 
         assert response.status_code == 422
+
+
+class TestSenderOnTheLocalNode:
+    """LEX-1910: a session's message on its own node carries its name, stamped by Forge."""
+
+    async def test_send_message_is_labelled_with_the_sending_session_and_node(self):
+        from unittest.mock import patch
+
+        from tests.test_adapters.test_rest import TestSessionMessages
+        from volundr.domain.models import SessionStatus
+
+        forge = build_forge_app()
+        local = _instance(
+            "local",
+            base_url="embedded://local-forge",
+            tenant_id=TENANT,
+            is_default=True,
+            config={"transport": "embedded"},
+        )
+        app = FastAPI()
+        app.state.identity = AllowAllIdentityAdapter(user_repository=AsyncMock())
+        app.include_router(
+            create_volundr_router(StubInstanceService([local]), embedded_forge_app=forge.app)
+        )
+        sender = await forge.session(
+            "voice", workload_config={"forge_mcp": {"grants": ["message"]}}
+        )
+        credential = await forge.start(sender)
+        target = await forge.session(
+            "ios-coordinator",
+            status=SessionStatus.RUNNING,
+            chat_endpoint="ws://localhost:8080/s/ios-coordinator/session",
+        )
+        fake = TestSessionMessages._ack_connect({"type": "user_delivered", "status": "delivered"})
+
+        with patch("websockets.asyncio.client.connect", new=fake):
+            response = TestClient(app).post(
+                f"/api/v1/forge/sessions/{target.id}/messages",
+                json={"content": "READY", "request_id": "fmcp-1"},
+                # A caller cannot name the node; the gateway sets it.
+                headers={**bearer(credential.token), "x-niuu-sender-node": "forged"},
+            )
+
+        assert response.status_code == 200, response.text
+        frame = json.loads(fake.ws.sent[0])
+        # A session's message is a peer envelope Forge stamps from the credential; the
+        # recipient's Skuld writes the sender header (niuu.domain.peer_message).
+        assert frame["type"] == "peer_message"
+        envelope = PeerMessage.from_wire(frame["envelope"])
+        assert (envelope.sender.kind, envelope.sender.id, envelope.sender.name) == (
+            PeerKind.SESSION,
+            str(sender.id),
+            "voice",
+        )
+        assert envelope.sender.node != "forged"
+        assert envelope.content == "READY"

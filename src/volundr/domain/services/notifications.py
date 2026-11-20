@@ -13,9 +13,10 @@ image settles (:mod:`volundr.domain.services.notification_images`).
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
+from typing import Any
 from uuid import UUID, uuid4
 
 from niuu.domain.guild_membership import GuildInstance
@@ -29,8 +30,11 @@ from niuu.domain.notifications import (
     NotificationLink,
     NotificationSeverity,
     NotificationSource,
+    QuestionAction,
     draft_from_log_payload,
     notification_id,
+    parse_question_ref,
+    question_ref,
     summarize_reply,
     turn_dedupe_key,
 )
@@ -75,12 +79,54 @@ from volundr.domain.notifications import (
     attention_push_rule,
 )
 from volundr.domain.ports import EventBroadcaster, IntegrationRepository
+from volundr.domain.push import APNS_MAX_COLLAPSE_ID_BYTES
+from volundr.domain.question_ports import QuestionRepository
+from volundr.domain.questions import (
+    ANSWERED_RESOLUTION,
+    SETTLED_IN_SESSION_RESOLUTION,
+    AnsweredBy,
+    NotAQuestionError,
+    QuestionAnswer,
+    QuestionAnsweredError,
+    QuestionClosedError,
+    QuestionRecord,
+    QuestionState,
+)
 from volundr.domain.services.notification_images import notification_event
 from volundr.domain.services.room_grants import RoomGrantSource
 from volundr.domain.session_participants import SessionParticipant
 from volundr.domain.session_read_state import is_final_output
 
 logger = logging.getLogger(__name__)
+
+#: ``about_question`` actions that close a question (LEX-1932).
+_CLOSING_ACTIONS = frozenset({QuestionAction.RESOLVED.value, QuestionAction.WITHDRAWN.value})
+
+
+class QuestionStoreUnavailableError(Exception):
+    """This node was wired without question state (LEX-1932)."""
+
+
+def _same_answer(
+    record: QuestionRecord, request_id: str, content: str, device: AnsweredBy
+) -> QuestionRecord:
+    """``record`` when it holds this very answer; else why a new one is refused.
+
+    A retry repeats the answer exactly: the same ``request_id`` with other text or from
+    another device is a second answer, refused like any other.
+    """
+    if record.state.closed:
+        raise QuestionClosedError(record)
+    answer = record.answer
+    if (
+        answer is None
+        or answer.request_id != request_id
+        or answer.content != content
+        or answer.device != device
+    ):
+        raise QuestionAnsweredError(record)
+    return record
+
 
 EngineResolver = Callable[[Session], str | None]
 
@@ -224,6 +270,8 @@ class NotificationService(NotificationRecorder):
         attention_retire_page_size: int = 200,
         guild_instance: GuildInstance | None = None,
         room_grants: RoomGrantSource | None = None,
+        questions: QuestionRepository | None = None,
+        question_host: str = "",
     ) -> None:
         if attention_retire_page_size < 1:
             raise ValueError("attention_retire_page_size must be positive")
@@ -250,6 +298,22 @@ class NotificationService(NotificationRecorder):
         # (per-session grants and the roles of its project's members). ``None`` is a
         # service built without room roles; it tells only the session's owner.
         self._room_grants = room_grants
+        # LEX-1932. None: this node keeps no question state (unit-test wiring); the
+        # answer route then refuses with 503 and nothing records a question's state.
+        self._questions = questions
+        if questions is not None and not question_host:
+            raise ValueError(
+                "Question state needs this Forge's host key (host_identity.host, else "
+                "projects.instance_id) to name questions question:<host>:<id>"
+            )
+        self._question_host = question_host
+        longest = question_ref(question_host, UUID(int=0))
+        if questions is not None and len(longest.encode("utf-8")) > APNS_MAX_COLLAPSE_ID_BYTES:
+            raise ValueError(
+                f"Question refs on this Forge ({longest!r}) exceed APNs' "
+                f"{APNS_MAX_COLLAPSE_ID_BYTES}-byte apns-collapse-id, so phones could not "
+                "replace or remove a question's alert: shorten host_identity.host"
+            )
 
     # -- Projection --------------------------------------------------------
 
@@ -323,12 +387,21 @@ class NotificationService(NotificationRecorder):
         kind: str,
         prompt: str,
         request_id: str,
+        urgent: bool = False,
     ) -> Notification | None:
         context = self._context(session)
         draft = NotificationDraft(
             kind=NotificationKind.ATTENTION,
+            # An urgent request (one the CLI denies by itself in about two minutes)
+            # says so in its title. Its severity stays warning, so the owner's quiet
+            # hours still apply: the prompt fails closed, and no one should be woken
+            # for a decision that has expired by the time they could answer.
             severity=NotificationSeverity.WARNING,
-            title=_bounded(f"{context.session_name} needs your input", MAX_TITLE_CHARS),
+            title=_bounded(
+                f"{context.session_name} needs your input"
+                + (" now (denied by itself in about 2 minutes)" if urgent else ""),
+                MAX_TITLE_CHARS,
+            ),
             body=_bounded(
                 prompt.strip() or _DEFAULT_ATTENTION_PROMPTS.get(kind, _DEFAULT_ATTENTION_PROMPT),
                 MAX_BODY_CHARS,
@@ -354,6 +427,8 @@ class NotificationService(NotificationRecorder):
         rest of the feed's read state is untouched. Returns how many were acknowledged.
         """
         owner = session.owner_id or ""
+        # LEX-1932: the session waits for nothing now, so its runtime questions are settled.
+        await self._settle_runtime_questions(session)
         recipients = [owner] if owner else []
         recipients += [
             person
@@ -951,6 +1026,9 @@ class NotificationService(NotificationRecorder):
                 resolved_at=now,
                 resolved_by=notification.id,
             )
+        about = notification.metadata.get("about_question")
+        if isinstance(about, Mapping) and about.get("action") in _CLOSING_ACTIONS:
+            resolved += await self._close_question(notification, about)
         resolved += await self._settle_group(
             resolved, resolved_at=now, resolved_by=notification.id, resolution=None
         )
@@ -992,6 +1070,226 @@ class NotificationService(NotificationRecorder):
                 resolution=resolution,
             )
         return changed
+
+    # -- Questions (LEX-1932) ----------------------------------------------
+
+    @property
+    def question_host(self) -> str:
+        """This Forge's host key in question refs; empty without question state."""
+        return self._question_host
+
+    def question_ref(self, notification_id: UUID) -> str:
+        """``question:<host>:<id>``, the ref the asking session and the app use."""
+        return question_ref(self._question_host, notification_id)
+
+    def _question_store(self) -> QuestionRepository:
+        if self._questions is None:
+            raise QuestionStoreUnavailableError(
+                "This Forge keeps no question state: wire a QuestionRepository "
+                "(migration 000123) into NotificationService"
+            )
+        return self._questions
+
+    async def answer_question(
+        self,
+        principal: Principal,
+        notification_id: UUID,
+        *,
+        request_id: str,
+        device: AnsweredBy,
+        content: str,
+        answers: list[Any] | None,
+        before_claim: Callable[[Notification], Awaitable[None]] | None = None,
+    ) -> tuple[Notification, QuestionRecord, bool]:
+        """Record the first answer to a notice question (LEX-1932).
+
+        Returns the question's notification, its record and whether this answer is new.
+        ``False`` is the same answer again (the same ``request_id``, ``content`` and
+        device): the caller delivers the recorded answer again, idempotently. A
+        different answer raises :class:`QuestionAnsweredError` with the first; a closed
+        question raises :class:`QuestionClosedError`. A new answer resolves the
+        notification ("Answered on <device>"), as the feed and older app builds expect.
+
+        Only the question's owner answers it (a tenant admin reads the feed but does not
+        answer for someone). ``before_claim`` runs once the question is known to be open,
+        before anything is recorded: the caller refuses there what could never be
+        delivered (no such session, not running, not the caller's), so an answer that
+        cannot reach the asking session never closes the question for every device.
+        """
+        notification = await self._repository.get(notification_id)
+        if notification is None or notification.owner_id != principal.user_id:
+            raise NotificationNotFoundError(f"Notification not found: {notification_id}")
+        if notification.copy_of is not None:
+            # An approver answers through their own copy; the question is the original's,
+            # so the first answer wins whichever row it came through.
+            original = await self._repository.get(notification.copy_of)
+            if original is None:
+                raise NotificationNotFoundError(
+                    f"Notification {notification_id} is a copy of {notification.copy_of}, "
+                    "which no longer exists"
+                )
+            notification = original
+            notification_id = original.id
+        if notification.metadata.get("question") is not True:
+            raise NotAQuestionError(
+                f"Notification {notification_id} is not a question"
+                + (
+                    "; a runtime question is answered on the session socket "
+                    "(ask_user_answer with its request_id)"
+                    if notification.input_request is not None
+                    else ""
+                )
+            )
+        if notification.session_id is None:
+            raise NotAQuestionError(
+                f"Notification {notification_id} has no asking session to deliver the answer to"
+            )
+        store = self._question_store()
+        record = await store.get(notification_id)
+        if record is None and notification.resolved:
+            raise QuestionClosedError(None, notification.resolution or "resolved")
+        if record is None:
+            if before_claim is not None:
+                await before_claim(notification)
+            now = datetime.now(UTC)
+            record, recorded = await store.claim_answer(
+                notification_id=notification_id,
+                owner_id=notification.owner_id,
+                tenant_id=notification.tenant_id,
+                session_id=notification.session_id,
+                answer=QuestionAnswer(
+                    request_id=request_id,
+                    device=device,
+                    content=content,
+                    answers=answers,
+                    at=now,
+                ),
+            )
+            if recorded:
+                await self._resolve_question_notice(
+                    notification, ANSWERED_RESOLUTION.format(label=device.device_label), now
+                )
+                return notification, record, True
+        return notification, _same_answer(record, request_id, content, device), False
+
+    async def _settle_runtime_questions(self, session: Session) -> None:
+        """The session waits for nothing any more: its runtime questions are settled.
+
+        Forge sees only that the session stopped waiting (an answer on the session
+        socket, an interrupt, a stop), not which, so each open runtime question is
+        recorded ``resolved``, never ``answered``. Read or not, every open one is found.
+        """
+        if self._questions is None or not session.owner_id:
+            return
+        scope = NotificationScope(
+            user_id=session.owner_id, tenant_id=session.tenant_id or "", is_admin=False
+        )
+        query = NotificationQuery(
+            limit=self._attention_retire_page_size,
+            session_id=session.id,
+            kinds=(NotificationKind.ATTENTION,),
+            sources=(NotificationSource.SYSTEM,),
+            unresolved=True,
+        )
+        while True:
+            page = await self._repository.list_feed(scope, query, read_through_seq=0)
+            now = datetime.now(UTC)
+            for item in page.items:
+                if item.input_request is None:
+                    continue
+                await self._questions.close(
+                    notification_id=item.id,
+                    owner_id=item.owner_id,
+                    tenant_id=item.tenant_id,
+                    session_id=item.session_id,
+                    state=QuestionState.RESOLVED,
+                    at=now,
+                    closed_by_notification_id=None,
+                )
+                await self._resolve_question_notice(item, SETTLED_IN_SESSION_RESOLUTION, now)
+            if page.next_before is None:
+                return
+            query = replace(query, before=page.next_before)
+
+    async def _close_question(
+        self, notice: Notification, about: Mapping[str, Any]
+    ) -> list[Notification]:
+        """Apply ``about_question`` resolved/withdrawn from the asking session."""
+        ref = about.get("id")
+        parsed = parse_question_ref(ref) if isinstance(ref, str) else None
+        if parsed is None:
+            return []
+        host, question_id = parsed
+        if host != self._question_host:
+            # Another Forge's question: only the Forge that recorded it holds its state,
+            # and the asking session reports to that one.
+            return []
+        question = await self._repository.get(question_id)
+        if (
+            question is None
+            or question.owner_id != notice.owner_id
+            or question.metadata.get("question") is not True
+        ):
+            return []
+        if question.session_id is None or question.session_id != notice.session_id:
+            logger.error(
+                "Not applied: about_question %s on %s came from session %s, not the asking "
+                "session %s (only the asking session may close its question)",
+                about.get("action"),
+                ref,
+                notice.session_id,
+                question.session_id,
+            )
+            return []
+        state = QuestionState(about["action"])
+        record = await self._question_store().close(
+            notification_id=question.id,
+            owner_id=question.owner_id,
+            tenant_id=question.tenant_id,
+            session_id=question.session_id,
+            state=state,
+            at=notice.created_at,
+            closed_by_notification_id=notice.id,
+        )
+        if record is None or question.resolved:
+            return []
+        return await self._repository.resolve(
+            question.owner_id,
+            [question.id],
+            resolved_at=notice.created_at,
+            resolved_by=notice.id,
+            resolution=None,
+        )
+
+    async def _resolve_question_notice(
+        self, notification: Notification, resolution: str, at: datetime
+    ) -> None:
+        if notification.resolved:
+            return
+        rows = await self._repository.resolve(
+            notification.owner_id,
+            [notification.id],
+            resolved_at=at,
+            resolved_by=None,
+            resolution=resolution,
+        )
+        # The question went to the owner and to every approver told of it (their copies):
+        # settled once, it is settled for all of them.
+        rows += await self._settle_group(
+            rows, resolved_at=at, resolved_by=None, resolution=resolution
+        )
+        for row in rows:
+            await self._broadcast(row)
+
+    async def question_events(
+        self, principal: Principal, *, after: int, limit: int
+    ) -> tuple[list[dict[str, Any]], int]:
+        """The caller's question changes after ``after``, and the newest position."""
+        store = self._question_store()
+        scope = NotificationScope.for_principal(principal)
+        events = await store.events_after(scope, after=after, limit=limit)
+        head = await store.head_seq(scope)
+        return [event.wire(self.question_ref(event.notification_id)) for event in events], head
 
     async def resolve(
         self, principal: Principal, notification_id: UUID, *, resolution: str | None

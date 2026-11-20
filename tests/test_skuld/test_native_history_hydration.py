@@ -3,7 +3,6 @@
 import asyncio
 import importlib
 import json
-from dataclasses import asdict
 from unittest.mock import AsyncMock, MagicMock
 
 import httpx
@@ -13,6 +12,7 @@ from fastapi import WebSocketDisconnect
 from niuu.ports.cli.transport import TransportCapabilities
 from skuld.broker import Broker, ConversationTurn
 from skuld.config import SkuldSettings
+from skuld.conversation_models import turn_record
 from skuld.history_hydration import merge_history_turns
 from tests.test_skuld.workflow_support import MEMBER_MESH, MEMBER_STEPS, PERSONA
 
@@ -104,7 +104,7 @@ async def test_empty_cache_hydrates_native_prefix_without_reemitting_events(tmp_
     assert all(turn.created_at == _TS for turn in broker._conversation_turns)
     assert broker._event_log_buffer == []
     cached = json.loads(broker._conversation_history_path().read_text())
-    assert cached["turns"] == [asdict(turn) for turn in broker._conversation_turns]
+    assert cached["turns"] == [turn_record(turn) for turn in broker._conversation_turns]
     assert seen == [0, 9]  # the filtered import marker at head is not visible
 
 

@@ -89,3 +89,16 @@ async def test_invalid_explicit_effort_is_rejected(effort):
         return
     with pytest.raises(ValueError, match="reasoningEffort"):
         await contributor.contribute(None, context)
+
+
+@pytest.mark.asyncio
+async def test_the_initial_prompts_sender_rides_with_it():
+    """LEX-1910: Skuld records who wrote the first prompt and heads it for the model."""
+    sender = {"kind": "agent", "sub_kind": "session", "id": "s-0", "name": "ios-coordinator"}
+    context = SessionContext(initial_prompt="Build it", initial_prompt_sender=sender)
+
+    result = await PromptContributor().contribute(_make_session(), context)
+
+    assert result.values == {
+        "session": {"initialPrompt": "Build it", "initialPromptSender": sender}
+    }

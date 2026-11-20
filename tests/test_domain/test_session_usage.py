@@ -468,3 +468,22 @@ def test_cost_replay_is_exactly_idempotent_across_native_sessions():
     p.feed({**first, "session_id": "second"})
     assert p.state["cost_estimate"] == 0.2
     assert p.feed(first)["cost_estimate"] == 0.2
+
+
+def test_runtime_choice_reads_only_applied_switches():
+    """LEX-2022: what Forge records on the row so a relaunch keeps the choice."""
+    from volundr.domain.session_usage import runtime_choice
+
+    current = {"model": "claude-fable-5-2", "effort": "high"}
+    assert runtime_choice({"type": "runtime_options", "applied": True, "current": current}) == (
+        "claude-fable-5-2",
+        "high",
+    )
+    assert runtime_choice({"type": "runtime_options", "applied": False, "current": current}) is None
+    assert runtime_choice({"type": "effort_status", "applied": True, "current": "max"}) == (
+        None,
+        "max",
+    )
+    assert runtime_choice({"type": "effort_status", "current": "max"}) is None
+    assert runtime_choice({"type": "assistant", "applied": True}) is None
+    assert runtime_choice("not a frame") is None

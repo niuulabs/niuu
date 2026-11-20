@@ -54,6 +54,8 @@ APNS_MAX_COLLAPSE_ID_BYTES = 64
 
 #: Why a background push was sent, as the app reads it (``forge.reason``).
 BACKGROUND_REASON = "notification"
+#: A question changed state (LEX-1932): ``forge.question`` says how.
+QUESTION_STATE_REASON = "question_state"
 #: Topic suffixes APNs requires for the non-alert push types.
 LIVE_ACTIVITY_TOPIC_SUFFIX = ".push-type.liveactivity"
 WIDGETS_TOPIC_SUFFIX = ".push-type.widgets"
@@ -297,6 +299,8 @@ class GuildNotification:
     image_thumbnail_url: str | None = None
     #: The org it belongs to (``None``: untenanted). Every push and count of it is that org's.
     tenant_id: str | None = None
+    #: The question this item is or is about (LEX-1932): its alert collapses under it.
+    question_ref: str | None = None
 
     @classmethod
     def from_feed_item(cls, item: Mapping[str, Any]) -> GuildNotification:
@@ -345,6 +349,7 @@ class GuildNotification:
             image_url=image_url,
             image_thumbnail_url=thumbnail_url,
             tenant_id=_optional_text(item.get("tenant_id")),
+            question_ref=_optional_text(item.get("question_ref")),
         )
 
     def stored(self) -> dict[str, Any]:
@@ -366,6 +371,7 @@ class GuildNotification:
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "read": self.read,
             "tenant_id": self.tenant_id,
+            "question_ref": self.question_ref,
         }
         if self.image_url:
             data["image"] = {"url": self.image_url, "thumbnail_url": self.image_thumbnail_url}
@@ -471,6 +477,8 @@ def alert_payload(
     if notification.tenant_id:
         payload["tenant_id"] = notification.tenant_id
     payload["kind"] = notification.kind
+    if notification.question_ref:
+        payload["question_ref"] = notification.question_ref
     if attention:
         aps["mutable-content"] = 1
         payload["attention"] = True
@@ -708,5 +716,83 @@ def operator_test_call_frame(
             "text": TEST_CALL_TEXT,
             "priority": "now",
             "expiresAt": expires_at.isoformat().replace("+00:00", "Z"),
+        },
+    }
+
+
+@dataclass(frozen=True)
+class GuildQuestionEvent:
+    """One question state change as a node serves it (LEX-1932)."""
+
+    seq: int
+    ref: str
+    notification_id: str
+    instance_id: str
+    owner_id: str
+    state: str
+    answered_by: dict[str, str] | None
+    at: str
+
+    @classmethod
+    def from_item(cls, item: Mapping[str, Any], instance_id: str) -> GuildQuestionEvent:
+        """Parse an events item; raises ``ValueError`` when it is not one."""
+        seq, ref, notification_id = item.get("seq"), item.get("ref"), item.get("notification_id")
+        owner_id, state, at = item.get("owner_id"), item.get("state"), item.get("at")
+        if type(seq) is not int:
+            raise ValueError("Question event has no seq")
+        for name, value in (
+            ("ref", ref),
+            ("notification_id", notification_id),
+            ("owner_id", owner_id),
+            ("state", state),
+            ("at", at),
+        ):
+            if not isinstance(value, str) or not value:
+                raise ValueError(f"Question event {seq} has no {name}")
+        answered_by = item.get("answered_by")
+        if answered_by is not None and not (
+            isinstance(answered_by, Mapping)
+            and isinstance(answered_by.get("device_id"), str)
+            and isinstance(answered_by.get("device_label"), str)
+        ):
+            raise ValueError(f"Question event {seq} has a malformed answered_by")
+        return cls(
+            seq=seq,
+            ref=str(ref),
+            notification_id=str(notification_id),
+            instance_id=instance_id,
+            owner_id=str(owner_id),
+            state=str(state),
+            answered_by=(
+                {
+                    "device_id": answered_by["device_id"],
+                    "device_label": answered_by["device_label"],
+                }
+                if answered_by is not None
+                else None
+            ),
+            at=str(at),
+        )
+
+
+def question_state_payload(event: GuildQuestionEvent) -> dict[str, Any]:
+    """The silent push that tells every device a question changed (LEX-1932).
+
+    The shape agreed with the app: ``forge.question`` = ``{ref, notification_id,
+    instance_id, state, answered_by, at}``; the app removes the delivered alert by
+    ``ref`` (its apns-collapse-id) and by ``notification_id``.
+    """
+    return {
+        "aps": {"content-available": 1},
+        "forge": {
+            "reason": QUESTION_STATE_REASON,
+            "question": {
+                "ref": event.ref,
+                "notification_id": event.notification_id,
+                "instance_id": event.instance_id,
+                "state": event.state,
+                "answered_by": event.answered_by,
+                "at": event.at,
+            },
         },
     }

@@ -105,7 +105,10 @@ class ActivityReportingMixin:
         return datetime.fromtimestamp(epoch_seconds, tz=UTC).isoformat()
 
     def _open_controls(self, state: str) -> list[dict[str, str]] | None:
-        """The open human gates as ``[{request_id, kind, opened_at}]`` (F12d).
+        """The open human gates as ``[{request_id, kind, opened_at, tool_use_id?}]`` (F12d).
+
+        ``tool_use_id`` is the CLI's id for the call the gate asks about, when known
+        (LEX-1979), so a client can tie a transcript question to its card.
 
         Served by Forge on the session so the Code tab runs the same derived-state
         algorithm as the control plane. ``None`` means unknown: awaiting input on a
@@ -121,11 +124,17 @@ class ActivityReportingMixin:
         if state == "awaiting_input" and not pending:
             return None
         now = datetime.now(UTC).isoformat()
+        tool_use_ids = getattr(self, "_control_tool_use_ids", {})
         return [
             {
                 "request_id": request_id,
                 "kind": kind,
                 "opened_at": opened.setdefault(request_id, now),
+                **(
+                    {"tool_use_id": tool_use_ids[request_id]}
+                    if tool_use_ids.get(request_id)
+                    else {}
+                ),
             }
             for request_id, kind in pending.items()
         ]
@@ -303,7 +312,8 @@ class ActivityReportingMixin:
         The metadata travels to Volundr, which (re-)emits the high-urgency
         needs-input event a notification / push fan-out reacts to.
         ``extra_metadata`` rides along for consumers that key on it (Ting reads
-        ``help_needed`` from workflow gates and peers' questions).
+        ``help_needed`` from workflow gates and peers' questions; the push fan-out reads
+        ``person_only`` / ``auto_deny_after_seconds``, LEX-1936).
         """
         if request_id:
             self._pending_attention[request_id] = kind
@@ -347,6 +357,23 @@ class ActivityReportingMixin:
                 if text:
                     return str(text)
         return "The agent is asking a question"
+
+    @staticmethod
+    def _person_only_attention(data: dict) -> dict[str, Any] | None:
+        """A card only a person may answer before the CLI denies it by itself.
+
+        The tmux bridge marks Claude's built-in safety prompts under
+        bypassPermissions; they time out (LEX-1936), so attention is urgent.
+        """
+        metadata = data.get("metadata")
+        if not isinstance(metadata, dict) or metadata.get("person_only") is not True:
+            return None
+        timeout = metadata.get("auto_deny_after_seconds")
+        if not isinstance(timeout, int | float) or isinstance(timeout, bool) or timeout <= 0:
+            raise ValueError(
+                "A person-only native control must carry a positive auto_deny_after_seconds"
+            )
+        return {"person_only": True, "urgent": True, "auto_deny_after_seconds": float(timeout)}
 
     @staticmethod
     def _attention_prompt_from_permission(request: dict) -> str:

@@ -66,6 +66,7 @@ from volundr.domain.push import (
     CallRequest,
     EnvironmentAssumed,
     GuildNotification,
+    GuildQuestionEvent,
     InterruptionLevel,
     LiveActivityEvent,
     PushTestKind,
@@ -80,6 +81,7 @@ from volundr.domain.push import (
     live_activity_content_state,
     live_activity_payload,
     operator_test_call_frame,
+    question_state_payload,
     shorten,
     token_fingerprint,
     voip_payload,
@@ -100,6 +102,8 @@ from volundr.domain.push_ports import (
 logger = logging.getLogger(__name__)
 
 NO_ALERT_DEVICE = "The owner has no alert device registered"
+#: Where a node's question-event position is kept among the stored feed positions.
+QUESTION_POSITION_PREFIX = "questions:"
 ALERTS_DISABLED = "Alerts are switched off (push.gateway.alerts.enabled)"
 ALREADY_READ = "Already read when the gateway picked it up"
 
@@ -182,6 +186,8 @@ class BackgroundSettings:
     enabled: bool
     priority: int
     min_interval_seconds: float
+    #: LEX-1932: a silent push for every question state change.
+    questions: bool = True
 
 
 @dataclass(frozen=True)
@@ -258,6 +264,9 @@ class PushGatewayStats:
     #: that found no token).
     calls_rung: int = 0
     calls_undelivered: int = 0
+    #: LEX-1932: question state pushes APNs accepted, and changes held for a retry.
+    question_pushes: int = 0
+    question_retries: int = 0
     tokens_pruned: int = 0
     apns_rejections: int = 0
     stale_settles: int = 0
@@ -351,6 +360,12 @@ class PushGateway:
         self._clock = clock
         self.stats = PushGatewayStats()
         self._positions: dict[str, int] | None = None
+        #: LEX-1932: per node, the last question change pushed, and why a node's
+        #: changes could not be read.
+        self._question_positions: dict[str, int] = {}
+        self._question_errors: dict[str, str] = {}
+        #: Devices that already took a change held back for a retry: not sent again.
+        self._question_delivered: dict[tuple[str, int], set[UUID]] = {}
         #: The Guild's Forge nodes as its registry last listed them.
         self._nodes: list[str] = []
         #: Why the registry does not name this node as the Guild's push gateway.
@@ -470,6 +485,7 @@ class PushGateway:
         positions = await self._positions_for_tick(now)
         fresh = await self._ingest(positions, now)
         await self._deliver_alerts()
+        await self._push_question_changes(now)
         tick = _Tick(load=self._newest_page)
         # An owner leaves the set only once refreshed: if this tick fails part-way
         # (the feed, the database), the next one still owes them their surfaces.
@@ -583,7 +599,17 @@ class PushGateway:
 
     async def _positions_for_tick(self, now: datetime) -> dict[str, int]:
         if self._positions is None:
-            self._positions = await self._deliveries.load_positions()
+            stored = await self._deliveries.load_positions()
+            self._positions = {
+                key: value
+                for key, value in stored.items()
+                if not key.startswith(QUESTION_POSITION_PREFIX)
+            }
+            self._question_positions = {
+                key.removeprefix(QUESTION_POSITION_PREFIX): value
+                for key, value in stored.items()
+                if key.startswith(QUESTION_POSITION_PREFIX)
+            }
         if self._discovery_due(self._positions, now):
             await self._discover_nodes(self._positions, now)
         return self._positions
@@ -750,6 +776,102 @@ class PushGateway:
             return
         await self._settle(delivery, PushDeliveryStatus.FAILED, detail)
 
+    # -- Question state (LEX-1932) -------------------------------------------
+
+    async def _push_question_changes(self, now: datetime) -> None:
+        """Tell every iOS device of the owner that a question changed state."""
+        background = self._settings.background
+        if not (background.enabled and background.questions):
+            return
+        nodes = self._readable(
+            [node for node in self._nodes if node in (self._positions or {})], now
+        )
+        for node in nodes:
+            if self._stopping.is_set():
+                return
+            try:
+                await self._push_node_questions(node)
+            except GuildNodeHasNoFeedError as exc:
+                self._question_unreadable(node, str(exc), logging.INFO)
+            except GuildFeedError as exc:
+                self._question_unreadable(node, str(exc), logging.WARNING)
+            else:
+                self._question_errors.pop(node, None)
+
+    def _question_unreadable(self, node: str, error: str, level: int) -> None:
+        if self._question_errors.get(node) != error:
+            # Said once when it starts, not on every tick while it lasts.
+            logger.log(level, "Push gateway cannot read question changes of %s: %s", node, error)
+        self._question_errors[node] = error
+
+    async def _push_node_questions(self, node: str) -> None:
+        limit = self._settings.page_size
+        position = self._question_positions.get(node)
+        if position is None:
+            # First read of this node: earlier changes are history; start at its head.
+            page = await self._feed.question_events(node, 0, limit=1)
+            await self._save_question_position(node, page.head)
+            return
+        while not self._stopping.is_set():
+            page = await self._feed.question_events(node, position, limit=limit)
+            if page.head < position:
+                logger.warning(
+                    "Question changes of %s went back from %d to %d (a new database?): "
+                    "continuing from its head",
+                    node,
+                    position,
+                    page.head,
+                )
+                await self._save_question_position(node, page.head)
+                return
+            for event in page.items:
+                if not await self._push_question_event(event):
+                    # APNs could not take it now: this change and the later ones wait.
+                    self.stats.question_retries += 1
+                    await self._save_question_position(node, position)
+                    return
+                position = event.seq
+            await self._save_question_position(node, position)
+            if len(page.items) < limit:
+                return
+
+    async def _save_question_position(self, node: str, position: int) -> None:
+        if self._question_positions.get(node) == position:
+            return
+        await self._deliveries.save_positions({QUESTION_POSITION_PREFIX + node: position})
+        self._question_positions[node] = position
+
+    async def _push_question_event(self, event: GuildQuestionEvent) -> bool:
+        """Push one change to the owner's iOS devices; ``False`` when it must be retried.
+
+        A retry goes only to the devices that did not take it yet.
+        """
+        key = (event.instance_id, event.seq)
+        delivered = self._question_delivered.setdefault(key, set())
+        retry = False
+        for device in await self._ios_devices(event.owner_id, (PushTokenKind.ALERT,)):
+            if device.id in delivered:
+                continue
+            result = await self._send(device, self._question_push(device, event))
+            if result.accepted:
+                self.stats.question_pushes += 1
+                delivered.add(device.id)
+            elif result.retryable:
+                retry = True
+        if not retry:
+            del self._question_delivered[key]
+        return not retry
+
+    def _question_push(self, device: DeviceToken, event: GuildQuestionEvent) -> ApnsPush:
+        return ApnsPush(
+            token=device.token,
+            environment=device.environment,
+            topic=self._topic(device, ApnsPushType.BACKGROUND),
+            push_type=ApnsPushType.BACKGROUND,
+            priority=self._settings.background.priority,
+            payload=question_state_payload(event),
+        )
+
     def _backoff(self, attempts: int) -> float:
         alerts = self._settings.alerts
         return min(alerts.backoff_max_seconds, alerts.backoff_base_seconds * 2 ** (attempts - 1))
@@ -821,7 +943,18 @@ class PushGateway:
             image_url=absolute_url(base, notification.image_url),
             image_thumbnail_url=absolute_url(base, notification.image_thumbnail_url),
         )
-        collapse_id = notification.id
+        # LEX-1932: a question's alerts (ask, remind, replace, resolve) share its ref, so
+        # each replaces the last one in place and the app removes it by that identifier.
+        collapse_id = notification.question_ref or notification.id
+        if len(collapse_id.encode("utf-8")) > APNS_MAX_COLLAPSE_ID_BYTES:
+            logger.error(
+                "Alert for %s goes without apns-collapse-id: %r is over APNs' %d bytes "
+                "(shorten host_identity.host on node %s)",
+                notification.id,
+                collapse_id,
+                APNS_MAX_COLLAPSE_ID_BYTES,
+                notification.instance_id,
+            )
         return ApnsPush(
             token=device.token,
             environment=device.environment,
@@ -1301,6 +1434,8 @@ class PushGateway:
             "feedless_nodes": dict(sorted(self._feedless.items())),
             "self_pushing_nodes": sorted(self._self_pushing),
             "registry_problem": self._registry_problem,
+            "question_positions": dict(sorted(self._question_positions.items())),
+            "question_unreadable_nodes": dict(sorted(self._question_errors.items())),
             "alerts_enabled": self._settings.alerts.enabled,
             "live_activity_enabled": self._settings.live_activity.enabled,
             "live_activity_start_enabled": self._settings.live_activity.start_enabled,

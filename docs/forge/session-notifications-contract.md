@@ -400,6 +400,47 @@ delivered, 202 pending, the same id with different content 409 (`request_id_conf
 409 also when the pod is unreachable). Delivery is not resolution: the asking session confirms it later with
 `about_question` (`resolved`).
 
+**One answer for every device (LEX-1932).** A client that knows the route answers through
+`POST /notifications/{id}/answer` instead (through the Guild facade with `?instance_id=`):
+`{request_id, device_id, device_label, content, answers?}`. `device_id` is the install's
+opaque id (1–64 chars), `device_label` what the app shows (`iPhone`, `iPad`, `Mac`), `content`
+the message the asking session receives and `answers` the structured answer per ask item,
+kept as sent. The node that recorded the question keeps its state (migration 000097):
+
+| Case | Answer |
+|---|---|
+| First answer | Recorded; the notification is resolved with `resolution: "Answered on <device_label>"`; `content` is delivered with `request_id` (the message contract above: 200 / 202 / 409 / 502). The body adds `question`. |
+| Same `request_id`, `content` and device again | The recorded answer, delivered again (a retry); nothing new is recorded. The broker drops a `request_id` it already delivered. |
+| A different answer | `409 {detail: {code: "question_answered", question}}`; `question` carries the first answer and `answered_by: {device_id, device_label}`. Nothing is delivered. |
+| Resolved or withdrawn | `409 {detail: {code: "question_closed", question}}` (`question` null when the notice was resolved by hand, e.g. by an older client). |
+| Recorded, not delivered | The delivery status with `detail.code: "answer_not_delivered"`; retry with the same `request_id`. |
+| Not a question, or a runtime question | 422 (a runtime question is answered on the session socket). |
+
+`question` is `{ref, notification_id, state, answered_by, at, answer}`. The asking session's
+`about_question` `resolved` / `withdrawn` closes the question (the notification is resolved by
+that notice); from any other session it is not applied. When a session stops waiting (its
+runtime question answered on the socket, interrupted or stopped; Forge cannot tell which), each
+open runtime question is recorded `resolved` and its item resolved "No longer waiting in the
+session". Only the question's owner answers it; an answer whose asking session is gone or not
+running is refused with 409 before anything is recorded.
+A session credential cannot answer (403).
+
+Every item carries `question_ref`: `question:<host>:<id>` for a question, the referred ref for a
+notice with `about_question`, null otherwise. `GET /notifications?ids=a,b` reads those items
+only (at most `limit`), so a client re-reads its open questions whatever their age.
+`GET /notifications/questions/events?after=&limit=` lists the reader's question state changes,
+oldest first: `{items: [{seq, ref, notification_id, owner_id, state, answered_by, at}],
+next_after, head_seq}`.
+
+The push gateway reads those changes node by node and sends each of the owner's iOS alert
+tokens a silent push (`apns-push-type: background`, `push.gateway.background.priority`; on with `push.gateway.background.enabled`
+and `.questions`, not spaced by its `min_interval_seconds`):
+`{"aps": {"content-available": 1}, "forge": {"reason": "question_state", "question": {ref,
+notification_id, instance_id, state, answered_by, at}}}`. A question's alerts (the question, a
+remind or replace, its resolving notice) use `apns-collapse-id` = its ref and carry
+`question_ref`, so each replaces the last in place and the app removes it by that identifier.
+The Mac has no APNs and re-reads the feed.
+
 **The question standard (LEX-1597, LEX-1671).** An agent's `decision` (the user must
 choose) or `attention` (the user must act or unblock) is a question: `question: true`,
 an `ask` with 2–4 options, one `recommended`, and a `default`. The text is

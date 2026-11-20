@@ -70,6 +70,7 @@ from niuu.adapters.outbound.guild_transport import (
     build_guild_httpx_client,
 )
 from niuu.domain.guild_membership import GuildInstance, GuildMembership
+from niuu.domain.message_sender import SENDER_NODE_HEADER
 from niuu.domain.models import InstanceKind, Principal, RegisteredInstance
 from niuu.domain.notifications import notification_image_url, notification_visible_to
 from niuu.domain.presented_files import (
@@ -420,6 +421,21 @@ def _route_missing(response: httpx.Response) -> bool:
     return isinstance(payload, dict) and payload.get("detail") == "Not Found"
 
 
+#: A node's structured answer refusals (LEX-1932): passed through whole, so the app
+#: reads the first answer, the close, or that it must retry with the same request_id.
+_ANSWER_CODES = frozenset({"question_answered", "question_closed", "answer_not_delivered"})
+
+
+def _answer_code(response: httpx.Response) -> str | None:
+    try:
+        payload = response.json()
+    except ValueError:
+        return None
+    detail = payload.get("detail") if isinstance(payload, dict) else None
+    code = detail.get("code") if isinstance(detail, dict) else None
+    return code if isinstance(code, str) else None
+
+
 def _ensure_remote_success(response: httpx.Response) -> None:
     if response.status_code < 400:
         return
@@ -446,6 +462,17 @@ def _merge_layer_ends(answers: list[dict[str, Any]]) -> dict[str, Any]:
             key=lambda value: datetime.fromisoformat(value),
         ),
     }
+
+
+#: A node's refusal of a message while a native control is pending (LEX-1936): passed
+#: through whole, so a sender reads which card blocks it and what the screen shows.
+_NATIVE_CONTROL_CODES = frozenset({"native_control_pending"})
+
+
+def _ensure_message_delivered(response: httpx.Response) -> None:
+    if response.status_code >= 400 and _answer_code(response) in _NATIVE_CONTROL_CODES:
+        raise HTTPException(response.status_code, response.json()["detail"])
+    _ensure_remote_success(response)
 
 
 def _ensure_history_success(response: httpx.Response) -> None:
@@ -2600,6 +2627,10 @@ def create_volundr_router(
             method="POST",
             path="/sessions",
             json_body=_strip_instance_hints(body),
+            # The in-process Forge records a creating session's node (LEX-1910).
+            extra_headers=(
+                {SENDER_NODE_HEADER: instance.name} if _uses_embedded_transport(instance) else None
+            ),
             embedded_app=embedded_forge_app,
         )
         _ensure_remote_success(response)
@@ -3732,6 +3763,50 @@ def create_volundr_router(
         if not isinstance(payload, dict):
             raise HTTPException(status.HTTP_502_BAD_GATEWAY, "Invalid notification response")
         return _tag_notification(payload, instance)
+
+    @router.post("/notifications/{notification_id}/answer")
+    async def answer_question(
+        request: Request,
+        notification_id: UUID,
+        body: dict[str, Any] = Body(...),
+        principal: Principal = Depends(extract_principal),
+    ) -> JSONResponse:
+        """Answer a question on the node that holds it (LEX-1932).
+
+        The node's answer passes through as it is, its structured refusals included:
+        ``question_answered`` / ``question_closed`` (409, with the first answer or the
+        close) and ``answer_not_delivered`` (recorded; retry with the same request_id)."""
+        instance = await _notification_target(request, principal)
+        remote = await _request_remote(
+            instance,
+            request,
+            method="POST",
+            path=f"/notifications/{notification_id}/answer",
+            params=_forward_params(request, drop=_FLEET_SELECTORS),
+            json_body=body,
+            embedded_app=embedded_forge_app,
+        )
+        if remote.status_code >= 400 and _answer_code(remote) not in _ANSWER_CODES:
+            _ensure_remote_success(remote)
+        payload = _remote_json(remote)
+        if not isinstance(payload, dict):
+            raise HTTPException(status.HTTP_502_BAD_GATEWAY, "Invalid question answer response")
+        return JSONResponse({**payload, "instance_id": instance.id}, status_code=remote.status_code)
+
+    @router.get("/notifications/questions/events")
+    async def list_question_events(
+        request: Request, principal: Principal = Depends(extract_principal)
+    ) -> dict[str, Any]:
+        """One node's question state changes, oldest first (LEX-1932)."""
+        instance = await _notification_target(request, principal)
+        remote = await _proxy_to(
+            instance, request, method="GET", path="/notifications/questions/events"
+        )
+        _ensure_remote_success(remote)
+        payload = _remote_json(remote)
+        if not isinstance(payload, dict) or not isinstance(payload.get("items"), list):
+            raise HTTPException(status.HTTP_502_BAD_GATEWAY, "Invalid question events response")
+        return {**payload, "instance_id": instance.id}
 
     @router.get("/notifications/rules")
     async def list_notification_rules(
@@ -4900,6 +4975,59 @@ def create_volundr_router(
         """
         return await _forward_forge_mcp(request, principal, session_id, "PUT", body)
 
+    async def _forward_native_controls(
+        request: Request, principal: Principal, session_id: str, method: str, suffix: str = ""
+    ) -> JSONResponse:
+        """A session's native-control cards on its owning host (LEX-1936).
+
+        The owning Forge decides who may see or dismiss them (owner or admin, never a
+        session credential) and audits each dismissal; its answer is passed through.
+        """
+        instance, _ = await _find_session_owner(
+            service, principal, request, session_id, embedded_app=embedded_forge_app
+        )
+        response = await _request_remote(
+            instance,
+            request,
+            method=method,
+            path=f"/sessions/{session_id}/native-controls{suffix}",
+            embedded_app=embedded_forge_app,
+        )
+        if _route_missing(response):
+            raise HTTPException(501, "Update this session's Forge host to handle native controls")
+        _ensure_remote_success(response)
+        return JSONResponse(content=response.json(), status_code=response.status_code)
+
+    @router.get("/sessions/{session_id}/native-controls")
+    async def list_session_native_controls(
+        request: Request,
+        session_id: str = Path(description="Volundr session identifier"),
+        principal: Principal = Depends(extract_principal),
+    ) -> JSONResponse:
+        """The native-control cards a session's broker holds, from its owning host."""
+        return await _forward_native_controls(request, principal, session_id, "GET")
+
+    @router.post("/sessions/{session_id}/native-controls/reconcile")
+    async def reconcile_session_native_questions(
+        request: Request,
+        session_id: str = Path(description="Volundr session identifier"),
+        principal: Principal = Depends(extract_principal),
+    ) -> JSONResponse:
+        """Reconcile a session's open questions with its CLI session file (LEX-1979)."""
+        return await _forward_native_controls(request, principal, session_id, "POST", "/reconcile")
+
+    @router.post("/sessions/{session_id}/native-controls/{request_id}/dismiss")
+    async def dismiss_session_native_control(
+        request: Request,
+        session_id: str = Path(description="Volundr session identifier"),
+        request_id: str = Path(description="The card's request_id"),
+        principal: Principal = Depends(extract_principal),
+    ) -> JSONResponse:
+        """Dismiss a stale native-control card on the session's owning host (audited there)."""
+        return await _forward_native_controls(
+            request, principal, session_id, "POST", f"/{quote(request_id, safe='')}/dismiss"
+        )
+
     @router.put("/sessions/{session_id}")
     async def update_session(
         request: Request,
@@ -5728,9 +5856,13 @@ def create_volundr_router(
             method="POST",
             path=f"/sessions/{session_id}/messages",
             json_body=body,
+            # The in-process Forge records a sending session's node from this (LEX-1910).
+            extra_headers=(
+                {SENDER_NODE_HEADER: instance.name} if _uses_embedded_transport(instance) else None
+            ),
             embedded_app=embedded_forge_app,
         )
-        _ensure_remote_success(response)
+        _ensure_message_delivered(response)
         payload = response.json()
         return JSONResponse(
             content=payload if isinstance(payload, dict) else {}, status_code=response.status_code

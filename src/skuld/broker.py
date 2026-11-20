@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import collections
+import contextvars
 import json
 import logging
 import os
@@ -30,6 +31,14 @@ from niuu.cap_telemetry import record_degraded
 from niuu.domain.conversation_timeline import TIMELINE_KEY, project_timeline, stamp_parts, timeline
 from niuu.domain.logging import LoggingConfig
 from niuu.domain.message_author import AUTHOR_KEY, MessageAuthor
+from niuu.domain.message_sender import (
+    SENDER_KEY,
+    SenderError,
+    parse_recorded_sender,
+    sender_for_request_id,
+    text_for_model,
+    user_sender,
+)
 from niuu.domain.outcome import parse_outcome_block
 from niuu.domain.peer_message import (
     PEER_MESSAGE_FRAME,
@@ -42,8 +51,10 @@ from niuu.domain.person_question import PERSON_ANSWER_MESSAGE
 from niuu.domain.presented_files import PRESENT_FILE_RPC_TYPE
 from niuu.domain.text_projection import projection_revision
 from niuu.domain.transcript_reducer import (
+    TURN_INTERRUPTED_KIND,
     TurnAccumulator,
     apply_assistant_blocks,
+    apply_question_closure,
     apply_result_content,
     apply_text_delta,
     apply_text_start,
@@ -52,9 +63,16 @@ from niuu.domain.transcript_reducer import (
     apply_tool_result_blocks,
     assistant_turn_id,
     build_assistant_turn,
+    drop_question_closures,
+    error_text,
+    frame_turn_id,
+    is_late_frame,
+    note_message_id,
     result_metadata,
+    result_repeats_error,
     steering_state_from_frame,
     steering_target_id,
+    tool_result_block_ids,
 )
 from niuu.mesh import mesh_event_prefix
 from niuu.mesh.attestation import VERIFIED_SENDER_KEY
@@ -75,7 +93,11 @@ from skuld.channels import (
 from skuld.chronicle import ChronicleMixin
 from skuld.chronicle_watcher import ChronicleWatcher
 from skuld.config import SkuldSettings
-from skuld.control_errors import ControlRecoveryError, control_error_frame
+from skuld.control_errors import (
+    ControlRecoveryError,
+    NativeControlsUnsupportedError,
+    control_error_frame,
+)
 from skuld.control_state import (
     load_control_state,
     pending_controls,
@@ -88,10 +110,11 @@ from skuld.conversation_models import (  # noqa: F401
     CONVERSATION_HISTORY_FILE,
     SUMMARY_TIMEOUT_SECONDS,
     ConversationTurn,
+    turn_record,
 )
 from skuld.conversation_read import history_write
 from skuld.delivery_claims import claim_message, settle_message
-from skuld.delivery_errors import DeliveryNotAcceptedError
+from skuld.delivery_errors import DeliveryNotAcceptedError, NativeControlPendingError
 from skuld.effort import EffortControlMixin, effort_argument
 from skuld.event_log import EventLogMixin
 from skuld.file_routes import (  # noqa: F401
@@ -116,6 +139,7 @@ from skuld.mesh_topics import MeshTopics, mesh_topics
 from skuld.peer_inbox import PEER_STATE_RPC_TYPE, PeerInboxMixin, PeerMessageUnconfirmedError
 from skuld.person_questions import PersonQuestionMixin
 from skuld.preview import PreviewForwarder, PreviewPortWatcher
+from skuld.question_reconcile import QuestionReconcileMixin
 from skuld.room_delivery import ROOM_MESSAGE_RPC_TYPE, RoomDelivery, RoomDeliveryError
 from skuld.service_manager import (  # noqa: F401
     ServiceCreateRequest,
@@ -194,6 +218,7 @@ def _configure_logging() -> None:
 
 
 _configure_logging()
+
 logger = logging.getLogger("skuld.broker")
 
 #: Room participant types that are not agents: a message for everyone does not go to them.
@@ -205,6 +230,12 @@ RUN_ROOT_PERSONA = "coordinator"
 RUN_ROOT_DISPLAY_NAME = "Coordinator"
 RUN_ROOT_DESCRIPTION = (
     "The run's root: it publishes the run's step offers and hosts its room; it runs no agent."
+)
+
+# The task handling a CLI event, set for the code (and the tasks it starts) that runs
+# under it: a nested event skips the shutdown gate only while that handler is still running.
+_CLI_EVENT_TASK: contextvars.ContextVar[asyncio.Task | None] = contextvars.ContextVar(
+    "cli_event_task", default=None
 )
 
 FORGE_SESSIONS_PATH = "/api/v1/forge/sessions"
@@ -313,6 +344,51 @@ def _describe_browser_content_block(block: dict[str, Any]) -> str | None:
     if block_type == "file":
         return "file attachment"
     return f"{block_type} attachment"
+
+
+def _browser_message_sender(
+    data: dict,
+    content: str,
+    request_id: str | None,
+    *,
+    role: str,
+    from_telegram: bool,
+    from_verified_person: bool = False,
+) -> tuple[dict[str, Any], str, str]:
+    """Return ``(sender, turn text, model text)`` for an inbound message (LEX-1910).
+
+    Forge's ``POST /messages`` names the sender and, when it wrote the sender's
+    header into ``content``, sends the message as written in ``display_content``.
+    Only an owner connection (Forge's own, or the owner's client) may name a sender,
+    and ``content`` must be exactly ``display_content`` as the sender's header
+    heads it, so the stored turn is always what the model received. A frame
+    without a sender is the owner's Telegram channel, a connection the proxy verified
+    as a person (its ``author``), or a client request id (the user), or else an unknown
+    sender.
+    """
+    named = data.get(SENDER_KEY)
+    display = data.get("display_content")
+    if (named is not None or display is not None) and role != "owner":
+        raise SenderError(f"a {role} connection cannot name a message's sender")
+    sender = parse_recorded_sender(named)
+    if sender is None:
+        if display is not None:
+            raise SenderError("display_content needs the sender that heads it")
+        sender = (
+            user_sender()
+            if from_telegram or from_verified_person
+            else sender_for_request_id(request_id)
+        )
+        return sender, content, text_for_model(sender, content)
+    if display is None:
+        return sender, content, text_for_model(sender, content)
+    if not isinstance(display, str) or text_for_model(sender, display) != content:
+        raise SenderError("content must be display_content headed by its sender")
+    return sender, display, content
+
+
+def _sender_kind(sender: dict[str, Any]) -> str:
+    return sender.get("sub_kind") or sender["kind"]
 
 
 def _normalize_browser_message_content(content: object) -> str:
@@ -505,6 +581,7 @@ class Broker(
     PeerInboxMixin,
     PersonQuestionMixin,
     MeshFollowMixin,
+    QuestionReconcileMixin,
 ):
     """WebSocket broker for Claude Code sessions.
 
@@ -644,6 +721,17 @@ class Broker(
         # local history and the durable log. More than one means the model is told who
         # said each message (see _author_prefix).
         self._human_author_ids: set[str] = set()
+        # CLI events in flight, and the gate shutdown closes to save the open turn
+        # between two of them (LEX-1982).
+        self._cli_events_open = asyncio.Event()
+        self._cli_events_open.set()
+        self._cli_events_settled = asyncio.Event()
+        self._cli_events_settled.set()
+        self._cli_events_in_flight = 0
+        self._cli_event_tasks: set[asyncio.Task] = set()
+        # Questions already counted as closed (LEX-1979 f), so a second close frame for
+        # one question does not count it again.
+        self._counted_question_closes: set[str] = set()
         self._pending_assistant_content: str = ""
         self._pending_assistant_parts: list[dict] = []
         # Tool details are available before their live preview is sent, including
@@ -651,6 +739,15 @@ class Broker(
         self._live_tool_details: dict[str, dict[str, dict]] = {}
         self._pending_block_type: str = ""
         self._pending_reasoning_text: str = ""
+        # The agent's message ids folded into the open turn, and the agent turn id the last
+        # logged result closed: that turn's late hook frames are dropped (LEX-1825). Held in
+        # memory: a broker restart between a result and its late hook (about 29 ms) keeps
+        # that one frame live while a rebuild drops it.
+        self._pending_message_ids: list[str] = []
+        self._closed_turn_id: str | None = None
+        # An error frame's text until the next result: a failed result that repeats it is
+        # not saved as a second error turn (LEX-1847).
+        self._pending_error_text: str | None = None
         # Durable-log seq of the LAST frame folded into the open assistant turn. Drives the
         # SHARED reducer's deterministic turn-id (uuid5(session:seq:role)) so the live turn id
         # equals the id a later log rebuild assigns to the same logical turn (SRD INV-4).
@@ -689,6 +786,9 @@ class Broker(
         # (ask_user.resolved), and turn completion (result).
         self._pending_ask_user_questions: dict[str, dict[str, Any]] = {}
         self._unrestored_questions: dict[str, dict[str, Any]] = {}
+        # The CLI's tool_use_id for each open control, served in open_controls so a client
+        # ties a transcript question (toolu_…) to its card (LEX-1979).
+        self._control_tool_use_ids: dict[str, str] = {}
         self._unrestored_permissions: dict[str, dict[str, Any]] = {}
 
         # Msg ids whose transport delivery task is still in flight (mid-retry, not yet
@@ -793,6 +893,7 @@ class Broker(
                     thread_id=t.get("thread_id"),
                     visibility=t.get("visibility", "public"),
                     author=t.get("author"),
+                    sender=t.get("sender"),
                 )
                 for t in turns
             ]
@@ -855,7 +956,7 @@ class Broker(
         """
         path = self._conversation_history_path()
         path.parent.mkdir(parents=True, exist_ok=True)
-        turns = [asdict(t) for t in self._conversation_turns]
+        turns = [turn_record(t) for t in self._conversation_turns]
         turns = project_timeline(turns, self.session_id)
         data = {"turns": turns, "projection_revision": projection_revision(turns)}
         path.write_text(json.dumps(data, indent=2), encoding="utf-8")
@@ -866,11 +967,13 @@ class Broker(
         The turn reaches the durable event log first, so a failed write of the local
         history file (which raises) cannot also cost the turn its durable record.
         """
+        if turn.role == "user":
+            self._pending_error_text = None  # a human turn: an earlier error is not its error
         self._conversation_turns.append(turn)
         entry = self._enqueue_event_log(
             {
                 "type": "conversation.turn",
-                "turn": asdict(turn),
+                "turn": turn_record(turn),
             }
         )
         self._save_conversation_history()
@@ -878,6 +981,33 @@ class Broker(
             # A room call hears every post the room keeps, once it is durable.
             self._voice_room.observe_turn(turn)
         return entry
+
+    def _close_question_in_conversation(self, data: dict, frame_ts: datetime) -> bool:
+        """Write a dismissed question's closing tool_result into its turn (LEX-1979).
+
+        ``apply_question_closure`` is the transition every rebuild applies to the same
+        logged ``ask_user_resolved`` frame, so live and rebuilt history agree.
+        """
+        target = apply_question_closure(
+            self._pending_assistant_parts, self._conversation_turns, data, frame_ts.isoformat()
+        )
+        if target is None:
+            return False
+        if target is not self._pending_assistant_parts:
+            self._save_conversation_history()
+        return True
+
+    def _drop_question_closures(self, data: dict) -> None:
+        """A real result replaces a question's closure in a finished turn (LEX-1979)."""
+        answered = tool_result_block_ids(data)
+        if not answered:
+            return
+        drop_question_closures(self._pending_assistant_parts, answered)
+        changed = False
+        for turn in self._conversation_turns:
+            changed = drop_question_closures(turn.parts, answered) or changed
+        if changed:
+            self._save_conversation_history()
 
     def _serialize_in_progress_turn(self) -> dict | None:
         """Reconstruct the in-flight assistant turn as a turn-shaped dict (or None when idle).
@@ -931,6 +1061,7 @@ class Broker(
             reasoning=self._pending_reasoning_text,
             last_seq=self._pending_assistant_last_seq,
             last_ts=self._pending_assistant_last_ts,
+            message_ids=self._pending_message_ids,
         )
 
     def _flush_pending_assistant_turn(self, metadata: dict | None = None) -> None:
@@ -949,10 +1080,40 @@ class Broker(
                 metadata=turn["metadata"],
             )
         )
+        self._discard_pending_assistant_turn()
+
+    async def _interrupt_open_turn(self, reason: str) -> None:
+        """Save the open assistant span as an interrupted turn before the broker stops.
+
+        The span lives only in memory until its turn ends, so a restart would drop it
+        from the record whenever the durable log is too large to read back (LEX-1982).
+        The ``turn_interrupted`` frame is logged first and the turn is stamped with its
+        seq and time: a rebuild closes the span at that frame the same way, so both give
+        the same turn, whatever frames (terminal repaints) the span held.
+        """
+        self._cli_events_open.clear()
+        try:
+            await self._cli_events_settled.wait()
+            if build_assistant_turn(self.session_id, self._pending_accumulator()) is None:
+                return
+            frame = {"type": TURN_INTERRUPTED_KIND, "reason": reason}
+            observed_at = datetime.now(UTC)
+            self._enqueue_event_log(frame, ts=observed_at)
+            self._pending_assistant_last_seq = self._event_log_seq
+            self._pending_assistant_last_ts = observed_at
+            self._flush_pending_assistant_turn(metadata={"status": "interrupted"})
+            # Reach every client before the next event can, as in the log.
+            await self._channels.broadcast(frame)
+        finally:
+            self._cli_events_open.set()
+
+    def _discard_pending_assistant_turn(self) -> None:
+        """Clear the open assistant turn: after a flush, or when it is not to be saved."""
         self._pending_assistant_content = ""
         self._pending_assistant_parts = []
         self._pending_reasoning_text = ""
         self._pending_assistant_last_ts = None
+        self._pending_message_ids = []
 
     async def _start_mesh_adapter(self) -> None:
         """Build and start the mesh adapter when mesh.enabled is True.
@@ -2428,8 +2589,45 @@ class Broker(
 
     @history_write
     async def _handle_cli_event(self, data: dict) -> None:
+        """Handle one CLI event, unless shutdown is saving the open turn (LEX-1982).
+
+        An event is logged before it is folded into the open span, with awaits between.
+        Shutdown closes the gate and waits for the events in flight, so the turn it
+        saves holds every frame logged before its ``turn_interrupted`` frame and none
+        after. A nested call, made while its handler still runs (in its task or in a
+        task it started), runs at once; a task that outlives its handler is gated.
+        """
+        if _CLI_EVENT_TASK.get() in self._cli_event_tasks:
+            await self._handle_cli_event_now(data)
+            return
+        await self._cli_events_open.wait()
+        task = asyncio.current_task()
+        self._cli_events_in_flight += 1
+        self._cli_events_settled.clear()
+        self._cli_event_tasks.add(task)
+        token = _CLI_EVENT_TASK.set(task)
+        try:
+            await self._handle_cli_event_now(data)
+        finally:
+            _CLI_EVENT_TASK.reset(token)
+            self._cli_event_tasks.discard(task)
+            self._cli_events_in_flight -= 1
+            if self._cli_events_in_flight == 0:
+                self._cli_events_settled.set()
+
+    async def _handle_cli_event_now(self, data: dict) -> None:
         """Forward a CLI event to all connected channels."""
         event_type = data.get("type", "unknown")
+        if event_type == "assistant" and is_late_frame(self._closed_turn_id, data):
+            # A hook of the agent turn the last result closed, fired after it ended. Never
+            # logged, broadcast or folded: it would reach clients as a live line and be saved
+            # again at the front of the next turn (LEX-1825). The rebuild drops it the same way.
+            logger.info(
+                "Dropped a late frame of closed turn %s (session %s)",
+                self._closed_turn_id,
+                self.session_id,
+            )
+            return
         self._observe_activity_row(data)
 
         # Use one observation instant for both the durable event row and the
@@ -2528,6 +2726,9 @@ class Broker(
             if ask_request_id:
                 self._pending_ask_user_questions[ask_request_id] = dict(data)
                 self._unrestored_questions.pop(ask_request_id, None)
+                native_tool_use_id = str(data.get("tool_use_id") or "")
+                if native_tool_use_id and native_tool_use_id != ask_request_id:
+                    self._control_tool_use_ids[ask_request_id] = native_tool_use_id
                 # A native adapter may reissue the same question with a fresh
                 # RPC ID. Retire only matching historical text, never another ask.
                 for old_id, old in list(self._unrestored_questions.items()):
@@ -2538,14 +2739,24 @@ class Broker(
             # the assistant tool_use frame that the tmux bridge emits right after
             # this question cannot schedule an "active" report that clobbers the
             # awaiting_input below — the assistant branch checks _pending_attention.
+            urgency = self._person_only_attention(data)
+            kind = "permission" if urgency else "question"
             if ask_request_id:
-                self._pending_attention[ask_request_id] = "question"
+                self._pending_attention[ask_request_id] = kind
+            prompt = self._attention_prompt_from_questions(data)
+            if urgency:
+                prompt = (
+                    f"Only a person may approve this: {prompt} Claude Code denies it by "
+                    f"itself after about {urgency['auto_deny_after_seconds']:.0f} seconds "
+                    "unless someone answers."
+                )
             asyncio.create_task(
                 self._enter_attention(
                     ask_request_id,
-                    "question",
-                    prompt=self._attention_prompt_from_questions(data),
+                    kind,
+                    prompt=prompt,
                     options=data.get("questions"),
+                    extra_metadata=urgency,
                 )
             )
 
@@ -2562,8 +2773,22 @@ class Broker(
             if resolved_request_id:
                 self._pending_ask_user_questions.pop(resolved_request_id, None)
                 self._unrestored_questions.pop(resolved_request_id, None)
+                self._control_tool_use_ids.pop(resolved_request_id, None)
                 self._save_control_state()
                 asyncio.create_task(self._exit_attention(resolved_request_id))
+            # A question closed without an answer leaves its tool_use open in the record
+            # for good (LEX-1979): close it there too, as the rebuild does from this frame.
+            self._close_question_in_conversation(data, frame_ts)
+            if data.get("dismissed") and data.get("control_kind") == "question":
+                # Every close, whichever stage made it: the menu check, a hook, the
+                # reconcile, an operator (LEX-1979 f). A question counts once, at the
+                # first stage to close it, however many close frames follow.
+                question = resolved_request_id or str(data.get("tool_use_id") or "")
+                if question not in self._counted_question_closes:
+                    self._counted_question_closes.add(question)
+                    stage = data.get("dismiss_trigger") or "unattributed"
+                    reason = data.get("dismiss_reason") or "unattributed"
+                    self.question_reconcile_counts[f"closed.{stage}.{reason}"] += 1
 
         # Plan + running-agents surfacing: keep the latest plan and the live agent
         # set so reconnects + GET /api/plan|agents can answer. The frames are still
@@ -2765,6 +2990,8 @@ class Broker(
             part_start = len(acc.parts)
             apply_tool_result_blocks(acc, tr_blocks, ts=frame_ts)
             stamp_parts(self._pending_assistant_parts, data, start=part_start)
+            # After stamping: a real result replaces a question's closure (LEX-1979).
+            self._drop_question_closures(data)
             self._pending_assistant_last_seq = self._event_log_seq
             self._pending_assistant_last_ts = frame_ts
         elif event_type == "result":
@@ -2773,6 +3000,7 @@ class Broker(
             # awaiting_input.
             self._pending_attention.clear()
             self._pending_ask_user_questions.clear()
+            self._control_tool_use_ids.clear()
             for permission_id in list(self._pending_permission_requests):
                 self._clear_pending_permission_request(permission_id)
             self._unrestored_questions.clear()
@@ -2799,6 +3027,8 @@ class Broker(
             acc = self._pending_accumulator()
             # D1: ``frame_ts`` (== this frame's durable row ts) is the tool_use start stamp.
             part_start = len(acc.parts)
+            note_message_id(acc, data)
+            self._pending_message_ids = acc.message_ids
             apply_assistant_blocks(acc, content_blocks, ts=frame_ts)
             stamp_parts(acc.parts, data, start=part_start)
             self._pending_assistant_content = acc.content
@@ -2862,21 +3092,26 @@ class Broker(
 
         # Capture error events
         if event_type == "error":
-            error_msg = (
-                data.get("error", {}).get("message", "")
-                if isinstance(data.get("error"), dict)
-                else data.get("content", str(data.get("error", "Unknown error")))
-            )
-            visible_error = str(error_msg) or "Unknown error"
-            if self._pending_assistant_content or self._pending_assistant_parts:
+            visible_error = error_text(data)  # the same rule the rebuild applies
+            # Held until the next result: a failed result repeating it adds no turn.
+            self._pending_error_text = visible_error
+            # The error frame's own seq: flushing streamed text below logs a turn row first.
+            error_frame_seq = self._event_log_seq
+            if (
+                self._pending_assistant_content
+                or self._pending_assistant_parts
+                or self._pending_reasoning_text
+            ):
                 self._flush_pending_assistant_turn(
                     metadata={"status": "error", "messageType": "error"}
                 )
+            else:
+                self._pending_message_ids = []  # as the rebuild's reset at an error
             # Deterministic id (uuid5(session:error_frame_seq:assistant)) so the live error
             # turn id matches the id a log rebuild assigns to the same error frame (INV-4).
             self._append_turn(
                 ConversationTurn(
-                    id=assistant_turn_id(self.session_id, self._event_log_seq),
+                    id=assistant_turn_id(self.session_id, error_frame_seq),
                     role="assistant",
                     content=visible_error,
                     parts=[{"type": "text", "text": visible_error}],
@@ -2905,10 +3140,14 @@ class Broker(
             asyncio.create_task(self._report_usage(data))
             explicit_room_reply = self._pending_explicit_human_response_count > 0
 
+            acc = self._pending_accumulator()
+            repeats_error = result_repeats_error(self._pending_error_text, acc, data)
+            if not suppress_channel_broadcast:
+                # Only a logged result ends it, so the rebuild sees the same results.
+                self._pending_error_text = None
             # Inject the result frame's text into the OPEN turn via the SHARED reducer policy —
             # the SAME fold a later log rebuild applies — so a tool_use-only turn closed by a
             # result with text surfaces that text identically on live and rebuild (INV-4/FR-3).
-            acc = self._pending_accumulator()
             part_start = len(acc.parts)
             apply_result_content(acc, data)
             stamp_parts(acc.parts, data, start=part_start)
@@ -2921,12 +3160,18 @@ class Broker(
             self._pending_assistant_last_seq = self._event_log_seq
             self._pending_assistant_last_ts = frame_ts
 
-            # Capture content before flush clears it
-            content = self._pending_assistant_content or data.get("result", "")
-            if explicit_room_reply:
-                self._pending_assistant_content = ""
-                self._pending_assistant_parts = []
-                self._pending_reasoning_text = ""
+            # Capture content before flush clears it. A repeated provider error is not an
+            # agent reply: it is not posted to a room as one or used as the turn's label.
+            content = (
+                "" if repeats_error else self._pending_assistant_content or data.get("result", "")
+            )
+            if not suppress_channel_broadcast:
+                # Only a logged result moves it, so the rebuild sees the same results.
+                self._closed_turn_id = frame_turn_id(data)
+            if explicit_room_reply or repeats_error:
+                # A room reply is surfaced elsewhere; a failed result that only repeats the
+                # error turn just saved adds nothing (one stored error turn, LEX-1847).
+                self._discard_pending_assistant_turn()
             else:
                 self._flush_pending_assistant_turn(metadata=turn_metadata)
             self._live_tool_details.clear()
@@ -3222,6 +3467,9 @@ class Broker(
                     "ask_user_answer",
                     request_id=data.get("request_id", ""),
                     answers=data.get("answers", []),
+                    # The questions the person left unanswered (LEX-2016); None from
+                    # clients that predate it.
+                    skipped=data.get("skipped"),
                 )
                 # The human answered — the session is no longer blocked. Drop the
                 # replay entry too so a later reconnect doesn't re-surface an
@@ -3522,6 +3770,25 @@ class Broker(
                 msg_id = str(uuid.uuid4())
                 request_id = data.get("request_id")
                 request_id = request_id if isinstance(request_id, str) and request_id else None
+                # The claim keeps the text as this frame carried it, as brokers before
+                # LEX-1910 recorded it, so a retry across an upgrade is the same claim.
+                frame_content = content_str
+                try:
+                    sender, content_str, model_content = _browser_message_sender(
+                        data,
+                        content_str,
+                        request_id,
+                        role=actual_role,
+                        from_telegram=sender_ws is None,
+                        from_verified_person=self._author_for(sender_ws) is not None,
+                    )
+                except SenderError as exc:
+                    logger.info("_dispatch_browser_message: refused sender: %s", exc)
+                    if sender_ws:
+                        await self._send_broker_frame_to(
+                            sender_ws, control_error_frame(str(exc), data, code="invalid_sender")
+                        )
+                    return
                 if request_id and self.volundr_api_url:
                     msg_id = str(
                         uuid.uuid5(uuid.NAMESPACE_URL, f"{self.session_id}:message:{request_id}")
@@ -3531,7 +3798,7 @@ class Broker(
                         await self._get_session_http_client(),
                         session_id=self.session_id,
                         request_id=request_id,
-                        content=content_str,
+                        content=frame_content,
                         token=token,
                         timeout=self._settings.delivery.attempt_timeout_seconds,
                         attempts=self._settings.delivery.max_attempts,
@@ -3552,6 +3819,8 @@ class Broker(
                     request_id=request_id,
                     source="browser",
                     author=self._author_for(sender_ws),
+                    sender=sender,
+                    model_content=model_content,
                 )
 
     async def _deliver_untargeted_to(
@@ -3648,6 +3917,8 @@ class Broker(
         extra_metadata: dict[str, Any] | None = None,
         author: MessageAuthor | None = None,
         model_note: str = "",
+        sender: dict[str, Any] | None = None,
+        model_content: str | None = None,
     ) -> asyncio.Task[None]:
         """Record a user turn, echo it to every client and deliver it to the transport.
 
@@ -3661,6 +3932,11 @@ class Broker(
         frame, the ``user_confirmed`` broadcast and the trace span, and once the session has
         had more than one person it opens the message the model reads. ``model_note`` is
         read by the model ahead of the message and never shown in the conversation.
+
+        ``sender`` is the server-set label of who sent it (LEX-1910,
+        ``niuu.domain.message_sender``), recorded the same places. ``model_content`` is the
+        text the model receives when it differs from the turn's (a non-user sender's header
+        heads it); None delivers ``content_str``.
         """
         await self._record_user_turn(
             content_str,
@@ -3669,9 +3945,14 @@ class Broker(
             source=source,
             extra_metadata=extra_metadata,
             author=author,
+            sender=sender,
         )
         return self._spawn_user_delivery(
-            content_str, msg_id=msg_id, request_id=request_id, author=author, model_note=model_note
+            content_str if model_content is None else model_content,
+            msg_id=msg_id,
+            request_id=request_id,
+            author=author,
+            model_note=model_note,
         )
 
     def _spawn_user_delivery(
@@ -3713,6 +3994,7 @@ class Broker(
         extra_metadata: dict[str, Any] | None = None,
         author: MessageAuthor | None = None,
         steering_state: str = "pending",
+        sender: dict[str, Any] | None = None,
     ) -> None:
         """Record a user turn durably and echo it to every client, without delivering it.
 
@@ -3723,7 +4005,7 @@ class Broker(
         self._note_human_author(author)
         now = datetime.now(UTC)
         input_timeline = self._enqueue_human_turn_event(
-            content_str, msg_id, request_id=request_id, ts=now, author=author
+            content_str, msg_id, request_id=request_id, ts=now, author=author, sender=sender
         )
         self._append_turn(
             ConversationTurn(
@@ -3743,6 +4025,7 @@ class Broker(
                     **(extra_metadata or {}),
                 },
                 author=author.to_dict() if author is not None else None,
+                sender=sender,
             )
         )
         # Mirror the human turn into the durable event log so log-only
@@ -3754,7 +4037,10 @@ class Broker(
             actor_type="user",
             actor_id=author.user_id if author is not None else request_id or msg_id,
             actor_label=author.label if author is not None else "user",
-            attributes={"source": source},
+            attributes={
+                "source": source,
+                **({"sender_kind": _sender_kind(sender)} if sender is not None else {}),
+            },
             started_at=now,
             ended_at=now,
         )
@@ -3772,6 +4058,7 @@ class Broker(
                 "created_at": now.isoformat(),
                 **({TIMELINE_KEY: input_timeline} if input_timeline else {}),
                 **({AUTHOR_KEY: author.to_dict()} if author is not None else {}),
+                **({SENDER_KEY: sender} if sender is not None else {}),
             }
         )
 
@@ -3916,6 +4203,52 @@ class Broker(
             except Exception:
                 logger.debug("Failed to broadcast transport error to channels", exc_info=True)
 
+    def list_native_controls(self) -> dict[str, Any]:
+        """Open native-control cards (age, live/stale menu state) and their counters."""
+        transport = self._transport
+        if transport is None or not transport.capabilities.native_controls:
+            raise NativeControlsUnsupportedError(
+                "This session's transport has no native-control cards"
+            )
+        return {
+            **transport.list_native_controls(),
+            # Questions open only in the record or the restored list, and the closes of
+            # each reconcile stage (LEX-1979).
+            "record_questions": [
+                {"tool_use_id": tool_use_id, "request_id": request_id}
+                for tool_use_id, request_id in self._open_record_questions().items()
+                if tool_use_id not in transport.open_question_tool_use_ids()
+            ],
+            "reconcile_counts": dict(self.question_reconcile_counts),
+        }
+
+    async def dismiss_native_control(self, request_id: str, *, dismissed_by: str) -> dict:
+        """Close one card, or a question open only in the record, for an operator.
+
+        ``request_id`` is a card's id, or for a question with no card its CLI
+        ``tool_use_id`` (``toolu_…``) or its ``reconcile:<tool_use_id>`` id. Audited by
+        the transport and here.
+        """
+        transport = self._transport
+        if transport is None or not transport.capabilities.native_controls:
+            raise NativeControlsUnsupportedError(
+                "This session's transport has no native-control cards"
+            )
+        try:
+            dismissed = await transport.dismiss_native_control(
+                request_id, dismissed_by=dismissed_by
+            )
+        except LookupError:
+            tool_use_id = request_id.removeprefix("reconcile:")
+            return await self.dismiss_record_question(tool_use_id, dismissed_by=dismissed_by)
+        logger.warning(
+            "AUDIT session %s: native control %s dismissed by operator %s",
+            self.session_id,
+            _sanitize_log(request_id),
+            _sanitize_log(dismissed_by),
+        )
+        return dismissed
+
     def _resolve_delivery_routing(self) -> bool:
         """Decide redirect-vs-send for an inbound message AT DELIVERY TIME (INV-7).
 
@@ -4033,9 +4366,9 @@ class Broker(
         pending_q = len(self._pending_ask_user_questions)
         if pending_q:
             logger.warning(
-                "user message delivered while %d ask_user_question(s) pending "
-                "(request_id=%s) — a free-text steer may not start a turn until the "
-                "question is answered",
+                "user message arrived while %d ask_user_question(s) pending "
+                "(request_id=%s); a tmux session closes the question to deliver it "
+                "(LEX-2016), other transports deliver it as a steer",
                 pending_q,
                 _sanitize_log(request_id),
             )
@@ -4071,8 +4404,12 @@ class Broker(
                         _sanitize_log(request_id),
                         _sanitize_log(str(exc)),
                     )
-                    if attempt >= attempts or (
-                        claimed_delivery and not isinstance(exc, DeliveryNotAcceptedError)
+                    if (
+                        attempt >= attempts
+                        or (claimed_delivery and not isinstance(exc, DeliveryNotAcceptedError))
+                        # A live native control refuses every attempt until a human
+                        # acts; retrying only hides the refusal behind "pending".
+                        or isinstance(exc, NativeControlPendingError)
                     ):
                         break
                     await asyncio.sleep(backoff)
@@ -4101,6 +4438,9 @@ class Broker(
             # come later: without this the turn stays "pending" in the history until the
             # next message's output flips it, and the session's last message never.
             await self._activate_user_turn({"msg_id": msg_id, "request_id": request_id})
+        # A question open when the message arrived may have been closed to deliver it
+        # (LEX-2016): the ack reports the questions still open now.
+        pending_q = len(self._pending_ask_user_questions)
         await self._emit_delivery_ack(
             request_id,
             msg_id,
@@ -4113,18 +4453,35 @@ class Broker(
     ) -> None:
         """Terminal delivery failure: flip the turn to a VISIBLE ``failed`` state and
         surface it. The turn is NEVER left silently ``pending`` (INV-7)."""
-        logger.exception(
-            "user message delivery failed after retries (request_id=%s)",
-            _sanitize_log(request_id),
-            exc_info=error,
-        )
+        details = error.details() if isinstance(error, NativeControlPendingError) else None
+        if details is not None:
+            logger.warning(
+                "user message refused: native control %s (%s, menu %s) is open "
+                "(request_id=%s); nothing was typed",
+                details["control_request_id"] or "<no card>",
+                details["control_kind"],
+                details["menu_state"],
+                _sanitize_log(request_id),
+            )
+        else:
+            logger.exception(
+                "user message delivery failed after retries (request_id=%s)",
+                _sanitize_log(request_id),
+                exc_info=error,
+            )
         if self._mark_user_turn_failed(msg_id):
             self._save_conversation_history()
-        await self._emit_delivery_ack(request_id, msg_id, "failed", error=str(error))
+        await self._emit_delivery_ack(
+            request_id, msg_id, "failed", error=str(error), details=details
+        )
         try:
-            await self._emit_broker_frame(
-                control_error_frame(error, {"request_id": request_id}, code="user_delivery_failed")
+            frame = control_error_frame(
+                error, {"request_id": request_id}, code="user_delivery_failed"
             )
+            if details is not None:
+                frame.update({k: v for k, v in details.items() if k != "code"})
+                frame["reason_code"] = details["code"]
+            await self._emit_broker_frame(frame)
         except Exception:
             logger.debug("Failed to broadcast delivery error", exc_info=True)
 
@@ -4153,6 +4510,7 @@ class Broker(
         error: str | None = None,
         pending_questions: int = 0,
         settle_claim: bool = True,
+        details: dict[str, Any] | None = None,
     ) -> None:
         """Broadcast a steering delivery ACK (BUG-3).
 
@@ -4193,6 +4551,10 @@ class Broker(
             event["error"] = error
         if pending_questions:
             event["pending_questions"] = pending_questions
+        if details:
+            # Why it was refused (e.g. code=native_control_pending and the blocking
+            # card's control_request_id), so Forge can answer 409, not a bare failure.
+            event.update(details)
         try:
             await self._emit_broker_frame(event)
         except Exception:
@@ -5000,7 +5362,7 @@ class Broker(
                 on_frames=self._restore_durable_runtime_state,
             )
             merged = merge_history_turns(
-                durable, [asdict(turn) for turn in self._conversation_turns]
+                durable, [turn_record(turn) for turn in self._conversation_turns]
             )
             hydrated = [ConversationTurn(**turn) for turn in merged]
         except Exception as exc:

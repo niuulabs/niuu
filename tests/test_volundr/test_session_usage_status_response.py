@@ -58,6 +58,7 @@ def test_model_windows_preserve_explicit_positive_overrides_and_unknown_models()
     assert configured.model_windows == {"custom-model": 4096, "large-model": 2**53 - 1}
     assert SessionUsageConfig().model_windows == {
         "claude-opus-5-5": 1_000_000,
+        "claude-fable-5-2": 1_000_000,
         "claude-fable-5-1": 1_000_000,
         "claude-sonnet-5-5": 1_000_000,
     }

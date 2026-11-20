@@ -5,6 +5,7 @@ from uuid import uuid4
 
 import pytest
 
+from volundr.config import Settings
 from volundr.domain.models import GitSource, ModelProvider, Session, SessionStatus
 from volundr.domain.services import SessionService, TokenService
 
@@ -51,6 +52,99 @@ class TestSessionServiceBroadcaster:
 
         assert len(broadcaster.session_updated_events) == 1
         assert broadcaster.session_updated_events[0].name == "Updated Name"
+
+    @pytest.mark.asyncio
+    async def test_update_session_stores_a_launch_effort_for_the_model(self, service):
+        """LEX-2022: a model and effort switch is recorded on the row for the next launch."""
+        session = await service.create_session(
+            name="Test",
+            model="claude-opus-5-5",
+            source=GitSource(repo="https://github.com/test/repo", branch="main"),
+        )
+
+        updated = await service.update_session(
+            session.id, model="claude-fable-5-2", reasoning_effort="high"
+        )
+
+        assert updated.model == "claude-fable-5-2"
+        assert updated.workload_config["reasoningEffort"] == "high"
+        with pytest.raises(ValueError, match="Unsupported effort"):
+            await service.update_session(session.id, reasoning_effort="ultra")
+        unchanged = await service.update_session(session.id, name="renamed")
+        assert unchanged.workload_config["reasoningEffort"] == "high"
+
+    @pytest.mark.asyncio
+    async def test_update_session_stores_an_allowlisted_launch_env(
+        self, repository, pod_manager, broadcaster
+    ):
+        """LEX-2045: launch_env is checked, stored whole for the next launch, and {} clears it."""
+        rules = Settings.model_fields["session_launch_env"].default_factory()
+        service = SessionService(
+            repository=repository,
+            pod_manager=pod_manager,
+            broadcaster=broadcaster,
+            launch_env_rules=rules,
+        )
+        session = await service.create_session(
+            name="Test",
+            model="claude-opus-5-5",
+            source=GitSource(repo="https://github.com/test/repo", branch="main"),
+        )
+
+        first = await service.update_session(
+            session.id,
+            reasoning_effort="medium",
+            launch_env={
+                "CLAUDE_CODE_SUBAGENT_MODEL": "opus",
+                "CLAUDE_CODE_AUTO_COMPACT_WINDOW": 150000,
+            },
+        )
+        assert first.workload_config["launch_env"] == {
+            "CLAUDE_CODE_SUBAGENT_MODEL": "opus",
+            "CLAUDE_CODE_AUTO_COMPACT_WINDOW": "150000",
+        }
+        assert first.workload_config["reasoningEffort"] == "medium"
+
+        replaced = await service.update_session(
+            session.id, launch_env={"CLAUDE_CODE_AUTO_COMPACT_WINDOW": "300000"}
+        )
+        assert replaced.workload_config["launch_env"] == {
+            "CLAUDE_CODE_AUTO_COMPACT_WINDOW": "300000"
+        }
+
+        with pytest.raises(ValueError, match="not allowed"):
+            await service.update_session(session.id, launch_env={"LD_PRELOAD": "/x.so"})
+        with pytest.raises(ValueError, match="above"):
+            await service.update_session(
+                session.id, launch_env={"CLAUDE_CODE_AUTO_COMPACT_WINDOW": 2_000_000}
+            )
+        kept = await repository.get(session.id)
+        assert kept.workload_config["launch_env"] == {"CLAUDE_CODE_AUTO_COMPACT_WINDOW": "300000"}
+
+        cleared = await service.update_session(session.id, launch_env={})
+        assert "launch_env" not in cleared.workload_config
+        assert cleared.workload_config["reasoningEffort"] == "medium"
+
+    @pytest.mark.asyncio
+    async def test_start_session_checks_the_stored_launch_env_again(self, repository, pod_manager):
+        """A launch env the allowlist no longer admits stops the start loudly, not silently."""
+        session = await SessionService(
+            repository=repository, pod_manager=pod_manager
+        ).create_session(
+            name="Test",
+            model="claude-opus-5-5",
+            source=GitSource(repo="https://github.com/test/repo", branch="main"),
+        )
+        await repository.update(
+            session.model_copy(
+                update={"workload_config": {"launch_env": {"CLAUDE_CODE_SUBAGENT_MODEL": "opus"}}}
+            )
+        )
+
+        with pytest.raises(ValueError, match="not allowed"):
+            await SessionService(repository=repository, pod_manager=pod_manager).start_session(
+                session.id
+            )
 
     @pytest.mark.asyncio
     async def test_delete_session_publishes_event(self, service, broadcaster):

@@ -2642,6 +2642,27 @@ page_path: council/demo/opinion-b.md
     });
   });
 
+  it('starts a new message after a turn the broker interrupted', async () => {
+    const { result } = renderHook(() => useSkuldChat('ws://localhost:8080/s/test/session'));
+
+    await waitFor(() => expect(result.current.historyLoaded).toBe(true));
+
+    act(() => {
+      const emit = (frame: unknown) => wsHandlers.onMessage?.(JSON.stringify(frame));
+      emit({ type: 'assistant', message: { model: 'claude-opus-5-5', content: [] } });
+      emit({ type: 'content_block_delta', delta: { type: 'text_delta', text: 'before stop' } });
+      emit({ type: 'turn_interrupted', reason: 'broker_shutdown' });
+      emit({ type: 'content_block_delta', delta: { type: 'text_delta', text: 'after restart' } });
+      emit({ type: 'result', result: '' });
+    });
+
+    const assistant = result.current.messages.filter((m) => m.role === 'assistant');
+    expect(assistant.map((m) => [m.content, m.status])).toEqual([
+      ['before stop', 'done'],
+      ['after restart', 'done'],
+    ]);
+  });
+
   it('surfaces single-agent tool use while streaming', async () => {
     const { result } = renderHook(() => useSkuldChat('ws://localhost:8080/s/test/session'));
 

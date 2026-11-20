@@ -14,7 +14,13 @@ from pathlib import Path
 
 import pytest
 
-from niuu.domain.work_facts import WorkFacts, fold_rows, hook_name, is_work_row
+from niuu.domain.work_facts import (
+    WorkFacts,
+    fold_rows,
+    hook_name,
+    is_side_query_hook,
+    is_work_row,
+)
 
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "control_plane"
 CASES = json.loads((FIXTURES / "derived-state.json").read_text())["cases"]
@@ -113,3 +119,50 @@ def test_newest_source_time_wins_and_close_never_goes_negative():
     assert facts.fold("claude_hook", stop, t1).open_tools == 0
     assert facts.fold("result", {}, t1).open_tools == 0
     assert facts.fold("terminal_frame", {}, t1) is facts
+
+
+def _hook_frame(event: str, **inner) -> dict:
+    return {"type": "claude_hook", "hook_event_name": event, "payload": inner}
+
+
+def test_side_query_hooks_are_never_work():
+    """LEX-2026: a prompt-suggestion side query's tools are always denied, so its
+    PreToolUse never gets a PostToolUse; counted, it held a tool open until the next turn."""
+    side = _hook_frame("PreToolUse", agent_id="a0a9ec517ee04652e", tool_name="Bash")
+    stop = _hook_frame("SubagentStop", agent_id="a0a9ec517ee04652e", agent_type="")
+    sub = _hook_frame("PreToolUse", agent_id="a1", agent_type="general-purpose")
+    start = _hook_frame("SubagentStart", agent_id="a1")
+    main = _hook_frame("PreToolUse", tool_name="Bash")
+    assert is_side_query_hook(side) and is_side_query_hook(stop)
+    assert not any(is_side_query_hook(f) for f in (sub, start, main, {"payload": "x"}, None))
+    assert not is_work_row("claude_hook", side) and not is_work_row("claude_hook", stop)
+    assert is_work_row("claude_hook", sub) and is_work_row("claude_hook", main)
+    at = datetime(2026, 11, 10, 4, 47, 17, tzinfo=UTC)
+    facts = fold_rows([("claude_hook", side, at), ("claude_hook", stop, at)])
+    assert facts.last_work_at is None and not facts.tool_open
+
+
+# Row-for-row with Forge's _SIDE_QUERY_HOOK_SQL (checked against PostgreSQL on Thor,
+# LEX-2026 review): only non-empty JSON strings count as an agent id or type.
+_PARITY = [
+    ({"hook_event_name": "PreToolUse", "payload": {"agent_id": "a0a9"}}, True),
+    ({"hook_event_name": "PreToolUse", "payload": {"agent_id": "a1", "agent_type": "Plan"}}, False),
+    ({"hook_event_name": "PreToolUse", "payload": {"tool_name": "Bash"}}, False),
+    ({"hook_event_name": "SubagentStart", "payload": {"agent_id": "a2"}}, False),
+    ({"hook_event_name": "SubagentStop", "payload": {"agent_id": "a3", "agent_type": ""}}, True),
+    ({"payload": {"hook_event_name": "PreToolUse", "agent_id": "a4"}}, True),
+    ({"hook_event_name": "PreToolUse", "payload": "a string"}, False),
+    ({"hook_event_name": "PreToolUse", "payload": ["x"]}, False),
+    ({"hook_event_name": "PreToolUse", "payload": {"agent_id": 0}}, False),
+    ({"hook_event_name": "PreToolUse", "payload": {"agent_id": ""}}, False),
+    ({"hook_event_name": "PreToolUse", "payload": {"agent_id": "a5", "agent_type": 0}}, True),
+    ({"hook_event_name": "PreToolUse", "payload": {"agent_id": "a6", "agent_type": False}}, True),
+    ({"hook_event_name": "PreToolUse", "payload": {"agent_id": "a7", "agent_type": None}}, True),
+    ({"hook_event_name": "PreToolUse", "payload": {"agent_id": ["x"]}}, False),
+    ({"hook_event_name": "PreToolUse"}, False),
+]
+
+
+@pytest.mark.parametrize(("frame", "side"), _PARITY)
+def test_side_query_rule_matches_the_ingest_sql(frame, side):
+    assert is_side_query_hook({"type": "claude_hook", **frame}) is side

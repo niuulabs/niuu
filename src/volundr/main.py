@@ -145,6 +145,7 @@ from volundr.adapters.outbound.postgres_notifications import (
     PostgresNotificationRuleRepository,
 )
 from volundr.adapters.outbound.postgres_prompts import PostgresPromptRepository
+from volundr.adapters.outbound.postgres_questions import PostgresQuestionRepository
 from volundr.adapters.outbound.postgres_resident_runtimes import (
     PostgresResidentRuntimeRepository,
 )
@@ -430,6 +431,8 @@ def _create_notification_service(
         integration_repository=integration_repository,
         guild_instance=guild_instance,
         room_grants=room_grants,
+        questions=PostgresQuestionRepository(pool),
+        question_host=resolve_host(settings),
     )
     return service, image_worker
 
@@ -1688,6 +1691,7 @@ def create_app(
                         IntegrationType.AI_PROVIDER
                     )
                 },
+                launch_env_rules=settings.session_launch_env,
             )
             # A workflow run's unit starts its members with it: every pod manager that hosts
             # one resolves their launches (each member's own spec and credential) from here.

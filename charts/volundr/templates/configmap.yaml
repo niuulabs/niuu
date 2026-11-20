@@ -793,6 +793,9 @@ data:
         {{- end }}
     {{- end }}
 
+    {{- if .Values.sessionLaunchEnv }}
+    session_launch_env: {{ .Values.sessionLaunchEnv | toJson }}
+    {{- end }}
     {{- if .Values.sessionContributors }}
     session_contributors:
       {{- $root := . }}

@@ -20,6 +20,7 @@ secret: health, counts, build names and reasons only.
 from __future__ import annotations
 
 import argparse
+import http.client
 import json
 import os
 import re
@@ -32,7 +33,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
-from urllib.error import URLError
+from urllib.error import HTTPError, URLError
 from urllib.request import ProxyHandler, Request, build_opener
 
 #: Counters of ``GET /push/status`` the summary reports as "moved since".
@@ -249,6 +250,45 @@ class HostSnapshot:
     server_errors: int | None
     errors_note: str = ""
     errors_breakdown: str = ""
+    question_closes: str = ""
+
+
+def question_closes(reads: list[tuple[int, Any]]) -> str:
+    """Questions closed without an answer, by stage and reason, over running sessions.
+
+    ``reads`` holds each running session's native-controls answer: its HTTP status and
+    body (LEX-1979 f), whose ``reconcile_counts`` run from the broker's start. A broker on
+    older code has none (501, or an answer without them); an unreadable one is named,
+    never zero.
+    """
+    closed: Counter[str] = Counter()
+    problems: Counter[str] = Counter()
+    old = unreadable = 0
+    for status, body in reads:
+        if status == 501 or (
+            status == 200 and isinstance(body, dict) and "reconcile_counts" not in body
+        ):
+            old += 1
+            continue
+        counts = body.get("reconcile_counts") if isinstance(body, dict) else None
+        if status != 200 or not isinstance(counts, dict):
+            unreadable += 1
+            continue
+        for key, value in counts.items():
+            if key.startswith("closed."):
+                closed[key.removeprefix("closed.")] += value
+            else:
+                problems[key] += value
+    text = ", ".join(f"{key} {value}" for key, value in sorted(closed.items())) or "none"
+    if problems:
+        text += "; reconcile problems: " + ", ".join(
+            f"{key} {value}" for key, value in sorted(problems.items())
+        )
+    if old:
+        text += f"; {old} broker(s) on older code, without counts"
+    if unreadable:
+        text += f"; {unreadable} unreadable"
+    return text
 
 
 def render(
@@ -283,6 +323,11 @@ def render(
             f"- **{host.name}**: {host.status}, {host.build} ({host.revision[:9]}, {dirty})"
             f"{plugins}; ledger {host.ledger}; {sessions}; {errors}"
         )
+        if host.question_closes:
+            lines.append(
+                "  - Questions closed without an answer, by stage.reason, since each "
+                f"broker started: {host.question_closes}"
+            )
     lines.append("")
     if push is None:
         lines.append("- **Push gateway**: status unreadable")
@@ -380,7 +425,14 @@ def _host(
         sessions = len(listed)
         running = sum(1 for item in listed if item.get("status") == "running")
     except (URLError, OSError, ValueError):
+        listed = []
         sessions = running = None
+    reads = [
+        _native_controls(spec["url"], item["id"], timeout)
+        for item in listed
+        if item.get("status") == "running"
+    ]
+    closes = question_closes(reads) if sessions is not None else "sessions unreadable"
     errors, note, breakdown = _server_errors(spec, since, when, state, context)
     return HostSnapshot(
         spec["name"],
@@ -395,7 +447,19 @@ def _host(
         errors,
         note,
         breakdown,
+        closes,
     )
+
+
+def _native_controls(url: str, session_id: str, timeout: float) -> tuple[int, Any]:
+    """One running session's native-controls answer, with the HTTP status that gave it."""
+    try:
+        body = _get_json(f"{url}/api/v1/forge/sessions/{session_id}/native-controls", timeout)
+    except HTTPError as exc:
+        return exc.code, None
+    except (URLError, OSError, ValueError, http.client.HTTPException):
+        return 0, None  # counted as unreadable, never as no closes
+    return 200, body
 
 
 def _breakdown(lines: list[str], context: dict[str, Any]) -> tuple[int, str]:

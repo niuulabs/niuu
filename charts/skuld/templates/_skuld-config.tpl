@@ -76,6 +76,9 @@ unit (see skuld.memberValues). Every line is indented four spaces, to sit under 
       {{- if .Values.session.initialPrompt }}
       initial_prompt: {{ .Values.session.initialPrompt | quote }}
       {{- end }}
+      {{- if .Values.session.initialPromptSender }}
+      initial_prompt_sender: {{ .Values.session.initialPromptSender | toJson }}
+      {{- end }}
       {{- if (.Values.team | default dict).conversational }}
       # A team's agent: it talks in its room and hands back no persona outcome.
       conversational: true
@@ -90,6 +93,10 @@ unit (see skuld.memberValues). Every line is indented four spaces, to sit under 
     tmux_question_result_history_limit: {{ .Values.broker.tmuxQuestionResultHistoryLimit | default 128 }}
     tmux_native_text_wait_s: {{ .Values.broker.tmuxNativeTextWaitSeconds | default 0.1 }}
     tmux_native_text_poll_s: {{ .Values.broker.tmuxNativeTextPollSeconds | default 0.005 }}
+    tmux_native_control_sweep_interval_s: {{ .Values.broker.tmuxNativeControlSweepIntervalSeconds | default 30.0 }}
+    tmux_native_control_absent_checks: {{ .Values.broker.tmuxNativeControlAbsentChecks | default 3 }}
+    tmux_prompt_suggestions: {{ .Values.broker.tmuxPromptSuggestions | default false }}
+    tmux_person_only_prompt_timeout_s: {{ .Values.broker.tmuxPersonOnlyPromptTimeoutSeconds | default 120.0 }}
     remote_control_permission_mode: {{ .Values.broker.remoteControlPermissionMode | default "" | quote }}
     skip_permissions: {{ .Values.broker.skipPermissions }}
     {{- with .Values.broker.claudePermissionMode }}
@@ -112,6 +119,7 @@ unit (see skuld.memberValues). Every line is indented four spaces, to sit under 
     history_hydration_max_frames: {{ .Values.broker.historyHydrationMaxFrames | toJson }}
     history_hydration_max_bytes: {{ .Values.broker.historyHydrationMaxBytes | toJson }}
     effort_control_timeout_s: {{ .Values.broker.effortControlTimeoutSeconds | toJson }}
+    effort_confirm_settle_s: {{ .Values.broker.effortConfirmSettleSeconds | toJson }}
     pi: {{ .Values.broker.pi | toJson }}
     codex_auth:
       adapter: {{ dig "codexAuth" "adapter" "skuld.codex_auth.HostCodexAuthProvider" .Values.broker | quote }}
