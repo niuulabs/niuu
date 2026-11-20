@@ -173,6 +173,17 @@ _SLASH_COMMAND_ROW_RE = re.compile(r"^(/\S+)\s{2,}(.+?)\s*$")
 # the tmux test harness (tests/support/forge/tmux_page.py) imports this so it
 # parses menus exactly the way the shipped transport does.
 _MENU_ROW_RE = re.compile(r"^\s*[❯>\s]*([1-9])[.)]\s+(.+?)\s*$")
+
+
+def _fold_label(label: str) -> str:
+    """A menu label for comparison: trimmed, case-folded, typographic apostrophes plain.
+
+    Claude Code writes some rows with U+2019 ("Yes, and don’t ask again for: …") and
+    clients may send either form back.
+    """
+    return label.strip().casefold().replace("\u2019", "'").replace("\u2018", "'")
+
+
 # Claude Code fills an empty composer with a dimmed suggestion, e.g.
 # `❯ Try "how does work?"` (v2.1.x). It is not input: the composer is empty.
 _COMPOSER_SUGGESTION_RE = re.compile(r'Try "[^"\n]*"')
@@ -2645,9 +2656,11 @@ class TmuxInteractiveTransport(CLITransport):
         """Surface a Claude-CLI permission gate as a structured `ask_user_question`.
 
         The on-screen rows aren't reliably available yet at hook time (they render a beat later), so
-        we offer Claude's stable 3-option shape (Allow / Allow & don't ask again / Deny) and resolve
-        the actual keystroke against the LIVE menu at answer time (`_answer_tty_prompt`) — race-free
-        (the menu is on screen while the human deliberates) and tolerant of 2-row menus.
+        we first offer a generic 3-option shape (Allow / Allow & don't ask again / Deny), then
+        replace it with Claude's own rows once they render (`_refine_permission_options`): a row
+        such as "Yes, and always allow access to <dir> from this project" has no generic
+        equivalent. Every answer resolves its keystroke against the LIVE menu at answer time
+        (`_answer_tty_prompt`), so a client still holding the generic card is answered too.
         """
         tool_name = self._coerce_str(payload.get("tool_name")) or "this action"
         tool_input = payload.get("tool_input")
@@ -2707,11 +2720,13 @@ class TmuxInteractiveTransport(CLITransport):
         task.add_done_callback(self._permission_refinements.discard)
 
     async def _refine_permission_options(self, request_id: str) -> None:
-        """Replace the generic Allow/Deny card with a custom gate's real menu rows.
+        """Replace the generic Allow/Deny card with the gate's real menu rows.
 
-        Most gates render Claude's standard permission menu, which the generic card
-        already maps. Some tools draw their own confirmation (Workflow: "Yes, run it /
-        View raw script / No"); without its real labels no client could answer it.
+        Claude's standard menu scopes its second row by what the call touches ("Yes, and
+        don’t ask again for: <command>", "Yes, and always allow access to <dir> from this
+        project", "Yes, allow reading from <dir>"), and some tools draw their own
+        confirmation (Workflow: "Yes, run it / View raw script / No"). Only the real
+        labels let a client offer what Claude offers.
         """
         rows = await self._capture_menu_rows_wait()
         pending = self._pending_tty_prompts.get(request_id)
@@ -2722,7 +2737,10 @@ class TmuxInteractiveTransport(CLITransport):
             or pending.get("answer_in_flight")
             or pending.get("answer_uncertain")
             or self._rows_show_pending_question(request_id, rows)
-            or not self._custom_confirmation(rows)
+            or not (
+                self._permission_menu_digit("allow", rows) is not None
+                or self._custom_confirmation(rows)
+            )
         ):
             return
         labels = [label for _, label in rows]
@@ -2736,7 +2754,7 @@ class TmuxInteractiveTransport(CLITransport):
         """A yes/no-style menu that is not Claude's standard permission menu."""
         if cls._permission_menu_digit("allow", rows) is not None:
             return False
-        labels = [label.strip().casefold() for _, label in rows]
+        labels = [_fold_label(label) for _, label in rows]
         return (
             len(set(labels)) == len(labels)
             and any(re.match(r"(yes|allow)\b", label) for label in labels)
@@ -2752,7 +2770,7 @@ class TmuxInteractiveTransport(CLITransport):
         """
         if chosen != "deny" or not cls._custom_confirmation(rows):
             return None
-        matches = [d for d, label in rows if re.match(r"(no|deny)\b", label.strip().casefold())]
+        matches = [d for d, label in rows if re.match(r"(no|deny)\b", _fold_label(label))]
         return matches[0] if len(matches) == 1 else None
 
     @staticmethod
@@ -3028,8 +3046,8 @@ class TmuxInteractiveTransport(CLITransport):
         kind = pending.get("kind")
         if kind == "permission":
             chosen = self._first_answer_text(answers)
-            low = chosen.strip().casefold()
-            live = {label.strip().casefold(): label for label in pending.get("live_labels") or ()}
+            low = _fold_label(chosen)
+            live = {_fold_label(label): label for label in pending.get("live_labels") or ()}
             standard = low in {"allow", "allow & don't ask again", "deny"}
             if not standard and low not in live:
                 raise ValueError("The requested answer is not a declared Claude permission option")
@@ -3055,14 +3073,16 @@ class TmuxInteractiveTransport(CLITransport):
                 elif standard:
                     digit = self._custom_confirmation_digit(low, rows)
                 else:
-                    digit = next((d for d, label in rows if label.strip().casefold() == low), None)
+                    digit = next((d for d, label in rows if _fold_label(label) == low), None)
                 if digit is None:
                     raise ValueError("The requested answer does not match the live Claude menu")
                 pending["answer_uncertain"] = True
-                # Claude's standard menu declines with Escape; a custom menu uses its own row.
-                escape = low == "deny" and standard_menu is not None
-                await self._send_key("Escape" if escape else str(digit), pane_id=pane_id)
-                decision = "deny" if low == "deny" else (live.get(low) or chosen)
+                # Claude's standard menu declines with Escape (its "No, and tell Claude what
+                # to do differently (esc)" row, chosen by label too); a custom menu uses its
+                # own row.
+                denies = digit == self._permission_menu_digit("deny", rows)
+                await self._send_key("Escape" if denies else str(digit), pane_id=pane_id)
+                decision = "deny" if low == "deny" or denies else (live.get(low) or chosen)
                 await self._resolve_tty_answer(request_id, decision)
             finally:
                 pending.pop("answer_in_flight", None)
@@ -3632,7 +3652,7 @@ class TmuxInteractiveTransport(CLITransport):
         """Resolve only a recognizable permission menu, never an arbitrary first row."""
         choices: dict[str, int] = {}
         for digit, label in rows:
-            low = label.strip().casefold()
+            low = _fold_label(label)
             if re.match(r"^(yes|allow)(?:$|[, &])", low):
                 if "don't ask" in low:
                     choices.setdefault("allow & don't ask again", digit)

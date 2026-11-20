@@ -452,9 +452,89 @@ async def test_a_custom_gate_refuses_what_its_menu_cannot_do(bridge, answer, err
     assert live["request_id"] in transport._pending_tty_prompts
 
 
-async def test_the_standard_permission_menu_keeps_the_generic_card(bridge):
-    transport, events = bridge
-    transport.capture_stdout = PERMISSION_MENU
+# Claude Code 2.1.x: a compound command's second row names the command with a
+# typographic apostrophe; a directory-scoped call offers a project-wide grant instead.
+CURLY_PERMISSION_MENU = """Do you want to proceed?
+❯ 1. Yes
+  2. Yes, and don\u2019t ask again for: cd shooter && node shoot.mjs
+  3. No, and tell Claude what to do differently (esc)
+"""
+SCOPED_PERMISSION_MENU = """Do you want to proceed?
+❯ 1. Yes
+  2. Yes, and always allow access to shooter/ from this project
+  3. No, and tell Claude what to do differently (esc)
+"""
+
+
+async def _live_permission_card(transport, events, menu):
+    transport.capture_stdout = menu
     await hook(transport, "PermissionRequest", tool="Bash")
-    await asyncio.sleep(0.2)
-    assert len(_ask_user_questions(events)) == 1
+    for _ in range(200):
+        cards = _ask_user_questions(events)
+        if len(cards) == 2:
+            return cards
+        await asyncio.sleep(0.01)
+    raise AssertionError(f"the live permission menu was never offered: {cards}")
+
+
+async def test_the_standard_permission_menu_is_offered_with_its_live_rows(bridge):
+    transport, events = bridge
+    generic, live = await _live_permission_card(transport, events, SCOPED_PERMISSION_MENU)
+    assert generic["request_id"] == live["request_id"]
+    assert [o["label"] for o in live["questions"][0]["options"]] == [
+        "Yes",
+        "Yes, and always allow access to shooter/ from this project",
+        "No, and tell Claude what to do differently (esc)",
+    ]
+
+
+async def test_a_live_scoped_row_is_answered_by_its_label(bridge):
+    transport, events = bridge
+    _, live = await _live_permission_card(transport, events, SCOPED_PERMISSION_MENU)
+    transport.steps.append(("2", "❯\n"))
+    label = "Yes, and always allow access to shooter/ from this project"
+    await transport.send_control(
+        "ask_user_answer", request_id=live["request_id"], answers=[{"answer": label}]
+    )
+    assert _send_keys(transport) == ["2"]
+    resolved = [e for e in events if e.get("type") == "ask_user_resolved"]
+    assert [e["decision"] for e in resolved] == [label]
+
+
+async def test_the_live_no_row_declines_with_escape(bridge):
+    transport, events = bridge
+    _, live = await _live_permission_card(transport, events, SCOPED_PERMISSION_MENU)
+    transport.steps.append(("Escape", "❯\n"))
+    await transport.send_control(
+        "ask_user_answer",
+        request_id=live["request_id"],
+        answers=[{"answer": "No, and tell Claude what to do differently (esc)"}],
+    )
+    assert _send_keys(transport) == ["Escape"]
+    resolved = [e for e in events if e.get("type") == "ask_user_resolved"]
+    assert [e["decision"] for e in resolved] == ["deny"]
+
+
+async def test_the_generic_dont_ask_again_maps_a_typographic_apostrophe_row(bridge):
+    """Regression: "Allow & don't ask again" was refused against Claude's ’ row."""
+    transport, events = bridge
+    generic, _ = await _live_permission_card(transport, events, CURLY_PERMISSION_MENU)
+    transport.steps.append(("2", "❯\n"))
+    await transport.send_control(
+        "ask_user_answer",
+        request_id=generic["request_id"],
+        answers=[{"answer": "Allow & don't ask again"}],
+    )
+    assert _send_keys(transport) == ["2"]
+
+
+async def test_a_generic_dont_ask_again_never_takes_a_project_wide_grant(bridge):
+    transport, events = bridge
+    generic, _ = await _live_permission_card(transport, events, SCOPED_PERMISSION_MENU)
+    with pytest.raises(ValueError, match="live Claude menu"):
+        await transport.send_control(
+            "ask_user_answer",
+            request_id=generic["request_id"],
+            answers=[{"answer": "Allow & don't ask again"}],
+        )
+    assert _send_keys(transport) == []
