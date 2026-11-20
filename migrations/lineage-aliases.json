@@ -156,5 +156,11 @@
       "filename": "000096_push_gateway.up.sql",
       "sha256": "2de323206ec4e0f0e17c8c46805a74563cb44897d5342355264c0bae3ab6b6bb"
     }
+  ],
+  "000123_forge_question_states.up.sql": [
+    {
+      "filename": "000097_forge_question_states.up.sql",
+      "sha256": "b40da2fe13b6b97004ee6fdeb455d1c895f3930458854124da5b3defbd54df1e"
+    }
   ]
 }

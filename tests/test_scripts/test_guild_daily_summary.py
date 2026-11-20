@@ -240,3 +240,63 @@ def test_a_storm_without_an_offset_is_a_config_error():
         assert "UTC offset" in str(exc)
     else:
         raise AssertionError("a naive storm time must be refused")
+
+
+def test_question_closes_add_up_by_stage_and_name_what_has_no_counts():
+    """LEX-1979 (f): per-stage close counts across running sessions, one line per host."""
+    counts = {"closed.reconcile_start.never_shown": 2, "closed.delivery.superseded": 1}
+    reads = [
+        (200, {"controls": [], "reconcile_counts": counts}),
+        (
+            200,
+            {
+                "reconcile_counts": {
+                    "closed.reconcile_start.never_shown": 1,
+                    "transcript_unavailable": 1,
+                }
+            },
+        ),
+        (200, {"controls": [], "reconcile_counts": {}}),
+        (200, {"controls": [], "counts": {}}),  # a broker from before the counts
+        (501, {"detail": "Update this session's Forge host"}),
+        (0, None),
+        (502, None),
+    ]
+    assert daily.question_closes(reads) == (
+        "delivery.superseded 1, reconcile_start.never_shown 3; "
+        "reconcile problems: transcript_unavailable 1; "
+        "2 broker(s) on older code, without counts; 2 unreadable"
+    )
+    assert daily.question_closes([(200, {"reconcile_counts": {}})]) == "none"
+
+
+def test_the_host_line_carries_its_question_closes():
+    host = daily.HostSnapshot(
+        "mini-m6",
+        "ok",
+        "forge-m6-x",
+        "30f20f4f2",
+        False,
+        [],
+        "141|44",
+        17,
+        13,
+        0,
+        question_closes="reconcile_start.never_shown 3",
+    )
+    text = daily.render(WHEN, SINCE, [host], None, None, None, [], [])
+    assert (
+        "  - Questions closed without an answer, by stage.reason, since each broker "
+        "started: reconcile_start.never_shown 3"
+    ) in text
+
+
+def test_a_truncated_answer_is_unreadable_not_a_failed_summary(monkeypatch):
+    import http.client
+
+    def truncated(url, timeout):
+        raise http.client.IncompleteRead(b"{", 10)
+
+    monkeypatch.setattr(daily, "_get_json", truncated)
+    assert daily._native_controls("http://forge", "s", 1.0) == (0, None)
+    assert daily.question_closes([(0, None)]) == "none; 1 unreadable"

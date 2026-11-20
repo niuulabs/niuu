@@ -716,7 +716,9 @@ class Session(BaseModel):
 
     @property
     def open_controls(self) -> list[dict] | None:
-        """The broker's open human gates ``[{request_id, kind, opened_at}]`` (F12d).
+        """The broker's open human gates ``[{request_id, kind, opened_at, tool_use_id?}]``.
+
+        F12d; ``tool_use_id`` (LEX-1979) is the CLI's id for the call, when the broker knows it.
 
         ``None`` means unknown (an older broker, or none reported yet): a reader must
         never take it as "no control open".
@@ -725,7 +727,11 @@ class Session(BaseModel):
         if not isinstance(controls, list):
             return None
         return [
-            {key: str(c[key]) for key in ("request_id", "kind", "opened_at") if c.get(key)}
+            {
+                key: str(c[key])
+                for key in ("request_id", "kind", "opened_at", "tool_use_id")
+                if c.get(key)
+            }
             for c in controls
             if isinstance(c, dict) and c.get("request_id")
         ]

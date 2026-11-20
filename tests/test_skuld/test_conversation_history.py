@@ -271,3 +271,30 @@ class TestConversationHistoryEndpoint:
         assert data["turns"][0]["content"] == "Hello"
         assert data["turns"][1]["role"] == "assistant"
         assert data["turns"][1]["metadata"]["model"] == "claude-sonnet-4-20250514"
+
+    def test_protocol2_part_paging_pages_within_a_huge_turn(self):
+        parts = []
+        for i in range(40):
+            parts.append({"type": "tool_use", "id": f"c{i}", "name": "Bash", "input": {}})
+            parts.append({"type": "tool_result", "tool_use_id": f"c{i}", "content": "r" * 500})
+        broker._conversation_turns = [
+            ConversationTurn(id="long", role="assistant", content="done", parts=parts)
+        ]
+        client = TestClient(app, raise_server_exceptions=False)
+        params = {"history_protocol": 2, "max_bytes": 4096, "part_paging": 1}
+        whole = client.get("/api/conversation/history", params={**params, "part_paging": 0})
+        assert whole.json()["turns"][0]["parts"] == parts
+        received = []
+        page = client.get("/api/conversation/history", params=params).json()
+        while True:
+            turn = page["turns"][0]
+            assert "history_preview" not in turn
+            received = turn["parts"] + received
+            if not page["older_cursor"]:
+                break
+            page = client.get(
+                "/api/conversation/history", params={**params, "cursor": page["older_cursor"]}
+            ).json()
+        assert received == parts
+        legacy = client.get("/api/conversation/history", params={"part_paging": 1})
+        assert legacy.status_code == 400

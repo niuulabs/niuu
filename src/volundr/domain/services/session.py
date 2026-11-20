@@ -20,6 +20,7 @@ except ImportError:
 from niuu.cap_telemetry import record_degraded
 from niuu.domain.model_runtime import normalize_model_vendor
 from niuu.domain.models import is_push_device
+from niuu.domain.reasoning import MODEL_EFFORTS, validate_effort
 from niuu.domain.services.forge_session_token import (
     ForgeSessionTokenService,
     IssuedForgeSessionToken,
@@ -31,6 +32,7 @@ from niuu.forge_mcp.credentials import grants_from_scopes, normalize_grants
 from niuu.forge_mcp.models import ForgeMcpGrant
 from sleipnir.domain.catalog import volundr_session_forge_mcp_grants_changed
 from volundr.domain.execution_catalog import ExecutionCatalogError, ExecutionSelectionError
+from volundr.domain.launch_env import LAUNCH_ENV_KEY, LaunchEnvRule, validate_launch_env
 from volundr.domain.models import (
     HOSTED_LAUNCH_KEY,
     CleanupTarget,
@@ -230,6 +232,7 @@ class SessionService:
         runtime_providers: Mapping[str, Iterable[str]] | None = None,
         default_definition: str = "",
         integration_vendors: Mapping[str, str] | None = None,
+        launch_env_rules: Mapping[str, LaunchEnvRule] | None = None,
     ):
         if forge_session_projection is not None and not forge_session_projection.supports(
             runtime_backend
@@ -252,6 +255,8 @@ class SessionService:
             for slug, vendor in (integration_vendors or {}).items()
             if vendor
         }
+        self._launch_env_rules: dict[str, LaunchEnvRule] = dict(launch_env_rules or {})
+        self._reported_orphan_slots: set[str] = set()
         self._presented_file_store = presented_file_store
         self._secret_cleanup = secret_cleanup
         self._mesh_identity = mesh_identity
@@ -748,6 +753,9 @@ class SessionService:
                 kind=metadata.get("kind", "question"),
                 prompt=metadata.get("prompt", "") or "",
                 request_id=metadata.get("request_id", "") or "",
+                # A prompt the agent's CLI denies by itself after a short timeout
+                # (Claude's person-only safety prompt, LEX-1936) is flagged as urgent.
+                urgent=metadata.get("urgent") is True,
             )
             return
         if (
@@ -824,6 +832,9 @@ class SessionService:
                 session.id,
                 session.last_active,
             )
+            # Its runtime is NOT stopped here: a quiet broker may be a live session, the
+            # very case the 2026-09-13 startup-cleanup incident killed. The slot it may
+            # still hold is reported by report_orphan_slots (LEX-1858).
             if self._broadcaster is not None:
                 await self._broadcaster.publish_session_updated(result)
         return reconciled
@@ -1032,8 +1043,17 @@ class SessionService:
         branch: str | None = None,
         tracker_issue_id: str | None = None,
         principal: Principal | None = None,
+        reasoning_effort: str | None = None,
+        launch_env: Mapping[str, object] | None = None,
     ) -> Session:
-        """Update a session's name, model, branch, and/or tracker issue."""
+        """Update a session's name, model, launch effort, launch env, branch, and/or tracker issue.
+
+        The effort is checked against the (new) model's levels and stored as
+        ``workload_config.reasoningEffort``, which the next launch uses (LEX-2022).
+        ``launch_env`` replaces ``workload_config.launch_env`` whole (an empty map clears it);
+        every name must be allowlisted and every value meet its rule (LEX-2045). Like the
+        effort, it takes effect at the next start or restart, not in a running CLI.
+        """
         session = await self._repository.get(session_id)
         if session is None:
             raise SessionNotFoundError(session_id)
@@ -1045,6 +1065,20 @@ class SessionService:
             updates["name"] = name
         if model is not None:
             updates["model"] = model
+        if reasoning_effort is not None:
+            levels = MODEL_EFFORTS.get(model or session.model, ())
+            effort = validate_effort(reasoning_effort, levels)
+            updates["workload_config"] = {
+                **(session.workload_config or {}),
+                "reasoningEffort": effort,
+            }
+        if launch_env is not None:
+            checked = validate_launch_env(launch_env, self._launch_env_rules)
+            config = dict(updates.get("workload_config", session.workload_config or {}))
+            config.pop(LAUNCH_ENV_KEY, None)
+            if checked:
+                config[LAUNCH_ENV_KEY] = checked
+            updates["workload_config"] = config
         if branch is not None and isinstance(session.source, GitSource):
             updates["source"] = session.source.model_copy(update={"branch": branch})
         if tracker_issue_id is not None:
@@ -1359,6 +1393,7 @@ class SessionService:
         resource_config: dict | None = None,
         system_prompt: str = "",
         initial_prompt: str = "",
+        initial_prompt_sender: dict | None = None,
         workload_type: str = "session",
         workload_config: dict | None = None,
     ) -> Session:
@@ -1409,6 +1444,13 @@ class SessionService:
             # The previous launch's facts end with it, and a caller cannot set them: the
             # launch records what its own contributors establish (``_record_launch_facts``).
             workload_config = without_launch_facts(workload_config)
+        if workload_config and LAUNCH_ENV_KEY in workload_config:
+            workload_config = {
+                **workload_config,
+                LAUNCH_ENV_KEY: validate_launch_env(
+                    workload_config[LAUNCH_ENV_KEY], self._launch_env_rules
+                ),
+            }
         if self._execution_resolver is not None:
             workload_config = await self._resolve_execution_config(
                 session, workload_config or {}, launch_spec
@@ -1499,6 +1541,7 @@ class SessionService:
                 resource_config=resource_config,
                 system_prompt=system_prompt,
                 initial_prompt=initial_prompt,
+                initial_prompt_sender=initial_prompt_sender,
                 workload_type=workload_type,
                 # Contributors never see the credential bookkeeping: an otherwise
                 # empty workload config must still read as empty to them.
@@ -1571,6 +1614,7 @@ class SessionService:
         resource_config: dict | None = None,
         system_prompt: str = "",
         initial_prompt: str = "",
+        initial_prompt_sender: dict | None = None,
         workload_type: str = "session",
         workload_config: dict | None = None,
     ) -> None:
@@ -1587,6 +1631,7 @@ class SessionService:
                 resource_config=resource_config,
                 system_prompt=system_prompt,
                 initial_prompt=initial_prompt,
+                initial_prompt_sender=initial_prompt_sender,
                 workload_type=workload_type,
                 workload_config=workload_config,
             )
@@ -1671,6 +1716,7 @@ class SessionService:
         resource_config: dict | None = None,
         system_prompt: str = "",
         initial_prompt: str = "",
+        initial_prompt_sender: dict | None = None,
         workload_type: str = "session",
         workload_config: dict | None = None,
     ):
@@ -1686,6 +1732,7 @@ class SessionService:
             resource_config=resource_config,
             system_prompt=system_prompt,
             initial_prompt=initial_prompt,
+            initial_prompt_sender=initial_prompt_sender,
             workload_type=workload_type,
             workload_config=workload_config,
         )
@@ -1882,6 +1929,7 @@ class SessionService:
         initial_prompt: str = "",
         workload_type: str = "session",
         workload_config: dict | None = None,
+        initial_prompt_sender: dict | None = None,
     ) -> tuple[Session, SessionSpec]:
         """Run the contributor pipeline for a launch; the session as launched, and its spec.
 
@@ -1922,6 +1970,7 @@ class SessionService:
             resource_config=resource_config or {},
             system_prompt=system_prompt,
             initial_prompt=initial_prompt,
+            initial_prompt_sender=initial_prompt_sender,
             workload_type=workload_type,
             # Contributors never see the credential bookkeeping: an otherwise
             # empty workload config must still read as empty to them.
@@ -2927,6 +2976,40 @@ class SessionService:
             await self._emit_session_started(final)
         return final
 
+    async def report_orphan_slots(self) -> int:
+        """Name every runtime slot still held for a session that is stopped, archived or gone.
+
+        Report only, once per orphan: a terminal row with a live runtime can be a live session (the
+        2026-09-13 startup-cleanup incident killed exactly those), so nothing is stopped
+        here. Runs with the active-session reconcile, at API start and on its interval
+        (LEX-1858). Returns how many were found.
+        """
+        found: set[str] = set()
+        for session_id in await self._pod_manager.active_session_ids():
+            try:
+                session = await self._repository.get(UUID(session_id))
+            except ValueError:
+                continue
+            if session is not None and session.status not in {
+                SessionStatus.STOPPED,
+                SessionStatus.ARCHIVED,
+            }:
+                continue
+            if session is not None and self._spawn_in_flight(session):
+                continue
+            found.add(session_id)
+            if session_id in self._reported_orphan_slots:
+                continue
+            logger.warning(
+                "Reconcile: session %s is %s but its runtime still holds a slot; "
+                "not stopped automatically (stop it to free the slot)",
+                session_id,
+                session.status.value if session is not None else "unknown to this Forge",
+            )
+        # Each orphan is named once, when first seen, not on every pass.
+        self._reported_orphan_slots = found
+        return len(found)
+
     async def reconcile_active_sessions(self) -> int:
         """Reconcile stored session rows against the pod manager.
 
@@ -3033,6 +3116,7 @@ class SessionService:
             reconciled += 1
             if actual_status == SessionStatus.FAILED and self._runtime_backend == "kubernetes":
                 await self._pod_manager.stop(final)
+        await self.report_orphan_slots()
         return reconciled
 
     async def reconcile_session_if_active(self, session_id: UUID) -> Session | None:

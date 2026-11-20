@@ -1,0 +1,10 @@
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Tool use
+ gbrain — Get Stats Tool: (MCP)
+ About the gbrain — Get Stats Tool:
+ │ Brain statistics (page count, chunk count, etc.) — remote callers see counters confined to their source grant.
+ Do you want to proceed?
+ ❯ 1. Yes
+   2. Yes, and don't ask again for gbrain — Get Stats commands in /home/thor/tmp/lex1950/proj
+   3. No
+ Esc to cancel · Tab to amend

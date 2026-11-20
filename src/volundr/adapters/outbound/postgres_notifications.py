@@ -304,6 +304,8 @@ def feed_sql(
             conditions.append(f"(seq <= {through} OR {acknowledged})")
     if query.unresolved is not None:
         conditions.append("resolved_at IS NULL" if query.unresolved else "resolved_at IS NOT NULL")
+    if query.ids:
+        conditions.append(f"id = ANY({bind(list(query.ids))}::uuid[])")
     if query.before is not None:
         conditions.append(f"seq < {bind(query.before)}")
     if query.after is not None:

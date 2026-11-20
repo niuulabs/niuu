@@ -62,6 +62,7 @@ async def test_create_and_start_session_delegates_to_session_service() -> None:
         resource_config=None,
         system_prompt="system",
         initial_prompt="start",
+        initial_prompt_sender=None,
         workload_type="interactive",
         workload_config={"persona": "reviewer"},
     )

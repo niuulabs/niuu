@@ -50,3 +50,20 @@ def test_session_updated_event_carries_the_facts():
     assert event.data["last_work_at"] == at.isoformat()
     assert event.data["tool_open"] is True
     assert event.data["open_controls"] == []
+
+
+def test_open_controls_carry_the_clis_tool_use_id_when_known():
+    """LEX-1979: the app ties a transcript question (toolu_…) to its card."""
+    controls = [
+        {
+            "request_id": "tty-1",
+            "kind": "question",
+            "opened_at": "2026-11-08T02:21:56+00:00",
+            "tool_use_id": "toolu_01FNSi1eEKu7LVLCvQ9qL51y",
+        },
+        {"request_id": "p-1", "kind": "permission", "opened_at": "2026-11-08T02:22:00+00:00"},
+    ]
+    body = SessionResponse.from_session(
+        _session(activity_metadata={"open_controls": controls}), people_count=1
+    ).model_dump()
+    assert body["open_controls"] == controls

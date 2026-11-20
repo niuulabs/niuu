@@ -27,11 +27,17 @@ class ModelPricing:
 
 # ---------------------------------------------------------------------------
 # Built-in pricing snapshot — USD/million tokens as of 2026-04, with the
-# Claude Fable 5.1 / Opus 5.5 and GPT-6 rows added 2026-09.
+# Claude Fable 5.1 / Opus 5.5 and GPT-6 rows added 2026-09, Claude Fable 5.2 2026-11-09.
 # These can be overridden or extended through BifrostConfig.pricing.
 # ---------------------------------------------------------------------------
 BUILTIN_PRICING: dict[str, ModelPricing] = {
     # Anthropic ──────────────────────────────────────────────────────────────
+    "claude-fable-5-2": ModelPricing(
+        input_per_million=8.00,
+        output_per_million=40.00,
+        cache_creation_per_million=10.00,
+        cache_read_per_million=0.20,
+    ),
     "claude-fable-5-1": ModelPricing(
         input_per_million=10.00,
         output_per_million=50.00,

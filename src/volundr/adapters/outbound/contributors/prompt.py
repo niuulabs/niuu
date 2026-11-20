@@ -35,6 +35,8 @@ class PromptContributor(SessionContributor):
             values.setdefault("session", {})["systemPrompt"] = context.system_prompt
         if context.initial_prompt:
             values.setdefault("session", {})["initialPrompt"] = context.initial_prompt
+            if context.initial_prompt_sender is not None:
+                values["session"]["initialPromptSender"] = context.initial_prompt_sender
 
         effort = context.workload_config.get("reasoningEffort")
         if effort is not None:

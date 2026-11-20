@@ -949,6 +949,9 @@ class SshContainerVmRuntime(BrokeredCredentialPodManager, VmRuntime):
         if persona := spec.values.get("session", {}).get("persona"):
             env["SKULD__SESSION__PERSONA"] = json.dumps(persona, separators=(",", ":"))
         env.update(workflow_session_environment(spec.values))
+        prompt_sender = spec.values.get("session", {}).get("initialPromptSender")
+        if prompt_sender is not None:
+            env["SKULD__SESSION__INITIAL_PROMPT_SENDER"] = json.dumps(prompt_sender)
         if any("\x00" in v for v in env.values()):
             raise ValueError("SSH VM environment cannot contain NUL values")
         if any(not k or "=" in k or any(c.isspace() for c in k) or "\x00" in k for k in env):

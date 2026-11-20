@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
 
-from volundr.domain.push import ApnsPush, ApnsResult, GuildNotification
+from volundr.domain.push import ApnsPush, ApnsResult, GuildNotification, GuildQuestionEvent
 
 
 class ApplePushClient(ABC):
@@ -58,6 +58,18 @@ class GuildFeedPage:
     node_pushes_alerts: bool = False
 
 
+@dataclass(frozen=True)
+class GuildQuestionPage:
+    """One page of one node's question state changes (LEX-1932), oldest first.
+
+    ``position`` continues after the last item; ``head`` is the node's newest change.
+    """
+
+    items: list[GuildQuestionEvent]
+    position: int
+    head: int
+
+
 class GuildFeed(ABC):
     """Reads each Guild node's notifications through the Guild API.
 
@@ -79,6 +91,13 @@ class GuildFeed(ABC):
     async def after(self, node: str, position: int, *, limit: int) -> GuildFeedPage:
         """``node``'s notifications recorded after ``position``, oldest first, with
         the position to continue from."""
+
+    @abstractmethod
+    async def question_events(self, node: str, position: int, *, limit: int) -> GuildQuestionPage:
+        """``node``'s question state changes after ``position``, oldest first.
+
+        Raises :class:`GuildNodeHasNoFeedError` for a node without the route (a Forge
+        older than LEX-1932): it has no question state to push."""
 
     @abstractmethod
     def notification_events(self) -> AsyncIterator[str]:

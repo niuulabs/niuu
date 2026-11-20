@@ -437,3 +437,86 @@ class TestEvents:
             async for _ in feed.notification_events():
                 pass
         await feed.close()
+
+
+def question_item(seq: int, **overrides) -> dict:
+    data = {
+        "seq": seq,
+        "ref": f"question:mini-m6:q-{seq}",
+        "notification_id": f"q-{seq}",
+        "owner_id": "dev-user",
+        "state": "answered",
+        "answered_by": {"device_id": "install-mac", "device_label": "Mac"},
+        "at": "2026-11-05T14:05:00+00:00",
+    }
+    data.update(overrides)
+    return data
+
+
+class TestQuestionEvents:
+    """LEX-1932: one node's question changes through the facade."""
+
+    async def test_reads_one_nodes_changes_after_its_position(self):
+        guild = Guild(
+            httpx.Response(
+                200,
+                json={
+                    "items": [
+                        question_item(4),
+                        question_item(5, state="withdrawn", answered_by=None),
+                    ],
+                    "next_after": 5,
+                    "head_seq": 9,
+                    "instance_id": MINI,
+                },
+            )
+        )
+        page = await feed_for(guild).question_events(MINI, 3, limit=2)
+
+        request = guild.requests[0]
+        assert request.url.path == "/api/v1/forge/notifications/questions/events"
+        assert dict(request.url.params) == {"instance_id": MINI, "after": "3", "limit": "2"}
+        assert (page.position, page.head) == (5, 9)
+        assert [(e.seq, e.instance_id, e.state, e.answered_by) for e in page.items] == [
+            (4, MINI, "answered", {"device_id": "install-mac", "device_label": "Mac"}),
+            (5, MINI, "withdrawn", None),
+        ]
+
+    async def test_a_node_without_the_route_has_no_question_state(self):
+        guild = Guild(httpx.Response(404, json={"detail": "Not Found"}))
+        with pytest.raises(GuildNodeHasNoFeedError, match="older than LEX-1932"):
+            await feed_for(guild).question_events(MINI, 0, limit=1)
+
+    @pytest.mark.parametrize(
+        "answer",
+        [
+            httpx.Response(502, json={"detail": "node down"}),
+            httpx.Response(200, text="not json"),
+            httpx.Response(200, json={"items": []}),
+            httpx.Response(200, json={"items": ["x"], "next_after": 1, "head_seq": 1}),
+            httpx.ConnectError("refused"),
+        ],
+    )
+    async def test_anything_else_is_an_error(self, answer):
+        with pytest.raises(GuildFeedError):
+            await feed_for(Guild(answer)).question_events(MINI, 0, limit=1)
+
+    @pytest.mark.parametrize(
+        "broken",
+        [
+            {"seq": "1"},
+            {"ref": ""},
+            {"state": None},
+            {"answered_by": {"device_id": "x"}},
+        ],
+    )
+    async def test_a_malformed_change_is_an_error_not_skipped(self, broken):
+        """Skipping one would advance past it and lose that change for good."""
+        guild = Guild(
+            httpx.Response(
+                200,
+                json={"items": [{**question_item(1), **broken}], "next_after": 1, "head_seq": 1},
+            )
+        )
+        with pytest.raises(GuildFeedError, match="malformed"):
+            await feed_for(guild).question_events(MINI, 0, limit=1)

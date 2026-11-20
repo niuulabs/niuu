@@ -59,7 +59,10 @@ from volundr.domain.notifications import (
     NotificationRuleSpec,
     NotificationValidationError,
 )
-from volundr.domain.services.notifications import NotificationService
+from volundr.domain.services.notifications import (
+    NotificationService,
+    QuestionStoreUnavailableError,
+)
 from volundr.domain.services.session import SessionAccessDeniedError, SessionService
 
 MAX_IDEMPOTENCY_KEY_CHARS = 200
@@ -105,6 +108,13 @@ class NotificationResponse(BaseModel):
 
     id: UUID
     seq: int
+    question_ref: str | None = Field(
+        default=None,
+        description=(
+            "question:<host>:<id> of the question this item is (question=true) or is about "
+            "(about_question); null otherwise (LEX-1932)."
+        ),
+    )
     session_id: UUID | None = None
     session_seq: int | None = None
     session_name: str | None = None
@@ -235,10 +245,12 @@ class NotificationResponse(BaseModel):
         read_through_seq: int,
         read_ids: set[UUID] | frozenset[UUID] = frozenset(),
         instance_fields: Mapping[str, str] | None = None,
+        question_host: str = "",
     ) -> NotificationResponse:
         return cls(
             **notification.wire(),
             **(instance_fields or {}),
+            question_ref=notification.question_ref(question_host) if question_host else None,
             read=notification.seq <= read_through_seq or notification.id in read_ids,
         )
 
@@ -366,6 +378,26 @@ class NotificationSinkResponse(BaseModel):
     requires_integration: bool
 
 
+def _csv_ids(raw: str | None) -> tuple[UUID, ...]:
+    if raw is None:
+        return ()
+    ids: list[UUID] = []
+    for part in raw.split(","):
+        token = part.strip()
+        if not token:
+            continue
+        try:
+            value = UUID(token)
+        except ValueError:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=f"Unknown notification id {token!r}; ids is a CSV of notification UUIDs",
+            )
+        if value not in ids:
+            ids.append(value)
+    return tuple(ids)
+
+
 def _csv_enum[E: StrEnum](raw: str | None, enum_cls: type[E], name: str) -> tuple[E, ...]:
     if raw is None:
         return ()
@@ -406,6 +438,7 @@ def create_notifications_router(
     router = APIRouter(prefix=prefix, tags=["Notifications"])
     # Every served item names this node's Guild instance, like the Guild feed's.
     instance_fields = notification_service.instance_fields
+    question_host = notification_service.question_host
 
     async def _session_for(session_id: UUID, principal: Principal, action: str) -> Session:
         session = await session_service.get_session(session_id)
@@ -454,6 +487,13 @@ def create_notifications_router(
                 "(the push gateway; needs a forge:notifications:deliver credential)"
             ),
         ),
+        ids: str | None = Query(
+            default=None,
+            description=(
+                "CSV of notification ids: only those (LEX-1932), at most `limit` of them. "
+                "Ids the caller may not see, or that do not exist, are left out."
+            ),
+        ),
         principal: Principal = Depends(extract_principal),
     ) -> NotificationFeedResponse:
         """The caller's notification feed with its read watermark and unread count."""
@@ -472,6 +512,13 @@ def create_notifications_router(
             raise HTTPException(
                 status.HTTP_422_UNPROCESSABLE_CONTENT, "owner_id filters the delivery view only"
             )
+        wanted = _csv_ids(ids)
+        if len(wanted) > limit:
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_CONTENT,
+                f"{len(wanted)} ids but limit={limit}: raise limit (at most {max_page_size}) "
+                "or split the ids",
+            )
         query = NotificationQuery(
             limit=limit,
             before=before,
@@ -484,6 +531,7 @@ def create_notifications_router(
             unread=unread,
             unresolved=unresolved,
             owner_id=owner_id,
+            ids=wanted,
         )
         if delivery_view:
             # The delivery credential reads only this view: it is no person's feed.
@@ -509,7 +557,9 @@ def create_notifications_router(
         feed = await notification_service.list_feed(principal, query)
         return NotificationFeedResponse(
             items=[
-                NotificationResponse.build(n, feed.read_through_seq, feed.read_ids, instance_fields)
+                NotificationResponse.build(
+                    n, feed.read_through_seq, feed.read_ids, instance_fields, question_host
+                )
                 for n in feed.items
             ],
             revision=feed.revision,
@@ -518,6 +568,33 @@ def create_notifications_router(
             read_through_seq=feed.read_through_seq,
             unread_count=feed.unread_count,
         )
+
+    @router.get(
+        "/notifications/questions/events",
+        dependencies=[Depends(require_scope(FORGE_SESSION_READ_SCOPE))],
+    )
+    async def list_question_events(
+        after: int = Query(default=0, ge=0, description="Changes after this seq"),
+        limit: int = Query(default=default_page_size, ge=1, le=max_page_size),
+        principal: Principal = Depends(extract_principal),
+    ) -> dict[str, Any]:
+        """The caller's question state changes, oldest first (LEX-1932).
+
+        Each item is ``{seq, ref, notification_id, owner_id, state, answered_by, at}``;
+        ``next_after`` continues the page and ``head_seq`` is the newest change.
+        """
+        try:
+            items, head = await notification_service.question_events(
+                principal, after=after, limit=limit
+            )
+        except QuestionStoreUnavailableError as exc:
+            raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, str(exc)) from exc
+        return {
+            "items": items,
+            "next_after": items[-1]["seq"] if items else after,
+            "head_seq": head,
+            **instance_fields,
+        }
 
     @router.get(
         "/notifications/read-state",
@@ -577,7 +654,7 @@ def create_notifications_router(
         state = await notification_service.get_read_state(principal)
         read_ids = await notification_service.read_ids(principal, [notification])
         return NotificationResponse.build(
-            notification, state.read_through_seq, read_ids, instance_fields
+            notification, state.read_through_seq, read_ids, instance_fields, question_host
         )
 
     @router.put(
@@ -728,7 +805,7 @@ def create_notifications_router(
         )
         read_ids = await notification_service.read_ids(principal, items)
         return [
-            NotificationResponse.build(item, read_through, read_ids, instance_fields)
+            NotificationResponse.build(item, read_through, read_ids, instance_fields, question_host)
             for item in items
         ]
 
@@ -776,6 +853,7 @@ def create_notifications_router(
             read_through,
             await notification_service.read_ids(principal, [notification]),
             instance_fields,
+            question_host,
         )
 
     return router

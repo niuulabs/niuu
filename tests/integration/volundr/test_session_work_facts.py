@@ -155,3 +155,56 @@ async def test_frames_that_change_nothing_do_not_write_the_session(txn_pool):
     )
     stored = await repo.get(session.id)
     assert stored.last_work_at == new and stored.tool_open is False
+
+
+async def test_side_query_hooks_are_not_work(txn_pool):
+    """LEX-2026: a Claude Code side query's denied PreToolUse never opens a tool."""
+    repo, log = PostgresSessionRepository(txn_pool), PostgresSessionEventLog(txn_pool)
+    session = await _session(repo)
+    at = _ts("2026-11-10T04:47:17Z")
+
+    def hook(seq: int, event: str, **inner) -> SessionLogEntry:
+        body = {"hook_event_name": event, **inner}
+        payload = {"type": "claude_hook", "hook_event_name": event, "payload": body}
+        return SessionLogEntry(
+            session_id=session.id, seq=seq, kind="claude_hook", payload=payload, ts=at
+        )
+
+    await log.append(
+        [
+            hook(1, "PreToolUse", agent_id="a0a9ec517ee04652e", tool_name="AskUserQuestion"),
+            hook(2, "SubagentStop", agent_id="a0a9ec517ee04652e", agent_type=""),
+        ]
+    )
+    stored = await repo.get(session.id)
+    assert stored.last_work_at is None and stored.tool_open is False
+
+    await log.append([hook(3, "PreToolUse", agent_id="a1", agent_type="general-purpose")])
+    stored = await repo.get(session.id)
+    assert stored.last_work_at == at and stored.tool_open is True
+
+
+@pytest.mark.parametrize(
+    ("inner", "side"),
+    [
+        ({"agent_id": "a0a9"}, True),
+        ({"agent_id": "a1", "agent_type": "Plan"}, False),
+        ({"agent_id": 0}, False),
+        ({"agent_id": "a5", "agent_type": 0}, True),
+        ({"agent_id": "a7", "agent_type": None}, True),
+    ],
+)
+async def test_side_query_sql_matches_python(txn_pool, inner, side):
+    """The SQL rule and niuu.domain.work_facts.is_side_query_hook agree row for row."""
+    from niuu.domain.work_facts import is_side_query_hook
+
+    repo, log = PostgresSessionRepository(txn_pool), PostgresSessionEventLog(txn_pool)
+    session = await _session(repo)
+    payload = {"type": "claude_hook", "hook_event_name": "PreToolUse", "payload": inner}
+    at = _ts("2026-11-10T04:47:17Z")
+    await log.append(
+        [SessionLogEntry(session_id=session.id, seq=1, kind="claude_hook", payload=payload, ts=at)]
+    )
+    stored = await repo.get(session.id)
+    assert is_side_query_hook(payload) is side
+    assert (stored.last_work_at is None) is side

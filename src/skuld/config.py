@@ -28,6 +28,7 @@ from pydantic_settings import (
 
 from identity.authz_config import AuthorizationAdapterConfig
 from niuu.config import DynamicAdapterConfig
+from niuu.domain.message_sender import parse_recorded_sender
 from niuu.domain.observability import ObservabilityConfig
 from niuu.forge_mcp.models import ForgeMcpGrant
 from niuu.mesh.config import DEFAULT_RPC_REPLY_CACHE_SIZE, MeshAttestationConfig, MeshNatsConfig
@@ -441,6 +442,15 @@ class SkuldSessionConfig(BaseModel):
             "contract is not."
         ),
     )
+    initial_prompt_sender: dict | None = Field(
+        default=None,
+        description=(
+            "Who wrote initial_prompt (LEX-1910, niuu.domain.message_sender): set by Forge "
+            "when the session's creator is known. Recorded on the first turn; a sender "
+            "other than the user also heads the prompt the model receives. Empty records "
+            "no sender."
+        ),
+    )
     saga_id: str | None = Field(default=None)
     run_id: str | None = Field(default=None)
     resume_session_id: str = Field(
@@ -450,6 +460,11 @@ class SkuldSessionConfig(BaseModel):
             "Volundr for sessions imported from an external harness."
         ),
     )
+
+    @field_validator("initial_prompt_sender", mode="after")
+    @classmethod
+    def _valid_initial_prompt_sender(cls, value: dict | None) -> dict | None:
+        return parse_recorded_sender(value)
 
 
 class ObservationRelayConfig(BaseModel):
@@ -1865,6 +1880,50 @@ class SkuldSettings(BaseSettings):
         gt=0,
         description="Interval between native transcript reads while that wait is open.",
     )
+    tmux_native_control_sweep_interval_s: float = Field(
+        default=30.0,
+        gt=0,
+        description=(
+            "How often a Claude tmux session re-checks its open native-control cards "
+            "(permission menus): a card whose tool call already has a result in the native "
+            "transcript, or whose menu is no longer on screen while the composer is, is "
+            "dismissed so it stops blocking messages (LEX-1936). Bounds how long a card the "
+            "CLI resolved by itself (a timed-out safety prompt) can block steering."
+        ),
+    )
+    tmux_prompt_suggestions: bool = Field(
+        default=False,
+        description=(
+            "Whether a Forge-launched Claude CLI makes prompt suggestions (the dim next-prompt "
+            "text). Off by default: each suggestion is a forked model query after every turn, "
+            "nobody types in these composers, and its tool calls (always denied) reach the "
+            "hooks (LEX-2025/2026). Off sets CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=0 for the "
+            "CLI only; ~/.claude/settings.json is untouched, so interactive use keeps them."
+        ),
+    )
+    tmux_native_control_absent_checks: int = Field(
+        default=3,
+        ge=1,
+        description=(
+            "How many native-control checks in a row must see no menu and the empty chat "
+            "composer before a question card the CLI no longer shows is dismissed (LEX-1979). "
+            "At most one check counts per tmux_native_control_sweep_interval_s, and any "
+            "other result starts the count again, so with the defaults a stranded question "
+            "blocks messages for one to one and a half minutes. A permission card closes on "
+            "one such check; a later prompt or tool start in the main conversation closes "
+            "either at the first such check."
+        ),
+    )
+    tmux_person_only_prompt_timeout_s: float = Field(
+        default=120.0,
+        gt=0,
+        description=(
+            "Claude Code's own timeout for a permission prompt it shows even under "
+            'bypassPermissions ("only a person may approve"); it denies the command after '
+            "it. Skuld does not enforce it: the value is only stated in the immediate "
+            "attention notification so the reader knows how long they have."
+        ),
+    )
     codex_receive_max_bytes: int = Field(default=16 * 1024 * 1024, ge=1024)
     # Unified internal-visibility default for a freshly-connected live channel
     # (SRD FR-7 / INV-10). The read paths thread the SAME configured default
@@ -1898,6 +1957,16 @@ class SkuldSettings(BaseSettings):
         default=15.0,
         gt=0,
         description="Time allowed for a native effort or model change to be acknowledged.",
+    )
+    effort_confirm_settle_s: float = Field(
+        default=1.0,
+        gt=0,
+        description=(
+            'How long Claude\'s "Switch model?" / "Change effort level?" dialog must stay '
+            "unchanged before the broker answers it, and again before it re-sends a key the "
+            "dialog did not take. A key sent as the dialog first draws can be lost; the "
+            "switch then times out (effort_control_timeout_s) and is cancelled."
+        ),
     )
     acp_prompt_timeout_s: float = Field(default=300.0)  # ACP/MSP (Grok Build, Muse) turn timeout
     mcp_servers: list[dict[str, Any]] = Field(default_factory=list)

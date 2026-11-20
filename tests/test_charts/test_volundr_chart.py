@@ -2762,3 +2762,20 @@ def test_claude_sessions_run_without_permission_prompts(definition):
     broker = values["sessionDefinitions"][definition]["defaults"]["broker"]
     assert broker["skipPermissions"] is True
     assert broker["claudePermissionMode"] == "bypassPermissions"
+
+
+@pytest.mark.skipif(shutil.which("helm") is None, reason="Helm is required")
+def test_session_launch_env_renders_only_when_set():
+    """LEX-2045: an empty sessionLaunchEnv leaves Volundr's default allowlist in place."""
+    assert "session_launch_env" not in _rendered_configmap()
+
+    config = _rendered_configmap(
+        "--set",
+        "sessionLaunchEnv.CLAUDE_CODE_AUTO_COMPACT_WINDOW.min_int=100000",
+        "--set",
+        "sessionLaunchEnv.CLAUDE_CODE_AUTO_COMPACT_WINDOW.max_int=500000",
+    )
+
+    assert config["session_launch_env"] == {
+        "CLAUDE_CODE_AUTO_COMPACT_WINDOW": {"min_int": 100000, "max_int": 500000}
+    }

@@ -2074,6 +2074,12 @@ export function useSkuldChat(
             streamingOutputTokensRef.current = event.usage?.output_tokens;
             break;
           }
+          case 'turn_interrupted': {
+            // The broker stopped mid-turn and saved the open span as an interrupted
+            // turn (LEX-1982): close it here, so work after the restart is a new message.
+            finalizeStreaming('done');
+            break;
+          }
           case 'result': {
             if (event.turn_id && closedNativeTurnsRef.current.has(event.turn_id)) break;
             if (activeNativeTurnRef.current) {

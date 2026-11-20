@@ -2518,6 +2518,10 @@ class OpenShellGatewayPodManager(
         }
         if persona := session_values.get("persona"):
             prompts["SKULD__SESSION__PERSONA"] = json.dumps(persona, separators=(",", ":"))
+        if session_values.get("initialPromptSender") is not None:
+            prompts["SKULD__SESSION__INITIAL_PROMPT_SENDER"] = json.dumps(
+                session_values["initialPromptSender"]
+            )
         prompts.update(workflow_session_environment(spec.values))
         return prompts
 

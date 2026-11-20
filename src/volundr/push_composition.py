@@ -153,6 +153,7 @@ def push_gateway_settings(push: PushNotificationConfig, *, instance_id: str) -> 
             enabled=background.enabled,
             priority=background.priority,
             min_interval_seconds=background.min_interval_seconds,
+            questions=background.questions,
         ),
         calls=CallSettings(
             enabled=calls.enabled,

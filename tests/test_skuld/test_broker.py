@@ -12,6 +12,7 @@ import httpx
 import pytest
 from fastapi import WebSocketDisconnect
 
+from niuu.domain.broker_contract import BROKER_CONTRACT
 from niuu.domain.models import SecretType
 from niuu.mesh.transport_builder import TransportBuildError
 from skuld.broker import (
@@ -1464,6 +1465,8 @@ class TestDispatchBrowserMessage:
                 "request_id": "req-1",
                 "steering_state": "pending",
                 "created_at": test_broker._conversation_turns[-1].created_at,
+                # With no socket, the message came from the owner's Telegram (LEX-1910).
+                "sender": {"kind": "user"},
             }
         )
         # BUG-3: a delivery ack is emitted so the HTTP /messages bridge can confirm the
@@ -1515,6 +1518,8 @@ class TestDispatchBrowserMessage:
                 "request_id": None,
                 "steering_state": "pending",
                 "created_at": test_broker._conversation_turns[-1].created_at,
+                # With no socket, the message came from the owner's Telegram (LEX-1910).
+                "sender": {"kind": "user"},
             }
         )
 
@@ -1551,6 +1556,8 @@ class TestDispatchBrowserMessage:
                 "request_id": None,
                 "steering_state": "pending",
                 "created_at": test_broker._conversation_turns[-1].created_at,
+                # With no socket, the message came from the owner's Telegram (LEX-1910).
+                "sender": {"kind": "user"},
             }
         )
 
@@ -1599,6 +1606,56 @@ class TestDispatchBrowserMessage:
                 "request_id": "req-7",
                 "pending_questions": 1,
             }
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_question_closed_to_deliver_the_message_is_not_reported_blocking(
+        self, test_broker
+    ):
+        # LEX-2016: the tmux bridge closes a live question to deliver a message; its
+        # resolved frame clears the question, so the ack says delivered.
+        test_broker._channels.broadcast = AsyncMock()
+        test_broker._apply_retrieval_reflex = AsyncMock(side_effect=lambda m: m)
+        test_broker._pending_ask_user_questions = {"q1": {"type": "ask_user_question"}}
+
+        async def close_question_then_type(*args, **kwargs):
+            test_broker._pending_ask_user_questions.pop("q1")
+
+        test_broker._transport.send_message = AsyncMock(side_effect=close_question_then_type)
+
+        await test_broker._dispatch_browser_message(
+            {"content": "use postgres", "request_id": "req-8"}
+        )
+        await _settle_delivery()
+
+        test_broker._channels.broadcast.assert_any_await(
+            {
+                "type": "user_delivered",
+                "status": "delivered",
+                "id": ANY,
+                "request_id": "req-8",
+            }
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_partial_answer_passes_its_skipped_questions_to_the_transport(
+        self, test_broker
+    ):
+        # LEX-2016: the app sends the questions left unanswered as `skipped`.
+        test_broker._transport.send_control = AsyncMock()
+        answers = [{"question": "Pick a colour?", "answer": "Red"}]
+
+        await test_broker._dispatch_browser_message(
+            {
+                "type": "ask_user_answer",
+                "request_id": "q1",
+                "answers": answers,
+                "skipped": ["Pick a size?"],
+            }
+        )
+
+        test_broker._transport.send_control.assert_awaited_once_with(
+            "ask_user_answer", request_id="q1", answers=answers, skipped=["Pick a size?"]
         )
 
     @pytest.mark.asyncio
@@ -2260,6 +2317,7 @@ class TestFastAPIEndpoints:
         assert data["revision"]
         assert isinstance(data["dirty"], bool)
         assert data["build"]
+        assert data["broker_contract"] == BROKER_CONTRACT
 
     def test_health_reports_cap_hits(self, client):
         """The session's cap hits (event-log overflow, …) show on /health."""
@@ -3547,7 +3605,9 @@ class TestHandleWebSocket:
         mock_ws.headers = {}
         mock_ws.query_params = {}
         # First receive_json returns a message, second raises disconnect
-        mock_ws.receive_json = AsyncMock(side_effect=[{"content": "hello"}, WebSocketDisconnect()])
+        mock_ws.receive_json = AsyncMock(
+            side_effect=[{"content": "hello", "sender": "user"}, WebSocketDisconnect()]
+        )
 
         await test_broker.handle_websocket(mock_ws)
         # send_message runs in a background task; pump the loop so it runs.
@@ -3700,7 +3760,7 @@ class TestHandleWebSocket:
         mock_ws.receive_json = AsyncMock(
             side_effect=[
                 json.JSONDecodeError("Expecting value", "not json", 0),
-                {"content": "still here"},
+                {"content": "still here", "sender": "user"},
                 WebSocketDisconnect(),
             ]
         )

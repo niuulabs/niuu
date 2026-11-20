@@ -331,6 +331,7 @@ async def test_browser_proxy_forwards_only_allowlisted_history_protocol_fields(m
             "history": "recent",
             "history_protocol": "2",
             "history_delivery": "none",
+            "part_paging": "1",
             "access_token": "do-not-forward",
             "cursor": "do-not-forward",
         }
@@ -345,6 +346,7 @@ async def test_browser_proxy_forwards_only_allowlisted_history_protocol_fields(m
     await session_proxy._proxy_ws(ws, "sender-session", reg, "/session", log_label="test")
     assert captured == [
         "ws://127.0.0.1:9123/session?history=recent&history_protocol=2&history_delivery=none"
+        "&part_paging=1"
     ]
 
 

@@ -300,6 +300,42 @@ async def test_session_model_follows_the_runtime_through_http_ingest(isolated_po
             assert event.data["model"] == "claude-fable-5-1"
     finally:
         await stream.aclose()
-    stored = await isolated_pool.fetchrow("SELECT model FROM sessions WHERE id=$1", session.id)
-    assert stored["model"] == "claude-fable-5-1"  # the launch record, which restart reads
+    stored = await isolated_pool.fetchrow(
+        "SELECT model, workload_config->>'reasoningEffort' AS effort FROM sessions WHERE id=$1",
+        session.id,
+    )
+    # The launch record, which a relaunch reads: an applied switch is recorded (LEX-2022).
+    assert (stored["model"], stored["effort"]) == ("claude-fable-5-1", "high")
     assert (await repo.get(session.id)).effective_model == "claude-fable-5-1"
+
+
+async def test_an_applied_switch_is_the_next_launch_choice(isolated_pool):
+    """LEX-2022: applied model/effort frames update the row; reads and turns do not."""
+    repo, session, log = await seed(isolated_pool)
+
+    def row():
+        return isolated_pool.fetchrow(
+            "SELECT model, workload_config->>'reasoningEffort' AS effort FROM sessions WHERE id=$1",
+            session.id,
+        )
+
+    picked = {
+        "type": "runtime_options",
+        "applied": True,
+        "active_turn": None,
+        "current": {"model": "claude-fable-5-2", "effort": "high", "service_tier": None},
+    }
+    read = {**picked, "applied": False, "current": {"model": "claude-opus-5-5", "effort": "max"}}
+    await log.append([entry(session, 1, read), entry(session, 2, claude("one"))])
+    assert tuple(await row()) == ("claude-opus-5-5", None)
+    await log.append([entry(session, 3, picked)])
+    assert tuple(await row()) == ("claude-fable-5-2", "high")
+    effort = {"type": "effort_status", "applied": True, "current": "xhigh", "levels": []}
+    await log.append([entry(session, 4, effort)])
+    assert tuple(await row()) == ("claude-fable-5-2", "xhigh")
+    # A newer choice (PUT), then the broker resends an already stored batch: no rollback.
+    await isolated_pool.execute(
+        "UPDATE sessions SET model='claude-opus-5-5' WHERE id=$1", session.id
+    )
+    await log.append([entry(session, 3, picked)])
+    assert tuple(await row()) == ("claude-opus-5-5", "xhigh")

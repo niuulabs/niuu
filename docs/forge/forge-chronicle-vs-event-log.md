@@ -44,6 +44,17 @@ single shared reducer:
 This fold takes **only** `session_event_log` entries. It has no input from the
 chronicle and never reconciles against it.
 
+**tmux repaints and turn ids** (LEX-1985). A pane repaint (`terminal_frame`) moves an
+open span's seq and time only while the span has nothing streamed, when the repaints are
+the span (its last-resort scrape). Once it has content, its seq and time are its
+content's, as the live broker keeps them, so a human message that closes a span ending in
+repaints gives the rebuilt turn the live turn's id (`tests/test_skuld/test_repaint_turn_id.py`).
+Known limit: before this rule, such a turn's rebuilt id came from its last repaint. A
+broker whose local cache was filled by a hydration under the old rule keeps that old id;
+its next hydration finds the turn unmatched within the durable span, is skipped, and the
+broker serves its own cache. The cache holds every turn that broker saved, so the only
+loss is the durable copy of a turn a crash left open (a clean stop saves it, LEX-1982).
+
 ### The chronicle timeline (derived)
 
 A separate pipeline, Claude-CLI-only:

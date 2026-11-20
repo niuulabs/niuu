@@ -1006,10 +1006,11 @@ def test_claude_284_wrapped_review_preserves_exact_question_and_answer(alter):
     assert NativeQuestionTransport._question_review_matches(captured, plans) is (alter == "none")
 
 
-async def test_question_frame_joins_the_native_tool_and_advertises_complete_answers(native_bridge):
+async def test_question_frame_joins_the_native_tool_and_advertises_partial_answers(native_bridge):
     transport, events = native_bridge
     rid = await transport.surface()
     frame = _ask_user_questions(events)[-1]
     assert frame["request_id"] == rid
     assert frame["tool_use_id"] == TOOL_ID
-    assert frame["metadata"]["requires_all_answers"] is True
+    # Claude's own menu submits a partial answer, so the bridge does too (LEX-2016).
+    assert frame["metadata"]["requires_all_answers"] is False

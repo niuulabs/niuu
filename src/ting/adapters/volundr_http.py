@@ -117,6 +117,9 @@ def _public_chat_endpoint(chat_endpoint: str | None, base_url: str) -> str | Non
     )
 
 
+TING_SENDER = {"kind": "agent", "sub_kind": "automation", "name": "ting"}
+
+
 class VolundrHTTPAdapter(VolundrPort):
     """Calls Volundr's REST API to manage sessions."""
 
@@ -801,7 +804,8 @@ class VolundrHTTPAdapter(VolundrPort):
             resp = await client.post(
                 f"{self._base_url}{FORGE_SESSIONS_PATH}/{session_id}/messages",
                 headers=self._headers(auth_token, principal),
-                json={"content": message},
+                # Ting is automation, never the owner typing (LEX-1910).
+                json={"content": message, "sender": TING_SENDER},
             )
             resp.raise_for_status()
 

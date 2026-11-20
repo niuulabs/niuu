@@ -40,6 +40,8 @@ from volundr.domain.notifications import (
     ReadWatermark,
     rules_matching,
 )
+from volundr.domain.question_ports import QuestionRepository
+from volundr.domain.questions import QuestionEvent, QuestionRecord, QuestionState
 
 
 def _utc_now() -> datetime:
@@ -195,6 +197,7 @@ class InMemoryNotificationRepository(NotificationRepository):
                 == query.unread
             )
             and (query.unresolved is None or (n.resolved_at is None) == query.unresolved)
+            and (not query.ids or n.id in query.ids)
             and (query.before is None or n.seq < query.before)
             and (query.after is None or n.seq > query.after)
         ]
@@ -571,3 +574,89 @@ class InMemoryNotificationImageRepository(NotificationImageRepository):
                 mime=row.stored.thumbnail_mime, content=row.stored.thumbnail
             )
         return NotificationImageContent(mime=row.stored.mime, content=row.stored.content)
+
+
+class InMemoryQuestionRepository(QuestionRepository):
+    """Question state (LEX-1932) with the first-answer-wins rule of the real store."""
+
+    def __init__(self) -> None:
+        self.records: dict[UUID, QuestionRecord] = {}
+        self.events: list[QuestionEvent] = []
+
+    def _event(self, record: QuestionRecord, at: datetime) -> None:
+        answer = record.answer
+        self.events.append(
+            QuestionEvent(
+                seq=len(self.events) + 1,
+                notification_id=record.notification_id,
+                owner_id=record.owner_id,
+                tenant_id=record.tenant_id,
+                state=record.state,
+                answered_by=(
+                    answer.device
+                    if answer is not None and record.state is QuestionState.ANSWERED
+                    else None
+                ),
+                at=at,
+            )
+        )
+
+    async def get(self, notification_id: UUID) -> QuestionRecord | None:
+        return self.records.get(notification_id)
+
+    async def claim_answer(self, *, notification_id, owner_id, tenant_id, session_id, answer):
+        existing = self.records.get(notification_id)
+        if existing is not None:
+            return existing, False
+        record = QuestionRecord(
+            notification_id=notification_id,
+            owner_id=owner_id,
+            tenant_id=tenant_id,
+            session_id=session_id,
+            state=QuestionState.ANSWERED,
+            answer=answer,
+        )
+        self.records[notification_id] = record
+        self._event(record, answer.at)
+        return record, True
+
+    async def close(
+        self,
+        *,
+        notification_id,
+        owner_id,
+        tenant_id,
+        session_id,
+        state,
+        at,
+        closed_by_notification_id,
+    ):
+        if not state.closed:
+            raise ValueError(f"close() takes resolved or withdrawn, not {state.value}")
+        existing = self.records.get(notification_id)
+        if existing is not None and existing.state.closed:
+            return None
+        record = QuestionRecord(
+            notification_id=notification_id,
+            owner_id=owner_id,
+            tenant_id=tenant_id,
+            session_id=session_id,
+            state=state,
+            answer=existing.answer if existing is not None else None,
+            closed_at=at,
+            closed_by_notification_id=closed_by_notification_id,
+        )
+        self.records[notification_id] = record
+        self._event(record, at)
+        return record
+
+    async def events_after(self, scope, *, after, limit):
+        visible = [
+            event
+            for event in self.events
+            if scope.allows(event.owner_id, event.tenant_id) and event.seq > after
+        ]
+        return visible[:limit]
+
+    async def head_seq(self, scope):
+        return max((e.seq for e in self.events if scope.allows(e.owner_id, e.tenant_id)), default=0)

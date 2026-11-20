@@ -164,7 +164,9 @@ async def test_unproved_native_prefix_never_invents_text_or_delays_tool(tmp_path
     elif case == "after_tool":
         rows = [native_row("tool", None, [tool(), {"type": "text", "text": "AFTER"}])]
     elif case == "child":
+        # A real subagent names its type (LEX-2025: one without is a side query).
         hook["agent_id"] = "worker"
+        hook["agent_type"] = "general-purpose"
     elif case == "nested_child":
         transport._active_subagent_stack.append("worker-task")
     elif case == "malformed_parent":

@@ -537,6 +537,13 @@ class DirectK8sPodManager(BrokeredCredentialPodManager, PodManager):
             env.append(
                 {"name": "SKULD__SESSION__INITIAL_PROMPT", "value": session_config["initialPrompt"]}
             )
+        if session_config.get("initialPromptSender") is not None:
+            env.append(
+                {
+                    "name": "SKULD__SESSION__INITIAL_PROMPT_SENDER",
+                    "value": json.dumps(session_config["initialPromptSender"]),
+                }
+            )
 
         # Handle extra env passthrough.
         extra_env = spec.values.get("env", {})

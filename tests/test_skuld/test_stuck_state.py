@@ -282,6 +282,21 @@ class TestReplayProjectModeUx:
 
 class TestOpenControls:
     @pytest.mark.asyncio
+    async def test_open_controls_name_the_clis_tool_call_when_known(self, broker):
+        """LEX-1979: ``tool_use_id`` ties a transcript question to its card."""
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=MagicMock(status_code=204))
+        broker._http_client = mock_client
+        broker._http_client_jwt = None
+        broker._pending_attention = {"q-1": "question", "p-2": "permission"}
+        broker._control_tool_use_ids = {"q-1": "toolu_q"}
+        await broker._report_activity_state(
+            "awaiting_input", extra_metadata={"kind": "question", "request_id": "q-1"}
+        )
+        controls = mock_client.post.call_args.kwargs["json"]["metadata"]["open_controls"]
+        assert [c.get("tool_use_id") for c in controls] == ["toolu_q", None]
+
+    @pytest.mark.asyncio
     async def test_report_carries_open_controls(self, broker):
         mock_client = AsyncMock()
         mock_client.post = AsyncMock(return_value=MagicMock(status_code=204))

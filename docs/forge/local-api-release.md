@@ -117,6 +117,43 @@ saved turn boundary, preserving its Forge ID, native thread/session ID, workspac
 history and pending-control disposition. Do not replay uncertain prompts or old
 approval answers. This release procedure does not perform that migration.
 
+### Broker contract (LEX-1957)
+
+Some releases change what Forge expects of a broker, and a gateway left on older
+code then gets it silently wrong. On 2026-11-06 nine Thor sessions still ran brokers
+from before LEX-1910, so they stored no sender and the apps showed "Unknown sender"
+for messages Forge had labelled. Each such change raises `BROKER_CONTRACT` in
+`niuu.domain.broker_contract`, with a line in `BROKER_CONTRACT_LEVELS` saying what a
+broker below it gets wrong. A broker reports its level on `/health`.
+`GET /sessions/{id}/runtime-version` returns
+`contract: {required, state}`, where `state` is one of:
+
+- `met`;
+- `below`: the broker reports a lower level, or none at all;
+- `not_running`: the session's next start uses the current release;
+- `unknown`: the probe failed.
+
+`scripts/forge_broker_catchup.py` runs on the Forge host itself:
+
+- `audit FORGE_BASE` lists every running session's build and contract state. It
+  exits 1 while any broker is below the contract or can't be probed.
+- `restart FORGE_BASE TMUX_BIN --until ISO [--hold NAME …] [--only ID …]` stops
+  and starts each session below the contract. The session resumes its engine
+  conversation.
+  - It restarts a session only when `forge_lane_busy` finds it idle, with no tool
+    command or train running in its pane, and retries busy sessions until `--until`.
+  - A `--hold` session is listed but never restarted. `--only` restricts the run to
+    the sessions it names: give it a held session once its owner says GO.
+  - A restart counts only when the broker meets the contract and the session kept
+    its conversation id. A session with no recorded conversation id is never stopped.
+  - Each outcome is printed, and written to `--evidence` as it happens.
+
+Run `restart` detached (`systemd-run`), never from a session's own shell: that
+shell is busy work in its pane, so the gate would never restart it. After every
+Thor promotion, the driver runs `audit` and lists each session still below the
+contract in the receipt. When a promotion raises the contract, run `restart` in
+the same quiet window, holding the sessions whose owners must give a GO.
+
 ### September 14 filesystem replay follow-up
 
 Spark API `650088f3` / timeline-v4 was installed at 10:02 UTC with the same guarded

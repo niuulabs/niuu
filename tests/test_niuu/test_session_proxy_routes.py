@@ -13,7 +13,9 @@ import asyncio
 from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
+import respx
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from starlette.datastructures import Headers
@@ -1179,3 +1181,96 @@ class TestVoiceChannelProxyRoutes:
 
         assert captured["url"] == "ws://forge-123--skuld.openshell.localhost:8080/voice"
         assert captured["kwargs"]["host"] == "openshell.openshell.svc.cluster.local"
+
+
+class TestBrokerFailureReasons:
+    """LEX-1847: a failed proxied read says why, so a 5xx count is diagnosable."""
+
+    URL = "http://127.0.0.1:9123/api/conversation/history"
+
+    def _get(self, tmp_path, caplog):
+        caplog.set_level("WARNING", logger="niuu.session_proxy")
+        app, reg = _bare_app(tmp_path)
+        app.state.identity = _verifying_identity()
+        reg.register("sess", 9123)
+        return TestClient(app).get(
+            "/s/sess/api/conversation/history", headers=_IMPERSONATION_HEADERS
+        )
+
+    @respx.mock
+    def test_a_refused_connection_is_named(self, tmp_path, caplog) -> None:
+        respx.get(self.URL).mock(side_effect=httpx.ConnectError("refused"))
+
+        response = self._get(tmp_path, caplog)
+
+        assert response.status_code == 502
+        assert response.headers["x-niuu-broker-unavailable"] == "connect"
+        assert "Session sess broker failed GET /api/conversation/history: could not connect" in (
+            caplog.text
+        )
+
+    @respx.mock
+    def test_a_broker_5xx_is_logged_with_its_detail(self, tmp_path, caplog) -> None:
+        respx.get(self.URL).mock(
+            return_value=httpx.Response(503, json={"detail": "history store busy"})
+        )
+
+        response = self._get(tmp_path, caplog)
+
+        assert response.status_code == 503
+        assert "x-niuu-broker-unavailable" not in response.headers  # the broker's own answer
+        assert "broker answered 503 (history store busy)" in caplog.text
+
+    @respx.mock
+    def test_a_broker_that_does_not_answer_is_a_504_not_a_crash(self, tmp_path, caplog) -> None:
+        respx.get(self.URL).mock(side_effect=httpx.ReadTimeout("slow"))
+
+        response = self._get(tmp_path, caplog)
+
+        assert response.status_code == 504
+        assert response.headers["x-niuu-broker-unavailable"] == "timeout"
+        assert "no answer within 30 s (ReadTimeout)" in caplog.text
+
+    @respx.mock
+    def test_a_dropped_connection_is_marked_too(self, tmp_path, caplog) -> None:
+        respx.get(self.URL).mock(side_effect=httpx.RemoteProtocolError("dropped"))
+
+        response = self._get(tmp_path, caplog)
+
+        assert response.status_code == 502
+        assert response.headers["x-niuu-broker-unavailable"] == "transport"
+
+    @respx.mock
+    def test_a_broker_that_drops_mid_response_is_a_logged_502(self, tmp_path, caplog) -> None:
+        respx.get(self.URL).mock(side_effect=httpx.RemoteProtocolError("Server disconnected"))
+
+        response = self._get(tmp_path, caplog)
+
+        assert response.status_code == 502
+        assert "transport failed (RemoteProtocolError" in caplog.text
+
+
+class TestUnknownSession:
+    """The guard decides before the lookup: an unknown session reads exactly like a session
+    the caller may not attach to (403), whatever the credential, so a probe never learns
+    whether a session id exists. Nothing is proxied, so no broker-failure line is logged."""
+
+    def test_an_unknown_session_is_not_authorized_for_anyone(self, tmp_path, caplog) -> None:
+        caplog.set_level("WARNING", logger="niuu.session_proxy")
+
+        async def guard_like_forge(session_id, user_id, tenant_id, roles) -> bool:
+            return False  # Forge's guard: no session row, so no owner to authorize
+
+        app, _reg = _bare_app(tmp_path, guard=guard_like_forge)
+        app.state.identity = _verifying_identity()
+
+        response = TestClient(app).get(
+            "/s/00000000-0000-4000-8000-000000000000/api/conversation/history",
+            headers=_IMPERSONATION_HEADERS,
+        )
+
+        assert (response.status_code, response.json()["detail"]) == (
+            403,
+            "Not authorized for this session",
+        )
+        assert "broker failed" not in caplog.text

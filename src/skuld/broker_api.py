@@ -26,6 +26,7 @@ from pydantic import BaseModel, Field
 from niuu.adapters.identity_headers import parse_roles_header
 from niuu.build_identity import build_identity
 from niuu.cap_telemetry import health_counts
+from niuu.domain.broker_contract import BROKER_CONTRACT
 from niuu.domain.conversation_timeline import resolve_timeline_turn
 from niuu.domain.history_paging import InvalidHistoryCursorError
 from niuu.domain.json_text import json_text_safe
@@ -47,7 +48,8 @@ from niuu.room_access import (
     ROOM_ROLE_RANK,
     required_role_for_route,
 )
-from skuld.conversation_models import ConversationTurn
+from skuld.control_errors import NativeControlsUnsupportedError
+from skuld.conversation_models import ConversationTurn, turn_record
 from skuld.conversation_read import conversation_rows, wait_history_quiet
 from skuld.conversation_shallow import SHALLOW_DETAIL, elide_turn, is_elided_input
 from skuld.conversation_snapshot import ConversationSnapshotTooLargeError, prepare_history_page
@@ -56,6 +58,7 @@ from skuld.file_routes import register_file_routes
 from skuld.forge_mcp.routes import register_forge_mcp_routes
 from skuld.harness_control import HarnessControl, HarnessControlError
 from skuld.memory_mcp.routes import register_memory_mcp_routes
+from skuld.native_question_index import NativeTranscriptUnavailableError
 from skuld.path_security import (
     UnsafePathError,
     resolve_contained_path,
@@ -72,6 +75,7 @@ from skuld.presented_durable import (
     write_pending_record,
 )
 from skuld.preview import PreviewMiddleware
+from skuld.question_reconcile import RECONCILE_OWNER, NativeQuestionsUnsupportedError
 from skuld.room_role_port import RoomRoleResolutionError
 from skuld.service_manager import ServiceCreateRequest, ServiceStatus
 from skuld.voice.channel import register_voice_routes
@@ -418,6 +422,10 @@ async def health() -> dict:
         **startup,
         **_BUILD_IDENTITY,
         "caps": health_counts(),
+        "broker_contract": BROKER_CONTRACT,
+        # Questions closed without an answer, per stage and reason, and the reconcile's
+        # own failures, since this broker started (LEX-1979 f).
+        "question_counts": dict(sorted(broker.question_reconcile_counts.items())),
     }
 
 
@@ -547,8 +555,13 @@ async def get_conversation_history(
     max_bytes: int = 0,
     cursor: str | None = None,
     turn_id: str | None = None,
+    part_paging: bool = False,
 ) -> dict:
     """Return the conversation history with activity state.
+
+    ``history_protocol=2`` pages drop older whole turns to fit the byte budget and
+    never cut a turn; ``part_paging`` pages within a turn larger than the budget
+    (``docs/forge/openclaw-session-orchestrator-guide.md``, "Bounded history pages").
 
     ``detail=shallow`` elides heavy ``tool_result`` content to lazy-load
     placeholders (see ``conversation_shallow``); the client fetches an
@@ -640,6 +653,8 @@ async def get_conversation_history(
     if history_protocol != 2:
         if cursor:
             raise HTTPException(400, "cursor requires history_protocol=2")
+        if part_paging:
+            raise HTTPException(400, "part_paging requires history_protocol=2")
         return json_text_safe(result)
     if turn_id is not None or limit < 0 or max_bytes < 0:
         raise HTTPException(400, "Invalid history page request")
@@ -656,6 +671,7 @@ async def get_conversation_history(
                 broker._settings.conversation_recent_max_bytes,
             ),
             cursor=cursor,
+            part_paging=part_paging,
         )
     except InvalidHistoryCursorError as exc:
         raise HTTPException(
@@ -1308,7 +1324,7 @@ async def present_host_file(
         source_path=source_path,
     )
     broker._append_turn(turn)
-    await broker._channels.broadcast({"type": "conversation.turn", "turn": asdict(turn)})
+    await broker._channels.broadcast({"type": "conversation.turn", "turn": turn_record(turn)})
     if broker._work_sharer is not None:
         # A run's member: the run's room lists the file with the run's deliverables.
         await broker._work_sharer.presented(dict(turn.parts[0]["input"]))
@@ -1915,6 +1931,63 @@ async def answer_help_request(request: Request, request_id: str, body: _HelpAnsw
     except RuntimeError as exc:
         raise HTTPException(409, str(exc)) from exc
     return {"status": "answered", "message_id": message_id}
+
+
+class _NativeControlDismissRequest(BaseModel):
+    """Who dismisses a native-control card; Forge sets it to the verified caller."""
+
+    dismissed_by: str = Field(default="", max_length=256)
+
+
+@app.get("/api/native-controls")
+async def list_native_controls(request: Request) -> dict:
+    """Open native-control cards: age, menu state (live/gone/unknown) and counters."""
+    if await _room_role_from_state(request) != "owner":
+        raise HTTPException(403, "Only the session owner may inspect native controls")
+    try:
+        return broker.list_native_controls()
+    except NativeControlsUnsupportedError as exc:
+        raise HTTPException(409, str(exc)) from exc
+
+
+@app.post("/api/native-controls/{request_id}/dismiss")
+async def dismiss_native_control(
+    request: Request, request_id: str, body: _NativeControlDismissRequest
+) -> dict:
+    """Dismiss one native-control card without answering it (owner only, audited).
+
+    The escape hatch for a card the automatic checks keep open. A verified identity
+    header names the operator; otherwise the body's ``dismissed_by`` (Forge sets it
+    from the caller it authenticated), else "session owner".
+    """
+    if await _room_role_from_state(request) != "owner":
+        raise HTTPException(403, "Only the session owner may dismiss a native control")
+    identity = _resolve_http_principal(request, broker._settings.ws_auth)
+    dismissed_by = (identity[0] if identity else "") or body.dismissed_by.strip()
+    try:
+        control = await broker.dismiss_native_control(
+            request_id, dismissed_by=dismissed_by or "session owner"
+        )
+    except LookupError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except NativeControlsUnsupportedError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    return {"status": "dismissed", "control": control}
+
+
+@app.post("/api/native-controls/reconcile")
+async def reconcile_native_questions(request: Request) -> dict:
+    """Check every open question against the CLI's session file now (owner only, LEX-1979).
+
+    Closes each question the CLI has answered, never showed, or no longer shows, and
+    keeps one whose menu is on screen. Each close is audited and reaches every client.
+    """
+    if await _room_role_from_state(request) != "owner":
+        raise HTTPException(403, "Only the session owner may reconcile native questions")
+    try:
+        return await broker.reconcile_open_questions(trigger=RECONCILE_OWNER)
+    except (NativeQuestionsUnsupportedError, NativeTranscriptUnavailableError) as exc:
+        raise HTTPException(409, str(exc)) from exc
 
 
 @app.get("/api/communication/routes")

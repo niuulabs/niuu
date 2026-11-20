@@ -358,6 +358,7 @@ class ForgeService:
             resource_config=data.resource_config or None,
             system_prompt=data.system_prompt,
             initial_prompt=data.initial_prompt,
+            initial_prompt_sender=getattr(data, "initial_prompt_sender", None),
             workload_type=data.workload_type,
             workload_config=workload_config or None,
         )
@@ -767,14 +768,18 @@ class ForgeService:
         session_id: UUID,
         name: str | None = None,
         model: str | None = None,
+        reasoning_effort: str | None = None,
         branch: str | None = None,
         tracker_issue_id: str | None = None,
         principal: Principal | None = None,
+        launch_env: dict[str, str | int] | None = None,
     ) -> Session:
         return await self._session_service.update_session(
             session_id=session_id,
             name=name,
             model=model,
+            reasoning_effort=reasoning_effort,
+            launch_env=launch_env,
             branch=branch,
             tracker_issue_id=tracker_issue_id,
             principal=principal,

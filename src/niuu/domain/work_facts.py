@@ -13,8 +13,12 @@ same predicate for its own self-heal (F12b), and the control plane's reference
 (``derived_state.py``) and the ForgeKit port are bound by the same goldens.
 
 Excluded on purpose: the ``system`` and ``capabilities`` rows every reconnect writes,
-the ``user_*`` delivery states, terminal frames and snapshots, ``Notification`` hooks
-and compaction.
+the ``user_*`` delivery states, terminal frames and snapshots, ``Notification`` hooks,
+compaction, and hooks from Claude Code's own side queries (LEX-2026): prompt
+suggestions run after a turn with every tool denied, so their ``PreToolUse`` never gets
+a ``PostToolUse`` and would hold a tool open until the next turn ends. They carry an
+``agent_id`` with no ``agent_type``; a real subagent names its type. The vendored
+control-plane goldens carry no agent fields, so they are unaffected.
 """
 
 from __future__ import annotations
@@ -51,6 +55,7 @@ WORK_HOOKS = frozenset(
 TOOL_OPEN_HOOK = "PreToolUse"
 TOOL_CLOSE_HOOKS = frozenset({"PostToolUse", "PostToolUseFailure"})
 TURN_END_HOOK = "Stop"
+SUBAGENT_START_HOOK = "SubagentStart"
 TURN_END_KIND = "result"
 
 
@@ -71,11 +76,31 @@ def hook_name(payload: Mapping[str, Any] | None) -> str:
     return ""
 
 
+def is_side_query_hook(payload: Mapping[str, Any] | None) -> bool:
+    """A ``claude_hook`` frame from a Claude Code side query (LEX-2025/2026).
+
+    Its raw hook names an ``agent_id`` and no ``agent_type`` and is not a SubagentStart.
+    Forge's ingest SQL applies the same test (``SIDE_QUERY_HOOK_SQL`` there).
+    """
+    if not isinstance(payload, Mapping):
+        return False
+    inner = payload.get("payload")
+    if not isinstance(inner, Mapping):
+        return False
+    agent_id, agent_type = inner.get("agent_id"), inner.get("agent_type")
+    if not (isinstance(agent_id, str) and agent_id):
+        return False
+    typed = isinstance(agent_type, str) and bool(agent_type)
+    return not typed and hook_name(payload) != SUBAGENT_START_HOOK
+
+
 def is_work_row(kind: str, payload: Mapping[str, Any] | None) -> bool:
     """True when a durable row of ``kind`` proves the agent is doing turn work."""
     if kind in WORK_KINDS:
         return True
-    return kind == HOOK_KIND and hook_name(payload) in WORK_HOOKS
+    return (
+        kind == HOOK_KIND and hook_name(payload) in WORK_HOOKS and not is_side_query_hook(payload)
+    )
 
 
 @dataclass(frozen=True)

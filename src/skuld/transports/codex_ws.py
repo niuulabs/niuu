@@ -240,18 +240,15 @@ _CODEX_APP_SERVER_SLASH_BY_NAME = {
 # Monotonic request-ID generator for JSON-RPC calls.
 _next_id = count(1)
 
-# Codex models whose app-server build accepts the `ultra` reasoning effort.
-# GPT-5.6 Sol introduced Ultra (subagent-parallel reasoning); GPT-6 Astra and
-# GPT-6 Sol keep it (their bundled Codex metadata lists
-# low/medium/high/xhigh/max/ultra, where ultra = maximum reasoning with automatic
-# task delegation). GPT-6 Luna tops out at `max`, and every earlier Codex model
-# at `high`, so `ultra` must be clamped for them.
-_ULTRA_EFFORT_MODELS = ("gpt-5.6-sol", "gpt-6-astra", "gpt-6-sol")
-
 
 def _model_supports_ultra(model: str) -> bool:
-    """True when the model's Codex build accepts the `ultra` reasoning effort."""
-    return (model or "").strip().lower() in _ULTRA_EFFORT_MODELS
+    """True when the model's Codex build accepts the `ultra` reasoning effort.
+
+    Read from MODEL_EFFORTS (niuu.domain.reasoning), the one table that mirrors
+    Codex's own model catalog, so a new model that ships with Ultra needs one entry
+    there and nothing here.
+    """
+    return "ultra" in MODEL_EFFORTS.get((model or "").strip().lower(), ())
 
 
 def _mcp_tool_name(server: object, tool: object) -> str:
@@ -271,9 +268,8 @@ def _mcp_tool_name(server: object, tool: object) -> str:
 def _codex_effort_for_model(model: str) -> str:
     """Default reasoning effort to push a new Codex session to, by model.
 
-    GPT-6 Astra, GPT-6 Sol and GPT-5.6 Sol default to the ``ultra`` effort; every other
-    Codex model keeps the ``high`` default (their app-server build has no
-    ultra tier).
+    Models whose Codex catalog lists ``ultra`` (GPT-6.x Astra and Sol, GPT-5.6 Sol
+    and Terra) default to it; every other Codex model keeps the ``high`` default.
     """
     if _model_supports_ultra(model):
         return "ultra"

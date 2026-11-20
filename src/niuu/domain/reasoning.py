@@ -10,18 +10,24 @@ CODEX_EFFORTS = (*CLAUDE_EFFORTS, "ultra")
 MUSE_EFFORTS = ("none", "minimal", "low", "medium", "high", "xhigh", "ultra")
 
 MODEL_EFFORTS: dict[str, tuple[str, ...]] = {
+    "claude-fable-5-2": CLAUDE_EFFORTS,
     "claude-fable-5-1": CLAUDE_EFFORTS,
     "claude-fable-5": CLAUDE_EFFORTS,
     "claude-opus-5-5": CLAUDE_EFFORTS,
     "claude-opus-5": CLAUDE_EFFORTS,
     "claude-opus-4-8": CLAUDE_EFFORTS,
     "claude-sonnet-5": CLAUDE_EFFORTS,
+    "gpt-6.2-astra": CODEX_EFFORTS,
+    "gpt-6.2-sol": CODEX_EFFORTS,
+    "gpt-6.1-sol": CODEX_EFFORTS,
+    "gpt-6.1-terra": CODEX_EFFORTS,
     "gpt-6-astra": CODEX_EFFORTS,
     "gpt-6-sol": CODEX_EFFORTS,
     "gpt-6-luna": CLAUDE_EFFORTS,
     "gpt-5.6-sol": CODEX_EFFORTS,
     "gpt-5.6-terra": CODEX_EFFORTS,
     "gpt-5.6-luna": CLAUDE_EFFORTS,
+    "gpt-reserve": CLAUDE_EFFORTS,
     "gpt-5.5": ("none", "low", "medium", "high", "xhigh"),
     "gpt-5.4": ("none", "low", "medium", "high", "xhigh"),
     "grok-4.7": ("low", "medium", "high", "xhigh"),
@@ -35,8 +41,18 @@ MODEL_EFFORTS: dict[str, tuple[str, ...]] = {
 }
 
 
-def preferred_effort(levels: tuple[str, ...] | list[str]) -> str:
-    """Extra high is the launch preference; use the highest available otherwise."""
+# A model whose own default effort is the launch effort, instead of extra high.
+# Claude Fable 5.2 defaults to high (LEX-2021).
+MODEL_DEFAULT_EFFORTS: dict[str, str] = {
+    "claude-fable-5-2": "high",
+}
+
+
+def preferred_effort(levels: tuple[str, ...] | list[str], model: str = "") -> str:
+    """The model's own default when it has one; else extra high, else the highest level."""
+    default = MODEL_DEFAULT_EFFORTS.get(model)
+    if default is not None and default in levels:
+        return default
     return "xhigh" if "xhigh" in levels else next(iter(reversed(levels)), "")
 
 

@@ -72,18 +72,50 @@ Check `GET /s/{id}/api/capabilities`: `runtime_options: true` gates the new surf
 - Choices persist through broker restart unless the operator changes the launch
   model. Native account availability can change: refresh and display rejection,
   never substitute another model or permission policy.
-- Claude sessions (tmux transport) expose the same shape with `source: "catalog"`:
-  Claude Code publishes no model catalog, so `models` are the product's Claude
-  entries in `niuu.domain.reasoning.MODEL_EFFORTS` (`name` is the model id,
-  `default` marks the launch model, no service tiers). `current.model` follows the
-  native transcript, so a `/model` typed in the terminal shows after the next
-  reply. A model change types `/model <id>` into the CLI between turns (400 while
-  Claude is working) and waits for its acknowledgement. Not offered
-  behind a model gateway (`runtime_options: false`).
+- Claude sessions (tmux transport) expose the same shape with `source: "catalog"`.
+  A typed `/model <id>` or `/effort <level>` saves the choice as the default for
+  every new Claude Code session on the host (`~/.claude/settings.json`), so the
+  broker never types them (LEX-2022). It opens the `/model` picker or the `/effort`
+  slider, moves to the choice and presses `s` ("this session only"), then waits for
+  the CLI's "for this session only" acknowledgement; a "saved as your default"
+  acknowledgement is an error. The picker lists only its aliases' current models,
+  so `models` are `SESSION_SWITCH_MODELS` in `skuld.transports.tmux_interactive`
+  (Opus 5.5 and Fable 5.2; `name` is the model id, `default` marks the launch
+  model, no service tiers). Any other model is refused with a 400 that says to set
+  the session's model (`PUT /sessions/{id}`) and relaunch. `current.model` follows
+  the native transcript, so a `/model` typed in the terminal shows after the next
+  reply. Changes happen between turns only (400 while Claude is working). Not
+  offered behind a model gateway (`runtime_options: false`).
+- An applied switch (a `runtime_options` frame with `applied: true`, or an applied
+  `effort_status`) is recorded on the session row: `model` and
+  `workload_config.reasoningEffort`, which the next launch uses. `PUT
+  /api/v1/forge/sessions/{id}` takes `model` and `reasoning_effort` (checked against
+  the model's levels) for the same record.
 - The session's `model` in `GET /api/v1/forge/sessions`, the session GET and the
   `session_updated` event is the model **in effect**: the last one the runtime
   reported (a reply's `message.model`, or an acknowledged change between turns),
-  else the launch model. The launch model stays stored; restart launches with it.
+  else the launch model. The launch model stays stored, updated by an applied
+  switch; restart launches with it. Sessions show it as `launch_model`, with
+  `launch_effort` (`workload_config.reasoningEffort`, null at the model's default),
+  so a `PUT` is visible before the CLI reports anything new.
+- Per-session launch environment (LEX-2045): `PUT /api/v1/forge/sessions/{id}` takes
+  `launch_env`, a `{name: value}` map stored whole as `workload_config.launch_env`
+  (`{}` clears it), and session create accepts the same key in `workload_config`.
+  Every start and restart gives it to the broker, whose environment the CLI inherits,
+  so a lane can launch with, for example, `CLAUDE_CODE_SUBAGENT_MODEL=opus` and
+  `CLAUDE_CODE_AUTO_COMPACT_WINDOW=150000`. Only names in Volundr's
+  `session_launch_env` are accepted, each with a rule: a whole-value `pattern`, or an
+  integer `min_int`/`max_int` (defaults: those two variables; the window is 100000 to
+  1000000). Anything else is a 400 naming the allowlist, and a stored map the
+  allowlist no longer admits stops the start with the same error. Sessions show it as
+  `launch_env`. Like `launch_effort`, it does not change a running CLI.
+- With history, Claude asks "Switch model?" / "Change effort level?" after `s`.
+  The broker reads the dialog from the live screen (border or not) and presses
+  Enter only on "Yes, switch to <choice>", once the dialog has stayed unchanged
+  for `effort_confirm_settle_s` (1 s; chart `broker.effortConfirmSettleSeconds`).
+  An Enter sent as the dialog first draws can be lost, and the switch then timed
+  out and was cancelled ("Kept model as …"). A dialog still there, unchanged, a
+  settle period later gets Enter again.
 
 ## Approvals, questions and notices
 

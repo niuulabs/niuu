@@ -247,8 +247,11 @@ async def test_another_claude_process_does_not_touch_the_main_plan(transport) ->
     await transport.handle_claude_hook(_create("1", "Main work"))
 
     await transport.handle_claude_hook({**_create("1", "Teammate work"), "session_id": "mate"})
-    # An in-process subagent shares the main list.
-    await transport.handle_claude_hook({**_create("2", "Subagent work"), "agent_id": "sub-1"})
+    # An in-process subagent shares the main list. A real subagent names its type; a hook
+    # with an agent_id and no type is a side query and is ignored (LEX-2025).
+    await transport.handle_claude_hook(
+        {**_create("2", "Subagent work"), "agent_id": "sub-1", "agent_type": "general-purpose"}
+    )
 
     assert [t["content"] for t in _plans(events)[-1]["tasks"]] == ["Main work", "Subagent work"]
 

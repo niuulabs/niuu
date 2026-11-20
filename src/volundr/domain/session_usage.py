@@ -389,3 +389,23 @@ def parse_json(value: object) -> dict:
     if isinstance(value, str):
         value = json.loads(value)
     return value if isinstance(value, dict) else {}
+
+
+def runtime_choice(payload: object) -> tuple[str | None, str | None] | None:
+    """(model, effort) a broker frame says was switched to, or None for a read.
+
+    An applied ``runtime_options`` frame carries both; an applied ``effort_status``
+    frame carries the effort alone. Forge records them on the session so a relaunch
+    keeps the choice (LEX-2022).
+    """
+    if not isinstance(payload, dict) or payload.get("applied") is not True:
+        return None
+    if payload.get("type") == "runtime_options":
+        current = payload.get("current")
+        if not isinstance(current, dict):
+            return None
+        return _text(current.get("model")), _text(current.get("effort"))
+    if payload.get("type") == "effort_status":
+        effort = _text(payload.get("current"))
+        return (None, effort) if effort else None
+    return None

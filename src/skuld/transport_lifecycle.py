@@ -9,6 +9,7 @@ import os
 import uuid
 from pathlib import Path
 
+from niuu.domain.message_sender import SENDER_KEY, text_for_model
 from niuu.ports.cli import CLITransport
 from niuu.utils import import_class, resolve_secret_kwargs
 from personas.domain.persona_document import PersonaDocumentError, PortablePersonaDefinition
@@ -74,6 +75,7 @@ class TransportLifecycleMixin:
             "reasoning_effort": self._restored_effort(),
             "service_tier": getattr(self, "_runtime_service_tier", None),
             "effort_control_timeout_s": self._settings.effort_control_timeout_s,
+            "effort_confirm_settle_s": self._settings.effort_confirm_settle_s,
             "sdk_port": self._settings.port,
             "session_id": self.session_id,
             "skip_permissions": self._settings.skip_permissions,
@@ -85,7 +87,7 @@ class TransportLifecycleMixin:
             "claude_permission_mode": self._settings.claude_permission_mode,
             "agent_teams": self._settings.agent_teams,
             "system_prompt": self._settings.session.system_prompt,
-            "initial_prompt": self._settings.session.initial_prompt,
+            "initial_prompt": self._initial_prompt_for_model(),
             # Configured servers plus the built-in forge MCP (merged by name).
             "mcp_servers": self._effective_mcp_servers(),
             "session_tools": self._session_tools(),
@@ -106,6 +108,12 @@ class TransportLifecycleMixin:
             "question_result_history_limit": self._settings.tmux_question_result_history_limit,
             "native_text_wait_s": self._settings.tmux_native_text_wait_s,
             "native_text_poll_s": self._settings.tmux_native_text_poll_s,
+            "native_control_sweep_interval_s": (
+                self._settings.tmux_native_control_sweep_interval_s
+            ),
+            "native_control_absent_checks": self._settings.tmux_native_control_absent_checks,
+            "prompt_suggestions": self._settings.tmux_prompt_suggestions,
+            "person_only_prompt_timeout_s": self._settings.tmux_person_only_prompt_timeout_s,
             "codex_receive_max_bytes": self._settings.codex_receive_max_bytes,
             "live_frame_max_bytes": self._settings.live_frame_max_bytes,
             "dsh_runtime_bin": self._settings.dsh.runtime_bin,
@@ -240,6 +248,14 @@ class TransportLifecycleMixin:
             mode,
         )
 
+    def _initial_prompt_for_model(self) -> str:
+        """The initial prompt as the model receives it: headed when not the user's."""
+        prompt = self._settings.session.initial_prompt
+        sender = self._settings.session.initial_prompt_sender
+        if not prompt or sender is None:
+            return prompt
+        return text_for_model(sender, prompt)
+
     async def _ensure_transport_started(self) -> None:
         """Join any in-flight startup before accepting messages on any channel."""
         async with self._transport_start_lock:
@@ -263,13 +279,21 @@ class TransportLifecycleMixin:
             t.role == "user" and t.content == prompt for t in self._conversation_turns
         ):
             turn_id = str(uuid.uuid4())
-            self._append_turn(ConversationTurn(id=turn_id, role="user", content=prompt))
+            sender = self._settings.session.initial_prompt_sender
+            self._append_turn(
+                ConversationTurn(id=turn_id, role="user", content=prompt, sender=sender)
+            )
             # The initial prompt is a human turn too — persist it to the durable
             # log so log-only replay opens with the operator's first message.
-            self._enqueue_human_turn_event(prompt, turn_id)
+            self._enqueue_human_turn_event(prompt, turn_id, sender=sender)
             try:
                 await self._emit_broker_frame(
-                    {"type": "user_confirmed", "id": turn_id, "content": prompt}
+                    {
+                        "type": "user_confirmed",
+                        "id": turn_id,
+                        "content": prompt,
+                        **({SENDER_KEY: sender} if sender else {}),
+                    }
                 )
             except Exception:
                 logger.debug("Initial-prompt user_confirmed broadcast failed", exc_info=True)
@@ -370,6 +394,11 @@ class TransportLifecycleMixin:
             self._report_startup_failure()
             return
         self._transport.on_event(self._handle_cli_event)
+        if self._transport.capabilities.native_controls:
+            # LEX-1979: close the questions the CLI is not asking, now and every sweep.
+            self._question_reconcile_task = asyncio.create_task(
+                self._run_question_reconcile_loop(), name=f"question-reconcile-{self.session_id}"
+            )
 
         # Initialize service manager
         self.service_manager = ServiceManager(self.workspace_dir)
@@ -508,12 +537,17 @@ class TransportLifecycleMixin:
         if self._chronicle_watcher:
             await self._chronicle_watcher.stop()
 
+        # An open turn is saved as interrupted, then logged by the drain (LEX-1982).
+        await self._interrupt_open_turn("broker_shutdown")
         # Drain and stop the durable event-log worker so the last turn persists
         await self._stop_event_log()
 
         if self._activity_heartbeat_task is not None:
             self._activity_heartbeat_task.cancel()
             await asyncio.gather(self._activity_heartbeat_task, return_exceptions=True)
+        if self._question_reconcile_task is not None:
+            self._question_reconcile_task.cancel()
+            await asyncio.gather(self._question_reconcile_task, return_exceptions=True)
             self._activity_heartbeat_task = None
 
         if self._permission_auto_approval_tasks:

@@ -785,6 +785,10 @@ class PodManager(ABC):
                 "still be running; stop the run to end it"
             )
 
+    async def active_session_ids(self) -> list[str]:
+        """Sessions this runtime holds a slot for. Runtimes without slots hold none."""
+        return []
+
     async def capacity(self) -> SessionCapacity | None:
         """The runtime's session capacity, or None when it has no fixed cap."""
         return None
@@ -2289,6 +2293,8 @@ class SessionContext:
     resource_config: dict = field(default_factory=dict)
     system_prompt: str = ""
     initial_prompt: str = ""
+    # Who wrote the initial prompt (LEX-1910); ``None`` when the creator named no one.
+    initial_prompt_sender: dict | None = None
     workload_type: str = "session"
     workload_config: dict = field(default_factory=dict)
     #: For a unit root: the members its pod hosts (see ``UnitMemberContext``). Empty for

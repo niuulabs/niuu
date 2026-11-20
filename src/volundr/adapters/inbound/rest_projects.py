@@ -1,5 +1,6 @@
 """Additive project API. Sessions retain the ordinary Forge lifecycle and replay."""
 
+import logging
 from typing import Literal
 from uuid import UUID
 
@@ -29,6 +30,8 @@ from volundr.domain.projects import (
 )
 from volundr.domain.services.projects import UNCHANGED, ProjectNotFoundError, ProjectService
 from volundr.domain.services.session import SessionAccessDeniedError
+
+logger = logging.getLogger(__name__)
 
 
 class ProjectCheckout(BaseModel):
@@ -135,6 +138,8 @@ async def project_result(operation):
     except ProjectNotFoundError as exc:
         raise HTTPException(404, str(exc)) from exc
     except ProjectConflictError as exc:
+        # In the journal too (LEX-1858): a burst of 409s must say which conflict it was.
+        logger.warning("Project request refused (409): %s", exc)
         raise HTTPException(409, str(exc)) from exc
     except (SessionAccessDeniedError, ProjectAccessDeniedError) as exc:
         raise HTTPException(403, str(exc)) from exc

@@ -18,6 +18,10 @@ the SAME transitions:
 Identical transitions over the same frames ⇒ identical resulting turns ⇒ INV-4 holds by
 construction.
 
+A late hook frame (LEX-1825) is part of the shared fold too: an assistant frame carrying
+the agent turn id (``metadata.claude_turn_id``) of the turn the last result closed is
+dropped by both paths (``is_late_frame``). Matching is by id only, never by text.
+
 niuu is the correct home: both ``skuld`` and ``volundr`` already import ``niuu``, and a pure
 reducer here avoids deepening the skuld↔volundr coupling. This module imports NOTHING from
 ``volundr`` or ``skuld`` (module-boundaries rule) — it takes duck-typed frame objects.
@@ -37,10 +41,12 @@ reducer here avoids deepening the skuld↔volundr coupling. This module imports 
 ## Unified metadata schema (chosen ONCE here)
 
   ``{usage, cost, model}`` (the names the UI reads), plus optional ``stop_reason``, ``status``
-  (``interrupted`` / ``error``) and ``provenance`` (``terminal_scrape``). Failed results also
-  retain ``is_error``, ``error`` and ``messageType: "error"`` so a transport failure cannot
-  masquerade as a successful completion after reload. The old rebuild-only
-  ``modelUsage`` key is gone — it is normalised to ``usage`` here. There is deliberately NO
+  (``interrupted`` / ``error``), ``provenance`` (``terminal_scrape``) and ``message_ids`` (the
+  agent's own ids for the messages folded into the turn, for client-side de-duplication).
+  Failed results also retain ``is_error``, ``error`` and ``messageType: "error"`` so a
+  transport failure cannot masquerade as a successful completion after reload. The old
+  rebuild-only ``modelUsage`` key is gone — it is normalised to ``usage`` here. There is
+  deliberately NO
   ``source`` provenance tag: metadata must be path-IDENTICAL (live == rebuild) for INV-4, and a
   "which path produced this" marker cannot be both meaningful and identical across paths.
 """
@@ -55,6 +61,7 @@ from typing import Any, Protocol, runtime_checkable
 from niuu.domain.conversation_timeline import TIMELINE_KEY, project_timeline, stamp_parts, timeline
 from niuu.domain.history_control import is_history_control
 from niuu.domain.message_author import AUTHOR_KEY, MessageAuthor
+from niuu.domain.message_sender import SENDER_KEY, parse_recorded_sender
 
 # Deterministic namespace for folded-turn ids (stable across reloads AND across paths).
 _TURN_NAMESPACE = uuid.UUID("6f2d2e2a-7b1c-4e8a-9d3f-0a1b2c3d4e5f")
@@ -108,6 +115,12 @@ TOOL_DURATION_MS = "duration_ms"
 NON_BROADCAST_KINDS: frozenset[str] = frozenset(
     {"conversation.turn", "conversation.projection", "history_import", "voice_call"}
 )
+
+# A broker that stops while its agent's turn is open logs this frame, then saves the open
+# span as an interrupted turn (LEX-1982). A rebuild closes the span at the same frame, so
+# the turn the broker saved and the one a rebuild gives agree (INV-4). Logged and broadcast
+# like any broker frame, so live, replay and cold reads carry it alike (INV-5).
+TURN_INTERRUPTED_KIND = "turn_interrupted"
 
 # Per-connect handshake/preamble frames: addressed to ONE freshly-connecting
 # socket, NOT the canonical shared stream (SRD FR-7 / INV-5). On every browser
@@ -202,6 +215,9 @@ class TurnAccumulator:
     # tmux LAST-RESORT pane rows, used only when no delta/assistant content exists.
     pending_tmux_rows: list[str] | None = None
     native_import: dict | None = None
+    # The agent's own ids for the messages folded into this turn (LEX-1825): carried on the
+    # saved turn so a client can tell a repeated delivery from a genuinely repeated message.
+    message_ids: list[str] = field(default_factory=list)
 
     def touch(self, ts: datetime | None, seq: int) -> None:
         if ts is not None:
@@ -221,6 +237,7 @@ class TurnAccumulator:
         self.reasoning = ""
         self.pending_tmux_rows = None
         self.native_import = None
+        self.message_ids = []
         # last_ts / last_seq intentionally retained as a floor for the next span.
 
 
@@ -282,6 +299,45 @@ def steering_target_id(kind: str, payload: dict) -> str:
 #
 # Each function is a PURE state transition: it mutates ``acc`` for one frame's worth of input.
 # The live path calls them as frames stream; the batch path calls them while walking the list.
+
+
+def frame_message_id(payload: dict) -> str | None:
+    """The agent's own id for an assistant frame's message, when the frame carries one."""
+    metadata = payload.get("metadata")
+    if isinstance(metadata, dict):
+        hook_id = metadata.get("claude_message_id")
+        if isinstance(hook_id, str) and hook_id and hook_id != "current":
+            return hook_id
+    message = payload.get("message")
+    if isinstance(message, dict) and isinstance(message.get("id"), str) and message["id"]:
+        return message["id"]
+    return None
+
+
+def note_message_id(acc: TurnAccumulator, payload: dict) -> None:
+    message_id = frame_message_id(payload)
+    if message_id and message_id not in acc.message_ids:
+        acc.message_ids.append(message_id)
+
+
+def frame_turn_id(payload: dict) -> str | None:
+    """The agent's own turn id a frame carries (``metadata.claude_turn_id``), if any."""
+    metadata = payload.get("metadata")
+    if isinstance(metadata, dict):
+        turn_id = metadata.get("claude_turn_id")
+        if isinstance(turn_id, str) and turn_id:
+            return turn_id
+    return None
+
+
+def is_late_frame(closed_turn_id: str | None, payload: dict) -> bool:
+    """Whether an assistant frame belongs to the turn the last result already closed.
+
+    A hook can fire after its turn ended (LEX-1825); its frame carries that turn's id. A new
+    turn has a new id, so this never touches a genuine message, and frames without a turn id
+    (other transports, older logs) are never dropped.
+    """
+    return closed_turn_id is not None and frame_turn_id(payload) == closed_turn_id
 
 
 def apply_assistant_blocks(
@@ -596,6 +652,24 @@ def apply_result_content(acc: TurnAccumulator, payload: dict) -> None:
         apply_text_message(acc, {"type": "text", "text": text})
 
 
+def result_repeats_error(pending_error: str | None, acc: TurnAccumulator, payload: dict) -> bool:
+    """Whether a failed result only repeats the error frame just before it (LEX-1847).
+
+    A provider failure arrives as an ``error`` frame (saved as an error turn) and then a
+    failed ``result`` whose text is the same message; saving it again made two identical
+    error turns. ``pending_error`` is that error frame's text, held only until the next
+    result, so an earlier turn's error never swallows a later failure. Only an exact repeat
+    with nothing streamed in between counts.
+    """
+    if pending_error is None or acc.content or acc.parts or acc.reasoning:
+        return False
+    if _result_status(payload) != "error":
+        return False
+    probe = TurnAccumulator()
+    apply_result_content(probe, payload)
+    return bool(probe.content.strip()) and probe.content.strip() == pending_error.strip()
+
+
 # --------------------------------------------------------------------------- turn builders
 
 
@@ -627,6 +701,8 @@ def build_assistant_turn(
     meta = dict(metadata or {})
     if acc.native_import is not None:
         meta["native_import"] = dict(acc.native_import)
+    if acc.message_ids:
+        meta["message_ids"] = list(acc.message_ids)
     if not text and not parts and scrape_text:
         text = scrape_text
         meta["provenance"] = "terminal_scrape"
@@ -653,6 +729,7 @@ def build_user_turn(
     metadata: dict | None = None,
     ts: datetime | None = None,
     author: MessageAuthor | None = None,
+    sender: dict | None = None,
 ) -> dict:
     """Build a user turn. Uses the carried ``turn_id`` (so live==rebuild) or the seq-based id.
 
@@ -667,6 +744,7 @@ def build_user_turn(
         parts=[],
         metadata=dict(metadata or {}),
         ts=ts,
+        sender=sender,
     )
     if author is not None:
         turn[AUTHOR_KEY] = author.to_dict()
@@ -679,7 +757,8 @@ def build_error_turn(session_id: str, seq: int, text: str, ts: datetime | None =
         role="assistant",
         content=text,
         parts=[{"type": "text", "text": text}] if text else [],
-        metadata={"status": "error"},
+        # The same schema the live broker saves (INV-4): an error stays an error on reload.
+        metadata={"status": "error", "messageType": "error"},
         ts=ts,
     )
 
@@ -828,6 +907,8 @@ def reduce_frames(
                 if isinstance(turn.get("metadata"), dict)
                 else {}
             ),
+            # Question closures append to a seed's parts (LEX-1979): copy, never mutate.
+            **({"parts": list(turn["parts"])} if isinstance(turn.get("parts"), list) else {}),
         }
         for turn in sdk_turns or []
     ]
@@ -842,6 +923,11 @@ def reduce_frames(
     # Preserve legacy raw-tail delivery folding. Only explicitly timed user seeds
     # opt into the additional cross-seed lifecycle reconciliation below.
     steering: dict[str, tuple[int, str]] = {}
+
+    # The agent turn id the last result closed (LEX-1825): its late hook frames are dropped.
+    closed_turn_id: str | None = None
+    # The text of an error frame not yet followed by its result (LEX-1847).
+    pending_error: str | None = None
 
     def flush(status: str | None = None, md: dict | None = None) -> None:
         scrape_text = None
@@ -874,12 +960,26 @@ def reduce_frames(
             imported_prefix_open = False
         if is_imported:
             imported_prefix_open = True
+        if k == "ask_user_resolved":
+            # The live broker closes a dismissed question as this frame arrives (LEX-1979).
+            apply_question_closure(acc.parts, turns, p, _stamp_iso(_ts_of(r)))
+            continue
         if k in NON_BROADCAST_KINDS or k in _IGNORED_KINDS:
             continue
         if r.request_id and r.request_id in folded_request_ids:
             continue
         seq = int(r.seq)
         ts = _ts_of(r)
+
+        if k == TURN_INTERRUPTED_KIND:
+            # The broker stopped mid-turn and saved the open span as interrupted, stamped
+            # with this frame's seq and time (LEX-1982); the broker after it starts afresh.
+            acc.touch(ts, seq)
+            flush(status="interrupted")
+            terminal_span_closed = True
+            closed_turn_id = None
+            pending_error = None
+            continue
 
         if k in _STEERING_FRAME_KINDS:
             _record_steering(steering, k, p, seq)
@@ -895,16 +995,20 @@ def reduce_frames(
                 acc.native_import = acc.native_import or dict(metadata["native_import"])
             if _apply_user_frame(acc, turns, seen_ids, session_id, seq, ts, k, p, flush):
                 terminal_span_closed = False
+                pending_error = None  # a human turn: an earlier error is not its error
             continue
 
         if is_imported:
             acc.native_import = acc.native_import or dict(metadata["native_import"])
 
         if k == "assistant":
+            if is_late_frame(closed_turn_id, p):
+                continue  # a hook of the turn the last result closed (LEX-1825)
             terminal_span_closed = False
             # D1: the frame's durable ts IS the tool_use start stamp — the same instant the
             # live broker passes here as it enqueues the frame, so both planes agree exactly.
             part_start = len(acc.parts)
+            note_message_id(acc, p)
             apply_assistant_blocks(acc, _content_blocks(p), ts=ts)
             stamp_parts(acc.parts, p, start=part_start)
             acc.touch(ts, seq)
@@ -945,22 +1049,42 @@ def reduce_frames(
             if not isinstance(rows_text, list):
                 rows_text = str(p.get("text", "")).split("\n")
             apply_tmux_rows(acc, rows_text)
-            acc.touch(ts, seq)
+            if not (acc.content or acc.parts or acc.reasoning):
+                # Only a span with nothing streamed is made of its repaints (the scrape).
+                # Once it has content, its seq and time are its content's, as the live
+                # broker keeps them: a trailing repaint must not change the turn's id
+                # when a human message closes it.
+                acc.touch(ts, seq)
             continue
 
         if k == "result":
+            repeats = result_repeats_error(pending_error, acc, p)
+            pending_error = None
+            if repeats:
+                acc.touch(ts, seq)
+                acc.reset()
+                closed_turn_id = frame_turn_id(p)
+                terminal_span_closed = True
+                continue
             part_start = len(acc.parts)
             apply_result_content(acc, p)
             stamp_parts(acc.parts, p, start=part_start)
             acc.touch(ts, seq)
             flush(md=result_metadata(p))
+            closed_turn_id = frame_turn_id(p)
             terminal_span_closed = True
             continue
 
         if k == "error":
-            flush()
+            # Streamed content before the failure is saved as the live broker saves it
+            # (INV-4); terminal-scrape rows alone are not a turn there, so not here either.
+            if acc.content or acc.parts or acc.reasoning:
+                flush(md={"status": "error", "messageType": "error"})
+            else:
+                acc.reset()
             acc.touch(ts, seq)
-            turns.append(build_error_turn(session_id, seq, _error_text(p), ts))
+            pending_error = error_text(p)
+            turns.append(build_error_turn(session_id, seq, pending_error, ts))
             terminal_span_closed = True
             continue
 
@@ -969,6 +1093,7 @@ def reduce_frames(
 
     _apply_steering_states(turns, steering)
     turns = apply_steering_frames(turns, rows)
+    drop_superseded_closures(turns)
 
     partial = any(
         t.get("metadata", {}).get("status") in ("interrupted", "error")
@@ -1020,6 +1145,226 @@ def apply_steering_frames(turns: list[dict], frames: list[Frame]) -> list[dict]:
         if user is not None:
             user.setdefault("metadata", {}).setdefault("steering_accepted_at", accepted)
     _apply_steering_states(result, states)
+    return result
+
+
+# --------------------------------------------------------------------------- question closures
+
+#: ``metadata.source`` of the tool_result Skuld writes for a question closed without a
+#: tool_result of its own (LEX-1979): dismissed, never shown, or answered in a session
+#: file whose result never reached the conversation.
+QUESTION_CLOSURE_SOURCE = "skuld_dismissal"
+
+
+def question_closure(payload: dict) -> tuple[str, dict] | None:
+    """``(tool_use_id, payload)`` when an ``ask_user_resolved`` frame closes a question.
+
+    Only a question card that closed without a client's answer counts (``dismissed``),
+    and only when it names the CLI's tool call: an answered card's result arrives as
+    the CLI's own tool_result.
+    """
+    if not payload.get("dismissed") or payload.get("control_kind") != "question":
+        return None
+    tool_use_id = payload.get("tool_use_id")
+    if not isinstance(tool_use_id, str) or not tool_use_id:
+        return None
+    return tool_use_id, payload
+
+
+def question_closure_part(tool_use_id: str, payload: dict, ended_at: str | None) -> dict:
+    """The tool_result part that closes a question in the conversation record."""
+    answer = payload.get("native_result_content")
+    detail = payload.get("dismiss_detail") or payload.get("dismiss_reason") or "closed"
+    part: dict[str, Any] = {
+        "type": "tool_result",
+        "tool_use_id": tool_use_id,
+        "content": answer if answer else f"Dismissed: {detail}. No answer was given.",
+        "is_error": not answer,
+        "metadata": {
+            "source": QUESTION_CLOSURE_SOURCE,
+            "dismissed": True,
+            "dismiss_reason": payload.get("dismiss_reason"),
+            "request_id": payload.get("request_id"),
+        },
+    }
+    if ended_at:
+        part[TOOL_ENDED_AT] = ended_at
+    return part
+
+
+def _has_tool_use(parts: list, tool_use_id: str) -> bool:
+    return any(
+        isinstance(part, dict)
+        and part.get("type") == "tool_use"
+        and str(part.get("id") or "") == tool_use_id
+        for part in parts
+    )
+
+
+def _has_tool_result(parts: list, tool_use_id: str) -> bool:
+    return any(
+        isinstance(part, dict)
+        and part.get("type") == "tool_result"
+        and str(part.get("tool_use_id") or "") == tool_use_id
+        for part in parts
+    )
+
+
+def is_question_closure(part: object) -> bool:
+    return (
+        isinstance(part, dict)
+        and part.get("type") == "tool_result"
+        and isinstance(part.get("metadata"), dict)
+        and part["metadata"].get("source") == QUESTION_CLOSURE_SOURCE
+    )
+
+
+def drop_question_closures(parts: list, tool_use_ids: set[str]) -> bool:
+    """Remove the closures of these calls from ``parts`` IN PLACE: their real result came."""
+    kept = [
+        part
+        for part in parts
+        if not (is_question_closure(part) and str(part.get("tool_use_id")) in tool_use_ids)
+    ]
+    if len(kept) == len(parts):
+        return False
+    parts[:] = kept
+    return True
+
+
+def drop_superseded_closures(turns: list) -> None:
+    """Drop every closure whose call has a real result in some turn (IN PLACE).
+
+    A real result replaces a question's closure wherever each one sits, including in
+    two different stored turns. Run on finished turns only: removing a part while a
+    turn is being reduced would shift the indexes its later parts are stamped from.
+    """
+
+    def parts_of(turn: object) -> list | None:
+        parts = turn.get("parts") if isinstance(turn, dict) else getattr(turn, "parts", None)
+        return parts if isinstance(parts, list) else None
+
+    real = {
+        str(part.get("tool_use_id"))
+        for turn in turns
+        for part in (parts_of(turn) or [])
+        if isinstance(part, dict)
+        and part.get("type") == "tool_result"
+        and not is_question_closure(part)
+    }
+    if not real:
+        return
+    for turn in turns:
+        parts = parts_of(turn)
+        if parts:
+            drop_question_closures(parts, real)
+
+
+def apply_question_closure(
+    open_parts: list, turns: list, payload: dict, ended_at: str | None
+) -> list | None:
+    """The one closure transition, shared by the live broker and every rebuild.
+
+    ``open_parts`` is the turn in progress, ``turns`` the finished turns (dicts or
+    objects with ``role`` and ``parts``). The closing tool_result goes where the
+    question's tool_use is: appended to the turn in progress, else to the end of the
+    latest finished turn that holds it. Nothing happens when any turn already has a
+    result for the call. Returns the parts list it appended to, or None. The
+    tool_use itself is not stamped, so a stale copy of the turn stays a prefix of
+    the closed one and a restart's history merge keeps the closure.
+    """
+    closure = question_closure(payload)
+    if closure is None:
+        return None
+    tool_use_id = closure[0]
+
+    def parts_of(turn: object) -> list:
+        parts = turn.get("parts") if isinstance(turn, dict) else getattr(turn, "parts", None)
+        return parts if isinstance(parts, list) else []
+
+    def role_of(turn: object) -> object:
+        return turn.get("role") if isinstance(turn, dict) else getattr(turn, "role", None)
+
+    if _has_tool_result(open_parts, tool_use_id) or any(
+        _has_tool_result(parts_of(turn), tool_use_id) for turn in turns
+    ):
+        return None
+    if _has_tool_use(open_parts, tool_use_id):
+        target = open_parts
+    else:
+        target = next(
+            (
+                parts_of(turn)
+                for turn in reversed(turns)
+                if role_of(turn) == "assistant" and _has_tool_use(parts_of(turn), tool_use_id)
+            ),
+            None,
+        )
+        if target is None:
+            return None
+    target.append(question_closure_part(tool_use_id, payload, ended_at))
+    return target
+
+
+def tool_result_block_ids(payload: dict) -> set[str]:
+    """The tool_use_ids a ``user`` frame carries results for."""
+    message = payload.get("message")
+    content = message.get("content") if isinstance(message, dict) else None
+    if not isinstance(content, list):
+        return set()
+    return {
+        str(block.get("tool_use_id"))
+        for block in content
+        if isinstance(block, dict)
+        and block.get("type") == "tool_result"
+        and block.get("tool_use_id")
+    }
+
+
+def tool_result_ids(turns: list[dict]) -> set[str]:
+    """Every tool_use_id some turn already holds a tool_result for."""
+    return {
+        str(part.get("tool_use_id"))
+        for turn in turns
+        for part in (turn.get("parts") or [])
+        if isinstance(part, dict) and part.get("type") == "tool_result"
+    }
+
+
+def apply_question_closures(turns: list[dict], frames: list[Frame]) -> list[dict]:
+    """Close every question a logged ``ask_user_resolved`` frame dismissed (rebuild side).
+
+    For the stored turns a rebuild starts from (``conversation.turn`` seeds that
+    predate the close): the same transition the live broker applied, in frame order.
+    Turns are copied, never mutated: seeds may be a repository's stored rows. A
+    question already closed (or answered) is left as it is.
+    """
+    rows = [
+        row
+        for row in sorted(frames, key=lambda frame: frame.seq)
+        if row.kind == "ask_user_resolved"
+        and isinstance(row.payload, dict)
+        and question_closure(row.payload) is not None
+    ]
+    has_closure = any(
+        is_question_closure(part)
+        for turn in turns
+        for part in (turn.get("parts") or [] if isinstance(turn.get("parts"), list) else [])
+    )
+    if not rows and not has_closure:
+        return turns
+    result = [
+        {
+            **turn,
+            "parts": [dict(part) if isinstance(part, dict) else part for part in turn["parts"]],
+        }
+        if turn.get("role") == "assistant" and isinstance(turn.get("parts"), list)
+        else turn
+        for turn in turns
+    ]
+    for row in rows:
+        apply_question_closure([], result, row.payload, _stamp_iso(_ts_of(row)))
+    drop_superseded_closures(result)
     return result
 
 
@@ -1100,13 +1445,21 @@ def _apply_user_frame(acc, turns, seen_ids, session_id, seq, ts, kind, payload, 
             ts=ts,
             metadata=metadata,
             author=MessageAuthor.from_wire(payload.get(AUTHOR_KEY)),
+            sender=parse_recorded_sender(payload.get(SENDER_KEY)),
         )
     )
     return True
 
 
 def _turn_dict(
-    *, id: str, role: str, content: str, parts: list[dict], metadata: dict, ts: datetime | None
+    *,
+    id: str,
+    role: str,
+    content: str,
+    parts: list[dict],
+    metadata: dict,
+    ts: datetime | None,
+    sender: dict | None = None,
 ) -> dict:
     return {
         "id": id,
@@ -1116,6 +1469,9 @@ def _turn_dict(
         "created_at": _iso(ts),
         "metadata": metadata,
         "visibility": "public",
+        # The sender the live broker stored on a user turn (LEX-1910), when its frame
+        # recorded one; transcripts from before senders were labelled stay as they were.
+        **({SENDER_KEY: sender} if sender is not None else {}),
     }
 
 
@@ -1154,7 +1510,8 @@ def _content_blocks(payload: dict) -> list:
     return blocks if isinstance(blocks, list) else []
 
 
-def _error_text(payload: dict) -> str:
+def error_text(payload: dict) -> str:
+    """An ``error`` frame's visible text: the one rule both folds use."""
     err = payload.get("error")
     if isinstance(err, dict):
         return str(err.get("message") or "") or "Unknown error"

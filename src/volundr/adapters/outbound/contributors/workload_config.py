@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
+from volundr.domain.launch_env import LAUNCH_ENV_KEY
 from volundr.domain.models import Session
 from volundr.domain.ports import (
     SessionContext,
@@ -27,7 +28,8 @@ def _filtered_broker_config(raw: Mapping[str, Any]) -> dict[str, Any]:
 class WorkloadConfigContributor(SessionContributor):
     """Applies explicit runtime overrides from ``SessionContext.workload_config``.
 
-    This intentionally accepts only a small set of top-level runtime knobs. The
+    This intentionally accepts only a small set of top-level runtime knobs, plus the
+    session's allowlisted ``launch_env``, which becomes the broker's (and so the CLI's) env. The
     workload config bag is also used by higher-level session MCP features,
     so it should not be blindly merged into Helm values.
     """
@@ -50,4 +52,18 @@ class WorkloadConfigContributor(SessionContributor):
 
         if broker_values:
             values["broker"] = broker_values
+
+        # LEX-2045: the session's launch env, checked against the allowlist when it was
+        # stored (create, PUT /sessions/{id}) and again at start. Only its shape is checked here.
+        launch_env = context.workload_config.get(LAUNCH_ENV_KEY)
+        if launch_env is not None:
+            if not isinstance(launch_env, Mapping) or not all(
+                isinstance(name, str) and name and isinstance(value, str)
+                for name, value in launch_env.items()
+            ):
+                raise ValueError("workload_config.launch_env must map names to string values")
+            if launch_env:
+                values["envVars"] = [
+                    {"name": name, "value": value} for name, value in launch_env.items()
+                ]
         return SessionContribution(values=values)

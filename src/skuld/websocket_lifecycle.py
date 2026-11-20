@@ -26,6 +26,7 @@ from skuld.conversation_snapshot import (
     prepare_conversation_snapshot,
     prepare_history_page,
     prepare_recent_snapshot,
+    snapshot_byte_size,
 )
 from skuld.preview import PREVIEW_PORTS_FRAME
 from skuld.room_role_port import RoomRoleResolutionError
@@ -321,6 +322,7 @@ class WebSocketLifecycleMixin:
         # move together when it is flipped.
         protocol2 = websocket.query_params.get("history_protocol") == "2"
         no_history = protocol2 and websocket.query_params.get("history_delivery") == "none"
+        part_paging = protocol2 and websocket.query_params.get("part_paging") == "1"
         channel = WebSocketChannel(
             websocket,
             show_internal=self._settings.default_show_internal,
@@ -454,6 +456,7 @@ class WebSocketLifecycleMixin:
                                 self._settings.conversation_snapshot_max_bytes,
                             ),
                             max_turns=self._settings.conversation_recent_max_turns,
+                            part_paging=part_paging,
                         )
                     elif replay_turns and recent_requested:
                         snapshot = prepare_recent_snapshot(
@@ -468,7 +471,16 @@ class WebSocketLifecycleMixin:
                         snapshot = prepare_conversation_snapshot(
                             frame, max_bytes=self._settings.conversation_snapshot_max_bytes
                         )
+                    frame_limit = self._settings.conversation_snapshot_max_bytes
+                    if snapshot is not None and snapshot_byte_size(snapshot) > frame_limit:
+                        # A whole turn is never cut to fit a frame (LEX-1937); one that
+                        # cannot ride this socket is read over REST instead.
+                        raise ConversationSnapshotTooLargeError(
+                            f"Replay frame is {snapshot_byte_size(snapshot)} bytes; "
+                            f"conversation_snapshot_max_bytes is {frame_limit}"
+                        )
                 except (ConversationSnapshotTooLargeError, TimeoutError) as exc:
+                    snapshot = None
                     logger.warning("WebSocket conversation replay requires REST: %s", exc)
                     if protocol2:
                         gap = history_gap(
