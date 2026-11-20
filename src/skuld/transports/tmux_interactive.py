@@ -1205,7 +1205,7 @@ class TmuxInteractiveTransport(CLITransport):
         lost while Forge shows it delivered and waits for a turn that never comes.
         """
         screen = self._clean_terminal_text(await self._capture_pane_text())
-        if self._repl_looks_ready(screen):
+        if self._composer_visible(screen) or self._repl_looks_ready(screen):
             return
         headline = self._screen_headline(screen)
         logger.error(
@@ -1217,6 +1217,23 @@ class TmuxInteractiveTransport(CLITransport):
             f"terminal shows {headline!r}. Answer or close that screen in the session's "
             "terminal, then send the message again"
         )
+
+    @staticmethod
+    def _composer_visible(screen: str) -> bool:
+        """Whether Claude Code's input box is on screen, whatever it holds.
+
+        The box is a ``❯`` row between two full-width ``─`` rules, above the status
+        footer. It may hold a greyed suggestion of Claude Code's own ("go, token's in"),
+        which plain capture cannot tell from typed text, so the box is recognised by its
+        frame, not by being empty. A dialog replaces the box, so it has no such frame.
+        """
+        rows = [row.strip() for row in screen.splitlines()]
+        rules = [index for index, row in enumerate(rows) if row and set(row) == {"─"}]
+        for above, below in zip(rules, rules[1:], strict=False):
+            inside = [row for row in rows[above + 1 : below] if row]
+            if inside and inside[0].startswith("❯"):
+                return True
+        return False
 
     @staticmethod
     def _screen_headline(screen: str) -> str:

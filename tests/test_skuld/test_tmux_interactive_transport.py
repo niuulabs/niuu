@@ -2623,3 +2623,42 @@ def test_screen_headline_without_a_rule_is_the_last_row() -> None:
         "Press Enter"
     )
     assert TmuxInteractiveTransport._screen_headline("") == ""
+
+
+# The coordinator's idle screen on thrudr after the dialog closed (2026-11-20): Claude
+# Code shows its own greyed suggestion in the input box, and an auto mode footer instead
+# of "? for shortcuts". A message must be typed here, not refused.
+_IDLE_WITH_SUGGESTION = """\
+⏺ Stopped watching Artifact: https://claude.ai/artifact/x (idle)
+                            ● high · /effort · ✘ Auto-update failed: no write permission
+────────────────────────────────────────────────────────────────────────────────
+❯ go, token's in
+────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ auto mode on (shift+tab to cycle) · ⧉ sneid-plan
+"""
+
+
+@pytest.mark.asyncio
+async def test_message_is_typed_when_the_prompt_holds_a_suggestion(tmp_path: Path) -> None:
+    transport = FakeTmuxInteractiveTransport(str(tmp_path), sdk_port=8081)
+    await _collect_events(transport)
+    await transport.start()
+    transport.capture_stdout = _IDLE_WITH_SUGGESTION
+
+    await transport.send_message("send revision 4 as a file")
+
+    assert sum(1 for args, _ in transport.commands if args[0] == "paste-buffer") == 1
+    assert transport.is_turn_active
+    await transport.stop()
+
+
+def test_composer_is_recognised_by_its_frame_not_by_being_empty() -> None:
+    visible = TmuxInteractiveTransport._composer_visible
+    assert visible(_IDLE_WITH_SUGGESTION)
+    assert visible("─────\n❯ \n─────\n  ? for shortcuts\n")
+    # A long suggestion wraps inside the box.
+    assert visible("─────\n❯ a long suggestion that\n  wraps onto a second row\n─────\n")
+    assert not visible(_AUTO_MODE_DIALOG)
+    # Two rules with something else between them are not the box.
+    assert not visible("─────\nDo you want to proceed?\n❯ 1. Allow\n─────\n")
+    assert not visible("")
