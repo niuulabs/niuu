@@ -51,6 +51,10 @@ logger = logging.getLogger("skuld.broker")
 #: Where the turn that carries peer messages came from, on the turn and its trace span.
 PEER_TURN_SOURCE = "peer_message"
 
+#: The turn metadata key that says who wrote a peer turn, for the clients that draw it. Set
+#: from the envelopes the platform stamped, never parsed from the turn's text.
+SENDER_KEY = "sender"
+
 #: Namespace of the deterministic id of the user turn that carries a batch of peer messages.
 _PEER_TURN_NAMESPACE = "peer-messages"
 
@@ -221,6 +225,21 @@ def peer_turn_id(session_id: str, message_ids: list[str]) -> str:
     """The user turn that carries a batch of messages has one id per batch."""
     batch = "\n".join(message_ids)
     return str(uuid.uuid5(uuid.NAMESPACE_URL, f"{session_id}:{_PEER_TURN_NAMESPACE}:{batch}"))
+
+
+def peer_turn_sender(entries: list[PeerInboxEntry]) -> dict[str, str]:
+    """Who wrote the turn that carries ``entries``: another agent, never this session's user.
+
+    One sender (a session or a mesh peer) is named with its id and node; a batch from
+    several senders says only that agents wrote it, since no one name is the author.
+    """
+    senders = {(e.envelope.sender.kind, e.envelope.sender.id) for e in entries}
+    label = {"kind": "agent", "sub_kind": "session"}
+    if len(senders) != 1:
+        return label
+    sender = entries[0].envelope.sender
+    named = {"name": sender.name, "id": sender.id, "host": sender.node}
+    return {**label, **{key: value for key, value in named.items() if value}}
 
 
 def render_peer_turn(entries: list[PeerInboxEntry], *, turns_shown_in_room: str = "") -> str:
@@ -550,7 +569,10 @@ class PeerInboxMixin:
                     msg_id=turn_id,
                     request_id=None,
                     source=PEER_TURN_SOURCE,
-                    extra_metadata={"peer_messages": message_ids},
+                    extra_metadata={
+                        "peer_messages": message_ids,
+                        SENDER_KEY: peer_turn_sender(waiting),
+                    },
                 )
             except Exception:
                 # No turn started: the next one decides for itself whether the room hears it.

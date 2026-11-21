@@ -39,6 +39,7 @@ from skuld.peer_inbox import (
     PeerMessageRefusedError,
     peer_channel,
     peer_turn_id,
+    peer_turn_sender,
     render_peer_turn,
 )
 from tests.test_adapters.test_rest_session_log import InMemoryLog, allow_log_access
@@ -355,6 +356,12 @@ class TestTheTurnBoundary:
         assert turn.content == render_for_harness(envelope)
         assert turn.id == peer_turn_id(SESSION_ID, ["msg-1"])
         assert turn.metadata["peer_messages"] == ["msg-1"]
+        assert turn.metadata["sender"] == {
+            "kind": "agent",
+            "sub_kind": "session",
+            "name": "planner",
+            "id": SENDER_ID,
+        }
         broker._complete_trace_span.assert_awaited()
         assert broker._complete_trace_span.await_args.kwargs["attributes"] == {
             "source": "peer_message"
@@ -378,6 +385,11 @@ class TestTheTurnBoundary:
         assert text.startswith("[3 messages arrived while you were working, oldest first]")
         assert text.index("first") < text.index("second") < text.index("third")
         assert broker._conversation_turns[0].metadata["peer_messages"] == ["m-1", "m-2", "m-3"]
+        # Several senders: no one of them is named as the author.
+        assert broker._conversation_turns[0].metadata["sender"] == {
+            "kind": "agent",
+            "sub_kind": "session",
+        }
         assert [f["injected"] for f in _peer_frames(broker)[-3:]] == [True, True, True]
 
     async def test_a_delivered_message_is_not_handed_over_a_second_time(self, tmp_path) -> None:
@@ -1538,3 +1550,23 @@ class TestATeamAgentKeepsItsTeammateTurnsOutOfTheRoom:
         agent._turn_kept_from_room = False
         await agent._handle_cli_event({"type": "assistant", "message": {"content": []}})
         agent._work_sharer.cli_event.assert_awaited_once()
+
+
+def test_a_mesh_peer_on_another_node_is_named_with_its_host() -> None:
+    envelope = _message(
+        sender=PeerAddress(PeerKind.MESH_PEER, "peer-7", name="stokk-cad-demo", node="valhalla")
+    )
+
+    assert peer_turn_sender([PeerInboxEntry(envelope, "t")]) == {
+        "kind": "agent",
+        "sub_kind": "session",
+        "name": "stokk-cad-demo",
+        "id": "peer-7",
+        "host": "valhalla",
+    }
+
+
+def test_one_sender_in_a_batch_is_still_named() -> None:
+    entries = [PeerInboxEntry(_message(f"m-{n}"), "t") for n in range(2)]
+
+    assert peer_turn_sender(entries)["name"] == "planner"
