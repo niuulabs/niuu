@@ -656,7 +656,7 @@ so the only boundary is a user. With shared slots (below) it runs several. Desig
 **Shared slots.** `computeHosts.darwin.sharedSlots: true` (the built-in catalog's
 `darwin_shared_slots`, the runtime's `shared_slots`) lets every Mac of this Forge run
 as many sessions as its slots, set per host like a Linux host's (Hosts → Edit slots,
-after a drain to lower them; raising them works on a busy host too, with
+after a drain to lower them; raising them works on a busy host too, from Edit slots or
 `niuu remote slots <host> <n>`: the new slots join beside the running sessions). Each slot `n` is its own user `niuu-slot-<n>` (uid `uid_base + n`) with
 its own home, workspace, launchd jobs and credential files, and the audit proves each
 slot clean on its own. What separates them is the user and nothing else, which is the

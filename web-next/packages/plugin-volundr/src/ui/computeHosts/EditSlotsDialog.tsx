@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Dialog, DialogContent } from '@niuulabs/ui';
-import type { ComputeHost } from '../../domain/computeHosts';
+import { slotsGrowOnly, type ComputeHost } from '../../domain/computeHosts';
 import { errorText } from '../errorText';
 
 export interface EditSlotsDialogProps {
@@ -22,9 +22,9 @@ function parseSlots(value: string): number | null {
 }
 
 /**
- * Change how many sessions a host runs at once. Forge accepts it only while no allocation
- * holds the host, and refuses a number the host cannot hold with the arithmetic; either
- * answer is shown as given.
+ * Change how many sessions a host runs at once. A host no allocation holds takes any count;
+ * an in-service host only grows, beside its running sessions. Forge refuses a number the host
+ * cannot hold with the arithmetic, and that answer is shown as given.
  */
 export function EditSlotsDialog({ host, onSave, onClose }: EditSlotsDialogProps) {
   const [value, setValue] = useState(host.slots === null ? '' : String(host.slots));
@@ -32,6 +32,8 @@ export function EditSlotsDialog({ host, onSave, onClose }: EditSlotsDialogProps)
   const [error, setError] = useState<string | null>(null);
   const slots = parseSlots(value);
   const suggested = host.suggestedSlots;
+  const growOnly = slotsGrowOnly(host) && host.slots !== null;
+  const lowering = growOnly && slots !== null && slots < (host.slots ?? 0);
 
   const save = async () => {
     if (slots === null) return;
@@ -72,10 +74,16 @@ export function EditSlotsDialog({ host, onSave, onClose }: EditSlotsDialogProps)
             onChange={(event) => setValue(event.target.value)}
             className="niuu:w-24 niuu:rounded-md niuu:border niuu:border-border niuu:bg-bg-primary niuu:px-2.5 niuu:py-1.5 niuu:text-sm niuu:text-text-primary"
           />
-          <p className="niuu:text-xs niuu:text-text-muted">
-            Only a host that is out of service (drained and empty) or not yet claimed can change its
-            slots. Drain an in-service host first, then resume it afterwards.
+          <p data-testid="slot-rule" className="niuu:text-xs niuu:text-text-muted">
+            {growOnly
+              ? `This host is in service: add slots now and its running sessions keep theirs. To go below ${host.slots}, drain it first.`
+              : 'Any count fits a host that is out of service (drained and empty) or not yet claimed.'}
           </p>
+          {lowering ? (
+            <p data-testid="slot-lowering" className="niuu:text-sm niuu:text-text-secondary">
+              Lowering an in-service host needs a drain first.
+            </p>
+          ) : null}
           {error ? (
             <p role="alert" className="niuu:text-sm niuu:text-critical-fg">
               {error}
@@ -88,7 +96,7 @@ export function EditSlotsDialog({ host, onSave, onClose }: EditSlotsDialogProps)
             <button
               type="button"
               className={PRIMARY}
-              disabled={slots === null || slots === host.slots || pending}
+              disabled={slots === null || slots === host.slots || lowering || pending}
               onClick={() => void save()}
             >
               Save
