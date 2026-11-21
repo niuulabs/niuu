@@ -13,7 +13,7 @@ from niuu.domain.transcript_reducer import (
     is_read_path_excluded,
     reduce_frames,
 )
-from skuld.history_hydration import fetch_durable_history
+from skuld.history_hydration import fetch_durable_history, read_durable_head
 from volundr.domain.models import SessionLogEntry
 
 _SID = UUID("5d87d7a8-5f0f-4cc3-ae03-d5f015a8a15c")
@@ -204,6 +204,7 @@ async def test_stopped_database_rebuild_equals_broker_hydration_after_new_live_t
             client,
             session_id=str(_SID),
             path="/log",
+            head=await read_durable_head(client, path="/log", max_bytes=1_000_000),
             timeout_seconds=5,
             page_size=7,
             max_frames=1000,
