@@ -35,6 +35,7 @@ from volundr.domain.compute import (
     ComputeLeaseBusyError,
     ComputeLeaseRepository,
     ComputeSlot,
+    LeaseState,
 )
 from volundr.domain.compute_hosts import (
     EndpointKey,
@@ -502,23 +503,62 @@ class ComputeHostService:
                 raise ComputeHostError("The host name must be a hostname label")
             changes["name"] = name
         if slots is not None and slots != host.slots:
-            if host.allocation_id is not None:
+            # A held host only grows: its sessions sit in slots 0..n-1 and keep them, and the
+            # new slots are made by the sessions placed in them. Lowering it would strand a
+            # live session above the new count, so that still waits for a drain.
+            if host.allocation_id is not None and (host.slots is None or slots < host.slots):
                 raise ComputeHostStateError(
-                    "Drain the host before changing its slots: sessions are placed by them"
+                    "Drain the host before lowering its slots: its sessions are placed by them"
                 )
             execution = self._execution(host.execution)
             self._require_slot_count(execution, slots)
             _platform_slots(host.platform, slots, execution)
             self._require_capacity(host, slots)
             changes["slots"] = slots
-        if not changes:
+        # A held host's allocation is grown too, also when an earlier grow saved the host
+        # but not its allocation: the allocation's count is what placement reads.
+        grow = slots is not None and host.allocation_id is not None
+        if not changes and not grow:
             return host
         updated = host.model_copy(update=changes)
-        try:
-            await self._repository.save(updated)
-        except HostConflictError as exc:
-            raise ComputeHostStateError(str(exc)) from exc
+        if changes:
+            try:
+                await self._repository.save(updated)
+            except HostConflictError as exc:
+                raise ComputeHostStateError(str(exc)) from exc
+        if grow:
+            await self._grow_allocation(updated.allocation_id, slots)
         return updated
+
+    async def _grow_allocation(self, allocation_id: UUID, slots: int) -> None:
+        """Raise a held host's allocation to ``slots`` while its sessions run.
+
+        The allocation's slot count is fixed when the host is claimed, so a grown host
+        would otherwise offer its new slots only after its next claim. Under the
+        allocation's operation lock (the one a bind holds) only the count grows: the live
+        bindings and their slot indices are untouched. The host is saved first, so a host
+        never has fewer slots than its allocation offers.
+        """
+        current = await self._compute.get(allocation_id)
+        if current is None or current.slots >= slots:
+            return  # nothing to grow: no lock taken, so a same-count save never waits
+        try:
+            async with self._compute.operation(allocation_id):
+                lease = await self._compute.get(allocation_id)
+                if (
+                    lease is None
+                    or lease.state in {LeaseState.DRAINING, LeaseState.RELEASED}
+                    or lease.slots >= slots
+                ):
+                    return
+                update: dict = {"slots": slots}
+                if lease.machine is not None and lease.machine.slots is not None:
+                    update["machine"] = lease.machine.model_copy(update={"slots": slots})
+                await self._compute.save(lease.model_copy(update=update))
+        except ComputeLeaseBusyError as exc:
+            raise ComputeHostStateError(
+                f"The host's allocation is busy ({exc}); set its slots again in a moment"
+            ) from exc
 
     async def drain(self, principal: Principal, host_id: UUID, *, remove: bool) -> RegisteredHost:
         """No new sessions. A held host leaves service once its allocation empties and is

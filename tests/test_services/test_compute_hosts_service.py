@@ -24,7 +24,14 @@ from tests.compute_host_fakes import (
     make_host,
     other_host_key,
 )
-from volundr.domain.compute import ComputeSlot, SlotState
+from volundr.domain.compute import (
+    ComputeLease,
+    ComputeSlot,
+    LeaseState,
+    Machine,
+    MachineState,
+    SlotState,
+)
 from volundr.domain.compute_hosts import LINUX_ONLY, HostHealth, HostPlatform, HostService
 from volundr.domain.services.compute_hosts import (
     ComputeHostAccessError,
@@ -87,6 +94,23 @@ def _service(
         reserved_memory_mib=8192,
     )
     return service, repository, connector, inspector
+
+
+def _lease(allocation_id, *, slots, state=None):
+    return ComputeLease(
+        id=allocation_id,
+        pool_id=POOL,
+        profile="bm",
+        request_fingerprint="test",
+        state=state or LeaseState.IDLE,
+        slots=slots,
+        machine=Machine(
+            allocation_id=allocation_id,
+            resource_id="hrimfaxi",
+            state=MachineState.RUNNING,
+            slots=slots,
+        ),
+    )
 
 
 def _binding(allocation_id, slot=0, state=SlotState.BUSY):
@@ -346,7 +370,7 @@ class TestOperatorActions:
         assert (updated.tags, updated.name) == (("a", "b"), "renamed")
         assert repository.hosts[host.id].allocation_id == host.allocation_id
 
-    async def test_slots_change_only_out_of_service_and_within_capacity(self):
+    async def test_slots_lower_only_out_of_service_and_within_capacity(self):
         held = make_host(allocation_id=uuid4())
         free = make_host(name="free", host_public_key=other_host_key(5))
         service, *_ = _service(held, free)
@@ -355,6 +379,61 @@ class TestOperatorActions:
         with pytest.raises(ComputeHostError, match="do not fit"):
             await service.update(ADMIN, free.id, slots=8)  # 7 fit
         assert (await service.update(ADMIN, free.id, slots=7)).slots == 7
+
+    async def test_a_held_host_grows_beside_its_sessions(self):
+        allocation = uuid4()
+        host = make_host(allocation_id=allocation)
+        lease = _lease(allocation, slots=4)
+        live = [_binding(allocation, slot=n) for n in range(4)]
+        ledger = SlotLedger({allocation: live}, leases=[lease])
+        service, repository, *_ = _service(host, ledger=ledger)
+        updated = await service.update(ADMIN, host.id, slots=6)
+        assert updated.slots == repository.hosts[host.id].slots == 6
+        assert repository.hosts[host.id].allocation_id == allocation
+        grown = ledger.leases[allocation]
+        assert (grown.slots, grown.machine.slots, grown.state) == (6, 6, lease.state)
+        # The running sessions keep their slots; nothing is bound or released.
+        assert await ledger.slots(allocation) == live
+        assert ledger.locked == []
+
+    async def test_a_held_host_grows_only_within_capacity(self):
+        allocation = uuid4()
+        host = make_host(allocation_id=allocation)
+        ledger = SlotLedger(leases=[_lease(allocation, slots=4)])
+        service, repository, *_ = _service(host, ledger=ledger)
+        with pytest.raises(ComputeHostError, match="do not fit"):
+            await service.update(ADMIN, host.id, slots=8)  # 7 fit
+        assert (repository.hosts[host.id].slots, ledger.leases[allocation].slots) == (4, 4)
+
+    async def test_a_busy_allocation_is_retried_and_a_retry_grows_it(self):
+        allocation = uuid4()
+        host = make_host(allocation_id=allocation)
+        ledger = SlotLedger(leases=[_lease(allocation, slots=4)])
+        ledger.busy.add(allocation)
+        service, repository, *_ = _service(host, ledger=ledger)
+        with pytest.raises(ComputeHostStateError, match="again"):
+            await service.update(ADMIN, host.id, slots=6)
+        # The host is saved first: it never has fewer slots than its allocation offers.
+        assert (repository.hosts[host.id].slots, ledger.leases[allocation].slots) == (6, 4)
+        ledger.busy.clear()
+        await service.update(ADMIN, host.id, slots=6)
+        assert ledger.leases[allocation].slots == 6
+
+    async def test_a_same_count_or_ending_allocation_is_left_alone(self):
+        allocation, ending = uuid4(), uuid4()
+        host = make_host(allocation_id=allocation)
+        other = make_host(name="other", host_public_key=other_host_key(5), allocation_id=ending)
+        ledger = SlotLedger(
+            leases=[
+                _lease(allocation, slots=4),
+                _lease(ending, slots=4, state=LeaseState.DRAINING),
+            ]
+        )
+        ledger.busy.add(allocation)  # a same-count save takes no lock, so it never waits
+        service, *_ = _service(host, other, ledger=ledger)
+        assert (await service.update(ADMIN, host.id, slots=4, tags=["a"])).tags == ("a",)
+        await service.update(ADMIN, other.id, slots=6)
+        assert ledger.leases[ending].slots == 4
 
     async def test_update_refusals(self):
         host = make_host()

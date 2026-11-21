@@ -541,7 +541,8 @@ class ComputeLeaseService:
 
         A provider that sets slots per machine (a registered host) only names the machine at
         claim, so the reserve used the pool default. The machine's number replaces it while
-        the claim is provisioning and never changes after.
+        the claim is provisioning; after that only an operator growing the host raises it
+        (``ComputeHostService.update``), never the provider's snapshot.
         """
         if machine.slots is None or lease.state != LeaseState.PROVISIONING:
             return lease.slots
