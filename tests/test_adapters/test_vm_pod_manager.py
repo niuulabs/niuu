@@ -1581,6 +1581,44 @@ async def test_stop_finishes_a_deletion_an_earlier_attempt_began(setup):
     runtime.stop.assert_not_awaited()
 
 
+async def test_start_after_a_failed_stop_finishes_that_stop_before_claiming_a_slot(setup):
+    manager, _, repository, provider, runtime, _, session = setup
+    await manager.start(session, SPEC)
+    machine, _ = _ledger(repository)
+    runtime.stop.side_effect = RuntimeError("archive failed")
+    with pytest.raises(RuntimeError, match="archive failed"):
+        await manager.stop(session)
+    assert repository.bindings[_ledger(repository)[1].id].stop_requested
+    starts = runtime.start.await_count
+
+    # The stop still cannot finish: the start says why and launches nothing on the slot.
+    with pytest.raises(RuntimeError, match="archive failed"):
+        await manager.start(session, SPEC)
+    assert runtime.start.await_count == starts
+
+    runtime.stop.side_effect = None
+    await manager.start(session, SPEC)
+
+    assert repository.leases[machine.id].state == LeaseState.RELEASED
+    assert machine.id not in provider.machines
+    view = await repository.active_for_session("pool", session.id)
+    assert view is not None and view.id != machine.id
+    assert not view.binding.stop_requested
+    assert runtime.start.await_count == starts + 1
+
+
+async def test_a_start_whose_earlier_stop_left_its_slot_live_is_refused(setup):
+    manager, _, repository, _, runtime, _, session = setup
+    await manager.start(session, SPEC)
+    await _edit(repository, binding={"stop_requested": True})
+    manager._stop_slot = AsyncMock(return_value=True)
+    starts = runtime.start.await_count
+
+    with pytest.raises(RuntimeError, match="did not end its slot 0"):
+        await manager.start(session, SPEC)
+    assert runtime.start.await_count == starts
+
+
 async def test_stop_after_a_crash_between_marking_the_slot_and_the_machine_still_deletes(setup):
     manager, _, repository, provider, _, _, session = setup
     await manager.start(session, SPEC)

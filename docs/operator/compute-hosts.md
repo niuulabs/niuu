@@ -745,6 +745,19 @@ runs, removes its launchd domains, IPC objects, crontab, Nix profile, temporary 
 runs the darwin audit for the slot: anything left fails the stop, naming it, and the
 Mac is not offered again until it is clean.
 
+macOS keeps some of a user's files even from root over SSH: app containers TCC guards
+(`~/Library/Group Containers`, `~/Library/Containers`) and data vaults, which macOS
+daemons and the iOS Simulator create in the slot user's home. The archive leaves out
+the files root cannot open and archives the rest. Each such stop is an error log naming
+the folders left out and a count on `ravn.degraded` (`compute.host.archive.unreadable`),
+and those files are not restored. Give `sshd-keygen-wrapper` Full Disk Access on the Mac
+to archive what TCC guards; data-vault files stay unreadable. Any other error tar reports
+fails the stop with tar's own words.
+
+A start of a session whose earlier stop did not finish (its archive or teardown failed)
+finishes that stop first, then starts the session in a slot of its own with the
+workspace restored. If the stop still fails, the start fails with its reason.
+
 **Paths.** A Mac has no mount namespaces, so the container paths a session and its
 agents are given (`/workspace`, `/home/skuld`, `/run/secrets`, an agent's home) are
 translated to where their sources are on the Mac, in the environment, commands and the
