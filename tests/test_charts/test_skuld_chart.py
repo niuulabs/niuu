@@ -1111,6 +1111,8 @@ def test_forge_controls_render_into_valid_skuld_configuration():
             "--set",
             "broker.codexReceiveMaxBytes=123456",
             "--set",
+            "broker.claudeSdkMaxMessageBytes=2097152",
+            "--set",
             "broker.pi.binary=/opt/pi",
         ],
         check=True,
@@ -1127,6 +1129,7 @@ def test_forge_controls_render_into_valid_skuld_configuration():
     assert settings.session.reasoning_effort == "high"
     assert settings.history_hydration_enabled is False
     assert settings.codex_receive_max_bytes == 123456
+    assert settings.claude_sdk_max_message_bytes == 2097152
     assert settings.pi.binary == "/opt/pi"
 
 

@@ -66,6 +66,10 @@ _TRANSIENT_ERROR_RE = re.compile(
 )
 _MAX_TRANSIENT_RETRIES = 1
 _DEFAULT_TURN_TIMEOUT_S = 0.0
+#: The largest single stdout line (one stream-json message) the SDK reads. Its own default is
+#: 1 MiB, which one Read of a screenshot (the image rides base64 in the tool result) passes; the
+#: reader then stops for good. The node's setting (``claude_sdk_max_message_bytes``) is passed.
+_DEFAULT_MAX_MESSAGE_BYTES = 64 * 1024 * 1024
 
 
 def _claude_effort_for_model(model: str) -> str:
@@ -328,8 +332,12 @@ class SDKTransport(CLITransport):
         claude_tool_policy: ClaudeToolPolicy | None = None,
         claude_auth: ClaudeAuthMode = "subscription",
         claude_oauth_token_file: str | None = None,
+        claude_sdk_max_message_bytes: int = _DEFAULT_MAX_MESSAGE_BYTES,
     ) -> None:
         super().__init__()
+        if claude_sdk_max_message_bytes <= 0:
+            raise ValueError("claude_sdk_max_message_bytes must be positive")
+        self._max_message_bytes = claude_sdk_max_message_bytes
         self._claude_auth = claude_auth
         self._claude_oauth_token_file = claude_oauth_token_file
         for value in (mcp_startup_timeout_seconds, mcp_status_poll_interval_seconds):
@@ -452,13 +460,15 @@ class SDKTransport(CLITransport):
     ) -> None:
         """Send a user turn and emit SDK responses as stream-json dicts."""
         async with self._send_lock:
-            if not self.is_alive:
-                await self._connect_client()
-            client = self._client
-            if client is None:
-                raise RuntimeError("Claude SDK client not connected")
             prompt = content
             while True:
+                # A lost output stream (below) leaves no client: the next prompt reconnects and
+                # resumes the conversation.
+                if not self.is_alive:
+                    await self._connect_client()
+                client = self._client
+                if client is None:
+                    raise RuntimeError("Claude SDK client not connected")
                 self._turn_active = True
                 self._steer_interrupt_requested = False
                 attempt = 0
@@ -484,6 +494,9 @@ class SDKTransport(CLITransport):
                             timeout_recovery_used = True
                             prompt = self._timeout_recovery_prompt()
                             continue
+                        except Exception as exc:
+                            await self._lose_output_stream(exc)
+                            break
 
                         if (
                             last_result_message is not None
@@ -556,6 +569,33 @@ class SDKTransport(CLITransport):
                     visible_output_emitted = True
 
         return last_result_message, last_result_event, visible_output_emitted
+
+    async def _lose_output_stream(self, exc: Exception) -> None:
+        """The SDK stopped reading Claude's output: say so, and restart Claude on the next prompt.
+
+        The SDK's reader ends for good on its first failure (a message over its buffer limit, a
+        line that is not JSON, the CLI's pipe closing), and every later ``receive_response`` ends
+        at once. The transport used to stay "alive" with it: Claude kept working, unseen, while
+        the broker held the turn it had been building as in progress for good, and served it as
+        the trailing ``in_progress`` row below every newer turn. The error frame closes that turn
+        (the broker flushes it and records the error); the client is stopped, and the next prompt
+        starts Claude again on the same conversation.
+        """
+        logger.error("Claude SDK transport: lost Claude's output stream: %s", exc)
+        await self._emit_event(
+            {
+                "type": "error",
+                "error": {
+                    "message": (
+                        f"Lost Claude's output ({exc}). Claude was stopped; the next "
+                        "message starts it again on this conversation."
+                    )
+                },
+            }
+        )
+        if self._session_id:
+            self._resume_session_id = self._session_id
+        await self.stop()
 
     async def interrupt(self) -> None:
         """Interrupt the in-flight turn if the SDK client is connected.
@@ -774,6 +814,7 @@ class SDKTransport(CLITransport):
             # A fresh Forge session must NEVER --continue the cwd's project history.
             "continue_conversation": False,
             "env": env,
+            "max_buffer_size": self._max_message_bytes,
         }
         if tools and tools.claude_plugin_dirs:
             option_kwargs["plugins"] = [

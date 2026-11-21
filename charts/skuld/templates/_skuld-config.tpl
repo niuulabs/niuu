@@ -104,6 +104,7 @@ unit (see skuld.memberValues). Every line is indented four spaces, to sit under 
     conversation_snapshot_max_bytes: {{ .Values.broker.conversationSnapshotMaxBytes | toJson }}
     live_frame_max_bytes: {{ .Values.broker.liveFrameMaxBytes | toJson }}
     codex_receive_max_bytes: {{ .Values.broker.codexReceiveMaxBytes | toJson }}
+    claude_sdk_max_message_bytes: {{ .Values.broker.claudeSdkMaxMessageBytes | toJson }}
     event_log_enabled: {{ .Values.broker.eventLogEnabled | toJson }}
     activity_reporting_enabled: {{ .Values.broker.activityReportingEnabled | toJson }}
     history_hydration_enabled: {{ .Values.broker.historyHydrationEnabled | toJson }}
