@@ -36,7 +36,13 @@ from volundr.domain.execution_catalog import ExecutionPlanMismatchError, Resolve
 from volundr.domain.host_preparation import HostPreparation
 from volundr.domain.services.compute_leases import ComputeLeaseService, require_machine_maximum
 from volundr.domain.services.execution_catalog import ExecutionPlanResolver
-from volundr.domain.vm_runtime import ProfileAwareVmRuntime, VmRuntime, VmRuntimeUnavailableError
+from volundr.domain.vm_runtime import (
+    ArchiveSpaceError,
+    ProfileAwareVmRuntime,
+    VmRuntime,
+    VmRuntimeUnavailableError,
+    waits_for_space,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -470,7 +476,11 @@ class ComputePoolService:
             return
         live = _live(bindings)
         for binding in live:
-            if binding.stop_requested and binding.state != SlotState.DRAINING:
+            if (
+                binding.stop_requested
+                and binding.state != SlotState.DRAINING
+                and not waits_for_space(binding)
+            ):
                 await self._finish_requested_stop(lease, binding)
         if live and self.provider.fixed_inventory:
             # A host in service can stop accepting (drained, quarantined, disconnected); keep
@@ -557,7 +567,17 @@ class ComputePoolService:
         view = SlotLease(allocation=lease, binding=binding)
         runtime = self._stopping_runtime(view)
         if binding.runtime_data_started:
-            await runtime.stop(view, await self.leases.bootstrap_for(view))
+            try:
+                await runtime.stop(view, await self.leases.bootstrap_for(view))
+            except ArchiveSpaceError as exc:
+                # Kept on the binding: maintenance does not retry a stop only a larger
+                # volume can finish; the operator's next stop or start does.
+                await self.repository.save_slot(binding.model_copy(update={"error": str(exc)}))
+                raise
+            except Exception:
+                if waits_for_space(binding):
+                    await self.repository.save_slot(binding.model_copy(update={"error": None}))
+                raise
         policy = await self.policy()
         bindings = await self.repository.slots(lease.id)
         limit = session_limit(policy, lease)

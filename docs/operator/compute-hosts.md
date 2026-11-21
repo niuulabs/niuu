@@ -754,6 +754,13 @@ and those files are not restored. Give `sshd-keygen-wrapper` Full Disk Access on
 to archive what TCC guards; data-vault files stay unreadable. Any other error tar reports
 fails the stop with tar's own words.
 
+The archive is written to Forge's sessions volume (`computeHosts.dataDir`, sized by the
+chart's `storage.sessions.size`). A Mac's archive is measured before it is taken: one the
+volume cannot hold fails the stop with `Forge's sessions volume has N free …, and the
+workspace archive … needs at least M; raise the chart's storage.sessions.size`, counted on
+`ravn.cap.hits`. Forge does not retry that stop on its own: raise the volume, then start
+the session, and the start finishes the stop.
+
 A start of a session whose earlier stop did not finish (its archive or teardown failed)
 finishes that stop first, then starts the session in a slot of its own with the
 workspace restored. If the stop still fails, the start fails with its reason.

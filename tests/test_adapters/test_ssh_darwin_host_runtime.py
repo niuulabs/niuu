@@ -139,7 +139,8 @@ def mac(tmp_path):
     lease = SlotView(allocation, session.id, 0, _machine(allocation))
 
     runtime._guest_access.execute = AsyncMock(
-        return_value=GuestCommandResult(0, json.dumps(DESCRIPTION).encode())
+        # The bundle's description, and the archive's measured size: both read as JSON.
+        return_value=GuestCommandResult(0, json.dumps({**DESCRIPTION, "bytes": 1024}).encode())
     )
     runtime._guest_access.open_tunnel = AsyncMock()
     runtime._guest_access.close_tunnel = AsyncMock()
@@ -680,19 +681,17 @@ async def test_stop_ends_the_jobs_archives_then_removes_the_slot_verified(mac):
     )
     assert calls[0].kwargs["expected_exit_codes"] == (0, 42)
     assert calls[0].kwargs["safe_error_prefix"] == STAGE_PREFIX
-    assert commands[1] == runtime._python(
-        programs.ARCHIVE,
-        json.dumps(
-            {
-                "root": "/var/lib/niuu/slots/0/session",
-                "excludes": [".allocation", "home/.codex/tmp"],
-                "report": "/var/run/niuu/host-sessions/0/archive-unreadable.json",
-            }
-        ),
-    )
-    assert calls[1].kwargs["expected_exit_codes"] == (0, programs.ARCHIVE_SKIPPED)
-    assert calls[1].kwargs["safe_detail_prefix"] == DETAIL_PREFIX
-    assert commands[2] == runtime._python(programs.SLOT, "down")
+    spec = {
+        "root": "/var/lib/niuu/slots/0/session",
+        "excludes": [".allocation", "home/.codex/tmp"],
+        "report": "/var/run/niuu/host-sessions/0/archive-unreadable.json",
+    }
+    # Measured first, so an archive Forge's volume cannot hold is refused before it starts.
+    assert commands[1] == runtime._python(programs.ARCHIVE, json.dumps({**spec, "measure": True}))
+    assert commands[2] == runtime._python(programs.ARCHIVE, json.dumps(spec))
+    assert calls[2].kwargs["expected_exit_codes"] == (0, programs.ARCHIVE_SKIPPED)
+    assert calls[2].kwargs["safe_detail_prefix"] == DETAIL_PREFIX
+    assert commands[3] == runtime._python(programs.SLOT, "down")
     runtime._guest_access.close_tunnel.assert_awaited_once_with(str(lease.id))
 
 
@@ -716,11 +715,13 @@ async def test_a_stop_that_left_files_root_may_not_read_out_of_the_archive_says_
     async def execute(_lease, _bootstrap, command, **kwargs):
         if command == archive:
             return GuestCommandResult(programs.ARCHIVE_SKIPPED, b"")
+        if "stdout" in kwargs:
+            raise AssertionError("only the archive streams")
         if command == runtime._python(
             programs.ARCHIVE_REPORT, "/var/run/niuu/host-sessions/0/archive-unreadable.json"
         ):
             return GuestCommandResult(0, json.dumps(left_out).encode())
-        return GuestCommandResult(0, json.dumps(DESCRIPTION).encode())
+        return GuestCommandResult(0, json.dumps({**DESCRIPTION, "bytes": 1024}).encode())
 
     runtime._guest_access.execute = AsyncMock(side_effect=execute)
     degraded = []
@@ -1257,3 +1258,25 @@ def test_an_unforeseen_failure_of_the_stop_program_names_its_stage(tmp_path):
     stage, detail = _reported(result.stderr)
     assert stage == "host-stop"
     assert detail.startswith("JSONDecodeError while stopping the session")
+
+
+def test_the_archive_program_measures_at_least_what_it_would_archive(tmp_path):
+    root = _storage(tmp_path)
+    (root / "workspace" / "big").write_bytes(b"x" * 5000)
+    spec = {
+        "root": str(root),
+        "excludes": [".allocation", "home/.codex/tmp"],
+        "report": str(tmp_path / "state" / "archive-unreadable.json"),
+    }
+
+    measured = subprocess.run(
+        [sys.executable, "-I", "-c", programs.ARCHIVE, json.dumps({**spec, "measure": True})],
+        capture_output=True,
+        text=True,
+    )
+    archived = _archive(tmp_path, root)
+
+    assert measured.returncode == 0, measured.stderr
+    size = json.loads(measured.stdout)["bytes"]
+    # A lower bound of what tar writes (bsdtar may add extended headers), never above it.
+    assert 5000 < size <= len(archived.stdout)

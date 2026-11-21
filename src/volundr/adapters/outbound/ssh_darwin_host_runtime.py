@@ -497,6 +497,30 @@ class SshDarwinHostRuntime(HostModeRuntime):
         await self._install(lease, bootstrap)
         await super().stop(lease, bootstrap)
 
+    def _archive_spec(self, layout: DarwinSlotLayout, **extra) -> str:
+        return json.dumps(
+            {
+                "root": layout.session_data,
+                "excludes": [".allocation", *self._archive_excludes],
+                "report": f"{layout.state_root}/archive-unreadable.json",
+                **extra,
+            }
+        )
+
+    async def _archive_size(  # type: ignore[override]
+        self, lease: SlotLease, bootstrap: MachineBootstrap, layout: DarwinSlotLayout
+    ) -> int:
+        """At least how large the archive is, from the same scan the archive makes."""
+        result = await self._guest_access.execute(
+            lease,
+            bootstrap,
+            self._python(programs.ARCHIVE, self._archive_spec(layout, measure=True)),
+            capture_stdout=True,
+            safe_error_prefix=STAGE_PREFIX,
+            safe_detail_prefix=DETAIL_PREFIX,
+        )
+        return int(json.loads(result.stdout)["bytes"])
+
     async def _write_archive(  # type: ignore[override]
         self,
         lease: SlotLease,
@@ -516,16 +540,7 @@ class SshDarwinHostRuntime(HostModeRuntime):
         result = await self._guest_access.execute(
             lease,
             bootstrap,
-            self._python(
-                programs.ARCHIVE,
-                json.dumps(
-                    {
-                        "root": layout.session_data,
-                        "excludes": [".allocation", *self._archive_excludes],
-                        "report": report,
-                    }
-                ),
-            ),
+            self._python(programs.ARCHIVE, self._archive_spec(layout)),
             stdout=dest,
             expected_exit_codes=(0, programs.ARCHIVE_SKIPPED),
             safe_error_prefix=STAGE_PREFIX,

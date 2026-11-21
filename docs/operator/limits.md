@@ -48,6 +48,7 @@ continue to read them.
 
 | Cap | Default | Real bound | Decision | How a hit is surfaced |
 |---|---|---|---|---|
+| Forge's sessions volume (chart `storage.sessions.size`), which holds every session's workspace archive on a VM or host Forge (`computeHosts.dataDir`) | 10Gi | The volume's size: a stop streams the workspace archive onto it | Kept: a volume needs a size; size it for the archives (a Mac home with iOS Simulators runs to several GiB) | A Mac archive is measured first and refused when it does not fit; any archive that fills the volume is refused. Either way the stop fails with `Forge's sessions volume has N free …, raise the chart's storage.sessions.size`, counted on `ravn.cap.hits` (`storage.sessions.size`). Forge's maintenance and sweeps do not retry it; the session's next start finishes the stop |
 | Tool-build gate review / question answer (`tool_build.gate_review` / `tool_build.question_answer`) | none, was hard-coded 400 / 700 | Model max output / remaining context window | Removed: no `max_tokens` is sent | Raises `OutputTruncatedError`; counted |
 | Tool-build gate review attempts | 2 | An unparseable verdict is worth one retry | Kept: one retry on an unparseable answer, never on truncation | Raises `ToolBuildError` after the last attempt |
 | A2A task result (`result_max_chars` of the A2A gateway kwargs) | 12000 | The consumer's prompt budget | Kept; bounds `a2a_task` results including `find`, whose handles leave out the case mandate. The character budget is the bound, not an item count | Marker in the result + error log + counted |

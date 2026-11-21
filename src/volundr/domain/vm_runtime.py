@@ -11,7 +11,13 @@ from uuid import UUID
 from niuu.domain.services.forge_session_token import IssuedForgeSessionToken
 from niuu.ports.credentials import CredentialStorePort
 from niuu.ports.session_proxy import SessionProxyTarget
-from volundr.domain.compute import AllocationRef, ComputeLease, MachineBootstrap, SlotLease
+from volundr.domain.compute import (
+    AllocationRef,
+    ComputeLease,
+    ComputeSlot,
+    MachineBootstrap,
+    SlotLease,
+)
 from volundr.domain.compute_hosts import LINUX_ONLY, HostPlatform
 from volundr.domain.guest_credentials import GuestCredentialDelivery
 from volundr.domain.models import Session, SessionSpec
@@ -55,6 +61,50 @@ class VmRuntimeStageError(RuntimeError):
         self.diagnostic = diagnostic
         suffix = f": {diagnostic}" if diagnostic else ""
         super().__init__(f"Guest runtime startup failed at stage {stage}{suffix}")
+
+
+#: The knob an operator raises when a workspace archive does not fit on Forge's volume.
+ARCHIVE_SPACE_KNOB = "storage.sessions.size"
+#: How every ``ArchiveSpaceError`` begins, so a stored binding error can be recognised.
+ARCHIVE_SPACE_PREFIX = "Forge's sessions volume"
+
+
+def _size(count: int) -> str:
+    if count >= 2**30:
+        return f"{count / 2**30:.2f} GiB"
+    if count >= 2**20:
+        return f"{count / 2**20:.1f} MiB"
+    return f"{count} bytes"
+
+
+class ArchiveSpaceError(RuntimeError):
+    """A session's workspace archive does not fit on Forge's volume.
+
+    Retrying the same stop cannot change this: only a larger volume (or fewer archives on
+    it) can. The message always begins with ``ARCHIVE_SPACE_PREFIX``.
+    """
+
+
+def archive_space_error(
+    *, session_id: UUID, directory: str, free: int, needed: int, measured: bool
+) -> ArchiveSpaceError:
+    """The error for an archive of ``needed`` bytes (a lower bound when ``measured``, else
+    what was written before the volume filled) and ``free`` bytes left on the volume."""
+    need = (
+        f"needs at least {_size(needed)}"
+        if measured
+        else f"stopped after {_size(needed)} when the volume filled"
+    )
+    return ArchiveSpaceError(
+        f"{ARCHIVE_SPACE_PREFIX} has {_size(free)} free ({directory}), and the workspace "
+        f"archive of session {session_id} {need}; raise the chart's {ARCHIVE_SPACE_KNOB} "
+        "(the volume that holds it), then start the session: the start finishes the stop"
+    )
+
+
+def waits_for_space(binding: ComputeSlot) -> bool:
+    """Whether ``binding``'s last stop failed because its archive did not fit on Forge."""
+    return bool(binding.error) and binding.error.startswith(ARCHIVE_SPACE_PREFIX)
 
 
 @runtime_checkable

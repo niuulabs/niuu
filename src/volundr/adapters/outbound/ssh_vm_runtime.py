@@ -22,6 +22,7 @@ from uuid import UUID
 
 import httpx
 
+from niuu.cap_telemetry import record_cap_hit
 from niuu.domain.services.forge_session_token import IssuedForgeSessionToken
 from niuu.observability import get_observability
 from niuu.ports.session_proxy import SessionProxyTarget
@@ -77,7 +78,14 @@ from volundr.domain.guest_credentials import GuestCredentialDelivery, GuestCrede
 from volundr.domain.models import Session, SessionSpec
 from volundr.domain.services.host_access_key import HostAccessKey
 from volundr.domain.session_runtimes import SessionRuntimeKind
-from volundr.domain.vm_runtime import SlotLimits, StartupStepReport, VmRuntime
+from volundr.domain.vm_runtime import (
+    ARCHIVE_SPACE_KNOB,
+    ArchiveSpaceError,
+    SlotLimits,
+    StartupStepReport,
+    VmRuntime,
+    archive_space_error,
+)
 from volundr.domain.workflow_session import workflow_session_environment
 
 # cloud-init's SSH module deletes/recreates keys at /etc/ssh/ssh_host_*.
@@ -1952,6 +1960,12 @@ class SshContainerVmRuntime(BrokeredCredentialPodManager, VmRuntime):
         layout = self._layout(lease)
         directory = self._data / str(lease.session_id)
         directory.mkdir(mode=0o700, exist_ok=True, parents=True)
+        needed = await self._archive_size(lease, bootstrap, layout)
+        if needed is not None:
+            usage = os.statvfs(directory)
+            free = usage.f_bavail * usage.f_frsize
+            if needed > free:
+                raise self._no_space(lease, free=free, needed=needed, measured=True)
         fd, temporary = tempfile.mkstemp(prefix="session-", suffix=".tar", dir=directory)
         try:
             with os.fdopen(fd, "wb") as dest:
@@ -1963,17 +1977,32 @@ class SshContainerVmRuntime(BrokeredCredentialPodManager, VmRuntime):
                     # The SSH client writes the archive straight into the file: a full
                     # volume reads as the guest command failing. Say which it was.
                     if os.statvfs(directory).f_bavail == 0:
-                        raise RuntimeError(
-                            f"Forge's data directory {self._data} is full: the workspace "
-                            f"archive of session {lease.session_id} stopped after "
-                            f"{os.fstat(dest.fileno()).st_size} bytes. Grow the volume "
-                            "that holds it (the chart's storage.sessions.size) and stop "
-                            "the session again"
-                        ) from exc
+                        written = os.fstat(dest.fileno()).st_size
+                        raise self._no_space(lease, free=0, needed=written, measured=False) from exc
                     raise
             os.replace(temporary, directory / "session.tar")
         finally:
             Path(temporary).unlink(missing_ok=True)
+
+    def _no_space(
+        self, lease: SlotLease, *, free: int, needed: int, measured: bool
+    ) -> ArchiveSpaceError:
+        """The archive does not fit on Forge's volume: an error, counted as a cap hit."""
+        error = archive_space_error(
+            session_id=lease.session_id,
+            directory=str(self._data),
+            free=free,
+            needed=needed,
+            measured=measured,
+        )
+        record_cap_hit(ARCHIVE_SPACE_KNOB, str(error))
+        return error
+
+    async def _archive_size(
+        self, lease: SlotLease, bootstrap: MachineBootstrap, layout
+    ) -> int | None:
+        """At least how many bytes the archive takes, when the runtime can tell beforehand."""
+        return None
 
     async def _write_archive(
         self, lease: SlotLease, bootstrap: MachineBootstrap, layout, dest: BinaryIO

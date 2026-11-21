@@ -548,6 +548,8 @@ ARCHIVE_SKIPPED = 43
 #: over SSH may not open (bsdtar fails the whole archive on them). Those are left out and
 #: listed in ``report``, and the program exits ``ARCHIVE_SKIPPED`` so the runtime reports
 #: them; anything else tar cannot archive fails the stop with tar's own words.
+#: With ``measure`` set it archives nothing and prints ``{"bytes": n}``: at least how
+#: large the archive is (a 512-byte header per entry, contents in 512-byte blocks).
 ARCHIVE = (
     _SLOT_COMMON
     + "SKIPPED = "
@@ -564,6 +566,8 @@ excluded = {'./' + p for p in a['excludes']}
 device = os.lstat(root).st_dev
 names, unreadable = ['.'], []
 pending = ['.']
+# tar's own layout: a header block per entry, contents in whole blocks, two end blocks.
+size = 512 + 1024
 while pending:
     relative = pending.pop()
     try:
@@ -584,10 +588,15 @@ while pending:
             except PermissionError:
                 unreadable.append(child)
                 continue
+            size += -(-info.st_size // 512) * 512
+        size += 512
         names.append(child)
         # tar --one-file-system: a mount point is archived, not what is mounted on it.
         if stat.S_ISDIR(info.st_mode) and info.st_dev == device:
             pending.append(child)
+if a.get('measure'):
+    print(json.dumps({'bytes': size}))
+    sys.exit(0)
 with tempfile.NamedTemporaryFile(prefix='niuu-archive-') as listed:
     listed.write(b''.join(name.encode('utf-8', 'surrogateescape') + b'\0' for name in names))
     listed.flush()

@@ -68,12 +68,14 @@ from volundr.domain.session_runtimes import (
 )
 from volundr.domain.session_startup import SessionStartup, StartupStage, StartupStageState
 from volundr.domain.vm_runtime import (
+    ArchiveSpaceError,
     ForgeSessionVmRuntime,
     ProfileAwareVmRuntime,
     StartupReportingVmRuntime,
     VmRuntime,
     VmRuntimeStageError,
     VmRuntimeUnavailableError,
+    waits_for_space,
 )
 
 logger = logging.getLogger(__name__)
@@ -1637,6 +1639,10 @@ class VmPodManager(PodManager):
             view = await repository.active_for_session(self._pool_id, session.id)
             if view is None:
                 return True
+            if waits_for_space(view.binding):
+                # Only a larger volume can finish this stop, and the start that follows
+                # finishes it: no archive (and no allocation lock) for every sweep.
+                raise ArchiveSpaceError(view.binding.error)
             return await self._stop_slot(session, view)
 
     async def _stop_slot(self, session: Session, view: SlotLease) -> bool:

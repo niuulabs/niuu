@@ -38,7 +38,12 @@ from volundr.domain.compute import (
 from volundr.domain.guest_access import GuestCommandResult
 from volundr.domain.models import GitSource, PodSpecAdditions, Session, SessionSpec
 from volundr.domain.services.host_access_key import generate_host_access_key
-from volundr.domain.vm_runtime import VmRuntimeStageError, VmRuntimeUnavailableError
+from volundr.domain.vm_runtime import (
+    ARCHIVE_SPACE_PREFIX,
+    ArchiveSpaceError,
+    VmRuntimeStageError,
+    VmRuntimeUnavailableError,
+)
 
 
 def _archive_bytes(*members: tarfile.TarInfo) -> bytes:
@@ -1210,11 +1215,37 @@ async def test_an_archive_that_fails_says_when_forges_data_directory_is_full(
             os.statvfs_result((4096, 4096, 10, 0, 0, 10, 0, 0, 0, 255)) if full else real(path)
         ),
     )
+    hits = []
+    monkeypatch.setattr(module, "record_cap_hit", lambda knob, message: hits.append(knob))
 
-    expected = "data directory .* is full" if full else "exit code 1"
-    with pytest.raises(RuntimeError, match=expected) as raised:
-        await runtime._archive_data(lease, bootstrap)
     if full:
-        assert "stopped after 10 bytes" in str(raised.value)
-        assert "storage.sessions.size" in str(raised.value)
+        with pytest.raises(ArchiveSpaceError) as raised:
+            await runtime._archive_data(lease, bootstrap)
+        message = str(raised.value)
+        assert message.startswith(ARCHIVE_SPACE_PREFIX + " has 0 bytes free")
+        assert "stopped after 10 bytes when the volume filled" in message
+        assert "raise the chart's storage.sessions.size" in message
+        assert hits == ["storage.sessions.size"]
+    else:
+        with pytest.raises(RuntimeError, match="exit code 1"):
+            await runtime._archive_data(lease, bootstrap)
+        assert hits == []
     assert list((runtime._data / str(session.id)).iterdir()) == []
+
+
+async def test_an_archive_the_volume_cannot_hold_is_refused_before_it_starts(setup, monkeypatch):
+    runtime, session, spec, bootstrap, lease = setup
+    runtime._guest_access.execute = AsyncMock()
+    free = os.statvfs(runtime._data).f_bavail * os.statvfs(runtime._data).f_frsize
+    monkeypatch.setattr(
+        runtime, "_archive_size", AsyncMock(return_value=free + 3 * 2**30), raising=False
+    )
+    hits = []
+    monkeypatch.setattr(module, "record_cap_hit", lambda knob, message: hits.append(knob))
+
+    with pytest.raises(ArchiveSpaceError, match="needs at least") as raised:
+        await runtime._archive_data(lease, bootstrap)
+
+    assert "needs at least" in str(raised.value)
+    runtime._guest_access.execute.assert_not_awaited()
+    assert hits == ["storage.sessions.size"]

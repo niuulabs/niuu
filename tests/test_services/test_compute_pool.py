@@ -20,6 +20,7 @@ from volundr.domain.compute import (
     usable_slots,
 )
 from volundr.domain.services.compute_leases import ComputeLeaseService
+from volundr.domain.vm_runtime import ARCHIVE_SPACE_PREFIX, ArchiveSpaceError
 
 
 @pytest.fixture
@@ -94,6 +95,33 @@ async def test_archive_failure_never_deletes_guest_and_retries_stop_intent(setup
         await pool.maintain()
     assert lease.id in provider.machines
     assert repo.bindings[lease.binding.id].stop_requested
+    runtime.stop.side_effect = None
+    await pool.maintain()
+    assert repo.leases[lease.id].state == LeaseState.RELEASED
+
+
+async def test_a_stop_that_failed_for_lack_of_space_waits_for_an_operator(setup):
+    pool, leases, repo, provider, runtime, _ = setup
+    lease = await leases.acquire(session_id=uuid4(), owner_id="o", tenant_id="t", profile="small")
+    stopping = await request_stop(repo, lease.binding)
+    runtime.stop.side_effect = ArchiveSpaceError(f"{ARCHIVE_SPACE_PREFIX} has 0 bytes free")
+    with pytest.raises(ArchiveSpaceError):
+        await pool.maintain()
+    assert repo.bindings[lease.binding.id].error.startswith(ARCHIVE_SPACE_PREFIX)
+    runtime.stop.reset_mock()
+
+    # Retrying cannot free space: maintenance leaves it, holding no lock and no guest.
+    await pool.maintain()
+    await pool.maintain()
+    runtime.stop.assert_not_awaited()
+    assert lease.id in provider.machines
+
+    # An operator's next stop or start retries it; another failure clears the space marker.
+    runtime.stop.side_effect = RuntimeError("guest gone")
+    async with repo.operation(lease.id):
+        with pytest.raises(RuntimeError, match="guest gone"):
+            await pool.finish_stop(repo.leases[lease.id], repo.bindings[stopping.id])
+    assert repo.bindings[lease.binding.id].error is None
     runtime.stop.side_effect = None
     await pool.maintain()
     assert repo.leases[lease.id].state == LeaseState.RELEASED

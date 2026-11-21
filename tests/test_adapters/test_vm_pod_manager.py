@@ -30,6 +30,8 @@ from volundr.domain.models import PodSpecAdditions, Session, SessionSpec, Sessio
 from volundr.domain.services.compute_leases import ComputeLeaseService
 from volundr.domain.session_startup import StartupStageState
 from volundr.domain.vm_runtime import (
+    ARCHIVE_SPACE_PREFIX,
+    ArchiveSpaceError,
     VmRuntime,
     VmRuntimeStageError,
     VmRuntimeUnavailableError,
@@ -1605,6 +1607,25 @@ async def test_start_after_a_failed_stop_finishes_that_stop_before_claiming_a_sl
     assert view is not None and view.id != machine.id
     assert not view.binding.stop_requested
     assert runtime.start.await_count == starts + 1
+
+
+async def test_a_stop_waiting_for_space_is_refused_at_once_and_a_start_retries_it(setup):
+    manager, _, repository, provider, runtime, _, session = setup
+    await manager.start(session, SPEC)
+    machine, _ = _ledger(repository)
+    message = f"{ARCHIVE_SPACE_PREFIX} has 0 bytes free; raise storage.sessions.size"
+    await _edit(repository, binding={"stop_requested": True, "error": message})
+
+    # A sweep's stop cannot free space: refused with the stored reason, no archive.
+    with pytest.raises(ArchiveSpaceError, match="raise storage.sessions.size"):
+        await manager.stop(session)
+    runtime.stop.assert_not_awaited()
+
+    # The operator's start, after the volume grew, finishes the stop and starts again.
+    await manager.start(session, SPEC)
+    runtime.stop.assert_awaited_once()
+    assert repository.leases[machine.id].state == LeaseState.RELEASED
+    assert (await repository.active_for_session("pool", session.id)).id != machine.id
 
 
 async def test_a_start_whose_earlier_stop_left_its_slot_live_is_refused(setup):
