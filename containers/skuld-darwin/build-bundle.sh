@@ -9,8 +9,8 @@
 #   site/        the niuu wheel and its locked dependencies (uv.lock, hashes required)
 #   node/        Node.js, for the npm CLIs
 #   tools/       the agent CLIs from containers/skuld/npm-tools (package-lock integrity)
-#   bin/         the agent CLIs and tmux; fallback/ uv and node; libexec/ Skuld, its
-#                Python, bao
+#   bin/         the agent CLIs and tmux; fallback/ gh, glab, uv and node; libexec/ Skuld,
+#                its Python, bao
 #   bundle.json  its format and platform, which the darwin install checks
 #
 # Every download is pinned by version and SHA-256; npm and uv verify the lockfiles' hashes.
@@ -46,6 +46,16 @@ LIBEVENT_SHA256=f7e9383b8c0baa81b687e5b5eecc01beefaf1b19b64151d95ed61647fe7a315c
 UTF8PROC_VERSION=2.12.0
 UTF8PROC_SHA256=a393fbef160835fb315bc3e91ba8d86f7a73a7cec9e6198b6c60b848b498bfeb
 MACOS_MINIMUM=13.5
+# gh and glab as the Skuld image builds them (containers/skuld/Dockerfile, its gh-build and
+# glab-build stages, which give the reasons): the same releases from source with the same
+# Go, so both platforms carry the same fixes. gh from its checksum-pinned tarball, whose
+# go.sum pins its modules; glab from the module proxy, verified against sum.golang.org.
+GO_VERSION=1.27.4
+GO_SHA256=91a44a2b8a716600ad94a4f143e156116620db8828086a6e3602291be9bd0bb4
+GH_VERSION=2.104.0
+GH_SHA256=779060cbdc5a354fa2fc8afb56e9277f64a29ac599daefd941558356509081e4
+GH_BUILD_DATE=2026-11-12
+GLAB_VERSION=1.128.0
 
 ROOT=$(pwd)
 [ -f "$ROOT/uv.lock" ] && [ -d "$ROOT/containers/skuld/npm-tools" ] || {
@@ -155,9 +165,37 @@ JOBS=$(sysctl -n hw.ncpu)
   make -s -j"$JOBS" && make -s install
 ) >"$WORK/tmux-build.log" 2>&1 || { cat "$WORK/tmux-build.log" >&2; echo "building tmux failed" >&2; exit 1; }
 install -m 0755 "$WORK/tmux/bin/tmux" "$B/bin/tmux"
-# Relocatable means it loads nothing but the Mac's own libraries.
-foreign=$(otool -L "$B/bin/tmux" | tail -n +2 | awk '{print $1}' | grep -v -E '^/(usr/lib|System/Library)/' || true)
-[ -z "$foreign" ] || { echo "tmux links libraries a Mac does not have: $foreign" >&2; exit 1; }
+
+fetch "https://go.dev/dl/go$GO_VERSION.darwin-arm64.tar.gz" "$GO_SHA256" "$WORK/downloads/go.tar.gz"
+fetch "https://github.com/cli/cli/archive/refs/tags/v$GH_VERSION.tar.gz" "$GH_SHA256" "$WORK/downloads/gh.tar.gz"
+tar -xzf "$WORK/downloads/go.tar.gz" -C "$WORK"
+mkdir -p "$WORK/gh-src" "$WORK/go-out"
+tar -xzf "$WORK/downloads/gh.tar.gz" -C "$WORK/gh-src" --strip-components=1
+(
+  # Only this Go and the public module proxy and checksum database: never the builder's Go
+  # environment, a workspace, or a toolchain download (GOTOOLCHAIN=local: a module asking
+  # for a newer Go fails the build). -modcacherw lets the cleanup remove the module cache.
+  export GOROOT="$WORK/go" GOPATH="$WORK/gopath" GOCACHE="$WORK/go-cache" GOENV=off \
+    GOTOOLCHAIN=local GOWORK=off GOFLAGS=-modcacherw GOPROXY=https://proxy.golang.org \
+    GOSUMDB=sum.golang.org GOPRIVATE='' GONOPROXY='' GONOSUMDB='' GOINSECURE='' \
+    CGO_ENABLED=0 GOOS=darwin GOARCH=arm64
+  GO="$WORK/go/bin/go"
+  cd "$WORK/gh-src"
+  "$GO" build -trimpath \
+    -ldflags "-s -w -X github.com/cli/cli/v2/internal/build.Version=$GH_VERSION-niuu.1 -X github.com/cli/cli/v2/internal/build.Date=$GH_BUILD_DATE" \
+    -o "$WORK/go-out/gh" ./cmd/gh
+  cd "$WORK"
+  glab_src=$("$GO" mod download -json "gitlab.com/gitlab-org/cli@v$GLAB_VERSION" | sed -n 's/.*"Dir": "\(.*\)".*/\1/p')
+  [ -n "$glab_src" ] || { echo "go mod download gave no glab source" >&2; exit 1; }
+  cd "$glab_src"
+  "$GO" build -trimpath -ldflags "-s -w -X main.version=$GLAB_VERSION-niuu.1" -o "$WORK/go-out/glab" ./cmd/glab
+) >"$WORK/go-build.log" 2>&1 || { cat "$WORK/go-build.log" >&2; echo "building gh and glab failed" >&2; exit 1; }
+
+# Relocatable means each loads nothing but the Mac's own libraries.
+for binary in "$B/bin/tmux" "$WORK/go-out/gh" "$WORK/go-out/glab"; do
+  foreign=$(otool -L "$binary" | tail -n +2 | awk '{print $1}' | grep -v -E '^/(usr/lib|System/Library)/' || true)
+  [ -z "$foreign" ] || { echo "$(basename "$binary") links libraries a Mac does not have: $foreign" >&2; exit 1; }
+done
 
 # Wrappers: each finds the bundle from its own path, so the bundle runs wherever it is
 # unpacked, and never picks an interpreter from the Mac's PATH. bin/ holds the agent CLIs
@@ -173,6 +211,7 @@ wrapper() {  # directory, name, command line
   chmod 0755 "$B/$1/$2"
 }
 mv "$B/bin/uv" "$B/bin/uvx" "$B/fallback/"
+install -m 0755 "$WORK/go-out/gh" "$WORK/go-out/glab" "$B/fallback/"
 mv "$B/bin/bao" "$B/libexec/"
 for name in python python3; do
   wrapper libexec "$name" 'PYTHONPATH="$here/site${PYTHONPATH:+:$PYTHONPATH}" exec "$here/python/bin/python3" "$@"'
@@ -185,12 +224,16 @@ for agent in $AGENTS; do
   wrapper bin "$agent" "PATH=\"\$here/node/bin:\$PATH\" exec \"\$here/tools/node_modules/.bin/$agent\" \"\$@\""
 done
 for tool in node npm npx; do
-  wrapper fallback "$tool" "exec \"\$here/node/bin/$tool\" \"\$@\""
+  # npm and npx are node scripts (#!/usr/bin/env node): the bundle's node runs them.
+  wrapper fallback "$tool" "PATH=\"\$here/node/bin:\$PATH\" exec \"\$here/node/bin/$tool\" \"\$@\""
 done
 
-# Every advertised command runs here, as the Linux image's build checks.
+# Every advertised command runs here, as the Linux image's build checks: the agents, and
+# every fallback tool a host session's PATH ends with (FALLBACK_TOOLS).
+FALLBACK=$("$B/libexec/python" -c 'from volundr.adapters.outbound.host_session_programs import FALLBACK_TOOLS; print(" ".join(FALLBACK_TOOLS))')
 for command in $(for a in $AGENTS muse; do echo "bin/$a"; done) libexec/bao \
-    fallback/uv fallback/node; do
+    $(for t in $FALLBACK; do echo "fallback/$t"; done); do
+  [ -x "$B/$command" ] || { echo "the bundle gives no $command" >&2; exit 1; }
   "$B/$command" --version >/dev/null || { echo "$command does not run" >&2; exit 1; }
 done
 "$B/libexec/python" -c 'import skuld.broker, volundr.guest_agent'
