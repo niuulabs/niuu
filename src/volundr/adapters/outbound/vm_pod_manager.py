@@ -792,6 +792,17 @@ class VmPodManager(PodManager):
                     if isinstance(runtime, ForgeSessionVmRuntime):
                         runtime.stage_forge_session(session.id, spec.forge_session)
             lease = await repository.active_for_session(self._pool_id, session.id)
+            if lease is not None and lease.binding.stop_requested:
+                # An earlier stop did not finish (its archive or cleanup failed). Its slot is
+                # refused credentials and hides its machine, so finish that stop first; a
+                # failure raises with its reason. The archive it takes is restored below.
+                await self._stop_slot(session, lease)
+                lease = await repository.active_for_session(self._pool_id, session.id)
+                if lease is not None:
+                    raise RuntimeError(
+                        f"The earlier stop of session {session.id} did not end its slot "
+                        f"{lease.binding.slot} of allocation {lease.id}; stop the session again"
+                    )
             if (
                 self._execution_resolver is not None
                 and "_compute_execution" not in session.workload_config
@@ -1612,7 +1623,7 @@ class VmPodManager(PodManager):
     async def stop(self, session: Session) -> bool:
         if session.hosted_by is not None:
             return await self._stop_member(session)
-        service, repository, _ = self._configured()
+        _, repository, _ = self._configured()
         self._wait_reasons.pop(session.id, None)
         self._progress.pop(session.id, None)
         for runtime in self._runtimes():
@@ -1626,59 +1637,61 @@ class VmPodManager(PodManager):
             view = await repository.active_for_session(self._pool_id, session.id)
             if view is None:
                 return True
-            recovery = self._recoveries.get((view.id, view.binding.id))
-            if recovery is not None:
-                recovery.cancel()
-                await asyncio.gather(recovery, return_exceptions=True)
-            async with asyncio.timeout(self._cleanup_timeout):
-                while True:
-                    machine = await repository.get(view.id)
-                    if machine is None:
-                        raise RuntimeError("VM claim disappeared during stop")
-                    binding = await repository.get_slot(view.binding.id)
-                    if self._slot_ended(machine, binding, session):
-                        return True
-                    try:
-                        if (
-                            machine.state != LeaseState.DRAINING
-                            and binding.state != SlotState.DRAINING
-                        ):
-                            # Archive failures deliberately prevent destructive VM cleanup.
-                            async with repository.operation(machine.id):
-                                machine = await repository.get(machine.id)
-                                if machine is None:
-                                    raise RuntimeError("VM claim disappeared during stop")
-                                binding = await repository.get_slot(binding.id)
-                                if self._slot_ended(machine, binding, session):
+            return await self._stop_slot(session, view)
+
+    async def _stop_slot(self, session: Session, view: SlotLease) -> bool:
+        """Archive and end ``session``'s slot ``view``; the caller holds the session's lock."""
+        service, repository, _ = self._configured()
+        recovery = self._recoveries.get((view.id, view.binding.id))
+        if recovery is not None:
+            recovery.cancel()
+            await asyncio.gather(recovery, return_exceptions=True)
+        async with asyncio.timeout(self._cleanup_timeout):
+            while True:
+                machine = await repository.get(view.id)
+                if machine is None:
+                    raise RuntimeError("VM claim disappeared during stop")
+                binding = await repository.get_slot(view.binding.id)
+                if self._slot_ended(machine, binding, session):
+                    return True
+                try:
+                    if machine.state != LeaseState.DRAINING and binding.state != SlotState.DRAINING:
+                        # Archive failures deliberately prevent destructive VM cleanup.
+                        async with repository.operation(machine.id):
+                            machine = await repository.get(machine.id)
+                            if machine is None:
+                                raise RuntimeError("VM claim disappeared during stop")
+                            binding = await repository.get_slot(binding.id)
+                            if self._slot_ended(machine, binding, session):
+                                return True
+                            if (
+                                machine.state != LeaseState.DRAINING
+                                and binding.state != SlotState.DRAINING
+                            ):
+                                binding = binding.model_copy(update={"stop_requested": True})
+                                await repository.save_slot(binding)
+                                machine, binding = await self._finish_stop(machine, binding)
+                                if binding.state in {SlotState.RETIRED, SlotState.RELEASED}:
                                     return True
-                                if (
-                                    machine.state != LeaseState.DRAINING
-                                    and binding.state != SlotState.DRAINING
-                                ):
-                                    binding = binding.model_copy(update={"stop_requested": True})
-                                    await repository.save_slot(binding)
-                                    machine, binding = await self._finish_stop(machine, binding)
-                                    if binding.state in {SlotState.RETIRED, SlotState.RELEASED}:
-                                        return True
-                        if machine.state != LeaseState.DRAINING:
-                            machine = await service.release(machine.id)
-                        machine = await service.reconcile(machine.id)
-                    except ComputeLeaseBusyError:
-                        # Maintenance contention retains the claim. Retry within the
-                        # existing cleanup deadline; capacity remains reserved.
-                        pass
-                    except MachineProviderError:
-                        # Only a provider failure after archive and the durable DRAINING
-                        # transition is retryable here. Bootstrap, configuration and
-                        # runtime failures must remain visible immediately.
-                        current = await repository.get(view.id)
-                        if (
-                            current is None
-                            or current.state != LeaseState.DRAINING
-                            or not service.provider_compatible(current)
-                        ):
-                            raise
-                    await asyncio.sleep(self._poll)
+                    if machine.state != LeaseState.DRAINING:
+                        machine = await service.release(machine.id)
+                    machine = await service.reconcile(machine.id)
+                except ComputeLeaseBusyError:
+                    # Maintenance contention retains the claim. Retry within the
+                    # existing cleanup deadline; capacity remains reserved.
+                    pass
+                except MachineProviderError:
+                    # Only a provider failure after archive and the durable DRAINING
+                    # transition is retryable here. Bootstrap, configuration and
+                    # runtime failures must remain visible immediately.
+                    current = await repository.get(view.id)
+                    if (
+                        current is None
+                        or current.state != LeaseState.DRAINING
+                        or not service.provider_compatible(current)
+                    ):
+                        raise
+                await asyncio.sleep(self._poll)
 
     async def _finish_stop(
         self, machine: ComputeLease, binding: ComputeSlot

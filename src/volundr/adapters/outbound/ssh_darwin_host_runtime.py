@@ -48,7 +48,9 @@ import json
 import re
 from dataclasses import dataclass
 from pathlib import PurePosixPath
+from typing import BinaryIO
 
+from niuu.cap_telemetry import record_degraded
 from volundr.adapters.outbound import darwin_guest_programs as programs
 from volundr.adapters.outbound.guest_credential_delivery import AGENT_CONFIG_FILE
 from volundr.adapters.outbound.host_checks import DARWIN_AUDIT_SH
@@ -242,6 +244,15 @@ def _group_mode(mode: str) -> str:
     value = int(mode, 8)
     group = (value >> 3 | value) & 0o7
     return f"0{(value & 0o700) | group << 3:o}"
+
+
+def _summary(paths: list[str]) -> str:
+    """Every path's folder, three levels deep, with how many paths it holds."""
+    folders: dict[str, int] = {}
+    for path in paths:
+        folder = "/".join(PurePosixPath(path).parts[:3])
+        folders[folder] = folders.get(folder, 0) + 1
+    return "; ".join(f"{folder} ({count})" for folder, count in sorted(folders.items()))
 
 
 class SshDarwinHostRuntime(HostModeRuntime):
@@ -486,6 +497,57 @@ class SshDarwinHostRuntime(HostModeRuntime):
         await self._install(lease, bootstrap)
         await super().stop(lease, bootstrap)
 
+    async def _write_archive(  # type: ignore[override]
+        self,
+        lease: SlotLease,
+        bootstrap: MachineBootstrap,
+        layout: DarwinSlotLayout,
+        dest: BinaryIO,
+    ) -> None:
+        """Archive the slot's storage with the bundle's program, which says what failed.
+
+        macOS keeps some of a user's files even from root over SSH (TCC-guarded app
+        containers, data vaults), and bsdtar fails the whole archive on one of them. Raising
+        would keep the session's work on the Mac forever and its host closed to new
+        sessions, so those files are left out, and that is an error log naming them and a
+        count on ``ravn.degraded``. Anything else tar cannot archive fails the stop.
+        """
+        report = f"{layout.state_root}/archive-unreadable.json"
+        result = await self._guest_access.execute(
+            lease,
+            bootstrap,
+            self._python(
+                programs.ARCHIVE,
+                json.dumps(
+                    {
+                        "root": layout.session_data,
+                        "excludes": [".allocation", *self._archive_excludes],
+                        "report": report,
+                    }
+                ),
+            ),
+            stdout=dest,
+            expected_exit_codes=(0, programs.ARCHIVE_SKIPPED),
+            safe_error_prefix=STAGE_PREFIX,
+            safe_detail_prefix=DETAIL_PREFIX,
+        )
+        if result.exit_code != programs.ARCHIVE_SKIPPED:
+            return
+        listed = await self._guest_access.execute(
+            lease,
+            bootstrap,
+            self._python(programs.ARCHIVE_REPORT, report),
+            capture_stdout=True,
+        )
+        unreadable = json.loads(listed.stdout)
+        record_degraded(
+            "compute.host.archive.unreadable",
+            f"Session {lease.session_id} on slot {layout.slot} of allocation {lease.id}: its "
+            f"workspace archive leaves out {len(unreadable)} paths macOS does not let root read "
+            f"over SSH, so they are not restored: {_summary(unreadable)}. Give sshd Full Disk "
+            "Access on the Mac to keep files TCC guards; data-vault files stay unreadable.",
+        )
+
     async def write_files(
         self, lease: AllocationRef, bootstrap: MachineBootstrap, items: list[dict]
     ) -> None:
@@ -662,5 +724,7 @@ class SshDarwinHostRuntime(HostModeRuntime):
                 ),
             ),
             expected_exit_codes=(0, 42),
+            safe_error_prefix=STAGE_PREFIX,
+            safe_detail_prefix=DETAIL_PREFIX,
         )
         return result.exit_code

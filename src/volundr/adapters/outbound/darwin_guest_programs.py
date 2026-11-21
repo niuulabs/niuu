@@ -216,6 +216,10 @@ SLOT = (
     _SLOT_COMMON
     + r"""
 action, s = sys.argv[1], json.load(sys.stdin)
+def unforeseen(kind, value, trace):
+    # What these commands say names slot paths, users and ids, never a credential.
+    report('slot-' + action, kind.__name__ + ': ' + str(value))
+sys.excepthook = unforeseen
 user, uid = s['name'], s['uid']
 def ds(*args, check=True):
     return subprocess.run(['dscl', '.', *args], check=check, capture_output=True, text=True)
@@ -521,6 +525,9 @@ os.execve('/bin/sh', ['/bin/sh', '-c', spec['boot']], spec['environment'])
 STOP = (
     _SLOT_COMMON
     + r"""
+def unforeseen(kind, value, trace):
+    report('host-stop', kind.__name__ + ' while stopping the session: ' + str(value))
+sys.excepthook = unforeseen
 h = json.loads(sys.argv[1])
 stop_jobs(h['label'], h['stop_timeout'], h['poll'])
 pathlib.Path(h['state_root'], 'session.json').unlink(missing_ok=True)
@@ -531,3 +538,81 @@ if marker.read_text() != h['marker']:
     raise RuntimeError('Workspace allocation mismatch')
 """
 )
+
+#: Exit status of ``ARCHIVE`` when it left out files root may not read; ``report`` names them.
+ARCHIVE_SKIPPED = 43
+
+#: Archive the slot's storage as root, to stdout. argv: the archive spec (JSON): ``root``,
+#: ``excludes`` (paths relative to it) and ``report`` (a root-only file). macOS keeps some
+#: per-user files from root itself: TCC-guarded app containers and data vaults that root
+#: over SSH may not open (bsdtar fails the whole archive on them). Those are left out and
+#: listed in ``report``, and the program exits ``ARCHIVE_SKIPPED`` so the runtime reports
+#: them; anything else tar cannot archive fails the stop with tar's own words.
+ARCHIVE = (
+    _SLOT_COMMON
+    + "SKIPPED = "
+    + repr(ARCHIVE_SKIPPED)
+    + "\n"
+    + r"""
+import stat, tempfile
+def unforeseen(kind, value, trace):
+    report('host-archive', kind.__name__ + ' while archiving the session: ' + str(value))
+sys.excepthook = unforeseen
+a = json.loads(sys.argv[1])
+root = a['root']
+excluded = {'./' + p for p in a['excludes']}
+device = os.lstat(root).st_dev
+names, unreadable = ['.'], []
+pending = ['.']
+while pending:
+    relative = pending.pop()
+    try:
+        entries = sorted(os.listdir(os.path.join(root, relative)))
+    except PermissionError:
+        unreadable.append(relative)
+        names.remove(relative)
+        continue
+    for entry in entries:
+        child = relative + '/' + entry
+        if child in excluded:
+            continue
+        path = os.path.join(root, child)
+        info = os.lstat(path)
+        if stat.S_ISREG(info.st_mode):
+            try:
+                os.close(os.open(path, os.O_RDONLY | os.O_NONBLOCK))
+            except PermissionError:
+                unreadable.append(child)
+                continue
+        names.append(child)
+        # tar --one-file-system: a mount point is archived, not what is mounted on it.
+        if stat.S_ISDIR(info.st_mode) and info.st_dev == device:
+            pending.append(child)
+with tempfile.NamedTemporaryFile(prefix='niuu-archive-') as listed:
+    listed.write(b''.join(name.encode('utf-8', 'surrogateescape') + b'\0' for name in names))
+    listed.flush()
+    sys.stdout.flush()
+    result = subprocess.run(['tar', '-c', '-f', '-', '--no-recursion', '--null', '-T', listed.name],
+        cwd=root, stdout=sys.stdout.buffer, stderr=subprocess.PIPE)
+if result.returncode:
+    errors = [line for line in result.stderr.decode(errors='replace').splitlines()
+        if line.strip() and 'Error exit delayed' not in line]
+    fail('host-archive', 'tar exited with status ' + str(result.returncode) + ' archiving '
+        + root + ': ' + '; '.join(errors))
+if unreadable:
+    report_path = pathlib.Path(a['report'])
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(str(report_path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, 'w') as out:
+        json.dump(sorted(unreadable), out)
+    sys.exit(SKIPPED)
+"""
+)
+
+#: Print the report ``ARCHIVE`` left (argv: its path) and remove it.
+ARCHIVE_REPORT = r"""
+import pathlib, sys
+path = pathlib.Path(sys.argv[1])
+sys.stdout.write(path.read_text())
+path.unlink()
+"""

@@ -1473,6 +1473,7 @@ class LocalProcessPodManager(PodManager):
                 "conversationSnapshotMaxBytes": "conversation_snapshot_max_bytes",
                 "liveFrameMaxBytes": "live_frame_max_bytes",
                 "codexReceiveMaxBytes": "codex_receive_max_bytes",
+                "claudeSdkMaxMessageBytes": "claude_sdk_max_message_bytes",
                 "historyHydrationEnabled": "history_hydration_enabled",
                 "historyHydrationTimeoutSeconds": "history_hydration_timeout_seconds",
                 "historyHydrationPageSize": "history_hydration_page_size",

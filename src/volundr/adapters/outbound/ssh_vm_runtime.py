@@ -17,6 +17,7 @@ import re
 import shlex
 import tempfile
 from pathlib import Path, PurePosixPath
+from typing import BinaryIO
 from uuid import UUID
 
 import httpx
@@ -1954,31 +1955,37 @@ class SshContainerVmRuntime(BrokeredCredentialPodManager, VmRuntime):
         fd, temporary = tempfile.mkstemp(prefix="session-", suffix=".tar", dir=directory)
         try:
             with os.fdopen(fd, "wb") as dest:
-                await self._guest_access.execute(
-                    lease,
-                    bootstrap,
-                    shlex.join(
-                        [
-                            "sudo",
-                            "-n",
-                            "tar",
-                            "--one-file-system",
-                            "--exclude=./.allocation",
-                            *[f"--exclude=./{p}" for p in self._archive_excludes],
-                            "-C",
-                            layout.session_data if layout else _REMOTE_DATA,
-                            "-cf",
-                            "-",
-                            ".",
-                        ]
-                    ),
-                    stdout=dest,
-                )
+                await self._write_archive(lease, bootstrap, layout, dest)
                 dest.flush()
                 os.fsync(dest.fileno())
             os.replace(temporary, directory / "session.tar")
         finally:
             Path(temporary).unlink(missing_ok=True)
+
+    async def _write_archive(
+        self, lease: SlotLease, bootstrap: MachineBootstrap, layout, dest: BinaryIO
+    ) -> None:
+        """Stream the session's storage on the guest, as a tar archive, into ``dest``."""
+        await self._guest_access.execute(
+            lease,
+            bootstrap,
+            shlex.join(
+                [
+                    "sudo",
+                    "-n",
+                    "tar",
+                    "--one-file-system",
+                    "--exclude=./.allocation",
+                    *[f"--exclude=./{p}" for p in self._archive_excludes],
+                    "-C",
+                    layout.session_data if layout else _REMOTE_DATA,
+                    "-cf",
+                    "-",
+                    ".",
+                ]
+            ),
+            stdout=dest,
+        )
 
     async def _close_tunnel(self, key: str) -> None:
         await self._guest_access.close_tunnel(key)

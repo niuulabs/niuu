@@ -1882,6 +1882,15 @@ class SkuldSettings(BaseSettings):
         description="Interval between native transcript reads while that wait is open.",
     )
     codex_receive_max_bytes: int = Field(default=16 * 1024 * 1024, ge=1024)
+    claude_sdk_max_message_bytes: int = Field(
+        default=64 * 1024 * 1024,
+        ge=1024 * 1024,
+        description=(
+            "Largest single message the Claude SDK transport reads from Claude's output. "
+            "A Read of a screenshot carries the image in one message; past this limit the "
+            "transport reports the lost stream and restarts Claude on the next message."
+        ),
+    )
     # Unified internal-visibility default for a freshly-connected live channel
     # (SRD FR-7 / INV-10). The read paths thread the SAME configured default
     # (``ReplayConfig.default_show_internal`` in volundr); a live ``WebSocketChannel``

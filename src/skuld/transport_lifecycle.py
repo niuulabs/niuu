@@ -107,6 +107,7 @@ class TransportLifecycleMixin:
             "native_text_wait_s": self._settings.tmux_native_text_wait_s,
             "native_text_poll_s": self._settings.tmux_native_text_poll_s,
             "codex_receive_max_bytes": self._settings.codex_receive_max_bytes,
+            "claude_sdk_max_message_bytes": self._settings.claude_sdk_max_message_bytes,
             "live_frame_max_bytes": self._settings.live_frame_max_bytes,
             "dsh_runtime_bin": self._settings.dsh.runtime_bin,
             "dsh_cordis_config": self._settings.dsh.cordis_config,

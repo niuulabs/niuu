@@ -271,6 +271,9 @@ broker:
   conversationSnapshotMaxBytes: 921600
   liveFrameMaxBytes: 921600
   codexReceiveMaxBytes: 16777216
+  # -- Largest single message the Claude SDK transport reads from Claude's output (a Read of a
+  # screenshot carries the image in one message).
+  claudeSdkMaxMessageBytes: 67108864
   # -- Append every frame to the Forge session's durable event log
   # (/api/v1/forge/sessions/<id>/log). Off for a runtime with no Forge session.
   eventLogEnabled: true
