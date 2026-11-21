@@ -484,6 +484,14 @@ export type HostAction =
   | 'remove';
 
 /**
+ * Whether a host's slots may only go up: an allocation holds an in-service host, and Forge
+ * lowers a held host's slots only after a drain (raising them works while sessions run).
+ */
+export function slotsGrowOnly(host: Pick<ComputeHost, 'state'>): boolean {
+  return host.state === 'in_service';
+}
+
+/**
  * What an operator may do to a host in its state. Remove and Re-prepare are only offered on
  * an empty host; a host with sessions leaves through drain and remove, which never stops
  * them, and is re-prepared once a drain has emptied it.
@@ -495,9 +503,9 @@ export function hostActions(
     host.sessions.length === 0 ? ['drain', 'remove'] : ['drain', 'drain_remove'];
   const follow: HostAction[] = needsCapacity(host) || host.state === 'pending' ? ['open'] : [];
   const reprepare: HostAction[] = host.sessions.length === 0 ? ['reprepare'] : [];
-  // Forge changes a host's slots only while no allocation holds it: a host that is out of
-  // service (a drain has emptied it) or one prepared but not yet claimed. An in-service host
-  // is drained first.
+  // Forge sets any slot count on a host no allocation holds (out of service after a drain, or
+  // prepared but not yet claimed). An in-service host only grows: its sessions keep their
+  // slots and the new ones join beside them; lowering it still needs a drain first.
   const resize: HostAction[] = host.slots !== null ? ['edit_slots'] : [];
   switch (host.state) {
     case 'pending':
@@ -505,7 +513,7 @@ export function hostActions(
     case 'ready':
       return [...follow, 'check', ...resize, ...reprepare, ...leave];
     case 'in_service':
-      return ['check', ...reprepare, 'drain', 'drain_remove'];
+      return ['check', ...resize, ...reprepare, 'drain', 'drain_remove'];
     case 'draining':
       return host.removeWhenEmpty ? ['check'] : ['check', 'cancel_drain', 'drain_remove'];
     case 'out_of_service':

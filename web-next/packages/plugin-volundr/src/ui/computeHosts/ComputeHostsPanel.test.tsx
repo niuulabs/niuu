@@ -266,10 +266,15 @@ describe('ComputeHostsPanel', () => {
       await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
     });
 
-    it('does not offer Edit slots on an in-service host', async () => {
-      setup();
+    it('grows the slots of an in-service host with a PATCH, beside its sessions', async () => {
+      const { spies } = setup();
       await row('hrimfaxi');
-      expect(screen.queryByRole('button', { name: 'Edit slots hrimfaxi' })).not.toBeInTheDocument();
+      fireEvent.click(screen.getByRole('button', { name: 'Edit slots hrimfaxi' }));
+      fireEvent.change(screen.getByLabelText('Sessions at once'), { target: { value: '17' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+      await waitFor(() =>
+        expect(spies.updateComputeHost).toHaveBeenCalledWith('forge', hrimfaxi.id, { slots: 17 }),
+      );
     });
 
     it('cancels a drain', async () => {

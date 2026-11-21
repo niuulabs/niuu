@@ -16,6 +16,7 @@ import {
   secondsUntil,
   slotCells,
   slotSummary,
+  slotsGrowOnly,
   truncateCode,
   warmRemedy,
   warmShortfall,
@@ -264,13 +265,14 @@ describe('joining timeline', () => {
 });
 
 describe('row actions', () => {
-  it('offers an in-service host check, drain and drain and remove', () => {
-    expect(hostActions(hrimfaxi)).toEqual(['check', 'drain', 'drain_remove']);
+  it('offers an in-service host check, edit slots, drain and drain and remove', () => {
+    expect(hostActions(hrimfaxi)).toEqual(['check', 'edit_slots', 'drain', 'drain_remove']);
   });
 
   it('offers re-prepare on an empty in-service host', () => {
     expect(hostActions({ ...hrimfaxi, sessions: [] })).toEqual([
       'check',
+      'edit_slots',
       'reprepare',
       'drain',
       'drain_remove',
@@ -315,8 +317,9 @@ describe('row actions', () => {
     expect(hostActions({ ...skinfaxi, state: 'ready', slots: 4, sessions: [] })).toContain(
       'edit_slots',
     );
-    // An in-service or draining host is held by an allocation: drain it first.
-    expect(hostActions(hrimfaxi)).not.toContain('edit_slots');
+    // An in-service host grows beside its sessions (lowering it waits for a drain).
+    expect(hostActions(hrimfaxi)).toContain('edit_slots');
+    // A draining host takes no new sessions, so its slots wait until it is out of service.
     expect(hostActions(arvak)).not.toContain('edit_slots');
     // A host with no slots yet sets them through Open, not Edit slots.
     expect(hostActions({ ...skinfaxi, state: 'out_of_service', slots: null })).not.toContain(
@@ -335,6 +338,12 @@ describe('row actions', () => {
       'drain',
       'remove',
     ]);
+  });
+
+  it('keeps an in-service host to growing its slots', () => {
+    expect(slotsGrowOnly(hrimfaxi)).toBe(true);
+    expect(slotsGrowOnly({ ...skinfaxi, state: 'out_of_service' })).toBe(false);
+    expect(slotsGrowOnly({ ...skinfaxi, state: 'ready' })).toBe(false);
   });
 
   it('offers nothing on a host being removed', () => {

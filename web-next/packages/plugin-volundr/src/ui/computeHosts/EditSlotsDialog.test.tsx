@@ -56,6 +56,27 @@ describe('EditSlotsDialog', () => {
     expect(props.onClose).not.toHaveBeenCalled();
   });
 
+  it('lets an in-service host only grow', async () => {
+    const props = renderDialog({ host: { ...skinfaxi!, state: 'in_service' as const, slots: 4 } });
+    expect(screen.getByTestId('slot-rule')).toHaveTextContent('add slots now');
+    const input = screen.getByLabelText('Sessions at once');
+    fireEvent.change(input, { target: { value: '3' } });
+    expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled();
+    expect(screen.getByTestId('slot-lowering')).toHaveTextContent('needs a drain first');
+    fireEvent.change(input, { target: { value: '6' } });
+    expect(screen.queryByTestId('slot-lowering')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(props.onClose).toHaveBeenCalled());
+    expect(props.onSave).toHaveBeenCalledWith(6);
+  });
+
+  it('lets a host out of service go down as well', () => {
+    renderDialog();
+    expect(screen.getByTestId('slot-rule')).toHaveTextContent('Any count fits');
+    fireEvent.change(screen.getByLabelText('Sessions at once'), { target: { value: '1' } });
+    expect(screen.getByRole('button', { name: 'Save' })).toBeEnabled();
+  });
+
   it('closes without saving on Cancel', () => {
     const props = renderDialog();
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
