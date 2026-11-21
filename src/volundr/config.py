@@ -3743,6 +3743,25 @@ class Settings(BaseSettings):
         ge=2,
         description="Factor by which a `?tail=N` event-log window widens per step.",
     )
+    conversation_durable_fold_sessions: int = Field(
+        default=256,
+        gt=0,
+        description=(
+            "Running sessions whose incremental durable turn-count fold (the FAULT-C desync "
+            "check of the conversation read) is kept in memory. Bounded by Forge's memory; an "
+            "evicted session is folded again from its log on its next poll."
+        ),
+    )
+    conversation_durable_fold_max_pending: int = Field(
+        default=50_000,
+        gt=0,
+        description=(
+            "Raw frames the durable turn-count fold holds while a session's log has no "
+            "assistant conversation.turn row to settle on (a pure raw-frame session), the same "
+            "bound as the full durable rebuild. A hit keeps the newest frames, undercounts the "
+            "older turns, and is logged and counted on ravn.cap.hits under this knob."
+        ),
+    )
     server_host: str = Field(
         default="127.0.0.1",
         validation_alias=AliasChoices("server_host", "NIUU_SERVER_HOST"),

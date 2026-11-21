@@ -53,6 +53,8 @@ data:
     conversation_recent_max_bytes: {{ .Values.config.conversationRecentMaxBytes | default 262144 }}
     conversation_tail_initial_frames: {{ .Values.config.conversationTailInitialFrames | default 2000 }}
     conversation_tail_growth: {{ .Values.config.conversationTailGrowth | default 2 }}
+    conversation_durable_fold_sessions: {{ .Values.config.conversationDurableFoldSessions | default 256 }}
+    conversation_durable_fold_max_pending: {{ .Values.config.conversationDurableFoldMaxPending | default 50000 }}
     runtime_health_timeout_seconds: {{ .Values.config.runtimeHealthTimeoutSeconds | default 3.0 }}
     preview_cache_dir: {{ .Values.previewCache.mountPath | default "/volundr/preview-cache" | quote }}
     {{- with .Values.previewCache.edges }}

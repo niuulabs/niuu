@@ -1978,6 +1978,8 @@ def create_app(
                 event_log_repository=session_event_log,
                 tail_initial_frames=settings.conversation_tail_initial_frames,
                 tail_growth=settings.conversation_tail_growth,
+                turn_tail_sessions=settings.conversation_durable_fold_sessions,
+                turn_tail_max_pending=settings.conversation_durable_fold_max_pending,
             )
             app.state.archive_service = archive_service
             app.state.session_event_log = session_event_log

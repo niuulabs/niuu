@@ -103,24 +103,19 @@ class AttachmentsFold:
 
     def settle(self, pending: list[SessionLogEntry]) -> list[SessionLogEntry]:
         """Settle ``pending`` up to its last boundary row; return the unsettled rest."""
-        boundary = _last_boundary(pending)
-        if boundary < 0:
+        settled = settle_pending(pending)
+        if settled is None:
             if len(pending) > self.max_pending:
                 # A log with no settling rows (a pure raw-frame session) keeps its
                 # newest frames; older raw work is dropped and the index says so.
                 self.truncated = True
                 return pending[-self.max_pending :]
             return pending
-        head, rest = pending[: boundary + 1], pending[boundary + 1 :]
-        marker = head[-1]
-        if marker.kind != HISTORY_IMPORT_KIND:
-            # Raw frames before an assistant turn row are covered by the turn rows.
-            head = [row for row in head if row.kind in (TURN_ROW_KIND, HISTORY_IMPORT_KIND)]
-        turns = rebuild_turns(head).turns
+        turns, boundary_seq, rest = settled
         for item in build_attachments_index(turns, self.session_id):
             self._add(self.settled, self._keys, item, self.settled_turns)
         self.settled_turns += len(turns)
-        self.resume_after = marker.seq
+        self.resume_after = boundary_seq
         return rest
 
     def items(self, pending: list[SessionLogEntry]) -> tuple[list[dict[str, Any]], int]:
@@ -141,6 +136,26 @@ class AttachmentsFold:
             return
         keys.add(key)
         items.append({**item, "turn_seq": item["turn_seq"] + offset})
+
+
+def settle_pending(
+    pending: list[SessionLogEntry],
+) -> tuple[list[dict[str, Any]], int, list[SessionLogEntry]] | None:
+    """Fold ``pending`` up to its last boundary row: ``(turns, boundary seq, rest)``.
+
+    A boundary is the newest assistant ``conversation.turn`` (or history import marker):
+    the rebuild never reduces raw frames before it, so the turns up to it are final and a
+    later refresh starts after ``boundary seq``. ``None`` when ``pending`` has no boundary.
+    """
+    boundary = _last_boundary(pending)
+    if boundary < 0:
+        return None
+    head, rest = pending[: boundary + 1], pending[boundary + 1 :]
+    marker = head[-1]
+    if marker.kind != HISTORY_IMPORT_KIND:
+        # Raw frames before an assistant turn row are covered by the turn rows.
+        head = [row for row in head if row.kind in (TURN_ROW_KIND, HISTORY_IMPORT_KIND)]
+    return rebuild_turns(head).turns, marker.seq, rest
 
 
 def _last_boundary(rows: list[SessionLogEntry]) -> int:

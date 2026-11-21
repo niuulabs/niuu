@@ -1607,6 +1607,10 @@ config:
   conversationTailInitialFrames: 2000
   # -- Factor by which that window widens until it holds more than N turns
   conversationTailGrowth: 2
+  # -- Running sessions whose incremental durable turn-count fold (FAULT-C desync check) is kept
+  conversationDurableFoldSessions: 256
+  # -- Raw frames that fold holds while a log has no assistant turn row to settle on
+  conversationDurableFoldMaxPending: 50000
   # -- Timeout (seconds) for the runtime-version health probe against a session's runtime
   runtimeHealthTimeoutSeconds: 3.0
   # -- Log level (debug, info, warning, error)

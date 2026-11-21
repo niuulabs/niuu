@@ -20,6 +20,7 @@ from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, Res
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from niuu.cap_telemetry import record_degraded
 from niuu.domain.conversation_timeline import resolve_timeline_turn
 from niuu.domain.guild_membership import GuildMembership
 from niuu.domain.history_paging import InvalidHistoryCursorError
@@ -178,6 +179,7 @@ from volundr.domain.services import (
 )
 from volundr.domain.services.attachments_index import KINDS as ATTACHMENT_KINDS
 from volundr.domain.services.attachments_index import filter_attachments
+from volundr.domain.services.durable_turn_tail import last_settled_turn_id
 from volundr.domain.services.forge import HostedUnitNotFoundError
 from volundr.domain.services.forge_session_launch import (
     FORGE_MCP_KEY,
@@ -444,28 +446,21 @@ def _durable_count_cache_put(session_id: str, seq: int, count: int, tail_id: str
     _DURABLE_COUNT_CACHE[session_id] = (seq, count, tail_id)
 
 
-def _last_settled_turn_id(turns: object) -> str | None:
-    """Id of the last turn that is NOT an in-progress row (the comparable transcript tail).
+# The FAULT-C tail-id discriminator lives with the durable turn-tail fold that feeds it.
+_last_settled_turn_id = last_settled_turn_id
 
-    Used by the FAULT-C tail-id gate: a broker that is genuinely BEHIND the durable log
-    (resumed from a stale snapshot) is missing trailing turns, so its settled tail id differs
-    from the rebuild's. A broker whose body merely SEGMENTS the same content differently
-    (e.g. `present_file` deliveries folded vs standalone) still ends on the same settled turn.
-    Interrupted-flush rows count as real tail (a crashed turn the live body lost IS a desync).
-    """
-    if not isinstance(turns, list):
-        return None
-    for t in reversed(turns):
-        if not isinstance(t, dict):
-            continue
-        if t.get("in_progress") is True:
-            continue
-        metadata = t.get("metadata")
-        if isinstance(metadata, dict) and metadata.get("status") == "in_progress":
-            continue
-        tid = str(t.get("id") or "").strip()
-        return tid or None
-    return None
+# FAULT-C pairs `session_id -> (durable_tail_id, live_tail_id)` that the exact rebuild already
+# judged NOT a desync. The incremental fold can disagree with the rebuild on the tail (a
+# `present_file` delivery is a durable-only standalone turn); without this the disagreement
+# would re-run the exact rebuild on every poll while the log grows, which is what this gate
+# exists to avoid. A new turn on either side changes the pair and is judged again.
+_FAULT_C_CLEARED: dict[str, tuple[str | None, str | None]] = {}
+
+
+def _fault_c_cleared_put(session_id: str, pair: tuple[str | None, str | None]) -> None:
+    if len(_FAULT_C_CLEARED) >= _DURABLE_COUNT_CACHE_MAX and session_id not in _FAULT_C_CLEARED:
+        _FAULT_C_CLEARED.pop(next(iter(_FAULT_C_CLEARED)), None)
+    _FAULT_C_CLEARED[session_id] = pair
 
 
 # Sessions with an in-flight background durable-count warm (dedup so a burst of cold polls spawns
@@ -475,26 +470,28 @@ _DURABLE_WARMING: set[str] = set()
 
 async def _warm_durable_count(
     forge: ForgeService,
-    durable_transcripts: DurableTranscripts,
     session_id: UUID,
     seq: int,
     sid_str: str,
 ) -> None:
-    """Background: rebuild the durable transcript ONCE to populate the count cache at ``seq`` so
-    the next conversation poll can detect a desync WITHOUT blocking the (cold) open. Fire-and-
-    forget; never raises into the event loop."""
+    """Background: fold the durable turn count and settled tail into the count cache at ``seq``
+    so the next conversation poll can detect a desync WITHOUT blocking the (cold) open.
+
+    The fold is incremental (``ForgeService.durable_turn_tail``): it reads only the frames after
+    the session's last settled turn, never a rebuild of the session. A running session's log
+    grows on every poll, and rebuilding it here each time OOMKilled Forge (2026-11-21)."""
     try:
-        # The shallow rebuild has the same turns as the full one, and warms its cache.
-        durable = await durable_transcripts.shallow(forge, session_id)
-        turns = durable.get("turns") if isinstance(durable, dict) else None
-        _durable_count_cache_put(
-            sid_str,
-            seq,
-            len(turns) if isinstance(turns, list) else 0,
-            _last_settled_turn_id(turns),
+        summary = await forge.durable_turn_tail(session_id)
+        if summary is not None:
+            _durable_count_cache_put(sid_str, seq, summary.turns, summary.tail_id)
+    except Exception as exc:  # a background task has no caller to raise to
+        # The open already served the live body; the desync check is skipped until a poll
+        # warms it. Loud and counted, so a fold that keeps failing is seen, not discovered.
+        record_degraded(
+            "volundr.conversation.fault_c_warm",
+            f"session {sid_str}: folding the durable turn count failed ({exc!r}); the live "
+            "conversation is served without the FAULT-C desync check",
         )
-    except Exception:  # pragma: no cover - a background warmer must never crash the loop
-        pass
     finally:
         _DURABLE_WARMING.discard(sid_str)
 
@@ -5618,11 +5615,13 @@ def create_router(
                                 if seq > 0 and sid_str not in _DURABLE_WARMING:
                                     _DURABLE_WARMING.add(sid_str)
                                     asyncio.create_task(
-                                        _warm_durable_count(
-                                            forge, durable_transcripts, session_id, seq, sid_str
-                                        )
+                                        _warm_durable_count(forge, session_id, seq, sid_str)
                                     )
-                            elif durable_count > live_count and durable_tail != live_tail:
+                            elif (
+                                durable_count > live_count
+                                and durable_tail != live_tail
+                                and _FAULT_C_CLEARED.get(sid_str) != (durable_tail, live_tail)
+                            ):
                                 # WARM + desync: rebuild to return the fuller durable body (rare).
                                 #
                                 # TAIL-ID GATE (2026-07-12, the flip-flop fix): a higher durable
@@ -5673,6 +5672,10 @@ def create_router(
                                         _sanitize_log(rebuilt_tail),
                                     )
                                     return _maybe_elide(durable)
+                                if durable is not None:
+                                    # The rebuild says the live body is not behind: do not
+                                    # rebuild again for this pair of tails.
+                                    _fault_c_cleared_put(sid_str, (durable_tail, live_tail))
                             else:
                                 # Warm + live complete (durable not ahead, or same settled
                                 # tail = segmentation-only difference) — no rebuild, serve live.

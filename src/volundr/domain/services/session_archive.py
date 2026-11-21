@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
 
+from niuu.cap_telemetry import record_cap_hit
 from niuu.domain.text_projection import projection_revision
 from niuu.domain.transcript_rebuild import rebuild_turns
 from volundr.domain.models import LocalMountSource
@@ -17,6 +18,7 @@ from volundr.domain.services.attachments_index import (
     AttachmentsFold,
     build_attachments_index,
 )
+from volundr.domain.services.durable_turn_tail import DurableTurnTail, TurnTailFold
 from volundr.log_aggregate import aggregate_workspace_logs
 from volundr.session_archive import (
     ArchivePathError,
@@ -65,6 +67,8 @@ class SessionArchiveService:
         tail_initial_frames: int = 2000,
         tail_growth: int = 2,
         event_log_page_size: int = 5000,
+        turn_tail_sessions: int = 256,
+        turn_tail_max_pending: int = 50_000,
     ) -> None:
         self._session_service = session_service
         self._storage = storage
@@ -83,6 +87,13 @@ class SessionArchiveService:
         self._tail_initial_frames = tail_initial_frames
         self._tail_growth = tail_growth
         self._event_log_page_size = event_log_page_size
+        # session id -> (durable head seq, incremental turn-tail fold, summary); LRU-bounded.
+        self._turn_tail_cache: OrderedDict[str, tuple[int, TurnTailFold, DurableTurnTail]] = (
+            OrderedDict()
+        )
+        self._turn_tail_sessions = turn_tail_sessions
+        self._turn_tail_max_pending = turn_tail_max_pending
+        self._turn_tail_locks: dict[str, asyncio.Lock] = {}
 
     async def resolve_workspace_dir(self, session_id: UUID) -> Path:
         """Resolve the first accessible workspace path for a session."""
@@ -412,6 +423,62 @@ class SessionArchiveService:
                 evicted, _ = self._attachments_cache.popitem(last=False)
                 self._attachments_locks.pop(evicted, None)
             return payload
+
+    async def durable_turn_tail(self, session_id: UUID) -> DurableTurnTail | None:
+        """The durable log's turn count and last settled turn id, folded incrementally.
+
+        A refresh reads only the frames after the last settled boundary (see
+        :class:`TurnTailFold`), so a running session whose log keeps growing costs the
+        frames since its last turn ended, not a rebuild of the session. ``None`` when the
+        session has no durable log.
+        """
+        if self._event_log_repository is None:
+            return None
+        sid = str(session_id)
+        lock = self._turn_tail_locks.setdefault(sid, asyncio.Lock())
+        async with lock:
+            head = await self._event_log_repository.latest_seq(session_id)
+            if head <= 0:
+                return None
+            cached = self._turn_tail_cache.get(sid)
+            if cached is not None and cached[0] == head:
+                self._turn_tail_cache.move_to_end(sid)
+                return cached[2]
+            fold = (
+                cached[1]
+                if cached is not None
+                else TurnTailFold(max_pending=self._turn_tail_max_pending)
+            )
+            was_truncated = fold.truncated
+            after = fold.resume_after
+            if fold.truncated:
+                # No boundary in the newest `max_pending` frames last time: read only that
+                # window again rather than the whole boundary-less log.
+                after = max(after, head - fold.max_pending)
+            pending: list = []
+            while True:
+                page = await self._event_log_repository.read_after(
+                    session_id, after_seq=after, limit=self._event_log_page_size
+                )
+                if not page:
+                    break
+                after = page[-1].seq
+                pending = await asyncio.to_thread(fold.settle, [*pending, *page])
+            summary = await asyncio.to_thread(fold.summary, pending, head)
+            if fold.truncated and not was_truncated:
+                record_cap_hit(
+                    "conversation_durable_fold_max_pending",
+                    f"session {sid}: the durable log has no assistant conversation.turn row "
+                    f"in more than {fold.max_pending} frames, so its oldest raw frames are "
+                    "not counted and the FAULT-C turn count undercounts; raise "
+                    "conversation_durable_fold_max_pending",
+                )
+            self._turn_tail_cache[sid] = (head, fold, summary)
+            self._turn_tail_cache.move_to_end(sid)
+            while len(self._turn_tail_cache) > self._turn_tail_sessions:
+                evicted, _ = self._turn_tail_cache.popitem(last=False)
+                self._turn_tail_locks.pop(evicted, None)
+            return summary
 
     async def _transcript_attachments(self, session_id: UUID) -> dict[str, Any]:
         """Sessions with no durable log: index the stored archive/workspace transcript."""

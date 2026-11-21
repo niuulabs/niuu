@@ -58,6 +58,7 @@ if TYPE_CHECKING:
     )
     from volundr.domain.ports import PersonaPlayabilityPort, Playability, PricingProvider
     from volundr.domain.services.chronicle import ChronicleService
+    from volundr.domain.services.durable_turn_tail import DurableTurnTail
     from volundr.domain.services.repo import ProviderInfo, RepoService
     from volundr.domain.services.session_archive import SessionArchiveService
     from volundr.domain.services.session_participants import SessionParticipantService
@@ -1092,6 +1093,13 @@ class ForgeService:
         if self._archive_service is None:
             raise RuntimeError("Session archive service not available")
         return await self._archive_service.get_attachments(session_id)
+
+    async def durable_turn_tail(self, session_id: UUID) -> DurableTurnTail | None:
+        """The durable log's turn count and last settled turn id, folded incrementally (the
+        FAULT-C desync gate), ``None`` when the session has no durable log."""
+        if self._archive_service is None:
+            raise RuntimeError("Session archive service not available")
+        return await self._archive_service.durable_turn_tail(session_id)
 
     async def durable_latest_seq(self, session_id: UUID) -> int:
         """Cheap durable-freshness signal (event-log MAX(seq), 0 when unavailable). Lets the read
