@@ -2,12 +2,12 @@
 
 import asyncio
 import json
-from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 
 import httpx
 
+from niuu.cap_telemetry import record_cap_hit
 from niuu.domain.text_projection import REPAIR_KEY, projection_digest, repair_legacy_turn
 from niuu.domain.transcript_rebuild import rebuild_turns
 
@@ -22,7 +22,27 @@ class _HistoryFrame:
     request_id: str | None = None
 
 
-async def _read_json(client: httpx.AsyncClient, path: str, *, remaining: int, params=None):
+#: The settings that bound a durable-history read, named when a read reaches them.
+MAX_BYTES_KNOB = "history_hydration_max_bytes"
+MAX_FRAMES_KNOB = "history_hydration_max_frames"
+
+#: Sentinels Forge writes where frames were lost or a sequence was reused.
+_GAP_KINDS = frozenset({"log_gap", "log_conflict"})
+
+
+class HistoryBudgetExceededError(ValueError):
+    """A durable-history read reached the configured byte or frame budget."""
+
+    def __init__(self, knob: str, what: str) -> None:
+        self.knob = knob
+        message = f"{what} exceeds the configured {knob}; raise {knob} to read it"
+        record_cap_hit(knob, message)
+        super().__init__(message)
+
+
+async def _read_json(
+    client: httpx.AsyncClient, path: str, *, remaining: int, params=None, what: str
+):
     chunks = []
     size = 0
     async with client.stream("GET", path, params=params) as response:
@@ -30,9 +50,102 @@ async def _read_json(client: httpx.AsyncClient, path: str, *, remaining: int, pa
         async for chunk in response.aiter_bytes():
             size += len(chunk)
             if size > remaining:
-                raise ValueError("Durable history exceeds the configured byte budget")
+                raise HistoryBudgetExceededError(MAX_BYTES_KNOB, what)
             chunks.append(chunk)
     return json.loads(b"".join(chunks)), size
+
+
+async def read_durable_head(client: httpx.AsyncClient, *, path: str, max_bytes: int) -> int:
+    """The highest stored seq: the frozen horizon a restart reads up to."""
+    head_data, _ = await _read_json(
+        client, path + "/head", remaining=max_bytes, what="Durable history head"
+    )
+    head = head_data.get("latest_seq") if isinstance(head_data, dict) else None
+    if type(head) is not int or head < 0:
+        raise ValueError("Durable history returned an invalid head")
+    return head
+
+
+def _row_seq(row, *, session_id: str, previous: int) -> int:
+    if not isinstance(row, dict):
+        raise ValueError("Durable history frame must be an object")
+    seq = row.get("seq")
+    if type(seq) is not int or seq <= previous:
+        raise ValueError("Durable history cursor must increase monotonically")
+    if str(row.get("session_id")) != session_id:
+        raise ValueError("Durable history contains a foreign session frame")
+    return seq
+
+
+def _history_frame(row: dict, *, session_id: str) -> _HistoryFrame:
+    kind, payload = row.get("kind"), row.get("payload")
+    if not isinstance(kind, str) or not isinstance(payload, dict):
+        raise ValueError("Durable history frame has an invalid kind or payload")
+    if kind in _GAP_KINDS:
+        raise ValueError("Durable history contains a capture gap or sequence conflict")
+    return _HistoryFrame(
+        session_id=session_id,
+        seq=row["seq"],
+        kind=kind,
+        payload=payload,
+        ts=datetime.fromisoformat(row["ts"]),
+        request_id=row.get("request_id"),
+    )
+
+
+async def fetch_durable_state_frames(
+    client: httpx.AsyncClient,
+    *,
+    session_id: str,
+    path: str,
+    kinds: frozenset[str],
+    head: int,
+    timeout_seconds: float,
+    page_size: int,
+    max_frames: int,
+    max_bytes: int,
+) -> list[_HistoryFrame]:
+    """Every frame of *kinds* up to *head*, read with Forge's kind filter.
+
+    The state a broker owns (its peer inbox, controls, workflow steps, follows, seats,
+    voice calls) lives in a few frame kinds, while an interactive session's log is
+    mostly terminal frames. Asking for only these kinds keeps a restart's state read
+    the size of that state, not of the whole conversation. Gap and conflict sentinels
+    are read too: a lost frame of one of these kinds must not look like none.
+    """
+    wanted = kinds | _GAP_KINDS
+    params = [("show_internal", "true"), *(("kind", k) for k in sorted(wanted))]
+    async with asyncio.timeout(timeout_seconds):
+        frames: list[_HistoryFrame] = []
+        consumed = 0
+        cursor = 0
+        while cursor < head:
+            page, size = await _read_json(
+                client,
+                path,
+                remaining=max_bytes - consumed,
+                params=[*params, ("after", cursor), ("limit", page_size)],
+                what="Durable session state",
+            )
+            consumed += size
+            if not isinstance(page, list):
+                raise ValueError("Durable history page must be an array")
+            if not page:
+                return frames
+            for row in page:
+                cursor = _row_seq(row, session_id=session_id, previous=cursor)
+                if cursor > head:
+                    return frames
+                if row.get("kind") not in wanted:
+                    raise ValueError(
+                        f"Forge answered a kind-filtered log read with a {row.get('kind')!r} "
+                        "frame; it predates the kind filter. Upgrade Forge to this broker's "
+                        "release"
+                    )
+                frames.append(_history_frame(row, session_id=session_id))
+                if len(frames) > max_frames:
+                    raise HistoryBudgetExceededError(MAX_FRAMES_KNOB, "Durable session state")
+        return frames
 
 
 async def fetch_durable_history(
@@ -40,11 +153,11 @@ async def fetch_durable_history(
     *,
     session_id: str,
     path: str,
+    head: int,
     timeout_seconds: float,
     page_size: int,
     max_frames: int,
     max_bytes: int,
-    on_frames: Callable[[list[_HistoryFrame]], None] | None = None,
 ) -> list[dict]:
     """Fold a frozen log horizon; filtered pages never imply end-of-log.
 
@@ -58,11 +171,8 @@ async def fetch_durable_history(
     A short visible page must likewise be followed until the frozen head.
     """
     async with asyncio.timeout(timeout_seconds):
-        head_data, consumed = await _read_json(client, path + "/head", remaining=max_bytes)
-        head = head_data.get("latest_seq") if isinstance(head_data, dict) else None
-        if type(head) is not int or head < 0:
-            raise ValueError("Durable history returned an invalid head")
         frames = []
+        consumed = 0
         cursor = 0
         while cursor < head:
             page, size = await _read_json(
@@ -75,6 +185,7 @@ async def fetch_durable_history(
                     "show_internal": "true",
                     "include_seeds": "true",
                 },
+                what="Durable conversation history",
             )
             consumed += size
             if not isinstance(page, list):
@@ -84,36 +195,15 @@ async def fetch_durable_history(
                 continue
             previous = cursor
             for row in page:
-                if not isinstance(row, dict):
-                    raise ValueError("Durable history frame must be an object")
-                seq = row.get("seq")
-                if type(seq) is not int or seq <= previous:
-                    raise ValueError("Durable history cursor must increase monotonically")
-                previous = seq
-                if str(row.get("session_id")) != session_id:
-                    raise ValueError("Durable history contains a foreign session frame")
-                if seq > head:
+                previous = _row_seq(row, session_id=session_id, previous=previous)
+                if previous > head:
                     continue
-                kind, payload = row.get("kind"), row.get("payload")
-                if not isinstance(kind, str) or not isinstance(payload, dict):
-                    raise ValueError("Durable history frame has an invalid kind or payload")
-                if kind in {"log_gap", "log_conflict"}:
-                    raise ValueError("Durable history contains a capture gap or sequence conflict")
-                frames.append(
-                    _HistoryFrame(
-                        session_id=session_id,
-                        seq=seq,
-                        kind=kind,
-                        payload=payload,
-                        ts=datetime.fromisoformat(row["ts"]),
-                        request_id=row.get("request_id"),
-                    )
-                )
+                frames.append(_history_frame(row, session_id=session_id))
                 if len(frames) > max_frames:
-                    raise ValueError("Durable history exceeds the configured frame budget")
+                    raise HistoryBudgetExceededError(
+                        MAX_FRAMES_KNOB, "Durable conversation history"
+                    )
             cursor = previous
-        if on_frames is not None:
-            on_frames(frames)
         return rebuild_turns(frames).turns
 
 

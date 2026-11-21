@@ -168,21 +168,27 @@ class TestHistoryUnrestored:
         assert degraded_counts() == {}
 
 
+def _patch_history(monkeypatch, fetch_state):
+    """Serve the broker's two restart reads: *fetch_state* answers the state read."""
+    module = importlib.import_module("skuld.broker")
+    monkeypatch.setattr(module, "read_durable_head", AsyncMock(return_value=1))
+    monkeypatch.setattr(module, "fetch_durable_state_frames", fetch_state)
+    monkeypatch.setattr(module, "fetch_durable_history", AsyncMock(return_value=[]))
+
+
 class TestHydration:
     async def test_runs_when_only_voice_is_enabled(self, tmp_path, monkeypatch):
         broker = _broker(tmp_path)
         broker._start_voice_channel()
         calls = {"n": 0}
 
-        async def fetch(client, *, on_frames, **kwargs):
+        async def fetch(client, **kwargs):
             calls["n"] += 1
-            on_frames(
-                _history_frames(_frame("started", persona="sidekick", provider="xai", metadata={}))
+            return _history_frames(
+                _frame("started", persona="sidekick", provider="xai", metadata={})
             )
-            return []
 
-        module = importlib.import_module("skuld.broker")
-        monkeypatch.setattr(module, "fetch_durable_history", fetch)
+        _patch_history(monkeypatch, fetch)
         monkeypatch.setattr(broker, "_get_session_http_client", AsyncMock())
 
         await broker._hydrate_conversation_history()
@@ -194,7 +200,7 @@ class TestHydration:
     async def test_does_not_run_when_nothing_needs_it(self, tmp_path, monkeypatch):
         broker = _broker(tmp_path, voice=False)
         fetch = AsyncMock(return_value=[])
-        monkeypatch.setattr(importlib.import_module("skuld.broker"), "fetch_durable_history", fetch)
+        _patch_history(monkeypatch, fetch)
 
         await broker._hydrate_conversation_history()
 
@@ -206,14 +212,13 @@ class TestHydration:
         broker = _broker(tmp_path)
         broker._start_voice_channel()
         fetch = AsyncMock(side_effect=RuntimeError("forge down"))
-        monkeypatch.setattr(importlib.import_module("skuld.broker"), "fetch_durable_history", fetch)
+        _patch_history(monkeypatch, fetch)
         monkeypatch.setattr(broker, "_get_session_http_client", AsyncMock())
 
         await broker._hydrate_conversation_history()
 
         assert broker._voice_channel.history_unavailable == "RuntimeError: forge down"
-        assert degraded_counts() == {"skuld.voice.history": 1}
-        assert "Durable history hydration skipped" in caplog.text
+        assert degraded_counts() == {"skuld.voice.history": 1, "skuld.history.state": 1}
 
     async def test_a_malformed_call_frame_in_the_log_marks_the_channel_too(
         self, tmp_path, monkeypatch
@@ -221,18 +226,17 @@ class TestHydration:
         broker = _broker(tmp_path)
         broker._start_voice_channel()
 
-        async def fetch(client, *, on_frames, **kwargs):
-            on_frames(_history_frames(_frame("ended", call_id="UNSEEN")))
-            return []
+        async def fetch(client, **kwargs):
+            return _history_frames(_frame("ended", call_id="UNSEEN"))
 
-        monkeypatch.setattr(importlib.import_module("skuld.broker"), "fetch_durable_history", fetch)
+        _patch_history(monkeypatch, fetch)
         monkeypatch.setattr(broker, "_get_session_http_client", AsyncMock())
 
         await broker._hydrate_conversation_history()
 
         assert "names an unknown call UNSEEN" in broker._voice_channel.history_unavailable
         assert broker._voice_channel.calls.calls() == []
-        assert degraded_counts() == {"skuld.voice.history": 1}
+        assert degraded_counts() == {"skuld.voice.history": 1, "skuld.history.state": 1}
 
 
 async def _forge_log_client() -> tuple[httpx.AsyncClient, InMemoryLog]:
@@ -287,18 +291,15 @@ async def test_startup_starts_the_channel_before_it_hydrates(tmp_path, monkeypat
     broker = _broker(tmp_path)
     seen: dict[str, object] = {}
 
-    async def fetch(client, *, on_frames, **kwargs):
+    async def fetch(client, **kwargs):
         seen["channel_at_hydration"] = broker._voice_channel
-        on_frames(
-            _history_frames(_frame("started", persona="sidekick", provider="xai", metadata={}))
-        )
-        return []
+        return _history_frames(_frame("started", persona="sidekick", provider="xai", metadata={}))
 
     def create_transport():
         seen["calls_at_transport"] = [c.call_id for c in broker._voice_channel.calls.calls()]
         return broker._transport
 
-    monkeypatch.setattr(module, "fetch_durable_history", fetch)
+    _patch_history(monkeypatch, fetch)
     monkeypatch.setattr(broker, "_get_session_http_client", AsyncMock())
     monkeypatch.setattr(broker, "_create_transport", create_transport)
     monkeypatch.setattr(broker, "_auto_start_transport", AsyncMock())

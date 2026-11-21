@@ -518,6 +518,17 @@ def create_session_log_router(
                 "participant replies exist only as seeds. Requires show_internal=true."
             ),
         ),
+        kind: list[str] = Query(
+            default=[],
+            description=(
+                "State read, not a wire replay: return exactly the stored rows of these "
+                "kinds (repeat the parameter for several), unfiltered, up to `limit`. An "
+                "empty page means the log holds no more rows of those kinds after the "
+                "cursor. A restarting broker reads the state it owns this way without "
+                "paging through the whole conversation. Requires show_internal=true and "
+                "cannot be combined with include_seeds."
+            ),
+        ),
     ) -> list[SessionLogEntryResponse]:
         """Replay the session transcript from a cursor (full fidelity), gated by the
         same internal-visibility filter as the live and replay read paths."""
@@ -528,6 +539,18 @@ def create_session_log_router(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail="include_seeds requires show_internal=true",
             )
+        if kind:
+            if not show_internal or include_seeds:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                    detail="kind requires show_internal=true and no include_seeds",
+                )
+            # Every row of the named kinds, as stored: a read-path filter dropping some
+            # of them would make a short page look like the end of the log.
+            rows = await log_repository.read_after_kinds(
+                session_id, after_seq=after, limit=limit, kinds=frozenset(kind)
+            )
+            return [SessionLogEntryResponse.from_entry(e) for e in rows]
         entries = await log_repository.read_after(session_id, after_seq=after, limit=limit)
         # Drop frames that were never on the canonical shared wire from the RAW
         # wire stream ALWAYS — independent of show_internal — so literal
