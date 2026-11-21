@@ -56,6 +56,7 @@ from niuu.domain.transcript_reducer import (
     steering_state_from_frame,
     steering_target_id,
 )
+from niuu.domain.workflow_step import WORKFLOW_STEP_FRAME
 from niuu.mesh import mesh_event_prefix
 from niuu.mesh.attestation import VERIFIED_SENDER_KEY
 from niuu.mesh.discovery_builder import build_discovery_adapters
@@ -110,8 +111,13 @@ from skuld.file_routes import (  # noqa: F401
     upload_files,
 )
 from skuld.forge_mcp.integration import ForgeSessionMixin
-from skuld.history_hydration import fetch_durable_history, merge_history_turns
-from skuld.mesh_follows import MeshFollowMixin
+from skuld.history_hydration import (
+    fetch_durable_history,
+    fetch_durable_state_frames,
+    merge_history_turns,
+    read_durable_head,
+)
+from skuld.mesh_follows import MESH_SUBSCRIPTION_FRAME, MeshFollowMixin
 from skuld.mesh_topics import MeshTopics, mesh_topics
 from skuld.peer_inbox import PEER_STATE_RPC_TYPE, PeerInboxMixin, PeerMessageUnconfirmedError
 from skuld.person_questions import PersonQuestionMixin
@@ -133,6 +139,7 @@ from skuld.session_artifacts import (  # noqa: F401
     _resolve_git_workspace_root,
 )
 from skuld.transport_lifecycle import TransportLifecycleMixin
+from skuld.voice.calls import VOICE_CALL_FRAME
 from skuld.websocket_auth import (  # noqa: F401
     WsPrincipal,
     _decode_jwt_claims,
@@ -217,6 +224,29 @@ FORGE_PERMISSION_AUTO_APPROVAL_EVALUATE_PATH = (
 )
 #: Durable log frame for an agent from another session joining or leaving the room.
 ROOM_MEMBER_FRAME = "room_member"
+
+#: Durable log kinds the broker-owned state is restored from after a restart (see
+#: ``_restore_durable_runtime_state``): read with Forge's kind filter, so a restart never
+#: has to fold the whole conversation, terminal frames and all, to know its own inbox.
+#: A restorer that reads another kind must add it here.
+RUNTIME_STATE_FRAME_KINDS = frozenset(
+    {
+        PEER_MESSAGE_FRAME,
+        WORKFLOW_STEP_FRAME,
+        MESH_SUBSCRIPTION_FRAME,
+        ROOM_MEMBER_FRAME,
+        VOICE_CALL_FRAME,
+        # The authors of human messages.
+        "user",
+        "user_confirmed",
+        # Open questions and permission requests, and the turn end that closes them.
+        "ask_user_question",
+        "ask_user_resolved",
+        "control_request",
+        "permission_resolved",
+        "result",
+    }
+)
 
 
 def _sanitize_log(value: object) -> str:
@@ -4988,16 +5018,52 @@ class Broker(
             or not self._settings.event_log_enabled
         ):
             return
+        client = await self._get_session_http_client()
+        path = self.FORGE_LOG_PATH_TEMPLATE.format(sid=self.session_id)
+        budget = {
+            "timeout_seconds": self._settings.history_hydration_timeout_seconds,
+            "page_size": self._settings.history_hydration_page_size,
+            "max_frames": self._settings.history_hydration_max_frames,
+            "max_bytes": self._settings.history_hydration_max_bytes,
+        }
+        try:
+            head = await read_durable_head(client, path=path, max_bytes=budget["max_bytes"])
+            frames = await fetch_durable_state_frames(
+                client,
+                session_id=self.session_id,
+                path=path,
+                kinds=RUNTIME_STATE_FRAME_KINDS,
+                head=head,
+                **budget,
+            )
+            self._restore_durable_runtime_state(frames)
+        except Exception as exc:
+            if self._settings.workflow_steps.enabled:
+                raise RuntimeError(
+                    "The durable history of this workflow step host could not be restored; "
+                    "refusing to start without knowing which step is open"
+                ) from exc
+            if self._settings.peer_inbox.enabled:
+                self._refuse_peer_messages_after_failed_restore(exc)
+            self._voice_history_unrestored(exc)
+            record_degraded(
+                "skuld.history.state",
+                f"session {self.session_id}: the broker's state (peer inbox, controls, "
+                f"follows, room seats, voice calls) could not be restored from the durable "
+                f"event log ({type(exc).__name__}: {exc}); restart the session once the log "
+                "is readable",
+            )
+            return
+        await self._hydrate_conversation_turns(client, path, head, budget)
+        await self._rejoin_room_members()
+
+    async def _hydrate_conversation_turns(
+        self, client: httpx.AsyncClient, path: str, head: int, budget: dict
+    ) -> None:
+        """Fold the durable log up to *head* into the conversation cache."""
         try:
             durable = await fetch_durable_history(
-                await self._get_session_http_client(),
-                session_id=self.session_id,
-                path=self.FORGE_LOG_PATH_TEMPLATE.format(sid=self.session_id),
-                timeout_seconds=self._settings.history_hydration_timeout_seconds,
-                page_size=self._settings.history_hydration_page_size,
-                max_frames=self._settings.history_hydration_max_frames,
-                max_bytes=self._settings.history_hydration_max_bytes,
-                on_frames=self._restore_durable_runtime_state,
+                client, session_id=self.session_id, path=path, head=head, **budget
             )
             merged = merge_history_turns(
                 durable, [asdict(turn) for turn in self._conversation_turns]
@@ -5009,13 +5075,10 @@ class Broker(
                     "The durable history of this workflow step host could not be restored; "
                     "refusing to start without knowing which step is open"
                 ) from exc
-            if self._settings.peer_inbox.enabled:
-                self._refuse_peer_messages_after_failed_restore(exc)
-            self._voice_history_unrestored(exc)
-            logger.warning(
-                "Durable history hydration skipped for session %s; preserving local cache: %s",
-                self.session_id,
-                exc,
+            record_degraded(
+                "skuld.history.conversation",
+                f"session {self.session_id}: the conversation could not be rebuilt from the "
+                f"durable event log ({type(exc).__name__}: {exc}); serving the local cache",
             )
             return
         # Direct cache replacement, never _append_turn: replayed frames are
@@ -5024,7 +5087,6 @@ class Broker(
         self._note_authors_of_turns(hydrated)
         self._save_conversation_history()
         logger.info("Hydrated %d conversation turns from durable history", len(hydrated))
-        await self._rejoin_room_members()
 
     def _control_state_path(self) -> Path:
         return self._conversation_history_path().with_name(f"controls_{self.session_id}.json")

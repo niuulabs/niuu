@@ -666,3 +666,89 @@ class TestIncludeSeeds:
 
         assert resp.status_code == 422
         assert "show_internal" in resp.json()["detail"]
+
+
+class TestKindFilter:
+    """The state read a restarting broker makes: named kinds only, as stored."""
+
+    @staticmethod
+    def _logged(client) -> str:
+        sid = str(uuid4())
+        entries = [
+            {"seq": 1, "kind": "peer_message", "payload": {"type": "peer_message", "n": 1}},
+            *(
+                {"seq": seq, "kind": "terminal_frame", "payload": {"type": "terminal_frame"}}
+                for seq in range(2, 6)
+            ),
+            {
+                "seq": 6,
+                "kind": "system",
+                "payload": {"type": "system", "_per_connect_handshake": True},
+            },
+            {"seq": 7, "kind": "peer_message", "payload": {"type": "peer_message", "n": 2}},
+            {"seq": 8, "kind": "voice_call", "payload": {"type": "voice_call"}},
+        ]
+        client.post(f"/api/v1/forge/sessions/{sid}/log", json={"entries": entries})
+        return sid
+
+    def test_returns_only_the_named_kinds_across_other_rows(self):
+        client, _ = _client()
+        sid = self._logged(client)
+
+        rows = client.get(
+            f"/api/v1/forge/sessions/{sid}/log",
+            params=[
+                ("show_internal", "true"),
+                ("kind", "peer_message"),
+                ("kind", "voice_call"),
+                ("kind", "system"),
+                ("limit", "2"),
+            ],
+        ).json()
+        rest = client.get(
+            f"/api/v1/forge/sessions/{sid}/log",
+            params=[
+                ("show_internal", "true"),
+                ("kind", "peer_message"),
+                ("kind", "voice_call"),
+                ("kind", "system"),
+                ("after", str(rows[-1]["seq"])),
+            ],
+        ).json()
+
+        # A per-connect handshake and a non-broadcast kind come back too when named:
+        # the read is of stored state, so a short page is only ever the end.
+        assert [row["seq"] for row in rows] == [1, 6]
+        assert [row["seq"] for row in rest] == [7, 8]
+
+    def test_an_empty_page_is_the_end_of_those_kinds(self):
+        client, _ = _client()
+        sid = self._logged(client)
+
+        rows = client.get(
+            f"/api/v1/forge/sessions/{sid}/log",
+            params=[("show_internal", "true"), ("kind", "peer_message"), ("after", "7")],
+        ).json()
+
+        assert rows == []
+
+    def test_requires_show_internal(self):
+        client, _ = _client()
+        sid = self._logged(client)
+
+        resp = client.get(f"/api/v1/forge/sessions/{sid}/log", params={"kind": "peer_message"})
+
+        assert resp.status_code == 422
+        assert "show_internal" in resp.json()["detail"]
+
+    def test_cannot_be_combined_with_seeds(self):
+        client, _ = _client()
+        sid = self._logged(client)
+
+        resp = client.get(
+            f"/api/v1/forge/sessions/{sid}/log",
+            params={"kind": "peer_message", "show_internal": "true", "include_seeds": "true"},
+        )
+
+        assert resp.status_code == 422
+        assert "include_seeds" in resp.json()["detail"]

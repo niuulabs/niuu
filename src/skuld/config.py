@@ -1793,8 +1793,24 @@ class SkuldSettings(BaseSettings):
     history_hydration_enabled: bool = Field(default=True)
     history_hydration_timeout_seconds: float = Field(default=30.0, gt=0)
     history_hydration_page_size: int = Field(default=1000, ge=1, le=5000)
-    history_hydration_max_frames: int = Field(default=100_000, ge=1)
-    history_hydration_max_bytes: int = Field(default=64 * 1024 * 1024, gt=0)
+    history_hydration_max_frames: int = Field(
+        default=100_000,
+        ge=1,
+        description=(
+            "Frames one durable-history read on restart may hold in memory (the state "
+            "read and the conversation fold are counted separately). Bounded by the "
+            "broker's memory; a hit raises, is counted on ravn.cap.hits and names this knob."
+        ),
+    )
+    history_hydration_max_bytes: int = Field(
+        default=64 * 1024 * 1024,
+        gt=0,
+        description=(
+            "Bytes one durable-history read on restart may download (the state read and "
+            "the conversation fold are counted separately). Bounded by the broker's "
+            "memory; a hit raises, is counted on ravn.cap.hits and names this knob."
+        ),
+    )
     # Leave room below clients with a 1 MiB WebSocket receive limit. Large
     # reconnect histories use the existing lazy tool-result preview contract.
     conversation_snapshot_max_bytes: int = Field(default=900 * 1024, gt=0)

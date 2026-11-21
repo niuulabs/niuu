@@ -1587,6 +1587,30 @@ class SessionEventLogRepository(ABC):
                 break
         return kept[:limit]
 
+    async def read_after_kinds(
+        self,
+        session_id: UUID,
+        after_seq: int = 0,
+        limit: int = 1000,
+        kinds: frozenset[str] = frozenset(),
+    ) -> list[SessionLogEntry]:
+        """Like :meth:`read_after`, keeping only rows whose ``kind`` is in ``kinds``.
+
+        Up to ``limit`` kept rows; an empty list means the log holds no more rows of
+        those kinds. This concrete default filters :meth:`read_after` pages so in-memory
+        fakes inherit it; SQL adapters override it to filter in the query.
+        """
+        kept: list[SessionLogEntry] = []
+        while len(kept) < limit:
+            page = await self.read_after(session_id, after_seq=after_seq, limit=limit)
+            if not page:
+                break
+            after_seq = page[-1].seq
+            kept.extend(row for row in page if row.kind in kinds)
+            if len(page) < limit:
+                break
+        return kept[:limit]
+
     async def import_history(
         self, session_id: UUID, source_id: str, entries: list[SessionLogEntry]
     ) -> int:

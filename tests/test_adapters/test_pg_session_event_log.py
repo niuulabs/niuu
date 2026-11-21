@@ -193,6 +193,20 @@ class TestReadAfter:
         assert "kind <> ALL($4::text[])" in sql and "ORDER BY seq ASC" in sql
         assert params == [sid, 7, 20, ["claude_hook", "terminal_frame"]]
 
+    async def test_read_after_kinds_keeps_only_those_kinds_in_the_query(self):
+        sid = uuid4()
+        pool = AsyncMock()
+        pool.fetch.return_value = []
+        log = PostgresSessionEventLog(pool)
+
+        await log.read_after_kinds(
+            sid, after_seq=3, limit=50, kinds=frozenset({"user", "peer_message"})
+        )
+
+        sql, *params = pool.fetch.call_args[0]
+        assert "kind = ANY($4::text[])" in sql and "ORDER BY seq ASC" in sql
+        assert params == [sid, 3, 50, ["peer_message", "user"]]
+
 
 class TestLatestSeq:
     async def test_latest_seq_returns_max(self):

@@ -1,7 +1,10 @@
 """Guards for CLI runtime container tool versions."""
 
 import json
+import re
 from pathlib import Path
+
+from volundr.adapters.outbound.host_session_programs import FALLBACK_TOOLS
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -90,3 +93,39 @@ def test_session_images_install_the_mesh_k8s_discovery_extra() -> None:
         assert syncs, dockerfile_path
         for sync in syncs:
             assert "--extra mesh-k8s" in sync, dockerfile_path
+
+
+def _one(pattern: str, text: str, where: str) -> str:
+    found = set(re.findall(pattern, text))
+    assert len(found) == 1, f"{where}: {pattern} matched {sorted(found)}"
+    return found.pop()
+
+
+def test_the_mac_bundle_builds_gh_and_glab_as_the_skuld_image_does() -> None:
+    """Mac and Linux sessions carry the same gh and glab, built from the same pinned source
+    with the same Go: a bump of one that misses the other leaves a platform unpatched."""
+    dockerfile = (REPO_ROOT / "containers/skuld/Dockerfile").read_text()
+    bundle = (REPO_ROOT / "containers/skuld-darwin/build-bundle.sh").read_text()
+    linux = {
+        "GO_VERSION": _one(r"golang:([\d.]+)-alpine", dockerfile, "Dockerfile"),
+        "GH_VERSION": _one(r"refs/tags/v([\d.]+)\.tar\.gz", dockerfile, "Dockerfile"),
+        "GH_SHA256": _one(r'"([0-9a-f]{64})  /tmp/gh\.tar\.gz"', dockerfile, "Dockerfile"),
+        "GH_BUILD_DATE": _one(r"internal/build\.Date=([\d-]+)", dockerfile, "Dockerfile"),
+        "GLAB_VERSION": _one(r"ARG GLAB_VERSION=([\d.]+)", dockerfile, "Dockerfile"),
+    }
+    mac = {name: _one(rf"(?m)^{name}=(\S+)$", bundle, "build-bundle.sh") for name in linux}
+
+    assert mac == linux
+    assert "GOTOOLCHAIN=local" in bundle
+
+
+def test_the_mac_bundle_checks_every_fallback_tool() -> None:
+    """A host session's PATH ends with the bundle's fallback/ (FALLBACK_TOOLS); the build
+    runs every entry of that list from fallback/, so a tool added to it cannot be missing
+    from the Mac bundle."""
+    bundle = (REPO_ROOT / "containers/skuld-darwin/build-bundle.sh").read_text()
+
+    assert "import FALLBACK_TOOLS" in bundle
+    assert 'echo "fallback/$t"' in bundle
+    assert {"gh", "glab"} <= set(FALLBACK_TOOLS)
+    assert 'install -m 0755 "$WORK/go-out/gh" "$WORK/go-out/glab" "$B/fallback/"' in bundle

@@ -10,10 +10,16 @@ import httpx
 import pytest
 from fastapi import WebSocketDisconnect
 
+from niuu import cap_telemetry
 from niuu.ports.cli.transport import TransportCapabilities
 from skuld.broker import Broker, ConversationTurn
 from skuld.config import SkuldSettings
-from skuld.history_hydration import merge_history_turns
+from skuld.history_hydration import (
+    HistoryBudgetExceededError,
+    fetch_durable_state_frames,
+    merge_history_turns,
+    read_durable_head,
+)
 from tests.test_skuld.workflow_support import MEMBER_MESH, MEMBER_STEPS, PERSONA
 
 _SID = "native-recovered-session"
@@ -72,10 +78,16 @@ def _client(rows=None, *, head=10, pages=None, fail_after=None, delay=0):
         if request.url.path.endswith("/head"):
             return httpx.Response(200, json={"latest_seq": head})
         after = int(request.url.params["after"])
-        seen.append(after)
         assert request.url.params["show_internal"] == "true"
         if fail_after is not None and after >= fail_after:
             return httpx.Response(503)
+        kinds = request.url.params.get_list("kind")
+        if kinds:
+            # The broker's state read: Forge's kind filter, an empty page is the end.
+            limit = int(request.url.params["limit"])
+            kept = [row for row in rows if row["seq"] > after and row["kind"] in kinds]
+            return httpx.Response(200, json=kept[:limit])
+        seen.append(after)
         page = (
             pages.get(after, [])
             if pages is not None
@@ -195,7 +207,7 @@ async def test_incomplete_hydration_preserves_existing_cache(tmp_path, failure, 
     assert broker._conversation_turns == [original]
     assert broker._conversation_history_path().read_bytes() == saved_bytes
     assert broker._event_log_buffer == []
-    assert "preserving local cache" in caplog.text
+    assert "degraded [skuld.history." in caplog.text
 
 
 async def test_unconfigured_resume_does_not_fetch_history(tmp_path):
@@ -364,3 +376,67 @@ def test_ambiguous_merge_is_rejected_without_mutating_either_history(durable, lo
     with pytest.raises(ValueError):
         merge_history_turns(durable, local)
     assert json.dumps([durable, local]) == before
+
+
+def _state_client(pages):
+    """Forge answering the kind-filtered state read with *pages*, keyed by ``after``."""
+
+    async def handle(request):
+        assert request.url.params.get_list("kind")
+        return httpx.Response(200, json=pages.get(int(request.url.params["after"]), []))
+
+    return httpx.AsyncClient(base_url="http://forge.test", transport=httpx.MockTransport(handle))
+
+
+async def _read_state(client, *, head=10, max_frames=100):
+    return await fetch_durable_state_frames(
+        client,
+        session_id=_SID,
+        path=f"/api/v1/forge/sessions/{_SID}/log",
+        kinds=frozenset({"user", "result"}),
+        head=head,
+        timeout_seconds=5,
+        page_size=1000,
+        max_frames=max_frames,
+        max_bytes=1 << 20,
+    )
+
+
+async def test_state_read_stops_at_the_frozen_head():
+    rows = [_history()[0], _history()[2], _row(12, "user", {"type": "user"})]
+    async with _state_client({0: rows}) as client:
+        frames = await _read_state(client)
+
+    assert [frame.seq for frame in frames] == [7, 9]
+
+
+async def test_state_read_refuses_a_forge_without_the_kind_filter():
+    async with _state_client({0: _history()}) as client:
+        with pytest.raises(ValueError, match="predates the kind filter"):
+            await _read_state(client)
+
+
+async def test_state_read_past_its_frame_budget_raises_and_counts():
+    cap_telemetry.reset_cap_hits()
+    async with _state_client({0: [_history()[0], _history()[2]]}) as client:
+        with pytest.raises(HistoryBudgetExceededError, match="raise history_hydration_max_frames"):
+            await _read_state(client, max_frames=1)
+
+    assert cap_telemetry.cap_hit_counts() == {"history_hydration_max_frames": 1}
+
+
+async def test_state_read_refuses_a_page_that_is_not_a_list():
+    async with _state_client({0: {"unexpected": "object"}}) as client:
+        with pytest.raises(ValueError, match="must be an array"):
+            await _read_state(client)
+
+
+async def test_state_read_refuses_an_invalid_head():
+    async def handle(request):
+        return httpx.Response(200, json={"latest_seq": "ten"})
+
+    async with httpx.AsyncClient(
+        base_url="http://forge.test", transport=httpx.MockTransport(handle)
+    ) as client:
+        with pytest.raises(ValueError, match="invalid head"):
+            await read_durable_head(client, path="/log", max_bytes=1024)

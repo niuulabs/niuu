@@ -514,6 +514,26 @@ class PostgresSessionEventLog(SessionEventLogRepository):
         # page off the event loop so a cold index fold never stalls other requests.
         return await asyncio.to_thread(lambda: [self._row_to_entry(r) for r in rows])
 
+    async def read_after_kinds(
+        self,
+        session_id: UUID,
+        after_seq: int = 0,
+        limit: int = 1000,
+        kinds: frozenset[str] = frozenset(),
+    ) -> list[SessionLogEntry]:
+        rows = await self._pool.fetch(
+            """SELECT session_id, seq, kind, role, request_id, payload, ts
+               FROM session_event_log
+               WHERE session_id = $1 AND seq > $2 AND kind = ANY($4::text[])
+               ORDER BY seq ASC
+               LIMIT $3""",
+            session_id,
+            after_seq,
+            limit,
+            sorted(kinds),
+        )
+        return await asyncio.to_thread(lambda: [self._row_to_entry(r) for r in rows])
+
     async def read_seqs(self, session_id: UUID, seqs: list[int]) -> list[SessionLogEntry]:
         if not seqs:
             return []

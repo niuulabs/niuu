@@ -11,7 +11,9 @@ from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
+import httpx
 import pytest
+from fastapi import FastAPI
 
 from niuu import cap_telemetry
 from niuu.domain.message_author import MessageAuthor
@@ -39,6 +41,8 @@ from skuld.peer_inbox import (
     peer_turn_id,
     render_peer_turn,
 )
+from tests.test_adapters.test_rest_session_log import InMemoryLog, allow_log_access
+from volundr.adapters.inbound.rest_session_log import create_session_log_router
 
 SESSION_ID = "6f1f0b52-7f4e-4a53-9b0b-3f4a2f2b9a11"
 SENDER_ID = "0c2d9b7e-1a4f-4c60-8f35-2b9d7e1a5c43"
@@ -505,6 +509,13 @@ class TestWorkflowStepsGoFirst:
         assert _sent_texts(broker) == [render_for_harness(_message())]
 
 
+def _serve_restart_reads(monkeypatch, fetch_state) -> None:
+    """A restart's two reads: *fetch_state* answers the broker's kind-filtered state read."""
+    monkeypatch.setattr("skuld.broker.read_durable_head", AsyncMock(return_value=1))
+    monkeypatch.setattr("skuld.broker.fetch_durable_state_frames", fetch_state)
+    monkeypatch.setattr("skuld.broker.fetch_durable_history", AsyncMock(return_value=[]))
+
+
 class TestRestart:
     async def test_a_fresh_start_restores_the_inbox_even_without_a_resume(
         self, tmp_path, monkeypatch
@@ -513,11 +524,7 @@ class TestRestart:
         await _accept(before, _message())
         frames = _restart_frames(before)
 
-        async def fetch(*_args, on_frames, **_kwargs):
-            on_frames(frames)
-            return []
-
-        monkeypatch.setattr("skuld.broker.fetch_durable_history", fetch)
+        _serve_restart_reads(monkeypatch, AsyncMock(return_value=frames))
         after = _inbox_broker(tmp_path)
         after._rejoin_room_members = AsyncMock()
         assert not after._settings.session.resume_session_id
@@ -526,15 +533,56 @@ class TestRestart:
 
         assert after._peer_messages_waiting() is True
 
+    async def test_terminal_frames_past_the_budget_do_not_cost_the_restarted_inbox(
+        self, tmp_path
+    ) -> None:
+        """An interactive coordinator restarts over Forge's real log route.
+
+        Its log is mostly terminal frames (sneid-coordinator's was ~1 GB of them). They
+        overflow the conversation budget, but the inbox is read with Forge's kind filter,
+        so the restarted coordinator still holds its waiting message and takes new ones.
+        """
+        cap_telemetry.reset_cap_hits()
+        before = _inbox_broker(tmp_path, activity="active")
+        await _accept(before, _message())
+        held = [e for e in before._event_log_buffer if e["kind"] == PEER_MESSAGE_FRAME]
+        screen = {"type": "terminal_frame", "rows": ["x" * 400] * 20}
+        terminal = [
+            {"seq": held[-1]["seq"] + n, "kind": "terminal_frame", "payload": screen}
+            for n in range(1, 40)
+        ]
+        app = FastAPI()
+        repo = InMemoryLog()
+        app.include_router(create_session_log_router(repo, session_service=allow_log_access(app)))
+        async with httpx.AsyncClient(
+            base_url="http://forge.test", transport=httpx.ASGITransport(app=app)
+        ) as client:
+            stored = await client.post(
+                f"/api/v1/forge/sessions/{SESSION_ID}/log",
+                json={"entries": [*held, *terminal]},
+            )
+            assert stored.status_code == 201
+            after = _inbox_broker(tmp_path, history_hydration_max_bytes=64 * 1024)
+            after._http_client = client
+            after._rejoin_room_members = AsyncMock()
+
+            await after._hydrate_conversation_history()
+
+        assert after._peer_inbox_restore_failure is None
+        assert after._peer_messages_waiting() is True
+        assert cap_telemetry.cap_hit_counts() == {"history_hydration_max_bytes": 1}
+        assert cap_telemetry.degraded_counts() == {"skuld.history.conversation": 1}
+        acceptance = await _accept(after, _message("msg-2"))
+        assert acceptance.duplicate is False
+
     async def test_an_inbox_that_could_not_be_restored_refuses_peers_loudly(
         self, tmp_path, monkeypatch
     ) -> None:
         cap_telemetry.reset_cap_hits()
 
-        async def fetch(*_args, **_kwargs):
-            raise RuntimeError("forge log unreachable")
-
-        monkeypatch.setattr("skuld.broker.fetch_durable_history", fetch)
+        _serve_restart_reads(
+            monkeypatch, AsyncMock(side_effect=RuntimeError("forge log unreachable"))
+        )
         broker = _inbox_broker(tmp_path)
 
         await broker._hydrate_conversation_history()
