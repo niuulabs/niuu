@@ -91,3 +91,20 @@ def broker_target_request(
     path = urlsplit(session_proxy_url(target.service_url, *path_segments)).path
     url, host = target.http_url(path)
     return url, {"Host": host}
+
+
+def broker_target_websocket(
+    target: SessionProxyTarget, path: str, query: str = ""
+) -> tuple[str, dict[str, object]]:
+    """The WebSocket URL and connect overrides that reach ``path`` on a broker target.
+
+    The URL names the target's service (its authority is the routing Host) and the
+    socket is opened to the target's connect address, exactly as the session proxy
+    dials ``/s/{id}/session``.
+    """
+    parsed = urlsplit(target.service_url)
+    if parsed.scheme not in {"http", "https", "ws", "wss"} or not parsed.netloc:
+        raise ValueError("Session broker target must be an absolute URL")
+    scheme = "wss" if parsed.scheme in {"https", "wss"} else "ws"
+    url = urlunsplit((scheme, parsed.netloc, path, query, ""))
+    return url, {"host": target.connect_host, "port": target.connect_port, "proxy": None}

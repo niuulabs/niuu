@@ -1145,6 +1145,178 @@ class TestSessionMessages:
         assert response.status_code == 409
         assert "not delivered" in str(response.json()).lower()
 
+    def test_send_message_dials_the_broker_target_not_forges_own_session_route(
+        self,
+        client: TestClient,
+        repository: InMemorySessionRepository,
+        pod_manager: MockPodManager,
+    ) -> None:
+        """A VM or registered-host session's chat endpoint is Forge's own public /s route.
+
+        Forge's edge admits no session-bound credential there, so a message from another
+        session dialled through it was refused with 403. The message goes to the broker
+        target, as the session proxy and the room route reach it, stamped as the owner.
+        """
+        from niuu.ports.session_proxy import SessionProxyTarget
+        from niuu.room_access import ROOM_ROLE_HEADER
+
+        calls: list[tuple[str, dict[str, object]]] = []
+
+        class _Ws:
+            async def send(self, payload: str) -> None:
+                return None
+
+            async def recv(self) -> str:
+                raise TimeoutError
+
+        def _connect(url: str, **kwargs: object):
+            calls.append((url, kwargs))
+
+            class _Ctx:
+                async def __aenter__(self) -> _Ws:
+                    return _Ws()
+
+                async def __aexit__(self, exc_type, exc, tb) -> bool:
+                    return False
+
+            return _Ctx()
+
+        session = Session(
+            id=uuid4(),
+            name="host-session",
+            model="claude-sonnet-4",
+            source=GitSource(repo="https://github.com/org/repo", branch="main"),
+            status=SessionStatus.RUNNING,
+            chat_endpoint="wss://forge-hosts.example/s/host-session/session",
+        )
+        asyncio.run(repository.create(session))
+        pod_manager.broker_target = AsyncMock(  # type: ignore[method-assign]
+            return_value=SessionProxyTarget(
+                service_url="http://broker.slot-1.internal:8080",
+                connect_host="127.0.0.1",
+                connect_port=41001,
+            )
+        )
+
+        with (
+            patch("websockets.asyncio.client.connect", new=_connect),
+            patch(
+                "volundr.adapters.inbound.rest.extract_principal",
+                new=AsyncMock(
+                    return_value=Principal(
+                        user_id="dev-user", email="dev@example.com", tenant_id="default", roles=[]
+                    )
+                ),
+            ),
+        ):
+            response = client.post(
+                f"/api/v1/forge/sessions/{session.id}/messages",
+                json={"content": "hello host"},
+                headers={"Authorization": "Bearer caller-jwt"},
+            )
+
+        assert response.status_code == 202
+        assert calls == [
+            (
+                "ws://broker.slot-1.internal:8080/session"
+                "?history=recent&history_protocol=2&history_delivery=none",
+                {
+                    "open_timeout": 10,
+                    "host": "127.0.0.1",
+                    "port": 41001,
+                    "proxy": None,
+                    "additional_headers": {
+                        "Authorization": "Bearer caller-jwt",
+                        ROOM_ROLE_HEADER: "owner",
+                    },
+                },
+            )
+        ]
+
+    def test_send_message_unready_broker_target_reconciles_and_returns_409(
+        self,
+        client: TestClient,
+        repository: InMemorySessionRepository,
+        pod_manager: MockPodManager,
+    ) -> None:
+        """A broker target that is not ready is an unreachable session, never a send."""
+        session = Session(
+            id=uuid4(),
+            name="unready-host-session",
+            model="claude-sonnet-4",
+            source=GitSource(repo="https://github.com/org/repo", branch="main"),
+            status=SessionStatus.RUNNING,
+            chat_endpoint="wss://forge-hosts.example/s/unready-host-session/session",
+        )
+        asyncio.run(repository.create(session))
+        pod_manager.broker_target = AsyncMock(  # type: ignore[method-assign]
+            side_effect=ValueError("no ready VM broker")
+        )
+
+        with patch(
+            "volundr.adapters.inbound.rest.extract_principal",
+            new=AsyncMock(
+                return_value=Principal(
+                    user_id="dev-user", email="dev@example.com", tenant_id="default", roles=[]
+                )
+            ),
+        ):
+            response = client.post(
+                f"/api/v1/forge/sessions/{session.id}/messages",
+                json={"content": "anybody home?"},
+            )
+
+        assert response.status_code == 409
+        assert "no ready VM broker" in response.json()["detail"]
+
+    def test_send_message_refused_broker_socket_is_502_not_unreachable(
+        self,
+        client: TestClient,
+        repository: InMemorySessionRepository,
+        pod_manager: MockPodManager,
+    ) -> None:
+        """A broker that answers 403 is live: no reconcile, and no 'no longer reachable'."""
+        from websockets.datastructures import Headers
+        from websockets.exceptions import InvalidStatus
+        from websockets.http11 import Response as WsResponse
+
+        def _refused(url: str, **kwargs: object):
+            raise InvalidStatus(WsResponse(403, "Forbidden", Headers()))
+
+        session = Session(
+            id=uuid4(),
+            name="refusing-session",
+            model="claude-sonnet-4",
+            source=GitSource(repo="https://github.com/org/repo", branch="main"),
+            status=SessionStatus.RUNNING,
+            chat_endpoint="ws://localhost:8080/s/refusing-session/session",
+        )
+        asyncio.run(repository.create(session))
+        reconcile = AsyncMock()
+
+        with (
+            patch("websockets.asyncio.client.connect", new=_refused),
+            patch(
+                "volundr.adapters.inbound.rest.extract_principal",
+                new=AsyncMock(
+                    return_value=Principal(
+                        user_id="dev-user", email="dev@example.com", tenant_id="default", roles=[]
+                    )
+                ),
+            ),
+            patch("volundr.domain.services.forge.ForgeService.reconcile_session", new=reconcile),
+        ):
+            response = client.post(
+                f"/api/v1/forge/sessions/{session.id}/messages",
+                json={"content": "hello?"},
+            )
+
+        assert response.status_code == 502
+        detail = response.json()["detail"]
+        assert "refused the connection with HTTP 403" in detail
+        assert "no longer reachable" not in detail
+        reconcile.assert_not_awaited()
+
     @staticmethod
     def _ack_connect(ack_frame: dict | None):
         """Build a fake websockets.connect whose socket replays one broker ACK frame.

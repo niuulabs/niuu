@@ -11,7 +11,7 @@ import time
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from pathlib import Path as FilePath
-from typing import Any, Literal
+from typing import Any, Literal, NoReturn
 from urllib.parse import parse_qsl, quote, urlencode, urlsplit, urlunsplit
 from uuid import UUID, uuid4
 
@@ -193,6 +193,7 @@ from volundr.domain.session_broker import (
     OPENSHELL_SERVICE_HOST_SUFFIX,
     PRESENTED_FILE_ROUTE,
     broker_target_request,
+    broker_target_websocket,
     server_side_http_proxy_target,
     session_proxy_url,
 )
@@ -4897,41 +4898,76 @@ def create_router(
         import ssl
 
         from websockets.asyncio.client import connect
+        from websockets.exceptions import InvalidStatus
 
-        ws_url = session.chat_endpoint
+        async def _unreachable(error: object) -> NoReturn:
+            # The endpoint looked live (chat_endpoint set) but the broker socket
+            # is unreachable — the pod is gone. Reconcile the row so its stale
+            # RUNNING/endpoint self-heals, then fail deterministically (409) so
+            # the caller never reads this as a successful send (no false 'sent').
+            reconciled = await forge.reconcile_session(session_id)
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    f"Session {session_id} is no longer reachable; "
+                    "reconciled to "
+                    f"{reconciled.status.value if reconciled else 'unknown'}. "
+                    f"Message not delivered: {error}"
+                ),
+            )
+
         # An instruction sender needs delivery ACKs, not the whole conversation.
         # Old proxies only forward history=recent, still avoiding full replay;
         # protocol2 gateways honor none and omit history entirely. Never resend.
-        endpoint = urlsplit(ws_url)
-        query = [
-            (k, v)
-            for k, v in parse_qsl(endpoint.query, keep_blank_values=True)
-            if k not in {"history", "history_protocol", "history_delivery"}
-        ]
-        query.extend(
-            (("history", "recent"), ("history_protocol", "2"), ("history_delivery", "none"))
+        negotiation = (
+            ("history", "recent"),
+            ("history_protocol", "2"),
+            ("history_delivery", "none"),
         )
-        ws_url = urlunsplit(endpoint._replace(query=urlencode(query)))
-
         connect_kwargs: dict[str, object] = {"open_timeout": 10}
+        headers: dict[str, str] = {}
         # The caller's bearer rides in the Authorization header, as for the history
         # proxy: Envoy reads JWTs from that header (and only a `token` query
         # parameter), so `?access_token=` reached a standalone Forge's /s route
         # unauthenticated and the broker socket was refused with 401.
         auth = request.headers.get("authorization", "")
         if auth.startswith("Bearer ") and auth.removeprefix("Bearer ").strip():
-            connect_kwargs["additional_headers"] = {"Authorization": auth}
-        if ws_url.startswith("wss://"):
-            ssl_ctx = ssl.create_default_context()
-            ssl_ctx.check_hostname = False
-            ssl_ctx.verify_mode = ssl.CERT_NONE
-            connect_kwargs["ssl"] = ssl_ctx
-        connect_kwargs.update(
-            _server_side_ws_connect_overrides(
-                ws_url,
-                gateway_url=openshell_internal_gateway_url,
+            headers["Authorization"] = auth
+        try:
+            target = await forge.get_broker_target(session)
+        except ValueError as e:
+            await _unreachable(e)
+        if target is not None:
+            # The chat endpoint of a VM or registered-host session is Forge's own public
+            # /s/{id}/session route. Dialling it leaves through the ingress and re-enters
+            # Forge's edge, which admits no session-bound credential there, so a message
+            # from another session was refused with 403. Reach the broker as the session
+            # proxy and the room route do; the caller was verified as the owner above.
+            ws_url, overrides = broker_target_websocket(target, "/session", urlencode(negotiation))
+            connect_kwargs.update(overrides)
+            headers[ROOM_ROLE_HEADER] = "owner"
+        else:
+            endpoint = urlsplit(session.chat_endpoint)
+            query = [
+                (k, v)
+                for k, v in parse_qsl(endpoint.query, keep_blank_values=True)
+                if k not in {"history", "history_protocol", "history_delivery"}
+            ]
+            query.extend(negotiation)
+            ws_url = urlunsplit(endpoint._replace(query=urlencode(query)))
+            if ws_url.startswith("wss://"):
+                ssl_ctx = ssl.create_default_context()
+                ssl_ctx.check_hostname = False
+                ssl_ctx.verify_mode = ssl.CERT_NONE
+                connect_kwargs["ssl"] = ssl_ctx
+            connect_kwargs.update(
+                _server_side_ws_connect_overrides(
+                    ws_url,
+                    gateway_url=openshell_internal_gateway_url,
+                )
             )
-        )
+        if headers:
+            connect_kwargs["additional_headers"] = headers
 
         # INV-7: correlate this message with the broker's delivery ACK so the response
         # distinguishes DELIVERED from NOT-delivered — a 200 means the transport actually
@@ -4994,21 +5030,24 @@ def create_router(
                         "message": "Delivery is unconfirmed; check this request before retrying.",
                     },
                 )
-            # The endpoint looked live (chat_endpoint set) but the broker socket
-            # is unreachable — the pod is gone. Reconcile the row so its stale
-            # RUNNING/endpoint self-heals, then fail deterministically (409) so
-            # the caller never reads this as a successful send (no false 'sent').
-            reconciled = await forge.reconcile_session(session_id)
-            detail = (
-                f"Session {session_id} is no longer reachable; "
-                "reconciled to "
-                f"{reconciled.status.value if reconciled else 'unknown'}. "
-                f"Message not delivered: {e}"
-            )
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=detail,
-            )
+            refused = e.response.status_code if isinstance(e, InvalidStatus) else None
+            if refused in (status.HTTP_401_UNAUTHORIZED, status.HTTP_403_FORBIDDEN):
+                # The broker answered and refused the credential: the session is
+                # live, so this is no reason to reconcile it or call it unreachable.
+                logger.error(
+                    "Session %s broker refused Forge's message socket with HTTP %d",
+                    _sanitize_log(session_id),
+                    refused,
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_502_BAD_GATEWAY,
+                    detail=(
+                        f"Session {session_id}'s broker refused the connection with HTTP "
+                        f"{refused}; the message was not delivered. The session is running: "
+                        "this is a Forge-to-broker authentication fault, not a dead session."
+                    ),
+                )
+            await _unreachable(e)
 
         if isinstance(delivery, dict) and delivery.get("type") == "error":
             code = delivery.get("code")
