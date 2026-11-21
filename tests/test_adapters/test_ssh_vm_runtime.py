@@ -3,6 +3,7 @@
 import asyncio
 import io
 import json
+import os
 import socket
 import subprocess
 import sys
@@ -1187,3 +1188,33 @@ def test_a_tunnel_that_never_answers_fails_the_start_naming_the_port():
     assert result.returncode == 1
     assert f"{vm_slot_supervisor.STAGE_PREFIX}callbacks" in result.stderr
     assert f"127.0.0.1:{port}" in result.stderr and "connect_timeout_seconds" in result.stderr
+
+
+@pytest.mark.parametrize("full", [True, False])
+async def test_an_archive_that_fails_says_when_forges_data_directory_is_full(
+    setup, monkeypatch, full
+):
+    runtime, session, spec, bootstrap, lease = setup
+
+    async def write(_lease, _bootstrap, _command, **kwargs):
+        # The SSH client writes to the file's descriptor directly.
+        os.write(kwargs["stdout"].fileno(), b"x" * 10)
+        raise RuntimeError("VM SSH command failed with exit code 1; inspect the guest")
+
+    runtime._guest_access.execute = AsyncMock(side_effect=write)
+    real = os.statvfs
+    monkeypatch.setattr(
+        module.os,
+        "statvfs",
+        lambda path: (
+            os.statvfs_result((4096, 4096, 10, 0, 0, 10, 0, 0, 0, 255)) if full else real(path)
+        ),
+    )
+
+    expected = "data directory .* is full" if full else "exit code 1"
+    with pytest.raises(RuntimeError, match=expected) as raised:
+        await runtime._archive_data(lease, bootstrap)
+    if full:
+        assert "stopped after 10 bytes" in str(raised.value)
+        assert "storage.sessions.size" in str(raised.value)
+    assert list((runtime._data / str(session.id)).iterdir()) == []

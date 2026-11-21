@@ -1955,9 +1955,22 @@ class SshContainerVmRuntime(BrokeredCredentialPodManager, VmRuntime):
         fd, temporary = tempfile.mkstemp(prefix="session-", suffix=".tar", dir=directory)
         try:
             with os.fdopen(fd, "wb") as dest:
-                await self._write_archive(lease, bootstrap, layout, dest)
-                dest.flush()
-                os.fsync(dest.fileno())
+                try:
+                    await self._write_archive(lease, bootstrap, layout, dest)
+                    dest.flush()
+                    os.fsync(dest.fileno())
+                except Exception as exc:
+                    # The SSH client writes the archive straight into the file: a full
+                    # volume reads as the guest command failing. Say which it was.
+                    if os.statvfs(directory).f_bavail == 0:
+                        raise RuntimeError(
+                            f"Forge's data directory {self._data} is full: the workspace "
+                            f"archive of session {lease.session_id} stopped after "
+                            f"{os.fstat(dest.fileno()).st_size} bytes. Grow the volume "
+                            "that holds it (the chart's storage.sessions.size) and stop "
+                            "the session again"
+                        ) from exc
+                    raise
             os.replace(temporary, directory / "session.tar")
         finally:
             Path(temporary).unlink(missing_ok=True)
