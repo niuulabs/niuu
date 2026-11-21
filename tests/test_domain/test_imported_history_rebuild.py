@@ -204,6 +204,7 @@ async def test_stopped_database_rebuild_equals_broker_hydration_after_new_live_t
             client,
             session_id=str(_SID),
             path="/log",
+            head=rows[-1].seq,
             timeout_seconds=5,
             page_size=7,
             max_frames=1000,
