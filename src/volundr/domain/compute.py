@@ -338,7 +338,11 @@ class ComputeLease(BaseModel):
     host_preparation_result: dict[str, JsonValue] | None = None
     bootstrap_ref: str | None = None
     bootstrap_owner: str | None = None
-    slots: int = Field(default=1, ge=1, description="Session slots; fixed when reserved")
+    slots: int = Field(
+        default=1,
+        ge=1,
+        description="Session slots; fixed when reserved, and only ever raised (a grown host)",
+    )
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     provision_deadline: datetime | None = None
     idle_since: datetime | None = Field(

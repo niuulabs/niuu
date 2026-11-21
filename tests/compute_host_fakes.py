@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import time
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
@@ -12,7 +13,7 @@ from niuu.ports.workload_identity import (
     WorkloadTokenIssuer,
     WorkloadTokenVerificationError,
 )
-from volundr.domain.compute import Machine, MachineState
+from volundr.domain.compute import ComputeLeaseBusyError, Machine, MachineState
 from volundr.domain.compute_hosts import (
     HostConflictError,
     HostConnectionStatus,
@@ -340,13 +341,34 @@ class Issuer(WorkloadTokenIssuer):
 
 
 class SlotLedger:
-    """Only the ``slots`` read the host service needs of the lease ledger."""
+    """What the host service needs of the lease ledger: ``slots``, and the allocations a
+    grown host raises under their operation lock (``busy`` holds that lock elsewhere)."""
 
-    def __init__(self, bindings_by_allocation=None):
+    def __init__(self, bindings_by_allocation=None, leases=None):
         self.bindings = bindings_by_allocation or {}
+        self.leases = {lease.id: lease for lease in leases or ()}
+        self.busy: set = set()
+        self.locked: list = []
 
     async def slots(self, allocation_id):
         return list(self.bindings.get(allocation_id, []))
+
+    async def get(self, lease_id):
+        return self.leases.get(lease_id)
+
+    async def save(self, lease):
+        assert lease.id in self.locked, "an allocation is saved only under its operation lock"
+        self.leases[lease.id] = lease
+
+    @asynccontextmanager
+    async def operation(self, lease_id):
+        if lease_id in self.busy:
+            raise ComputeLeaseBusyError("Allocation operation is already in progress")
+        self.locked.append(lease_id)
+        try:
+            yield
+        finally:
+            self.locked.remove(lease_id)
 
 
 class HostPool:
