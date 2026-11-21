@@ -14,6 +14,17 @@ def _client(app, client_ip: str) -> TestClient:
     return TestClient(app, client=(client_ip, 50000))
 
 
+def _app_with_frozen_clock():
+    """The app with its health limiter's clock stopped, so no token refills mid-test.
+
+    On the real clock the bucket refills one token per second: a runner slow enough to
+    spend a second on 60 requests had a token back for the 61st, which then passed.
+    """
+    app = create_app()
+    app.state.health_rate_limiter._clock = lambda: 0.0
+    return app
+
+
 def test_health_passes_through_unchanged_below_the_rate_limit() -> None:
     client = _client(create_app(), "198.51.100.10")
 
@@ -27,7 +38,7 @@ def test_health_passes_through_unchanged_below_the_rate_limit() -> None:
 
 
 def test_health_returns_429_and_retry_after_when_rate_limit_is_exceeded() -> None:
-    client = _client(create_app(), "198.51.100.10")
+    client = _client(_app_with_frozen_clock(), "198.51.100.10")
 
     try:
         for _ in range(60):
@@ -41,7 +52,7 @@ def test_health_returns_429_and_retry_after_when_rate_limit_is_exceeded() -> Non
 
 
 def test_health_rate_limits_each_client_ip_independently() -> None:
-    app = create_app()
+    app = _app_with_frozen_clock()
     limited_client = _client(app, "198.51.100.10")
     isolated_client = _client(app, "198.51.100.11")
 
