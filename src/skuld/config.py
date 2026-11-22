@@ -430,7 +430,13 @@ class SkuldSessionConfig(BaseModel):
             "session plays no persona and nothing is projected."
         ),
     )
-    initial_prompt: str = Field(default="")
+    initial_prompt: str = Field(
+        default="",
+        description=(
+            "The session's first message. Skuld hands it to the harness once, under a durable "
+            "delivery claim, and tells the owner when it cannot (``skuld.initial_prompt``)."
+        ),
+    )
     conversational: bool = Field(
         default=False,
         description=(

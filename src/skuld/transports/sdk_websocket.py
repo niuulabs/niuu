@@ -53,7 +53,6 @@ class SdkWebSocketTransport(CLITransport):
         skip_permissions: bool = False,
         agent_teams: bool = False,
         system_prompt: str = "",
-        initial_prompt: str = "",
         mcp_servers: list[dict] | None = None,
         resume_session_id: str | None = None,
         session_tools: SessionTools | None = None,
@@ -76,7 +75,6 @@ class SdkWebSocketTransport(CLITransport):
         self._claude_permission_mode = resolve_claude_permission_mode(claude_permission_mode)
         self._agent_teams = agent_teams and not bounded
         self._system_prompt = system_prompt
-        self._initial_prompt = initial_prompt
         self._resume_session_id = (resume_session_id or "").strip() or None
         self._raw_mcp_servers = list(mcp_servers or [])
         self._mcp_config = build_claude_mcp_config(mcp_servers or [])
@@ -137,15 +135,6 @@ class SdkWebSocketTransport(CLITransport):
                 include_system_prompt=True,
             )
         )
-        if self._initial_prompt and not resume_id:
-            self._pending_messages.append(
-                {
-                    "type": "user",
-                    "message": {"role": "user", "content": self._initial_prompt},
-                    "parent_tool_use_id": None,
-                    "session_id": "",
-                }
-            )
         if resume_id:
             cmd.extend(["--resume", resume_id])
 
@@ -154,9 +143,8 @@ class SdkWebSocketTransport(CLITransport):
             " ".join(cmd[:10]) + ("..." if len(cmd) > 10 else ""),
         )
         logger.info(
-            "CLI args: system_prompt=%d chars, initial_prompt=%d chars, model=%s, resume=%s",
+            "CLI args: system_prompt=%d chars, model=%s, resume=%s",
             len(self._system_prompt),
-            len(self._initial_prompt),
             self._model,
             resume_id,
         )

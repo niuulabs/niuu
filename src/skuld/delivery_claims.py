@@ -66,6 +66,21 @@ async def claim_message(
     raise DeliveryClaimError("No delivery claim attempt was configured")
 
 
+async def read_delivery(
+    client: httpx.AsyncClient, *, session_id: str, request_id: str, timeout: float
+) -> str | None:
+    """The status Forge holds for a message, or None when none was ever claimed under the id."""
+    response = await client.get(delivery_path(session_id, request_id), timeout=timeout)
+    if response.status_code == 404:
+        return None
+    response.raise_for_status()
+    result = response.json()
+    status = result.get("status") if isinstance(result, dict) else None
+    if status not in {"pending", "delivered", "failed"}:
+        raise ValueError("Invalid delivery status response")
+    return status
+
+
 async def settle_message(
     client: httpx.AsyncClient,
     *,

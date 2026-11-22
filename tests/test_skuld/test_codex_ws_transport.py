@@ -744,8 +744,8 @@ class TestSpawnAppServer:
 
 class TestStartupFailure:
     @pytest.mark.asyncio
-    async def test_required_mcp_failure_prevents_initial_prompt(self, tmp_path):
-        t = _make_transport(tmp_path, initial_prompt="Coordinate delivery")
+    async def test_required_mcp_failure_prevents_start(self, tmp_path):
+        t = _make_transport(tmp_path)
         t._spawn_app_server = AsyncMock()
         t._connect_ws = AsyncMock()
         t._handshake = AsyncMock(
@@ -761,7 +761,7 @@ class TestStartupFailure:
 
     @pytest.mark.asyncio
     async def test_start_rejects_app_server_failure_without_substitution(self, tmp_path):
-        t = _make_transport(tmp_path, initial_prompt="Investigate this")
+        t = _make_transport(tmp_path)
         emit = AsyncMock()
         t.on_event(emit)
         t._spawn_app_server = AsyncMock()
@@ -3522,37 +3522,6 @@ class TestConfigIntegration:
 
         settings = SkuldSettings(cli_type="codex")
         assert settings.transport_adapter == "skuld.transports.codex.CodexSubprocessTransport"
-
-
-class TestResumeInitialPromptSkip:
-    @pytest.mark.asyncio
-    async def test_start_skips_initial_prompt_on_resume(self, tmp_path):
-        """On resume the prior thread already contains the initial prompt."""
-        t = _make_transport(
-            tmp_path,
-            initial_prompt="kick off",
-            resume_session_id="thread-resume-1",
-        )
-        t._spawn_app_server = AsyncMock()
-        t._connect_ws = AsyncMock()
-        t._handshake = AsyncMock()
-        t.send_message = AsyncMock()
-
-        await t.start()
-
-        t.send_message.assert_not_awaited()
-
-    @pytest.mark.asyncio
-    async def test_start_sends_initial_prompt_without_resume(self, tmp_path):
-        t = _make_transport(tmp_path, initial_prompt="kick off")
-        t._spawn_app_server = AsyncMock()
-        t._connect_ws = AsyncMock()
-        t._handshake = AsyncMock()
-        t.send_message = AsyncMock()
-
-        await t.start()
-
-        t.send_message.assert_awaited_once_with("kick off")
 
 
 class TestSteeringCorrelation:

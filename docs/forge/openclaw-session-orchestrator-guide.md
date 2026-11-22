@@ -169,6 +169,13 @@ Minimal example:
 
 The response should be treated as an asynchronous launch acknowledgement, not proof that the session is ready.
 
+`initial_prompt` is the session's first message. Forge keeps it with the session and Skuld hands
+it to the agent once, as a user turn. A session that ends before its agent took the message
+(it failed to come up, or was stopped first) sends it on its next start; a session that has run a
+turn never gets it again. A message that could not be sent is a `failed` user turn
+(`user_delivery_failed`, with the reason), and one whose delivery was never confirmed is not
+repeated: the chat says so, and you decide whether to send it again.
+
 ### Runtime selection
 
 Volundr's Forge session-create API uses `definition` to pick the runtime, for example:

@@ -455,7 +455,6 @@ class MuseMSPTransport(CLITransport):
         skip_permissions: bool = True,
         agent_teams: bool = False,
         system_prompt: str = "",
-        initial_prompt: str = "",
         reasoning_effort: str = "",
         acp_prompt_timeout_s: float = 300.0,
         msp_handshake_timeout_s: float = 60.0,
@@ -481,7 +480,6 @@ class MuseMSPTransport(CLITransport):
                 "Muse MSP cannot apply system_prompt (including project briefings); "
                 "use a runtime with system-prompt support, or configure Muse workspace AGENTS.md"
             )
-        self._initial_prompt = initial_prompt
         self._reasoning_effort = _resolve_reasoning_effort(reasoning_effort)
         self._prompt_timeout = acp_prompt_timeout_s
         self._handshake_timeout = msp_handshake_timeout_s
@@ -499,7 +497,6 @@ class MuseMSPTransport(CLITransport):
         self._starting = False
         self._reader_task: asyncio.Task | None = None
         self._stderr_task: asyncio.Task | None = None
-        self._initial_dispatch_task: asyncio.Task | None = None
         self._send_lock = asyncio.Lock()  # serialize send_message turns
         self._write_lock = asyncio.Lock()  # one frame at a time on stdin
 
@@ -637,14 +634,12 @@ class MuseMSPTransport(CLITransport):
 
     async def start(self) -> None:
         logger.info(
-            "MuseMSPTransport configured for %s (model: %s, approval: %s, effort: %s, "
-            "resume: %s, initial_prompt=%d chars)",
+            "MuseMSPTransport configured for %s (model: %s, approval: %s, effort: %s, resume: %s)",
             self.workspace_dir,
             self._model,
             self._approval_mode,
             self._reasoning_effort or "host-default",
             self._resume_session_id or "-",
-            len(self._initial_prompt or ""),
         )
         # START-ONCE: the flag is set BEFORE any await so a concurrent start() cannot slip
         # past the guard while the handshake is in flight (two readers on one stdout is the
@@ -697,17 +692,6 @@ class MuseMSPTransport(CLITransport):
             self._server_info.get("version"),
         )
 
-        # Forge auto-start seeds the task via initial_prompt and relies on the transport to
-        # dispatch it (MSP has no separate "initial prompt" slot). Fire-and-forget so start()
-        # returns promptly; the turn streams via the reader.
-        if self._initial_prompt and not self._resume_session_id:
-            logger.info(
-                "Muse MSP: dispatching seeded initial prompt (%d chars)", len(self._initial_prompt)
-            )
-            self._initial_dispatch_task = asyncio.create_task(
-                self.send_message(self._initial_prompt)
-            )
-
     @staticmethod
     def _credentials_present() -> bool:
         if os.environ.get("META_API_KEY"):
@@ -753,8 +737,6 @@ class MuseMSPTransport(CLITransport):
             state = self._turns.get(turn_id)
             if state is not None and not state.future.done():
                 await self._finalize_stranded_turn(state, "cancelled")
-        if self._initial_dispatch_task and not self._initial_dispatch_task.done():
-            self._initial_dispatch_task.cancel()
         for task in list(self._bg_tasks):
             task.cancel()
         async with self._send_lock:

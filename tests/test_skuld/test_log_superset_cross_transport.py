@@ -457,7 +457,7 @@ async def _drive_persistent_subprocess(broker: Broker, tmp_path, monkeypatch) ->
     )
     monkeypatch.setattr("asyncio.create_subprocess_exec", AsyncMock(return_value=proc))
 
-    t = PersistentSubprocessTransport(str(tmp_path), initial_prompt="")
+    t = PersistentSubprocessTransport(str(tmp_path))
     t.on_event(broker._handle_cli_event)
     await t.send_message("hello")
     await t.stop()

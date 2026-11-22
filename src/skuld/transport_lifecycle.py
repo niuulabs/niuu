@@ -6,7 +6,6 @@ import asyncio
 import inspect
 import logging
 import os
-import uuid
 from pathlib import Path
 
 from niuu.ports.cli import CLITransport
@@ -16,7 +15,6 @@ from skuld.broker_api import _rebuild_presented_registry, _resume_presented_uplo
 from skuld.channels import TelegramChannelError
 from skuld.chronicle_watcher import ChronicleWatcher
 from skuld.codex_auth import CodexAuthProviderPort
-from skuld.conversation_models import ConversationTurn
 from skuld.memory_mcp.gateway import MemoryContextPackError
 from skuld.personas.projection import PersonaProjectionError, ProjectionContext
 from skuld.personas.registry import projector_for
@@ -84,7 +82,6 @@ class TransportLifecycleMixin:
             "claude_permission_mode": self._settings.claude_permission_mode,
             "agent_teams": self._settings.agent_teams,
             "system_prompt": self._settings.session.system_prompt,
-            "initial_prompt": self._settings.session.initial_prompt,
             # Configured servers plus the built-in forge MCP (merged by name).
             "mcp_servers": self._effective_mcp_servers(),
             "session_tools": self._session_tools(),
@@ -249,31 +246,13 @@ class TransportLifecycleMixin:
                 await self._transport.start()
 
     async def _auto_start_transport(self) -> None:
-        """Background-task wrapper around ``self._transport.start()``.
+        """Start the transport in the background, and hand it the session's first message."""
+        if self._settings.session.initial_prompt:
+            await self._start_with_initial_prompt()
+            return
+        await self._warm_transport()
 
-        Claude subprocess transports do not echo the user's own prompt back as
-        an event. Without an explicit synthesis the chat UI sees the
-        assistant's reply with no user turn before it. We append a user turn
-        to conversation history (so late-joining browsers see it via replay)
-        and broadcast ``user_confirmed`` so any already-connected channel
-        renders it immediately.
-        """
-        prompt = self._settings.session.initial_prompt
-        if prompt and not any(
-            t.role == "user" and t.content == prompt for t in self._conversation_turns
-        ):
-            turn_id = str(uuid.uuid4())
-            self._append_turn(ConversationTurn(id=turn_id, role="user", content=prompt))
-            # The initial prompt is a human turn too — persist it to the durable
-            # log so log-only replay opens with the operator's first message.
-            self._enqueue_human_turn_event(prompt, turn_id)
-            try:
-                await self._emit_broker_frame(
-                    {"type": "user_confirmed", "id": turn_id, "content": prompt}
-                )
-            except Exception:
-                logger.debug("Initial-prompt user_confirmed broadcast failed", exc_info=True)
-
+    async def _warm_transport(self) -> None:
         try:
             await self._ensure_transport_started()
             logger.info("Transport auto-started successfully")
@@ -422,6 +401,8 @@ class TransportLifecycleMixin:
             # frames. A restarted resident always has prior history, so this
             # guard must precede the resume branch below.
             logger.info("Room-routed session — skipping transport auto-start")
+            if self._settings.session.initial_prompt:
+                await self._report_unroutable_initial_prompt()
         elif self._settings.session.initial_prompt:
             logger.info("Initial prompt configured — auto-starting transport in background")
             asyncio.create_task(self._auto_start_transport())

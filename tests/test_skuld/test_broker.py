@@ -1372,7 +1372,8 @@ class TestBroker:
         assert kwargs["sandbox"] == "workspace-write"
         assert kwargs["agent_teams"] is True
         assert kwargs["system_prompt"] == "be helpful"
-        assert kwargs["initial_prompt"] == "hello"
+        # The broker sends the first message itself, once (skuld.initial_prompt).
+        assert "initial_prompt" not in kwargs
 
     def test_create_transport_filters_kwargs(self, tmp_path):
         """Only kwargs matching the constructor signature are passed."""

@@ -53,7 +53,6 @@ class PiRpcTransport(CLITransport):
         model: str = "",
         session_id: str | None = None,
         resume_session_id: str | None = None,
-        initial_prompt: str = "",
         system_prompt: str = "",
         session_name: str = "",
         reasoning_effort: str = "",
@@ -70,7 +69,6 @@ class PiRpcTransport(CLITransport):
         self._model = model
         self._session_id = session_id or str(uuid.uuid4())
         self._resume = resume_session_id
-        self._initial = initial_prompt
         self._system = system_prompt
         self._name = session_name
         self._effort = reasoning_effort
@@ -192,9 +190,6 @@ class PiRpcTransport(CLITransport):
                 await self._finish(str(exc), force=True)
                 await self.stop()
                 raise
-        if self._initial:
-            initial, self._initial = self._initial, ""
-            await self.send_message(initial)
 
     async def _write(self, frame: dict) -> None:
         if not self.is_alive or not self._process or not self._process.stdin:

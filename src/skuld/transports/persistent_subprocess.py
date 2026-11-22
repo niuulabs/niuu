@@ -101,7 +101,6 @@ class PersistentSubprocessTransport(CLITransport):
         claude_permission_mode: str = DEFAULT_CLAUDE_PERMISSION_MODE,
         agent_teams: bool = False,
         system_prompt: str = "",
-        initial_prompt: str = "",
         mcp_servers: list[dict] | None = None,
         resume_session_id: str = "",
         ask_user_question_enabled: bool = False,
@@ -130,11 +129,9 @@ class PersistentSubprocessTransport(CLITransport):
         self._claude_permission_mode = resolve_claude_permission_mode(claude_permission_mode)
         self._agent_teams = agent_teams and not bounded
         self._system_prompt = system_prompt
-        self._initial_prompt = initial_prompt
         self._ask_user_question_enabled = ask_user_question_enabled and not bounded
         self._raw_mcp_servers = list(mcp_servers or [])
         self._mcp_config = build_claude_mcp_config(mcp_servers or [])
-        self._initial_prompt_sent = False
         self._process: asyncio.subprocess.Process | None = None
         self._send_lock = asyncio.Lock()
         self._reader_task: asyncio.Task[None] | None = None
@@ -194,21 +191,9 @@ class PersistentSubprocessTransport(CLITransport):
         return proc is not None and proc.returncode is None
 
     async def start(self) -> None:
-        """Spawn Claude (if not already running) and send the initial prompt."""
+        """Spawn Claude (if not already running)."""
         if not self.is_alive:
             await self._spawn()
-        # On resume the prior conversation (including its initial prompt) is
-        # reloaded, so replaying the initial prompt would double-seed history.
-        if self._session_id:
-            self._initial_prompt_sent = True
-        if not self._initial_prompt or self._initial_prompt_sent:
-            return
-        self._initial_prompt_sent = True
-        try:
-            await self.send_message(self._initial_prompt)
-        except Exception:
-            self._initial_prompt_sent = False
-            raise
 
     async def stop(self) -> None:
         """Close stdin and wait for Claude to exit gracefully."""

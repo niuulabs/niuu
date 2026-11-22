@@ -36,7 +36,6 @@ async def test_app_server_startup_failure_never_launches_a_different_harness(tmp
         skip_permissions=False,
         approval_policy="on-request",
         sandbox="read-only",
-        initial_prompt="Do not execute twice",
     )
     for name in ("_spawn_app_server", "_connect_ws", "_handshake"):
         setattr(transport, name, AsyncMock())

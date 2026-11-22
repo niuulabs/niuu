@@ -1198,22 +1198,9 @@ class TestStartAndCreateSession:
         t._create_session.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_start_with_initial_prompt_sends_message(self, tmp_path):
-        """start() with initial_prompt calls send_message after setup."""
-        t = _make_transport(tmp_path, initial_prompt="bootstrap prompt")
-        t._spawn_server = AsyncMock()
-        t._connect = AsyncMock()
-        t._create_session = AsyncMock()
-        t.send_message = AsyncMock()
-
-        await t.start()
-
-        t.send_message.assert_awaited_once_with("bootstrap prompt")
-
-    @pytest.mark.asyncio
-    async def test_start_without_initial_prompt_no_send(self, tmp_path):
-        """start() without initial_prompt does not call send_message."""
-        t = _make_transport(tmp_path, initial_prompt="")
+    async def test_start_sends_no_message(self, tmp_path):
+        """start() sends nothing: the broker sends every message."""
+        t = _make_transport(tmp_path)
         t._spawn_server = AsyncMock()
         t._connect = AsyncMock()
         t._create_session = AsyncMock()

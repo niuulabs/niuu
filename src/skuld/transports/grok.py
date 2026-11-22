@@ -186,7 +186,6 @@ class GrokACPTransport(CLITransport):
         skip_permissions: bool = True,
         agent_teams: bool = False,
         system_prompt: str = "",
-        initial_prompt: str = "",
         reasoning_effort: str = "",
         acp_prompt_timeout_s: float = 300.0,
         acp_auth_preflight_timeout_s: float = 60.0,
@@ -206,7 +205,6 @@ class GrokACPTransport(CLITransport):
         self._skip_permissions = skip_permissions  # yolo via --always-approve; accepted for parity
         self._agent_teams = agent_teams
         self._system_prompt = system_prompt
-        self._initial_prompt = initial_prompt
         self._reasoning_effort = reasoning_effort
         self._effort_options: dict = {}
         self._prompt_timeout = acp_prompt_timeout_s
@@ -218,7 +216,6 @@ class GrokACPTransport(CLITransport):
         # slip past the guard while the auth preflight is awaited.
         self._starting = False
         self._reader_task: asyncio.Task | None = None
-        self._initial_dispatch_task: asyncio.Task | None = None
         self._lock = asyncio.Lock()  # serialize prompt turns
 
         self._session_id: str | None = None
@@ -297,12 +294,10 @@ class GrokACPTransport(CLITransport):
 
     async def start(self) -> None:
         logger.info(
-            "GrokACPTransport configured for %s "
-            "(model: %s, system_prompt=%d chars, initial_prompt=%d chars)",
+            "GrokACPTransport configured for %s (model: %s, system_prompt=%d chars)",
             self.workspace_dir,
             self._model,
             len(self._system_prompt or ""),
-            len(self._initial_prompt or ""),
         )
 
         # START-ONCE. The old guard was `if self._process is not None` — a check-then-act
@@ -380,19 +375,6 @@ class GrokACPTransport(CLITransport):
         await self._acp_new_session()
 
         logger.info("Grok ACP session ready: %s (sessionId=%s)", self._model, self._session_id)
-
-        # Forge auto-start seeds the task via initial_prompt and relies on the
-        # transport to dispatch it (ACP has no separate "initial prompt" slot).
-        # Fire-and-forget so start() returns promptly; the turn streams via the
-        # reader. Interactive sessions leave initial_prompt empty and skip this.
-        if self._initial_prompt:
-            logger.info(
-                "Grok ACP: dispatching seeded initial prompt (%d chars)",
-                len(self._initial_prompt),
-            )
-            self._initial_dispatch_task = asyncio.create_task(
-                self.send_message(self._initial_prompt)
-            )
 
     async def stop(self) -> None:
         async with self._lock:
@@ -1080,6 +1062,8 @@ class GrokACPTransport(CLITransport):
             steer=True,
             steering_mode="interrupt_resume",
             # set_model / rewind / mcp / permission_requests etc. are no-op or future ACP extensions
+            # ``send_message`` holds the turn lock until the prompt's result arrives.
+            send_runs_turn=True,
             skills=True,  # Grok Build surfaces skills and subagents as tools
         )
 

@@ -115,7 +115,7 @@ async def test_send_message_returns_when_result_event_arrives(tmp_path) -> None:
             _result_line("ALPHA"),
         ]
     )
-    transport = PersistentSubprocessTransport(str(tmp_path), initial_prompt="")
+    transport = PersistentSubprocessTransport(str(tmp_path))
 
     with patch("asyncio.create_subprocess_exec", AsyncMock(return_value=proc)):
         await transport.send_message("hello")
@@ -139,7 +139,7 @@ async def test_two_turns_reuse_same_process(tmp_path) -> None:
         ]
     )
     spawn = AsyncMock(return_value=proc)
-    transport = PersistentSubprocessTransport(str(tmp_path), initial_prompt="")
+    transport = PersistentSubprocessTransport(str(tmp_path))
 
     with patch("asyncio.create_subprocess_exec", spawn):
         await transport.send_message("first")
@@ -170,7 +170,7 @@ async def test_events_fan_out_to_callback(tmp_path) -> None:
     async def cb(event: dict) -> None:
         received.append(event)
 
-    transport = PersistentSubprocessTransport(str(tmp_path), initial_prompt="")
+    transport = PersistentSubprocessTransport(str(tmp_path))
     transport.on_event(cb)
 
     with patch("asyncio.create_subprocess_exec", AsyncMock(return_value=proc)):
@@ -184,30 +184,10 @@ async def test_events_fan_out_to_callback(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_start_sends_initial_prompt(tmp_path) -> None:
-    """start() with an initial_prompt writes it to stdin and waits for result."""
-    proc = _make_proc(
-        [
-            _system_line("sess-init"),
-            _assistant_line("ack"),
-            _result_line("ack"),
-        ]
-    )
-    transport = PersistentSubprocessTransport(str(tmp_path), initial_prompt="run setup")
-
-    with patch("asyncio.create_subprocess_exec", AsyncMock(return_value=proc)):
-        await transport.start()
-
-    body = bytes(proc.stdin.buf)
-    assert b"run setup" in body
-    await transport.stop()
-
-
-@pytest.mark.asyncio
-async def test_start_without_initial_prompt_does_not_write(tmp_path) -> None:
-    """start() with no initial_prompt only spawns; no stdin write."""
+async def test_start_only_spawns(tmp_path) -> None:
+    """start() spawns and writes nothing: the broker sends every message."""
     proc = _make_proc([])
-    transport = PersistentSubprocessTransport(str(tmp_path), initial_prompt="")
+    transport = PersistentSubprocessTransport(str(tmp_path))
 
     with patch("asyncio.create_subprocess_exec", AsyncMock(return_value=proc)):
         await transport.start()
@@ -219,7 +199,7 @@ async def test_start_without_initial_prompt_does_not_write(tmp_path) -> None:
 @pytest.mark.asyncio
 async def test_start_injects_tracker_shim_env(tmp_path) -> None:
     proc = _make_proc([])
-    transport = PersistentSubprocessTransport(str(tmp_path), initial_prompt="")
+    transport = PersistentSubprocessTransport(str(tmp_path))
     shim_env = {
         "PATH": f"{tmp_path}/.skuld-tools/bin:/usr/bin",
         "RAVN_WORKSPACE_DIR": str(tmp_path),
@@ -249,7 +229,7 @@ async def test_send_message_concurrency_is_serialized(tmp_path) -> None:
             _result_line("first done"),
         ]
     )
-    transport = PersistentSubprocessTransport(str(tmp_path), initial_prompt="")
+    transport = PersistentSubprocessTransport(str(tmp_path))
 
     async def send_second() -> None:
         # Tiny delay so the first call grabs the lock; then queue events
@@ -277,7 +257,7 @@ async def test_send_message_concurrency_is_serialized(tmp_path) -> None:
 @pytest.mark.asyncio
 async def test_stop_closes_stdin(tmp_path) -> None:
     proc = _make_proc([])
-    transport = PersistentSubprocessTransport(str(tmp_path), initial_prompt="")
+    transport = PersistentSubprocessTransport(str(tmp_path))
 
     with patch("asyncio.create_subprocess_exec", AsyncMock(return_value=proc)):
         await transport.start()
@@ -288,7 +268,7 @@ async def test_stop_closes_stdin(tmp_path) -> None:
 
 @pytest.mark.asyncio
 async def test_capabilities() -> None:
-    transport = PersistentSubprocessTransport("/tmp", initial_prompt="")
+    transport = PersistentSubprocessTransport("/tmp")
     caps = transport.capabilities
     assert caps.session_resume is True
     assert caps.interrupt is False
@@ -319,24 +299,6 @@ def test_no_resume_flag_without_seed() -> None:
 
     assert "--resume" not in cmd
     assert "--append-system-prompt" in cmd
-
-
-@pytest.mark.asyncio
-async def test_seeded_resume_skips_initial_prompt(tmp_path) -> None:
-    """On resume the prior conversation already contains the initial prompt —
-    replaying it would double-seed history."""
-    proc = _make_proc([])
-    transport = PersistentSubprocessTransport(
-        str(tmp_path),
-        initial_prompt="kick off the task",
-        resume_session_id="sess-resume-1",
-    )
-
-    with patch("asyncio.create_subprocess_exec", AsyncMock(return_value=proc)):
-        await transport.start()
-
-    assert proc.stdin.buf == bytearray()
-    await transport.stop()
 
 
 def test_flag_off_keeps_bypass_permissions_and_no_control_protocol() -> None:

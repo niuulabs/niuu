@@ -17,7 +17,7 @@ from niuu.adapters.cli.runtime import (
 from niuu.adapters.cli.runtime import (
     stop_subprocess as _stop_process,
 )
-from niuu.ports.cli import CLITransport
+from niuu.ports.cli import CLITransport, TransportCapabilities
 from skuld.transports.mcp_config import (
     CODEX_WEB_SEARCH_DISABLED,
     build_codex_mcp_overrides,
@@ -511,6 +511,11 @@ class CodexSubprocessTransport(CLITransport):
                 }
             },
         }
+
+    @property
+    def capabilities(self) -> TransportCapabilities:
+        # ``send_message`` returns when the ``codex exec`` that runs the turn exits.
+        return TransportCapabilities(send_runs_turn=True)
 
     @property
     def session_id(self) -> str | None:

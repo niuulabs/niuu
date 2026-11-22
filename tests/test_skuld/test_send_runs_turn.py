@@ -19,6 +19,9 @@ from claude_agent_sdk.types import AssistantMessage, ResultMessage, TextBlock
 from niuu.ports.cli.transport import TransportCapabilities
 from skuld.broker import Broker
 from skuld.config import SkuldSettings
+from skuld.transports.codex import CodexSubprocessTransport
+from skuld.transports.dsh import DshJsonRpcTransport
+from skuld.transports.grok import GrokACPTransport
 from skuld.transports.persistent_subprocess import PersistentSubprocessTransport
 from skuld.transports.sdk import SDKTransport
 from skuld.transports.subprocess import SubprocessTransport
@@ -172,7 +175,16 @@ async def test_the_transports_own_turn_timeout_still_bounds_the_turn(monkeypatch
     await transport.stop()
 
 
-@pytest.mark.parametrize("transport_class", [SDKTransport, SubprocessTransport])
+@pytest.mark.parametrize(
+    "transport_class",
+    [
+        SDKTransport,
+        SubprocessTransport,
+        CodexSubprocessTransport,
+        DshJsonRpcTransport,
+        GrokACPTransport,
+    ],
+)
 def test_transports_that_run_the_turn_inside_send_message_say_so(transport_class, tmp_path) -> None:
     assert transport_class(workspace_dir=str(tmp_path)).capabilities.send_runs_turn is True
 

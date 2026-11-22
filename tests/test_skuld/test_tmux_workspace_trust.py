@@ -95,13 +95,12 @@ async def test_start_without_seed_monitors_delayed_trust_and_confirms_once(
         await transport.stop()
 
 
-async def test_trust_already_selected_only_sends_enter_before_seed(tmp_path):
+async def test_trust_already_selected_only_sends_enter_before_chat(tmp_path):
     yes = trust_screen(tmp_path, yes=True)
-    transport = StartupTransport(
-        tmp_path, [yes, yes, "Loading", "❯"], initial_prompt="Start the review"
-    )
+    transport = StartupTransport(tmp_path, [yes, yes, "Loading", "❯"])
     try:
         await transport.start()
+        await transport.send_message("Start the review")
         assert transport.keys == ["Enter", "Enter"]  # Trust, then chat submit.
         assert transport.loaded_buffers == ["Start the review"]
         commands = [args[0] for args, _ in transport.commands]
@@ -174,9 +173,7 @@ async def test_native_control_does_not_satisfy_callers_about_to_type(tmp_path):
 
 
 async def test_trust_for_different_workspace_does_not_send_keys_or_chat(tmp_path):
-    transport = StartupTransport(
-        tmp_path, [trust_screen(tmp_path / "different")], initial_prompt="Review"
-    )
+    transport = StartupTransport(tmp_path, [trust_screen(tmp_path / "different")])
     try:
         with pytest.raises(RuntimeError, match="different folder"):
             await transport.start()
@@ -246,11 +243,10 @@ async def test_partial_trust_screen_does_not_look_ready_before_yes_renders(tmp_p
         await transport.stop()
 
 
-async def test_startup_menu_without_trust_does_not_receive_seed_or_chat(tmp_path):
+async def test_startup_menu_without_trust_does_not_receive_chat(tmp_path):
     transport = StartupTransport(
         tmp_path,
         ["Choose login method\n❯ Claude account\n  API key"],
-        initial_prompt="Review this",
         repl_ready_timeout_s=EXPIRING_READY_TIMEOUT_S,
     )
     try:
@@ -260,7 +256,6 @@ async def test_startup_menu_without_trust_does_not_receive_seed_or_chat(tmp_path
             await transport.send_message("Still must remain unsent")
         assert transport.keys == []
         assert not transport.loaded_buffers
-        assert not transport._initial_prompt_sent
         assert not transport._startup_ready
     finally:
         await transport.stop()
@@ -284,12 +279,11 @@ async def test_custom_ready_marker_is_required_after_trust(tmp_path, monkeypatch
         await transport.stop()
 
 
-@pytest.mark.parametrize("seed", ["", "Review this"])
 @pytest.mark.parametrize("pane", ["❯", "Which database?\n❯ 1. Postgres\n  2. SQLite"])
 async def test_known_question_during_startup_allows_connection_but_blocks_chat(
-    tmp_path, monkeypatch, seed, pane
+    tmp_path, monkeypatch, pane
 ):
-    transport = StartupTransport(tmp_path, [pane], initial_prompt=seed)
+    transport = StartupTransport(tmp_path, [pane])
     capture = transport._capture_pane_text
     question_received = False
 
@@ -324,14 +318,13 @@ async def test_known_question_during_startup_allows_connection_but_blocks_chat(
             await transport.send_message("Must remain unsent")
         assert transport.keys == []
         assert not transport.loaded_buffers
-        assert not transport._initial_prompt_sent
 
-        # Once the native question resolves, startup can be retried normally.
+        # Once the native question resolves, the message goes through.
         transport._pending_tty_prompts.clear()
         transport.screens.append("❯")
-        await transport.start()
+        await transport.send_message("Review this")
         assert transport._startup_ready
-        assert transport.loaded_buffers == ([seed] if seed else [])
+        assert transport.loaded_buffers == ["Review this"]
     finally:
         await transport.stop()
 
@@ -341,7 +334,6 @@ async def test_trust_confirmation_does_not_answer_a_following_startup_menu(tmp_p
     transport = StartupTransport(
         tmp_path,
         [yes, yes, "Choose login method\n❯ Claude account\n  API key"],
-        initial_prompt="Review this",
         repl_ready_timeout_s=EXPIRING_READY_TIMEOUT_S,
     )
     try:
@@ -464,10 +456,11 @@ def _enter_only_on_yes(transport: TrustDialogTransport) -> bool:
 
 async def test_enter_swallowed_by_a_redraw_is_renavigated_and_retried(tmp_path):
     """The live failure: Down, Enter, then the dialog re-renders on No and waits."""
-    transport = TrustDialogTransport(tmp_path, resets=1, initial_prompt="Start")
+    transport = TrustDialogTransport(tmp_path, resets=1)
     try:
         await transport.start()
-        trust_keys, seed_submit = transport.sent[:4], transport.sent[4:]
+        await transport.send_message("Start")
+        trust_keys, submit = transport.sent[:4], transport.sent[4:]
         assert trust_keys == [
             ("Down", False),
             ("Enter", True),
@@ -476,7 +469,7 @@ async def test_enter_swallowed_by_a_redraw_is_renavigated_and_retried(tmp_path):
         ]
         assert transport.trusted and transport._startup_ready
         assert transport.loaded_buffers == ["Start"]
-        assert [key for key, _ in seed_submit] == ["Enter"]  # the seed prompt, after trust
+        assert [key for key, _ in submit] == ["Enter"]  # the message, after trust
     finally:
         await transport.stop()
 
@@ -492,9 +485,7 @@ async def test_dropped_navigation_is_resent_after_settling(tmp_path):
 
 
 async def test_a_dialog_that_keeps_resetting_fails_loudly_within_budget(tmp_path):
-    transport = TrustDialogTransport(
-        tmp_path, resets=99, workspace_trust_max_attempts=2, initial_prompt="Never pasted"
-    )
+    transport = TrustDialogTransport(tmp_path, resets=99, workspace_trust_max_attempts=2)
     try:
         with pytest.raises(RuntimeError, match="did not move to Yes after 2 attempts"):
             await transport.start()

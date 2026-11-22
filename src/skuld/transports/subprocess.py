@@ -67,7 +67,6 @@ class SubprocessTransport(CLITransport):
         claude_permission_mode: str = DEFAULT_CLAUDE_PERMISSION_MODE,
         agent_teams: bool = False,
         system_prompt: str = "",
-        initial_prompt: str = "",
         mcp_servers: list[dict] | None = None,
         session_tools: SessionTools | None = None,
         read_only_mcp_only: bool = False,
@@ -90,10 +89,8 @@ class SubprocessTransport(CLITransport):
         self._claude_permission_mode = resolve_claude_permission_mode(claude_permission_mode)
         self._agent_teams = agent_teams and not bounded
         self._system_prompt = system_prompt
-        self._initial_prompt = initial_prompt
         self._raw_mcp_servers = list(mcp_servers or [])
         self._mcp_config = build_claude_mcp_config(mcp_servers or [])
-        self._initial_prompt_sent = False
         self._process: asyncio.subprocess.Process | None = None
         self._lock = asyncio.Lock()
         self._session_id: str | None = None
@@ -110,14 +107,6 @@ class SubprocessTransport(CLITransport):
             self._model or "<default>",
             self._session_id,
         )
-        if not self._initial_prompt or self._initial_prompt_sent:
-            return
-        self._initial_prompt_sent = True
-        try:
-            await self.send_message(self._initial_prompt)
-        except Exception:
-            self._initial_prompt_sent = False
-            raise
 
     async def stop(self) -> None:
         async with self._lock:

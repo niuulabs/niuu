@@ -173,7 +173,6 @@ async def test_construction_accepts_standard_kwargs(tmp_path) -> None:
         skip_permissions=False,
         agent_teams=True,
         system_prompt="Be precise.",
-        initial_prompt="Warm up.",
         mcp_servers=[{"name": "linear", "command": "uvx", "args": ["linear-mcp"]}],
     )
 
@@ -995,20 +994,6 @@ def test_content_block_and_message_conversion_helpers() -> None:
 
 
 @pytest.mark.asyncio
-async def test_start_resets_initial_prompt_flag_when_send_fails(monkeypatch, tmp_path) -> None:
-    factory = _ClientFactory([[]])
-    monkeypatch.setattr("skuld.transports.sdk.ClaudeSDKClient", factory)
-
-    transport = SDKTransport(workspace_dir=str(tmp_path), initial_prompt="setup")
-    transport.send_message = AsyncMock(side_effect=RuntimeError("boom"))  # type: ignore[method-assign]
-
-    with pytest.raises(RuntimeError, match="boom"):
-        await transport.start()
-
-    assert transport._initial_prompt_sent is False
-
-
-@pytest.mark.asyncio
 async def test_stop_swallows_client_exit_errors(monkeypatch, tmp_path) -> None:
     factory = _ClientFactory([[]])
     monkeypatch.setattr("skuld.transports.sdk.ClaudeSDKClient", factory)
@@ -1214,17 +1199,13 @@ def test_pending_steers_and_visibility_helpers() -> None:
 
 
 @pytest.mark.asyncio
-async def test_resume_session_id_sets_resume_option_and_skips_initial_prompt(
-    monkeypatch, tmp_path
-) -> None:
-    """A seeded resume id reloads the prior conversation: ClaudeAgentOptions.resume
-    is set and the initial prompt is NOT replayed (it is already in history)."""
+async def test_resume_session_id_sets_resume_option(monkeypatch, tmp_path) -> None:
+    """A seeded resume id reloads the prior conversation, and start() sends nothing."""
     factory = _ClientFactory([[]])
     monkeypatch.setattr("skuld.transports.sdk.ClaudeSDKClient", factory)
 
     transport = SDKTransport(
         workspace_dir=str(tmp_path),
-        initial_prompt="Warm up.",
         resume_session_id="sess-resume-1",
     )
 
