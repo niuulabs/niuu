@@ -675,7 +675,7 @@ describe('buildServices live base selection', () => {
     // Nothing else of this host's moved to Ting's, and nothing of Ting's stayed here.
     const onGuild = queryMocks.createApiClient.mock.calls
       .map(([base]) => base as string)
-      .filter((base) => base.startsWith('https://guild.example'));
+      .filter((base) => new URL(base, 'https://page.example').origin === 'https://guild.example');
     expect(new Set(onGuild)).toEqual(new Set([guild.baseUrl, 'https://guild.example/api/v1']));
     expect(queryMocks.createApiClient).not.toHaveBeenCalledWith('/api/v1/ting');
     expect((realmsMocks.buildRealmGovernanceHttpAdapter as any).mock.lastCall).toEqual([
