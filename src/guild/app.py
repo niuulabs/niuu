@@ -27,6 +27,7 @@ from niuu.adapters.postgres_observatory_fragments import (
 )
 from niuu.adapters.postgres_pairing_codes import PostgresPairingCodeRepository
 from niuu.adapters.postgres_pats import PostgresPATRepository
+from niuu.adapters.postgres_project_teams import PostgresProjectTeamRecords
 from niuu.config import InstanceProbeConfig, InstanceSeedConfig
 from niuu.cors import apply_cors_middleware
 from niuu.domain import transport_security
@@ -286,6 +287,7 @@ def create_app(
                         ),
                         forge_stream_queue_maxsize=loaded_settings.forge_stream_queue_maxsize,
                         guild_membership=loaded_settings.guild.membership(),
+                        project_teams=PostgresProjectTeamRecords(pool),
                         presented_file_max_bytes=loaded_settings.presented_files.max_bytes,
                     )
                 )

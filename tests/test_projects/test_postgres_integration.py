@@ -189,3 +189,83 @@ async def test_lightweight_project_document_and_detach_roundtrip(isolated_pool):
     detached = await sessions.update_coordination(member, None)
     assert detached.coordination is None and detached.coordination_revision == 1
     assert (await sessions.get(member.id)).coordination is None
+
+
+async def test_a_projects_team_is_kept_and_copied(isolated_pool):
+    from datetime import UTC, datetime
+
+    from niuu.adapters.postgres_project_teams import PostgresProjectTeamRecords
+    from niuu.domain.project_team import ProjectTeam, ProjectTeamRecord, TeamMember
+    from niuu.ports.project_teams import ProjectTeamHomeConflictError
+    from volundr.adapters.outbound.postgres_project_members import PostgresProjectMemberRepository
+    from volundr.adapters.outbound.postgres_project_team_sync import (
+        PostgresProjectTeamSyncRepository,
+    )
+    from volundr.domain.projects import ProjectMember, ProjectRole
+
+    repo, _ = await seed(isolated_pool)
+    project = await repo.register(
+        ForgeProject(slug="team", name="Team", owner_id="cara", tenant_id="acme")
+    )
+    now = datetime.now(UTC)
+
+    # A copy's people are replaced whole: its creator goes, the home's people come.
+    members = PostgresProjectMemberRepository(isolated_pool)
+    people = [
+        ProjectMember(
+            project_id=project.id,
+            user_id=user,
+            tenant_id="acme",
+            role=role,
+            added_by="alice",
+            created_at=now,
+            updated_at=now,
+        )
+        for user, role in (("alice", ProjectRole.OWNER), ("bob", ProjectRole.VIEWER))
+    ]
+    for _ in range(2):
+        await members.replace(project.id, people)
+        held = await members.list_for_project(project.id)
+        assert {m.user_id: m.role for m in held} == {
+            "alice": ProjectRole.OWNER,
+            "bob": ProjectRole.VIEWER,
+        }
+
+    sync = PostgresProjectTeamSyncRepository(isolated_pool)
+    assert (await sync.get(project.id)).synced_at is None
+    assert (await sync.changed(project.id)).version == 1
+    assert (await sync.changed(project.id)).pending is True
+    assert (await sync.failed(project.id, "away")).error == "away"
+    assert (await sync.published(project.id, 1, now)).pending is True
+    done = await sync.published(project.id, 2, now)
+    assert (done.version, done.pending, done.error) == (2, False, "")
+    copied = await sync.copied(project.id, 7, now)
+    assert (copied.version, copied.synced_at) == (7, now)
+
+    records = PostgresProjectTeamRecords(isolated_pool)
+
+    def record(version, home="valhalla", people=("alice", "bob")):
+        return ProjectTeamRecord(
+            home_instance_id=home,
+            team=ProjectTeam(
+                project_id=project.id,
+                tenant_id="acme",
+                version=version,
+                members=[
+                    TeamMember(user_id=user, role="owner", created_at=now, updated_at=now)
+                    for user in people
+                ],
+            ),
+        )
+
+    assert await records.get(project.id) is None
+    assert (await records.put(record(2))).team.version == 2
+    assert (await records.put(record(1))).team.version == 2
+    assert (await records.put(record(3, people=("alice",)))).team.version == 3
+    with pytest.raises(ProjectTeamHomeConflictError):
+        await records.put(record(9, home="noatun"))
+    assert (await records.get(project.id)) == record(3, people=("alice",))
+    assert await records.of_member("alice", "acme") == [record(3, people=("alice",))]
+    assert await records.of_member("alice", "other") == []
+    assert await records.of_member("bob", "acme") == []
+    assert await records.recorded([project.id, uuid4()]) == {project.id}

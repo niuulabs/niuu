@@ -24,7 +24,7 @@ from volundr.adapters.inbound.rest import (
     SessionResponse,
     _execution_catalog_http_error,
 )
-from volundr.adapters.inbound.rest_projects import project_result
+from volundr.adapters.inbound.rest_project_results import project_result
 from volundr.domain.execution_catalog import ExecutionCatalogError, ExecutionSelectionError
 from volundr.domain.models import (
     GitSource,

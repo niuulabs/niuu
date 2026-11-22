@@ -227,6 +227,22 @@ class ProjectMember(BaseModel):
     email: str = ""
 
 
+class ProjectTeamSync(BaseModel):
+    """Where a project's team on this Forge stands with the Guild.
+
+    ``version`` is the one this Forge made (at the project's home) or copied. ``pending`` is
+    a home that still has to publish, ``synced_at`` the last exchange that succeeded and
+    ``error`` why a later one did not.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    version: int = 0
+    pending: bool = False
+    synced_at: datetime | None = None
+    error: str = ""
+
+
 class ProjectMemberCandidate(BaseModel):
     """An active member of the project's org who is not yet on the project."""
 

@@ -4,15 +4,19 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from contextlib import AbstractAsyncContextManager
+from dataclasses import dataclass
+from datetime import datetime
 from uuid import UUID
 
 from niuu.domain.agent_directory import AgentSkill
+from niuu.domain.project_team import ProjectTeamRecord
 from volundr.domain.projects import (
     ForgeProject,
     ProjectMember,
     ProjectMemberCandidate,
     ProjectReceipt,
     ProjectRole,
+    ProjectTeamSync,
 )
 
 
@@ -123,11 +127,102 @@ class ProjectMemberRepository(ABC):
         ``LastOwnerError``."""
 
     @abstractmethod
+    async def replace(self, project_id: UUID, members: list[ProjectMember]) -> None:
+        """Make *members* the project's whole membership, in one transaction.
+
+        For a copy of a project: its home decided who is on it. Raises ``LastOwnerError``
+        when none of them is an owner.
+        """
+
+    @abstractmethod
     async def candidates(
         self, project_id: UUID, tenant_id: str, query: str
     ) -> list[ProjectMemberCandidate]:
         """Active members of *tenant_id* not yet on the project whose name or email
         contains *query* (every one when it is empty), by name."""
+
+
+class ProjectTeamSyncRepository(ABC):
+    """How each project's team on this Forge stands with the Guild's."""
+
+    @abstractmethod
+    async def get(self, project_id: UUID) -> ProjectTeamSync:
+        """The project's state; the empty one when it has none yet."""
+
+    @abstractmethod
+    async def changed(self, project_id: UUID) -> ProjectTeamSync:
+        """The home changed the team: the next version, still to be published."""
+
+    @abstractmethod
+    async def published(self, project_id: UUID, version: int, at: datetime) -> ProjectTeamSync:
+        """The Guild took *version*; a change made meanwhile is still to be published."""
+
+    @abstractmethod
+    async def copied(self, project_id: UUID, version: int, at: datetime) -> ProjectTeamSync:
+        """This copy now holds *version*."""
+
+    @abstractmethod
+    async def failed(self, project_id: UUID, error: str) -> ProjectTeamSync:
+        """The last exchange failed; what is held is unchanged."""
+
+
+class TeamGuildError(RuntimeError):
+    """The Guild could not answer, or refused; the message names the remedy.
+
+    ``route_missing`` is a Guild, or a home Forge, from before project teams.
+    """
+
+    def __init__(self, message: str, *, route_missing: bool = False) -> None:
+        super().__init__(message)
+        self.route_missing = route_missing
+
+
+class TeamNotVisibleError(TeamGuildError):
+    """The Guild holds no team of this project for the caller."""
+
+
+@dataclass(frozen=True)
+class TeamGuildReply:
+    """What the Guild answered to a forwarded change, passed on as it is."""
+
+    status: int
+    content: bytes = b""
+    media_type: str | None = None
+
+
+@dataclass(frozen=True)
+class TeamPublicationReply:
+    version: int
+
+
+class TeamGuild(ABC):
+    """The Guild as a Forge's project teams see it. Each call carries the caller's login."""
+
+    @abstractmethod
+    async def record(self, project_id: UUID, bearer: str) -> ProjectTeamRecord:
+        """The team the Guild holds. Raises ``TeamNotVisibleError`` when it holds none, or
+        none this caller may see, and ``TeamGuildError`` when it cannot answer."""
+
+    @abstractmethod
+    async def publish(
+        self, project_id: UUID, instance_id: str, bearer: str
+    ) -> TeamPublicationReply:
+        """Have the Guild take the team from its home *instance_id* and copy it on."""
+
+    @abstractmethod
+    async def forward(
+        self,
+        project_id: UUID,
+        instance_id: str,
+        *,
+        method: str,
+        operation: str,
+        query: str,
+        body: bytes,
+        bearer: str,
+    ) -> TeamGuildReply:
+        """Make a change to the project's team on its home *instance_id*. Raises
+        ``TeamGuildError`` when the Guild cannot be reached: then nothing was changed."""
 
 
 class ProjectWorkspace(ABC):

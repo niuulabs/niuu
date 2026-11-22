@@ -3663,6 +3663,24 @@ class ProjectsConfig(BaseModel):
             "paged with `before`, never dropped."
         ),
     )
+    team_refresh_after_seconds: float = Field(
+        default=15.0,
+        ge=0,
+        description=(
+            "How old a copied project team may be before a read copies it from the Guild "
+            "again. Bound by one project page making several team reads at once; 0 copies on "
+            "every read."
+        ),
+    )
+    team_guild_timeout_seconds: float = Field(
+        default=60.0,
+        gt=0,
+        description=(
+            "How long one exchange with the Guild about a project's team may take. Publishing "
+            "waits for every other Forge to copy, so it is longer than one Forge's own "
+            "timeout; past it the change is kept and published on the next read."
+        ),
+    )
 
 
 class Settings(BaseSettings):

@@ -17,6 +17,7 @@ from niuu.ports.credentials import CredentialStorePort
 from niuu.ports.integrations import IntegrationRepository, IntegrationUsageLog
 from niuu.utils import import_class
 from ting.adapters.native import NativeTrackerAdapter
+from ting.adapters.team_projects import TeamProject
 from ting.adapters.team_tracker import TeamIssueReader, TeamTrackerRecorder
 from ting.domain.memory_imports import CONNECTOR_LINEAR, ImportConnectionError
 from ting.ports.memory_imports import ImportConnections, IssueUpdateReader
@@ -70,7 +71,8 @@ class TrackerAdapterFactory(ImportConnections):
         credential_store: CredentialStorePort,
         pool: Any | None = None,
         *,
-        member_projects: Callable[[str], Awaitable[list[str]]] | None = None,
+        member_projects: Callable[[str], Awaitable[tuple[list[TeamProject], list[str]]]]
+        | None = None,
         usage_log: IntegrationUsageLog | None = None,
     ) -> None:
         self._integration_repo = integration_repo
@@ -202,30 +204,29 @@ class TrackerAdapterFactory(ImportConnections):
         """The tracker connections of each project the owner is a member of."""
         if self._member_projects is None:
             return []
-        try:
-            project_ids = await self._member_projects(owner_id)
-        except Exception:
+        projects, unread = await self._member_projects(owner_id)
+        for reason in unread:
             failures.append(
                 TrackerResolutionFailure(
                     connection_id="",
                     code="teamTrackersUnavailable",
-                    message="The owner's project memberships could not be read, so the "
-                    "team trackers are unavailable.",
+                    message="Some of the owner's project memberships could not be read, so "
+                    f"team trackers may be missing: {reason}.",
                 )
             )
             logger.error(
-                "Could not list the projects of owner %s; their team trackers are unavailable",
+                "Could not read every project of owner %s; team trackers may be missing: %s",
                 owner_id,
-                exc_info=True,
+                reason,
             )
-            return []
-        return [
-            await self._integration_repo.list_connections(
-                project_owner_id(project_id),
+        found = []
+        for project in projects:
+            connections = await self._integration_repo.list_connections(
+                project_owner_id(project.project_id),
                 integration_type=IntegrationType.ISSUE_TRACKER,
             )
-            for project_id in project_ids
-        ]
+            found.append([conn for conn in connections if project.has(str(conn.id))])
+        return found
 
     async def _resolve_connections(
         self,

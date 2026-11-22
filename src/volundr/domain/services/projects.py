@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
@@ -58,6 +59,10 @@ _ROLE_GUIDANCE = {
 }
 
 
+async def _nothing_to_publish(_project_id: UUID) -> None:
+    """A Forge without a Guild has nobody to tell that a project's team changed."""
+
+
 class ProjectNotFoundError(LookupError):
     """Project is absent or the principal is not on it."""
 
@@ -80,6 +85,9 @@ class ProjectService:
         self.members = members
         self.users = users
         self.member_service = ProjectMemberService(self)
+        # Set by the team's exchange with the Guild; a Forge without one has no copies.
+        self.team_changed: Callable[[UUID], Awaitable[None]] = _nothing_to_publish
+        self.team_is_copy: Callable[[ForgeProject], bool] = lambda _project: False
 
     @staticmethod
     def scope(principal: Principal | None) -> tuple[str, str]:

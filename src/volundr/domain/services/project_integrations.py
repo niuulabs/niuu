@@ -21,6 +21,7 @@ from niuu.domain.models import (
     IntegrationConnection,
     IntegrationType,
     IntegrationUsage,
+    credential_owner,
     project_owner_id,
 )
 from niuu.ports.credentials import CredentialStorePort
@@ -67,6 +68,37 @@ def team_route_rule_id(project_id: UUID | str, event: TeamRouteEvent) -> UUID:
     return uuid5(_TEAM_ROUTE_NAMESPACE, f"{project_id}:{event.value}")
 
 
+def team_route_rule(
+    project_id: UUID,
+    *,
+    event: TeamRouteEvent,
+    connection_id: str,
+    deliver_to: TeamDeliverTo,
+    channel: str,
+    enabled: bool,
+    created_at: datetime,
+    updated_at: datetime,
+) -> NotificationRule:
+    """The delivery rule a project's team route is kept as."""
+    return NotificationRule(
+        id=team_route_rule_id(project_id, event),
+        owner_id=project_owner_id(project_id),
+        name=f"Team: {event.value.replace('_', ' ')}",
+        enabled=enabled,
+        match=NotificationRuleMatch(project_ids=[str(project_id)]),
+        sink=INTEGRATION_SINK.name,
+        integration_connection_id=connection_id,
+        config={
+            TEAM_PROJECT_KEY: str(project_id),
+            TEAM_EVENT_KEY: event.value,
+            TEAM_DELIVER_TO_KEY: deliver_to.value,
+            TEAM_CHANNEL_KEY: channel,
+        },
+        created_at=created_at,
+        updated_at=updated_at,
+    )
+
+
 class ProjectIntegrationService:
     """Connect, route and audit the integrations a project's team shares."""
 
@@ -105,6 +137,26 @@ class ProjectIntegrationService:
         project = await self._projects.get(project_id, principal)
         return await self._integrations.list_connections(project_owner_id(project.id))
 
+    async def not_here(
+        self, project_id: UUID, connections: list[IntegrationConnection]
+    ) -> set[str]:
+        """The ids of a copied team's connections whose credential this Forge does not have.
+
+        A copy names the credential its home stored. Forges that share a credential store
+        all have it; one with a store of its own does not, and must not look connected.
+        """
+        project = await self._projects.repository.get(project_id)
+        if project is None or not self._projects.team_is_copy(project):
+            return set()
+        return {
+            connection.id
+            for connection in connections
+            if await self._credentials.get(
+                *credential_owner(connection), connection.credential_name
+            )
+            is None
+        }
+
     async def routes(self, project_id: UUID, principal: Principal | None) -> list[NotificationRule]:
         project = await self._projects.get(project_id, principal)
         owner = project_owner_id(project.id)
@@ -133,7 +185,13 @@ class ProjectIntegrationService:
     # --- managing (owners) ---------------------------------------------
 
     async def owner_project(self, project_id: UUID, principal: Principal | None) -> ForgeProject:
-        return await self._projects.get(project_id, principal, ProjectRole.OWNER)
+        project = await self._projects.get(project_id, principal, ProjectRole.OWNER)
+        if self._projects.team_is_copy(project):
+            raise TeamIntegrationError(
+                "This Forge has a copy of the project; change its team integrations on the "
+                f"project's home, Forge {project.home_instance_id}"
+            )
+        return project
 
     def definition(self, slug: str) -> IntegrationDefinition:
         definition = self._registry.get_definition(slug)
@@ -229,6 +287,7 @@ class ProjectIntegrationService:
             connected_by=connected_by,
         )
         saved = await self._integrations.save_connection(connection)
+        await self._projects.team_changed(project.id)
         await self._usage.record(
             IntegrationUsage(
                 connection_id=saved.id,
@@ -261,7 +320,9 @@ class ProjectIntegrationService:
             enabled=existing.enabled if enabled is None else enabled,
             updated_at=datetime.now(UTC),
         )
-        return await self._integrations.save_connection(updated)
+        saved = await self._integrations.save_connection(updated)
+        await self._projects.team_changed(project.id)
+        return saved
 
     async def remove(
         self, project_id: UUID, principal: Principal | None, connection_id: str
@@ -274,6 +335,7 @@ class ProjectIntegrationService:
             if rule.integration_connection_id == existing.id:
                 await self._rules.delete(owner, rule.id)
         await self._integrations.delete_connection(existing.id)
+        await self._projects.team_changed(project.id)
         await self._credentials.delete(
             PROJECT_CREDENTIAL_OWNER, str(project.id), existing.credential_name
         )
@@ -317,28 +379,24 @@ class ProjectIntegrationService:
         rule_id = team_route_rule_id(project.id, event)
         now = datetime.now(UTC)
         existing = await self._rules.get(owner, rule_id)
-        rule = NotificationRule(
-            id=rule_id,
-            owner_id=owner,
-            name=f"Team: {event.value.replace('_', ' ')}",
+        rule = team_route_rule(
+            project.id,
+            event=event,
+            connection_id=connection.id,
+            deliver_to=deliver_to,
+            channel=channel,
             enabled=enabled,
-            match=NotificationRuleMatch(project_ids=[str(project.id)]),
-            sink=INTEGRATION_SINK.name,
-            integration_connection_id=connection.id,
-            config={
-                TEAM_PROJECT_KEY: str(project.id),
-                TEAM_EVENT_KEY: event.value,
-                TEAM_DELIVER_TO_KEY: deliver_to.value,
-                TEAM_CHANNEL_KEY: channel,
-            },
             created_at=existing.created_at if existing else now,
             updated_at=now,
         )
         if existing is None:
-            return await self._rules.create(rule)
+            created = await self._rules.create(rule)
+            await self._projects.team_changed(project.id)
+            return created
         updated = await self._rules.update(rule)
         if updated is None:
             raise TeamIntegrationNotFoundError("That team route was removed meanwhile")
+        await self._projects.team_changed(project.id)
         return updated
 
     async def remove_route(
@@ -348,6 +406,7 @@ class ProjectIntegrationService:
         await self._rules.delete(
             project_owner_id(project.id), team_route_rule_id(project.id, event)
         )
+        await self._projects.team_changed(project.id)
 
     # --- use -----------------------------------------------------------
 

@@ -268,6 +268,10 @@ def mesh_routes(*, existing=False, owner_supported=True, source_status=200):
         httpx.Response(200, json={**project, "workspace_path": ""}),
     ]
     register = respx.post(f"{owner}/projects").respond(201, json=project)
+    # An owner from before project teams has no team to copy yet.
+    respx.post(f"{owner}/projects/{project_id}/team/refresh").respond(
+        404, json={"detail": "Not Found"}
+    )
     assignment = respx.put(f"{owner}/sessions/{session_id}/project").respond(
         200,
         json={

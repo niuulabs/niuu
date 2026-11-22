@@ -86,10 +86,11 @@ from volundr.adapters.inbound.rest_project_integrations import (
     create_project_integrations_router,
 )
 from volundr.adapters.inbound.rest_project_memory import create_project_memory_router
+from volundr.adapters.inbound.rest_project_results import project_result
+from volundr.adapters.inbound.rest_project_team import bearer_of, create_project_team_router
 from volundr.adapters.inbound.rest_projects import (
     create_projects_router,
     create_session_projects_router,
-    project_result,
 )
 from volundr.config import PermissionAutoApprovalConfig
 from volundr.domain.execution_catalog import (
@@ -2553,6 +2554,7 @@ def create_router(
     durable_transcripts: DurableTranscripts | None = None,
     project_service=None,
     project_integration_service=None,
+    project_team_service=None,
     project_memory_service=None,
     runtime_build: dict | None = None,
     session_status_host: str | None = None,
@@ -2784,6 +2786,10 @@ def create_router(
         router.include_router(
             create_session_projects_router(project_service, project_principal, guild_membership)
         )
+        if project_team_service is not None:
+            router.include_router(
+                create_project_team_router(project_service, project_team_service, project_principal)
+            )
         if project_integration_service is not None:
             router.include_router(
                 create_project_integrations_router(project_integration_service, project_principal)
@@ -3378,6 +3384,12 @@ def create_router(
         """
         principal = await _optional_principal(request)
         require_own_target(guild_membership, data)
+        if project_team_service is not None and data.coordination is not None:
+            # On a copy of the project, the launch sees the team as its home has it. Only a
+            # person's own login can ask the Guild for that.
+            copy = await project_team_service.copy_of(data.coordination.project_id)
+            if copy is not None and not (principal and principal.token_use):
+                await project_team_service.refresh_for_read(copy, bearer_of(request))
         try:
             started = await project_result(
                 forge.create_and_start_session(data, principal=principal)

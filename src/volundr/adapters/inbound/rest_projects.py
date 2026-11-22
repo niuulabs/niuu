@@ -10,16 +10,8 @@ from niuu.domain.agent_directory import AgentSkill
 from niuu.domain.guild_membership import GuildMembership
 from niuu.domain.services.token_scope import FORGE_SESSION_LIFECYCLE_SCOPE, require_scope
 from volundr.adapters.inbound.rest_guild import require_own_instance
-from volundr.domain.execution_catalog import ExecutionSelectionError
-from volundr.domain.project_memory import (
-    MemoryDirectoryUnavailableError,
-    MemoryMountClashError,
-)
-from volundr.domain.project_ports import (
-    ProjectAccessDeniedError,
-    ProjectConflictError,
-    ProjectMemberNotFoundError,
-)
+from volundr.adapters.inbound.rest_project_results import project_result
+from volundr.adapters.inbound.rest_project_team import ProjectTeamRoute
 from volundr.domain.projects import (
     PROJECT_BRIEF_MAX_CHARS,
     ForgeProject,
@@ -29,8 +21,7 @@ from volundr.domain.projects import (
     ProjectRole,
     SessionReference,
 )
-from volundr.domain.services.projects import UNCHANGED, ProjectNotFoundError, ProjectService
-from volundr.domain.services.session import SessionAccessDeniedError
+from volundr.domain.services.projects import UNCHANGED, ProjectService
 
 
 class ProjectRegistration(ForgeProject):
@@ -161,37 +152,12 @@ def create_session_projects_router(
     return router
 
 
-async def project_result(operation):
-    try:
-        return await operation
-    except ProjectNotFoundError as exc:
-        raise HTTPException(404, str(exc)) from exc
-    except ProjectConflictError as exc:
-        raise HTTPException(409, str(exc)) from exc
-    except (SessionAccessDeniedError, ProjectAccessDeniedError) as exc:
-        raise HTTPException(403, str(exc)) from exc
-    except ProjectMemberNotFoundError as exc:
-        raise HTTPException(404, str(exc)) from exc
-    except ExecutionSelectionError:
-        raise
-    except MemoryMountClashError as exc:
-        raise HTTPException(409, str(exc)) from exc
-    except MemoryDirectoryUnavailableError as exc:
-        raise HTTPException(503, str(exc)) from exc
-    except ValueError as exc:
-        raise HTTPException(422, str(exc)) from exc
-    except OSError as exc:
-        raise HTTPException(
-            503, "Project checkout is unavailable; retry after restoring it"
-        ) from exc
-
-
 def create_projects_router(
     service: ProjectService,
     principal_for_request,
     guild_membership: GuildMembership | None = None,
 ) -> APIRouter:
-    router = APIRouter(prefix="/projects", tags=["Projects"])
+    router = APIRouter(prefix="/projects", tags=["Projects"], route_class=ProjectTeamRoute)
 
     @router.get("")
     async def list_projects(request: Request) -> list[ForgeProject]:

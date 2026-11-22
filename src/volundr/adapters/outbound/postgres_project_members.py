@@ -149,6 +149,41 @@ class PostgresProjectMemberRepository(ProjectMemberRepository):
                 )
         return removed is not None
 
+    async def replace(self, project_id: UUID, members: list[ProjectMember]) -> None:
+        if not any(member.role == ProjectRole.OWNER for member in members):
+            raise LastOwnerError("A project needs an owner; none of these members is one")
+        async with self._pool.acquire() as connection:
+            async with connection.transaction():
+                await self._lock_owners(connection, project_id)
+                await connection.execute(
+                    "DELETE FROM project_members WHERE project_id = $1 "
+                    "AND NOT (user_id = ANY($2::text[]))",
+                    project_id,
+                    [member.user_id for member in members],
+                )
+                await connection.executemany(
+                    "INSERT INTO project_members (project_id, user_id, tenant_id, role, "
+                    "expertise, skills, added_by, created_at, updated_at) "
+                    "VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9) "
+                    "ON CONFLICT (project_id, user_id) DO UPDATE SET role = EXCLUDED.role, "
+                    "expertise = EXCLUDED.expertise, skills = EXCLUDED.skills, "
+                    "added_by = EXCLUDED.added_by, updated_at = EXCLUDED.updated_at",
+                    [
+                        (
+                            project_id,
+                            member.user_id,
+                            member.tenant_id,
+                            member.role.value,
+                            member.expertise,
+                            _skills_json(member.skills),
+                            member.added_by,
+                            member.created_at,
+                            member.updated_at,
+                        )
+                        for member in members
+                    ],
+                )
+
     async def candidates(
         self, project_id: UUID, tenant_id: str, query: str
     ) -> list[ProjectMemberCandidate]:
