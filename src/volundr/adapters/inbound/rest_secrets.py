@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, HTTPException, Path, Request, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, Response, status
 from pydantic import BaseModel, Field
 
 from credentials.models import MCPServerConfig, SecretInfo
@@ -14,7 +14,11 @@ from credentials.ports import (
     SecretManager,
     SecretValidationError,
 )
+from niuu.domain.guild_membership import GuildMembership
 from niuu.http_compat import LegacyRouteNotice, warn_on_legacy_route
+from volundr.adapters.inbound.auth import extract_principal
+from volundr.adapters.inbound.rest_guild import require_own_instance
+from volundr.domain.models import Principal
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +51,7 @@ class MCPServerResponse(BaseModel):
         description="Server description",
         examples=["Linear issue tracker MCP server"],
     )
+    version: str = Field(default="", description="Version of the pinned program it runs, if any")
 
     @classmethod
     def from_config(cls, cfg: MCPServerConfig) -> MCPServerResponse:
@@ -58,6 +63,7 @@ class MCPServerResponse(BaseModel):
             url=cfg.url,
             args=list(cfg.args),
             description=cfg.description,
+            version=str((cfg.program or {}).get("version", "")),
         )
 
 
@@ -287,3 +293,25 @@ def create_canonical_secrets_router(
 ) -> APIRouter:
     """Backward-compatible alias for the canonical shared credential metadata router."""
     return create_secrets_router(mcp_provider, secret_manager, prefix=prefix)
+
+
+def create_forge_mcp_servers_router(
+    mcp_provider: MCPServerProvider,
+    guild_membership: GuildMembership | None = None,
+    prefix: str = "/api/v1/forge",
+) -> APIRouter:
+    """This Forge's MCP server catalogue, where a UI scoped to this node reads it."""
+    router = APIRouter(prefix=prefix, tags=["MCP Servers"])
+
+    @router.get("/mcp-servers", response_model=list[MCPServerResponse])
+    async def list_mcp_servers(
+        instance_id: str | None = Query(
+            default=None,
+            description="Guild instance id, as the Guild facade takes it; must be this node's own",
+        ),
+        _principal: Principal = Depends(extract_principal),
+    ) -> list[MCPServerResponse]:
+        require_own_instance(guild_membership, instance_id)
+        return [MCPServerResponse.from_config(server) for server in mcp_provider.list()]
+
+    return router

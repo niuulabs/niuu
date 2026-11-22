@@ -459,3 +459,47 @@ async def test_get_session_proxy_target_requires_active_endpoint() -> None:
 
     with pytest.raises(ValueError, match="has no active endpoint"):
         await forge.get_session_proxy_target(uuid4())
+
+
+@pytest.mark.asyncio
+async def test_a_sessions_mcp_servers_are_checked_first_and_kept_for_its_restarts() -> None:
+    session_service = AsyncMock(spec=SessionService)
+    created = SimpleNamespace(id=uuid4())
+    session_service.create_session.return_value = created
+    session_service.start_session.return_value = created
+    forge = ForgeService(
+        session_service,
+        session_participant_service=make_session_participant_service(session_service),
+    )
+    data = SimpleNamespace(
+        name="demo",
+        model="claude",
+        source=SimpleNamespace(),
+        definition="skuldClaude",
+        launch_spec=None,
+        launch_spec_id=None,
+        workspace_id=None,
+        issue_id=None,
+        issue_url=None,
+        terminal_restricted=False,
+        credential_names=[],
+        integration_ids=[],
+        resource_config={},
+        system_prompt="",
+        initial_prompt="",
+        workload_type="session",
+        workload_config={},
+        mcp_servers=["solidcraft"],
+    )
+
+    await forge.create_and_start_session(data)
+
+    session_service.check_mcp_servers.assert_called_once_with(["solidcraft"])
+    started = session_service.start_session.await_args.kwargs
+    assert started["workload_config"] == {"mcp_servers": ["solidcraft"]}
+
+    session_service.create_session.reset_mock()
+    session_service.check_mcp_servers.side_effect = ValueError("not in this Forge's catalogue")
+    with pytest.raises(ValueError, match="catalogue"):
+        await forge.create_and_start_session(data)
+    session_service.create_session.assert_not_awaited()

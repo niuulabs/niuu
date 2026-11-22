@@ -14,11 +14,9 @@ import {
 export function AdvancedRuntimeSection({
   form,
   update,
-  availableMcpServers,
 }: {
   form: WizardForm;
   update: (patch: Partial<WizardForm>) => void;
-  availableMcpServers: McpServerConfig[];
 }) {
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [yamlError, setYamlError] = useState<string | null>(null);
@@ -31,10 +29,6 @@ export function AdvancedRuntimeSection({
   const [customMcpEnvKey, setCustomMcpEnvKey] = useState('');
   const [customMcpEnvValue, setCustomMcpEnvValue] = useState('');
   const [customMcpEnv, setCustomMcpEnv] = useState<Record<string, string>>({});
-  const selectedMcpNames = new Set(form.mcpServers.map((server) => server.name));
-  const availablePresetServers = availableMcpServers.filter(
-    (server) => !selectedMcpNames.has(server.name),
-  );
 
   const resetCustomMcp = useCallback(() => {
     setShowCustomMcp(false);
@@ -188,7 +182,7 @@ export function AdvancedRuntimeSection({
 
           <RuntimePanel
             title="MCP servers"
-            description="Attach launch-spec tools and custom MCP definitions."
+            description="Custom MCP definitions, kept in the launch spec."
           >
             <div className="niuu:flex niuu:flex-col niuu:gap-2">
               {form.mcpServers.length > 0 ? (
@@ -227,21 +221,6 @@ export function AdvancedRuntimeSection({
                   No MCP servers selected.
                 </div>
               )}
-              {availablePresetServers.length > 0 ? (
-                <div className="niuu:grid niuu:grid-cols-2 niuu:gap-2">
-                  {availablePresetServers.map((server) => (
-                    <button
-                      key={server.name}
-                      type="button"
-                      className={`${SECONDARY_BUTTON_CLASS} niuu:text-left`}
-                      onClick={() => update({ mcpServers: [...form.mcpServers, server] })}
-                    >
-                      <div className="niuu:font-mono niuu:text-text-primary">{server.name}</div>
-                      <div className="niuu:text-text-faint">{server.type}</div>
-                    </button>
-                  ))}
-                </div>
-              ) : null}
               <div className="niuu:flex niuu:flex-wrap niuu:gap-2">
                 <button
                   type="button"

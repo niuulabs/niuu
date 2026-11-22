@@ -407,6 +407,10 @@ data:
       {{- end }}
     {{- end }}
 
+    {{- if .Values.mcpServers }}
+    mcp_servers: {{ .Values.mcpServers | toJson }}
+    {{- end }}
+
     {{- if .Values.launchSpecs }}
     launch_specs:
       {{- range .Values.launchSpecs }}

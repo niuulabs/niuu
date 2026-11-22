@@ -206,6 +206,7 @@ export function ConfirmStep({
   sessionDefinitions,
   targets,
   runsAs,
+  sessionTools = [],
 }: {
   form: WizardForm;
   models: Record<string, RuntimeModelDescriptor>;
@@ -214,6 +215,8 @@ export function ConfirmStep({
   targets: VolundrTarget[];
   /** What the chosen host runs this session as. */
   runsAs?: SessionRuntimeOffer;
+  /** Names of the host's MCP servers this session turns on. */
+  sessionTools?: string[];
 }) {
   const modelLabel = formatModelOption(form.model, models[form.model]);
   const definitionLabel =
@@ -293,6 +296,7 @@ export function ConfirmStep({
           <ConfirmChipList
             title="MCP servers"
             items={[
+              ...sessionTools,
               ...form.mcpServers.map((server) => server.name),
               ...integrations
                 .filter(

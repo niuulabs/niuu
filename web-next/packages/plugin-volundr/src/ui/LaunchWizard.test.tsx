@@ -412,7 +412,6 @@ describe('LaunchWizard', () => {
     await advanceToRuntime();
 
     fireEvent.click(screen.getByText('show advanced'));
-    fireEvent.click(screen.getByText('filesystem'));
     fireEvent.click(screen.getByText('add env var'));
 
     const envInputs = screen.getAllByPlaceholderText(/KEY|value/);
@@ -663,22 +662,49 @@ source:
     expect(presetName.value).toBe('');
   });
 
-  it('manages preset and custom mcp servers in advanced runtime settings', async () => {
+  it('turns on a tool the host offers and names it before launch', async () => {
+    const service = createMockVolundrService();
+    service.getAvailableMcpServers = vi
+      .fn()
+      .mockResolvedValue([{ name: 'solidcraft', type: 'stdio' }]);
+    const startSession = vi.spyOn(service, 'startSession');
+    const saveLaunchSpec = vi.spyOn(service, 'saveLaunchSpec');
+    wrap(true, vi.fn(), service);
+
+    await advanceToRuntime();
+    fireEvent.click(await screen.findByLabelText('solidcraft'));
+    fireEvent.click(screen.getByTestId('wizard-next'));
+    const confirm = await screen.findByTestId('step-confirm-content');
+    expect(within(confirm).getByText('solidcraft')).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByTestId('wizard-next')).toBeEnabled());
+    fireEvent.click(screen.getByTestId('wizard-next'));
+
+    await waitFor(() =>
+      expect(startSession).toHaveBeenCalledWith(
+        expect.objectContaining({ mcpServers: ['solidcraft'] }),
+      ),
+    );
+    expect(saveLaunchSpec).not.toHaveBeenCalled();
+  });
+
+  it('says when the tools of the host cannot be read', async () => {
+    const service = createMockVolundrService();
+    service.getAvailableMcpServers = vi.fn().mockRejectedValue(new Error('no catalogue'));
+    wrap(true, vi.fn(), service);
+
+    await advanceToRuntime();
+
+    expect(
+      await screen.findByText("This host's tools could not be loaded: no catalogue"),
+    ).toBeInTheDocument();
+  });
+
+  it('manages custom mcp servers in advanced runtime settings', async () => {
     wrap();
 
     await advanceToRuntime();
 
     fireEvent.click(screen.getByText('show advanced'));
-
-    fireEvent.click(screen.getByText('filesystem'));
-    await screen.findByText('uvx mcp-filesystem /workspace');
-
-    const filesystemCard = screen.getByText('filesystem').parentElement
-      ?.parentElement as HTMLElement;
-    fireEvent.click(within(filesystemCard).getByRole('button', { name: 'remove' }));
-    await waitFor(() => {
-      expect(screen.queryByText('uvx mcp-filesystem /workspace')).not.toBeInTheDocument();
-    });
 
     fireEvent.click(screen.getByText('add custom server'));
     fireEvent.change(screen.getByPlaceholderText('filesystem'), {

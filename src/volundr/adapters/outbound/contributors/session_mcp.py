@@ -6,6 +6,7 @@ import logging
 import re
 from typing import Any
 
+from credentials.ports import MCPServerProvider
 from volundr.domain.models import LaunchSpec, Session
 from volundr.domain.ports import (
     LaunchSpecProvider,
@@ -15,6 +16,11 @@ from volundr.domain.ports import (
 )
 from volundr.domain.project_memory import MIMIR_SERVER_PREFIX
 from volundr.domain.services.memory_context import MemoryContextError, attached_mounts
+from volundr.domain.services.session_mcp_servers import (
+    MCP_SERVERS_KEY,
+    catalogue_entries,
+    requested_mcp_servers,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -359,8 +365,8 @@ class SessionMCPContributor(SessionContributor):
     """Converts attached session resources into MCP server configs.
 
     The contributor is generic at the session layer: it inspects attached
-    resources and emits ``mcpServers`` into session values. Mimir is simply the
-    first supported resource type behind this contributor.
+    resources and emits ``mcpServers`` into session values: the Mimir mounts, and the
+    servers the session asks for by name (``workload_config.mcp_servers``).
 
     With the memory gateway (*memory_gateway_url*, ``memory.gateway_url``) the session's
     one ``memory`` server carries every mount, and the gateway holds their limits: this
@@ -374,9 +380,11 @@ class SessionMCPContributor(SessionContributor):
         *,
         launch_spec_provider: LaunchSpecProvider | None = None,
         memory_gateway_url: str = "",
+        mcp_server_provider: MCPServerProvider | None = None,
         **_extra: object,
     ) -> None:
         self._launch_spec_provider = launch_spec_provider
+        self._mcp_server_provider = mcp_server_provider
         self._memory_gateway_url = memory_gateway_url.strip()
 
     @property
@@ -388,28 +396,31 @@ class SessionMCPContributor(SessionContributor):
         session: Session,
         context: SessionContext,
     ) -> SessionContribution:
-        workload_config = self._resolve_workload(context)
-        if not workload_config:
+        servers = [
+            *self._mimir_servers(self._resolve_workload(context)),
+            *catalogue_entries(
+                requested_mcp_servers(context.workload_config), self._mcp_server_provider
+            ),
+        ]
+        if not servers:
             return SessionContribution()
+        return SessionContribution(values={"mcpServers": servers})
 
+    def _mimir_servers(self, workload_config: dict[str, Any]) -> list[dict[str, Any]]:
         raw_mimir = workload_config.get("mimir")
         mimir_cfg = _normalize_mimir_workload_config(
             raw_mimir if isinstance(raw_mimir, dict) else None,
             workload_config.get("mimir_hosted_url"),
         )
         if not mimir_cfg:
-            return SessionContribution()
+            return []
 
         if self._memory_gateway_url:
             self._require_attachable(mimir_cfg)
-            return SessionContribution()
+            return []
 
         instances, _write_routing = _resolve_mimir_runtime(mimir_cfg)
-        if not instances:
-            return SessionContribution()
-
-        mcp_servers = [self._build_mimir_server(instance) for instance in instances]
-        return SessionContribution(values={"mcpServers": mcp_servers})
+        return [self._build_mimir_server(instance) for instance in instances]
 
     @staticmethod
     def _require_attachable(mimir_cfg: dict[str, Any]) -> None:
@@ -423,8 +434,11 @@ class SessionMCPContributor(SessionContributor):
         self,
         context: SessionContext,
     ) -> dict[str, Any]:
-        if context.workload_config:
-            return context.workload_config
+        # Asking for MCP servers by name says nothing about the mounts, so it does not
+        # replace the launch spec's workload.
+        own = {k: v for k, v in context.workload_config.items() if k != MCP_SERVERS_KEY}
+        if own:
+            return own
 
         source = self._resolve_source(context)
         if source is None:

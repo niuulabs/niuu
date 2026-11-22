@@ -402,7 +402,8 @@ export interface IVolundrService {
   deleteLaunchSpec(id: string): Promise<void>;
 
   // Cluster resources
-  getAvailableMcpServers(): Promise<McpServerConfig[]>;
+  /** The MCP servers the operator of a Forge lets sessions turn on (default: its own host). */
+  getAvailableMcpServers(options?: { instanceId?: string }): Promise<McpServerConfig[]>;
   getAvailableSecrets(): Promise<string[]>;
   createSecret(
     name: string,
@@ -428,6 +429,8 @@ export interface IVolundrService {
     workspaceId?: string;
     credentialNames?: string[];
     integrationIds?: string[];
+    /** Names of MCP servers to turn on, from the host's catalogue (`getAvailableMcpServers`). */
+    mcpServers?: string[];
     resourceConfig?: Record<string, string | undefined>;
     systemPrompt?: string;
     initialPrompt?: string;

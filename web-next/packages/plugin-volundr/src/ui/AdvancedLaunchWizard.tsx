@@ -18,7 +18,9 @@ import { LinkedText } from './LinkedText';
 export function AdvancedLaunchWizard(props: LaunchWizardProps) {
   const { open, onOpenChange } = props;
   const {
-    availableMcpServers,
+    toolServers,
+    toolsError,
+    sessionTools,
     bootProgress,
     bootStep,
     canGoBack,
@@ -101,7 +103,9 @@ export function AdvancedLaunchWizard(props: LaunchWizardProps) {
               selectedPreset={
                 presets.find((preset) => launchSpecRef(preset) === form.presetId) ?? null
               }
-              availableMcpServers={availableMcpServers}
+              toolServers={toolServers}
+              toolsError={toolsError}
+              sessionTools={sessionTools}
               sessionDefinitions={
                 sessionDefinitions.length > 0 ? sessionDefinitions : FALLBACK_SESSION_DEFINITIONS
               }
@@ -122,6 +126,7 @@ export function AdvancedLaunchWizard(props: LaunchWizardProps) {
               }
               targets={targets}
               runsAs={runsAs.offer}
+              sessionTools={sessionTools}
             />
           )}
           {step === 'booting' && <BootingStep bootStep={bootStep} progress={bootProgress} />}

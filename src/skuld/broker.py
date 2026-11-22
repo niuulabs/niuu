@@ -688,6 +688,8 @@ class Broker(
         self._startup_ready = False
         self._startup_state = "created"
         self._startup_failure = ""
+        # The configured MCP servers with their programs installed; None until startup did.
+        self._installed_mcp_servers: list[dict[str, Any]] | None = None
         self._shutdown_started = False
         self._peer_pending_commands: dict[str, list[str]] = {}
         self._git_workspace_checkpoint: GitWorkspaceCheckpoint | None = None

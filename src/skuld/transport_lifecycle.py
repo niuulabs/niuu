@@ -8,6 +8,7 @@ import logging
 import os
 from pathlib import Path
 
+from niuu.domain.session_program import ProgramError
 from niuu.ports.cli import CLITransport
 from niuu.utils import import_class, resolve_secret_kwargs
 from personas.domain.persona_document import PersonaDocumentError, PortablePersonaDefinition
@@ -19,6 +20,7 @@ from skuld.memory_mcp.gateway import MemoryContextPackError
 from skuld.personas.projection import PersonaProjectionError, ProjectionContext
 from skuld.personas.registry import projector_for
 from skuld.session_artifacts import _capture_git_workspace_checkpoint
+from skuld.session_programs import ProgramInstaller
 from skuld.session_runtime import write_private_file
 
 logger = logging.getLogger("skuld.broker")
@@ -152,6 +154,7 @@ class TransportLifecycleMixin:
             raise ValueError(f"Cannot load transport adapter '{adapter_path}': {exc}") from exc
 
         sig = inspect.signature(cls)
+        self._require_mcp_support(cls, sig)
         kwargs = self._build_transport_kwargs()
         if "codex_auth_provider" in sig.parameters:
             kwargs["codex_auth_provider"] = self._create_codex_auth_provider()
@@ -161,6 +164,29 @@ class TransportLifecycleMixin:
         if "claude_permission_mode" in sig.parameters:
             self._log_claude_permission_mode()
         return cls(**filtered)
+
+    async def _install_session_programs(self) -> None:
+        """Install the programs the session's MCP servers run. Raises ProgramError."""
+        programs = self._settings.programs
+        installer = ProgramInstaller(
+            Path(self._settings.programs_path),
+            connect_timeout_s=programs.connect_timeout_seconds,
+            read_timeout_s=programs.read_timeout_seconds,
+        )
+        self._installed_mcp_servers = await asyncio.to_thread(
+            installer.resolve, list(self._settings.mcp_servers)
+        )
+
+    def _require_mcp_support(self, cls: type, sig: inspect.Signature) -> None:
+        """Refuse a harness that would silently drop a server the session asked for."""
+        if "mcp_servers" in sig.parameters:
+            return
+        asked = [str(s.get("name")) for s in self._settings.mcp_servers if s.get("required")]
+        if asked:
+            raise ProgramError(
+                f"{cls.__name__} takes no MCP servers, and this session asked for "
+                f"{', '.join(asked)}; start it on Claude Code, Codex or Grok, or without them"
+            )
 
     def _project_persona(self, cls: type, adapter_path: str, kwargs: dict) -> None:
         """Play the session's persona on this transport, or refuse to start.
@@ -334,9 +360,29 @@ class TransportLifecycleMixin:
             self._report_startup_failure()
             return
 
+        # Off the event loop: an archive may be hundreds of megabytes.
+        try:
+            await self._install_session_programs()
+        except ProgramError as exc:
+            self._fail_startup(exc)
+            logger.critical(
+                "A tool of this session cannot be provided; broker remains unready: %s",
+                self._startup_failure,
+            )
+            self._report_startup_failure()
+            return
+
         # Initialize transport
         try:
             self._transport = self._create_transport()
+        except ProgramError as exc:
+            self._fail_startup(exc)
+            logger.critical(
+                "This harness takes no MCP servers; broker remains unready: %s",
+                self._startup_failure,
+            )
+            self._report_startup_failure()
+            return
         except (PersonaProjectionError, PersonaDocumentError) as exc:
             # The harness cannot play the session's persona. Keep the HTTP diagnostics alive
             # so /ready reports exactly why, and start nothing that would run unrestricted.

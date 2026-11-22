@@ -92,7 +92,10 @@ from volundr.adapters.inbound.rest_resources import (
     create_resources_router,
 )
 from volundr.adapters.inbound.rest_secret_requests import create_secret_requests_router
-from volundr.adapters.inbound.rest_secrets import create_canonical_secrets_router
+from volundr.adapters.inbound.rest_secrets import (
+    create_canonical_secrets_router,
+    create_forge_mcp_servers_router,
+)
 from volundr.adapters.inbound.rest_session_log import create_session_log_router
 from volundr.adapters.inbound.rest_session_members import create_session_members_router
 from volundr.adapters.inbound.rest_session_participants import (
@@ -1627,6 +1630,7 @@ def create_app(
                 persona_provider=session_persona_provider,
                 pricing_provider=pricing_provider,
                 execution_credential_service=execution_credential_service,
+                mcp_server_provider=mcp_provider,
             )
 
             # Durable presented files (F2): Forge's own copy of every present-file.
@@ -1654,6 +1658,7 @@ def create_app(
                 validate_repos=settings.git.validate_on_create,
                 broadcaster=broadcaster,
                 launch_spec_provider=launch_spec_provider,
+                mcp_server_provider=mcp_provider,
                 authorization=authorization_adapter,
                 contributors=contributors if contributors else None,
                 provisioning_timeout=settings.provisioning.timeout_seconds,
@@ -2202,6 +2207,7 @@ def create_app(
             app.include_router(create_credentials_settings_router())
             app.include_router(create_canonical_credentials_router(credential_service))
             app.include_router(create_canonical_secrets_router(mcp_provider, secret_manager))
+            app.include_router(create_forge_mcp_servers_router(mcp_provider, guild_membership))
 
             app.include_router(create_integrations_settings_router())
             app.include_router(

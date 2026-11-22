@@ -9,6 +9,7 @@ contributor so launch behaviour is unchanged.
 import logging
 from typing import Any
 
+from credentials.ports import MCPServerProvider
 from volundr.domain.models import LaunchSpec, Session
 from volundr.domain.ports import (
     LaunchSpecProvider,
@@ -16,6 +17,7 @@ from volundr.domain.ports import (
     SessionContribution,
     SessionContributor,
 )
+from volundr.domain.services.session_mcp_servers import catalogue_entries, refuse_own_programs
 
 logger = logging.getLogger(__name__)
 
@@ -27,9 +29,11 @@ class LaunchSpecContributor(SessionContributor):
         self,
         *,
         launch_spec_provider: LaunchSpecProvider | None = None,
+        mcp_server_provider: MCPServerProvider | None = None,
         **_extra: object,
     ):
         self._provider = launch_spec_provider
+        self._mcp_server_provider = mcp_server_provider
 
     @property
     def name(self) -> str:
@@ -61,8 +65,14 @@ class LaunchSpecContributor(SessionContributor):
             logger.info("Using default launch spec: %s", default.name)
         return default
 
-    @staticmethod
-    def _apply(values: dict, source: LaunchSpec) -> None:
+    def _mcp_server(self, server: dict[str, Any]) -> dict[str, Any]:
+        """A launch spec's server; one that gives only a name is the catalogue's."""
+        refuse_own_programs([server])
+        if server.get("command") or server.get("url"):
+            return server
+        return catalogue_entries([str(server.get("name") or "")], self._mcp_server_provider)[0]
+
+    def _apply(self, values: dict, source: LaunchSpec) -> None:
         """Merge runtime config from a launch spec into values.
 
         A K8s-native resource config (``requests``/``limits``) passes through as
@@ -84,7 +94,7 @@ class LaunchSpecContributor(SessionContributor):
         if source.env_secret_refs:
             values["envSecretRefs"] = source.env_secret_refs
         if source.mcp_servers:
-            values["mcpServers"] = source.mcp_servers
+            values["mcpServers"] = [self._mcp_server(server) for server in source.mcp_servers]
         if source.system_prompt:
             values.setdefault("session", {})["systemPrompt"] = source.system_prompt
         if source.workload_config:

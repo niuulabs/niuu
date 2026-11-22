@@ -850,6 +850,23 @@ chronicle:
   # -- Retention period in days (0 = keep forever)
   retentionDays: 0
 
+# -- MCP servers sessions ask for by name (`mcp_servers` on session create, or a launch
+# spec's `mcpServers: [{name: ...}]`). `program` pins a program no session image carries: the
+# session installs it when it starts, on whatever it runs, and does not start without it.
+# Keys are the Forge config's (snake_case). See docs/operator/session-tools.md.
+mcpServers: []
+#  - name: solidcraft
+#    description: "Parametric CAD."
+#    args: ["mcp", "--headless"]
+#    default_tools_approval_mode: approve
+#    program:
+#      version: "0.46.0"
+#      platforms:
+#        linux-x86_64:
+#          url: https://github.com/tangency-labs/solidcraft/releases/download/v0.46.0/solidcraft-0.46.0-linux-x86_64.tar.gz
+#          sha256: 27b3b8334fbf99ab376d0bea176afaf55ef83b7aff822eb731eddb8d632b9112
+#          command: solidcraft-0.46.0-linux-x86_64/bin/solidcraft-cli
+
 # System launch catalog preloaded by config.
 launchSpecs:
   - name: standard-claude

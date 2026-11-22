@@ -20,6 +20,11 @@ class ConfigMCPServerProvider(MCPServerProvider):
                 url=cfg.url,
                 args=cfg.args,
                 description=cfg.description,
+                program=cfg.program.model_dump() if cfg.program is not None else None,
+                env=dict(cfg.env) or None,
+                default_tools_approval_mode=cfg.default_tools_approval_mode,
+                startup_timeout_sec=cfg.startup_timeout_sec,
+                tool_timeout_sec=cfg.tool_timeout_sec,
             )
 
     def list(self) -> list[MCPServerConfig]:

@@ -177,7 +177,9 @@ class ForgeSessionMixin:
 
     def _effective_mcp_servers(self) -> list[dict[str, Any]]:
         """Configured servers plus the built-ins (a configured same-name entry wins)."""
-        configured = list(self._settings.mcp_servers)
+        configured = self._installed_mcp_servers
+        if configured is None:
+            configured = list(self._settings.mcp_servers)
         builtins = self._builtin_mcp_servers()
         if not builtins:
             return configured

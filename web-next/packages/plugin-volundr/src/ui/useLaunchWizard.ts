@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from '@tanstack/react-router';
 import type { BifrostModel, IBifrostService } from '@niuulabs/plugin-bifrost';
@@ -9,7 +9,6 @@ import type { IVolundrService } from '../ports/IVolundrService';
 import type {
   CatalogEntry,
   ClusterResourceInfo,
-  McpServerConfig,
   SessionDefinition,
   IntegrationConnection,
   VolundrTarget,
@@ -22,6 +21,7 @@ import type {
 import { availableEngines, withEngineProvider } from './launchEngines';
 import { errorText } from './errorText';
 import { useRunsAs } from './hooks/useRunsAs';
+import { offeredTools, useSessionTools } from './hooks/useSessionTools';
 import {
   buildPresetComparisonPayload,
   buildPresetPayload,
@@ -81,7 +81,6 @@ export function useLaunchWizard({ open, initialLaunchSpecRef, initialForm }: Lau
   const [clusterResources, setClusterResources] = useState<ClusterResourceInfo | null>(null);
   const [presets, setPresets] = useState<VolundrLaunchSpec[]>([]);
   const [targets, setTargets] = useState<VolundrTarget[]>([]);
-  const [availableMcpServers, setAvailableMcpServers] = useState<McpServerConfig[]>([]);
   const [sessionDefinitions, setSessionDefinitions] = useState<SessionDefinition[]>([]);
   const [personas, setPersonas] = useState<PersonaSummary[]>([]);
   const [trackerResults, setTrackerResults] = useState<TrackerIssue[]>([]);
@@ -104,6 +103,7 @@ export function useLaunchWizard({ open, initialLaunchSpecRef, initialForm }: Lau
     trackerIssue: null,
     selectedCredentials: [],
     selectedIntegrations: [],
+    tools: [],
     mcpServers: [],
     envVars: [],
     setupScripts: [],
@@ -121,6 +121,12 @@ export function useLaunchWizard({ open, initialLaunchSpecRef, initialForm }: Lau
     yamlContent: '',
     ...initialForm,
   }));
+  const toolsQuery = useSessionTools(
+    form.targetMode === 'instance' ? form.instanceId || undefined : undefined,
+    open,
+  );
+  const toolServers = useMemo(() => toolsQuery.data ?? [], [toolsQuery.data]);
+  const sessionTools = offeredTools(form.tools, toolServers);
   const [bootStep, setBootStep] = useState(0);
   const [bootProgress, setBootProgress] = useState(0);
   const [launching, setLaunching] = useState(false);
@@ -172,7 +178,6 @@ export function useLaunchWizard({ open, initialLaunchSpecRef, initialForm }: Lau
       volundr.getClusterResources().catch(() => null),
       volundr.getLaunchSpecs().catch(() => []),
       volundr.getTargets().catch(() => []),
-      volundr.getAvailableMcpServers().catch(() => []),
       volundr.getSessionDefinitions().catch(() => FALLBACK_SESSION_DEFINITIONS),
       personaCatalog?.listPersonas().catch(() => []) ?? Promise.resolve([]),
       volundr.getIntegrationCatalog().catch(recordProviderFailure),
@@ -186,7 +191,6 @@ export function useLaunchWizard({ open, initialLaunchSpecRef, initialForm }: Lau
         nextClusterResources,
         nextPresets,
         nextTargets,
-        nextMcpServers,
         nextSessionDefinitions,
         nextPersonas,
         nextIntegrationCatalog,
@@ -222,7 +226,6 @@ export function useLaunchWizard({ open, initialLaunchSpecRef, initialForm }: Lau
         setClusterResources(nextClusterResources);
         setPresets(nextPresets);
         setTargets(nextTargets);
-        setAvailableMcpServers(nextMcpServers);
         setSessionDefinitions(
           nextSessionDefinitions.length > 0 ? nextSessionDefinitions : FALLBACK_SESSION_DEFINITIONS,
         );
@@ -548,6 +551,7 @@ export function useLaunchWizard({ open, initialLaunchSpecRef, initialForm }: Lau
         workspaceId: form.workspaceId || undefined,
         credentialNames: form.selectedCredentials.length ? form.selectedCredentials : undefined,
         integrationIds: form.selectedIntegrations.length ? form.selectedIntegrations : undefined,
+        mcpServers: sessionTools.length ? sessionTools : undefined,
         resourceConfig: buildResourceConfig(form),
         systemPrompt: form.systemPrompt.trim() || undefined,
         initialPrompt: form.initialPrompt.trim() || undefined,
@@ -600,7 +604,9 @@ export function useLaunchWizard({ open, initialLaunchSpecRef, initialForm }: Lau
 
   return {
     runsAs,
-    availableMcpServers,
+    toolServers,
+    toolsError: toolsQuery.error,
+    sessionTools,
     bootProgress,
     bootStep,
     canGoBack,

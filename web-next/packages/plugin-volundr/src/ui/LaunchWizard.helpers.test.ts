@@ -61,6 +61,7 @@ function makeForm(overrides: Partial<WizardForm> = {}): WizardForm {
     trackerIssue: null,
     selectedCredentials: [],
     selectedIntegrations: [],
+    tools: [],
     mcpServers: [],
     envVars: [],
     setupScripts: [],

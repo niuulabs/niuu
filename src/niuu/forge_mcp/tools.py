@@ -374,6 +374,7 @@ class _CreateSessionArgs(_Args):
     model: str = ""
     definition: str | None = None
     launch_spec: str | None = None
+    mcp_servers: list[str] = Field(default_factory=list)
     repo: str | None = None
     branch: str | None = None
     local_path: str | None = None
@@ -1576,6 +1577,12 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
                     "description": "Session definition, e.g. skuldClaude or skuldCodex.",
                 },
                 "launch_spec": {"type": "string"},
+                "mcp_servers": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "MCP servers to give it, by catalogue name, e.g. the ones "
+                    "you have yourself. An unknown name is refused and the error lists them.",
+                },
                 "repo": {"type": "string"},
                 "branch": {"type": "string"},
                 "local_path": {"type": "string"},
@@ -2720,7 +2727,14 @@ class ForgeMcpToolbox:
         if args.repo and args.local_path:
             return ToolResult.error("create_session takes repo or local_path, not both.")
         body: dict[str, Any] = {"name": args.name}
-        for key in ("initial_prompt", "model", "system_prompt", "definition", "launch_spec"):
+        for key in (
+            "initial_prompt",
+            "model",
+            "system_prompt",
+            "definition",
+            "launch_spec",
+            "mcp_servers",
+        ):
             value = getattr(args, key)
             if value:
                 body[key] = value

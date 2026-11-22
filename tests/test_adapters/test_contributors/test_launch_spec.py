@@ -6,9 +6,15 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from volundr.adapters.outbound.config_mcp_servers import ConfigMCPServerProvider
 from volundr.adapters.outbound.contributors.launch_spec import LaunchSpecContributor
+from volundr.config import MCPServerEntry
 from volundr.domain.models import GitSource, LaunchSpec, Session
 from volundr.domain.ports import SessionContext
+from volundr.domain.services.session_mcp_servers import (
+    ProgramNotInCatalogueError,
+    UnknownMCPServerError,
+)
 
 
 @pytest.fixture
@@ -22,7 +28,7 @@ def _spec(name: str = "standard") -> LaunchSpec:
         resource_config={"requests": {"cpu": "2"}},
         env_vars={"FEATURE": "enabled"},
         env_secret_refs=["skuld-runtime-secret"],
-        mcp_servers=[{"name": "mimir", "type": "stdio"}],
+        mcp_servers=[{"name": "mimir", "type": "stdio", "command": "mimir"}],
         system_prompt="Stay sharp.",
         workload_config={"skuld": {"permissionMode": "acceptEdits"}},
     )
@@ -49,7 +55,7 @@ async def test_explicit_launch_spec_merges_runtime_values(session: Session) -> N
         "resources": {"requests": {"cpu": "2"}},
         "envVars": [{"name": "FEATURE", "value": "enabled"}],
         "envSecretRefs": ["skuld-runtime-secret"],
-        "mcpServers": [{"name": "mimir", "type": "stdio"}],
+        "mcpServers": [{"name": "mimir", "type": "stdio", "command": "mimir"}],
         "session": {"systemPrompt": "Stay sharp."},
         "skuld": {"permissionMode": "acceptEdits"},
     }
@@ -135,3 +141,43 @@ async def test_user_facing_resources_are_not_copied_into_the_chart(session: Sess
     result = await contributor.contribute(session, SessionContext(launch_spec="standard-claude"))
 
     assert "resources" not in result.values
+
+
+async def test_a_server_given_by_name_alone_is_the_catalogues(session: Session) -> None:
+    spec = LaunchSpec(
+        name="cad",
+        mcp_servers=[{"name": "cad", "type": "stdio"}, {"name": "x", "url": "https://x"}],
+    )
+    provider = MagicMock()
+    provider.get.return_value = spec
+    contributor = LaunchSpecContributor(
+        launch_spec_provider=provider,
+        mcp_server_provider=ConfigMCPServerProvider([MCPServerEntry(name="cad", command="cad")]),
+    )
+
+    result = await contributor.contribute(session, SessionContext(launch_spec="cad"))
+
+    assert result.values["mcpServers"] == [
+        {"name": "cad", "type": "stdio", "required": True, "command": "cad"},
+        {"name": "x", "url": "https://x"},
+    ]
+
+
+async def test_a_name_the_catalogue_does_not_have_fails_the_launch(session: Session) -> None:
+    provider = MagicMock()
+    provider.get.return_value = LaunchSpec(name="cad", mcp_servers=[{"name": "cad"}])
+    contributor = LaunchSpecContributor(launch_spec_provider=provider)
+
+    with pytest.raises(UnknownMCPServerError):
+        await contributor.contribute(session, SessionContext(launch_spec="cad"))
+
+
+async def test_a_program_outside_the_catalogue_fails_the_launch(session: Session) -> None:
+    provider = MagicMock()
+    provider.get.return_value = LaunchSpec(
+        name="cad", mcp_servers=[{"name": "cad", "program": {"version": "1"}}]
+    )
+    contributor = LaunchSpecContributor(launch_spec_provider=provider)
+
+    with pytest.raises(ProgramNotInCatalogueError):
+        await contributor.contribute(session, SessionContext(launch_spec="cad"))

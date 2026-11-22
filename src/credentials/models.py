@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import StrEnum
+from typing import Any
 
 from niuu.domain.models import SecretType, StoredCredential
 
@@ -16,6 +17,12 @@ class MCPServerConfig:
     url: str | None = None
     args: list[str] = ()  # type: ignore[assignment]
     description: str = ""
+    #: A pinned program Skuld installs and runs (``niuu.domain.session_program``).
+    program: dict[str, Any] | None = None
+    env: dict[str, str] | None = None
+    default_tools_approval_mode: str | None = None
+    startup_timeout_sec: float | None = None
+    tool_timeout_sec: float | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.args, tuple):

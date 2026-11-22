@@ -190,6 +190,7 @@ from volundr.domain.services.forge_session_launch import (
 from volundr.domain.services.permission_auto_approval import (
     evaluate_permission_auto_approval,
 )
+from volundr.domain.services.session_mcp_servers import MCP_SERVERS_KEY
 from volundr.domain.services.session_participants import SessionParticipantService
 from volundr.domain.session_broker import (
     DEFAULT_OPENSHELL_INTERNAL_GATEWAY_URL,
@@ -906,6 +907,13 @@ class SessionCreate(LaunchTarget):
         default_factory=dict,
         description="Workload-specific configuration (e.g. personas, mesh, mimir settings)",
     )
+    mcp_servers: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Names of MCP servers to give the session, from this Forge's catalogue "
+            "(GET /api/v1/forge/mcp-servers). An unknown name is refused"
+        ),
+    )
     forge_mcp: ForgeMcpSessionOptions | None = Field(
         default=None,
         description="Forge MCP grants for the session (see ForgeMcpSessionOptions).",
@@ -936,6 +944,15 @@ class SessionCreate(LaunchTarget):
         if FORGE_MCP_KEY in value:
             raise ValueError(
                 "set Forge MCP grants with the top-level forge_mcp field, not workload_config"
+            )
+        return value
+
+    @field_validator("workload_config")
+    @classmethod
+    def _no_mcp_servers_in_workload_config(cls, value: dict) -> dict:
+        if MCP_SERVERS_KEY in value:
+            raise ValueError(
+                "name MCP servers with the top-level mcp_servers field, not workload_config"
             )
         return value
 

@@ -22,6 +22,7 @@ from volundr.domain.services.launch_spec import (
     LaunchSpecNotFoundError,
     LaunchSpecService,
 )
+from volundr.domain.services.session_mcp_servers import refuse_own_programs
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +57,12 @@ class LaunchSpecCreate(BaseModel):
     workspace_layout: dict = Field(default_factory=dict)
     workload_config: dict = Field(default_factory=dict)
 
+    @field_validator("mcp_servers")
+    @classmethod
+    def _programs_come_from_the_catalogue(cls, value: list[dict]) -> list[dict]:
+        refuse_own_programs(value)
+        return value
+
     @field_validator("workload_type")
     @classmethod
     def _workload_type_still_exists(cls, value: str) -> str:
@@ -88,6 +95,12 @@ class LaunchSpecUpdate(BaseModel):
     setup_scripts: list[str] | None = None
     workspace_layout: dict | None = None
     workload_config: dict | None = None
+
+    @field_validator("mcp_servers")
+    @classmethod
+    def _programs_come_from_the_catalogue(cls, value: list[dict] | None) -> list[dict] | None:
+        refuse_own_programs(value or [])
+        return value
 
     @field_validator("workload_type")
     @classmethod

@@ -757,6 +757,41 @@ class TestConfigMapTemplate:
         assert configured.a2a_public_base_url == "https://guild.example"
         assert configured.a2a_reply_timeout_seconds == 20
 
+    def test_the_mcp_server_catalogue_renders_into_config(self):
+        from volundr.config import MCPServerEntry
+
+        catalogue = [
+            {
+                "name": "solidcraft",
+                "args": ["mcp", "--headless"],
+                "program": {
+                    "version": "0.46.0",
+                    "platforms": {
+                        "linux-x86_64": {
+                            "url": "https://downloads.example/solidcraft.tar.gz",
+                            "sha256": "0" * 64,
+                            "command": "bin/solidcraft-cli",
+                        }
+                    },
+                },
+            }
+        ]
+        result = subprocess.run(
+            ["helm", "template", "test", str(CHART_DIR), *BIFROST_URL]
+            + ["--set-json", f"mcpServers={json.dumps(catalogue)}"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        configmap = next(
+            doc
+            for doc in yaml.safe_load_all(result.stdout)
+            if doc and doc.get("kind") == "ConfigMap" and doc["metadata"]["name"] == "test-volundr"
+        )
+        rendered = yaml.safe_load(configmap["data"]["config.yaml"])["mcp_servers"]
+        assert rendered == catalogue
+        assert MCPServerEntry.model_validate(rendered[0]).program.version == "0.46.0"
+
     def test_artifact_and_presented_file_sections_render_into_config(self):
         from volundr.config import ArtifactsConfig, HostIdentityConfig, PresentedFilesConfig
 
