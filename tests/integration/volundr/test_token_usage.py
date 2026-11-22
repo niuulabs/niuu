@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import json
+from dataclasses import asdict
 from uuid import UUID, uuid4
 
 import pytest
 
 from tests.integration.volundr.conftest import NoOpPodManager
 from volundr.adapters.outbound.pg_event_sink import PostgresEventSink
+from volundr.adapters.outbound.postgres_stats import PostgresStatsRepository
+from volundr.adapters.outbound.postgres_tokens import PostgresTokenTracker
 from volundr.domain.models import SessionStatus
 
 pytestmark = [
@@ -106,3 +110,42 @@ async def test_the_token_timeline_sums_past_the_int32_range(volundr_client, txn_
     timeline = await PostgresEventSink(txn_pool).get_token_timeline(session_id, 10**9)
 
     assert timeline[0]["tokens_in"] == timeline[0]["tokens_out"] == 2 * INT32_MAX
+
+
+async def test_token_totals_are_integers(volundr_client, txn_pool, auth_headers):
+    """SUM of a BIGINT is numeric: uncast it reads as Decimal, which no JSON encoder takes."""
+    headers = auth_headers()
+    session_id = await _live_session(volundr_client, txn_pool, headers)
+    for provider, tokens in (("cloud", INT32_MAX + 1), ("local", 7)):
+        reported = await volundr_client.post(
+            f"{API}/sessions/{session_id}/usage",
+            json={"tokens": tokens, "provider": provider, "model": "claude-sonnet-4-6"},
+            headers=headers,
+        )
+        assert reported.status_code == 201, reported.text
+    # A session without usage rows today counts by its chronicle.
+    chronicled = await _live_session(volundr_client, txn_pool, headers)
+    await txn_pool.execute(
+        "INSERT INTO chronicles (id, session_id, project, repo, branch, model, token_usage) "
+        "VALUES ($1, $2, 'p', 'r', 'main', 'm', $3)",
+        uuid4(),
+        chronicled,
+        INT32_MAX + 2,
+    )
+
+    stats = await PostgresStatsRepository(txn_pool).get_stats(tenant_id=None, owner_id=None)
+    used = await PostgresTokenTracker(txn_pool).get_session_usage(session_id)
+
+    totals = {
+        key: value for key, value in asdict(stats).items() if key.endswith(("_tokens", "_today"))
+    }
+    del totals["cost_today"]
+    assert totals == {
+        "tokens_today": 2 * INT32_MAX + 10,
+        "local_tokens": 7,
+        "cloud_tokens": 2 * INT32_MAX + 3,
+        "sessions_today": 2,
+    }
+    assert {type(value) for value in totals.values()} == {int}
+    assert json.dumps(totals)
+    assert (type(used), used) == (int, INT32_MAX + 8)
