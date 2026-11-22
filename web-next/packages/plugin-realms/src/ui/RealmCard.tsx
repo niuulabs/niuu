@@ -1,4 +1,5 @@
 import { Link } from '@tanstack/react-router';
+import { useNodeScoped } from '@niuulabs/plugin-ting';
 import { Chip } from '@niuulabs/ui';
 import type { RealmSummary } from '../domain/governance';
 import type { RealmBinding } from '../domain/realm';
@@ -10,6 +11,8 @@ export interface RealmCardProps {
   boardName?: string | null;
   waitingTickets?: number;
   runningSessions: number;
+  /** False on a host without Ting, where neither figure can be read. */
+  hasTing?: boolean;
 }
 
 function Stat({ value, label, attention }: { value: number; label: string; attention?: boolean }) {
@@ -32,7 +35,9 @@ export function RealmCard({
   boardName = null,
   waitingTickets = 0,
   runningSessions,
+  hasTing = true,
 }: RealmCardProps) {
+  const here = useNodeScoped();
   return (
     <article
       className="niuu:flex niuu:flex-col niuu:gap-3 niuu:rounded-xl niuu:border niuu:border-border-subtle niuu:bg-bg-secondary niuu:px-4 niuu:py-3.5"
@@ -64,10 +69,12 @@ export function RealmCard({
           <span className="niuu:text-[11px] niuu:text-text-faint">nothing bound yet</span>
         ) : null}
       </div>
-      <div className="niuu:flex niuu:gap-4 niuu:border-t niuu:border-border-subtle niuu:pt-2.5">
-        <Stat value={runningSessions} label="in sessions" />
-        <Stat value={waitingTickets} label="needs you" attention={waitingTickets > 0} />
-      </div>
+      {hasTing ? (
+        <div className="niuu:flex niuu:gap-4 niuu:border-t niuu:border-border-subtle niuu:pt-2.5">
+          <Stat value={runningSessions} label={here ? 'in sessions here' : 'in sessions'} />
+          <Stat value={waitingTickets} label="needs you" attention={waitingTickets > 0} />
+        </div>
+      ) : null}
       <div className="niuu:flex niuu:items-center niuu:justify-between">
         <span className="niuu:text-[11px] niuu:text-text-faint">{realm.autonomy_profile}</span>
         <Link

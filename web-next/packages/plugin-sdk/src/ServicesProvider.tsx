@@ -2,7 +2,7 @@ import { createContext, useContext, type ReactNode } from 'react';
 
 export type ServicesMap = Record<string, unknown>;
 
-const ServicesContext = createContext<ServicesMap | null>(null);
+export const ServicesContext = createContext<ServicesMap | null>(null);
 
 interface ServicesProviderProps {
   services: ServicesMap;

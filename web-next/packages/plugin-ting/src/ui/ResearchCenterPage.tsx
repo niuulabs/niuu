@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from '@tanstack/react-router';
 import { useQueryClient } from '@tanstack/react-query';
-import { openEventStream } from '@niuulabs/query';
+import { useTingEvents } from './useTingEvents';
 import { Table, type TableColumn } from '@niuulabs/ui';
 import type { CampaignArtifactSummary, ResearchCampaign } from '../ports';
 import { useResearchCampaigns } from './useResearch';
@@ -499,6 +499,7 @@ function ResearchTableView({
 export function ResearchCenterPage() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
+  const events = useTingEvents();
   const { data: campaigns = [], isLoading, isError, error } = useResearchCampaigns();
   const { data: dispatcherState } = useDispatcherState();
   const [search, setSearch] = useState('');
@@ -507,8 +508,8 @@ export function ResearchCenterPage() {
   const [viewMode, setViewMode] = useState<ResearchViewMode>('grid');
 
   useEffect(() => {
-    if (typeof window === 'undefined') return;
-    const stream = openEventStream('/api/v1/ting/events', {
+    if (typeof window === 'undefined' || !events) return;
+    const stream = events.open({
       onMessage: () => {},
       onEvent: ({ event }) => {
         if (
@@ -522,7 +523,7 @@ export function ResearchCenterPage() {
       },
     });
     return () => stream.close();
-  }, [queryClient]);
+  }, [events, queryClient]);
 
   const cards = useMemo(() => campaigns.map(toViewModel), [campaigns]);
 

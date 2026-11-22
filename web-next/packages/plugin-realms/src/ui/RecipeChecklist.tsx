@@ -1,9 +1,11 @@
 import { Link } from '@tanstack/react-router';
+import { useTingPages } from '@niuulabs/plugin-ting';
 import { StateDot } from '@niuulabs/ui';
 import { RECIPE_STEPS, type RecipeProgress } from '../application/useCreateRealm';
 
 /** The create recipe as a checklist: same rhythm as the launch wizard's boot steps. */
 export function RecipeChecklist({ progress }: { progress: RecipeProgress }) {
+  const tingPages = useTingPages();
   const doneCount = Object.values(progress.states).filter((state) => state === 'done').length;
   const pct = Math.round((doneCount / RECIPE_STEPS.length) * 100);
   return (
@@ -61,11 +63,17 @@ export function RecipeChecklist({ progress }: { progress: RecipeProgress }) {
           </span>
           <span className="niuu:text-text-secondary">{progress.error}</span>
           <span className="niuu:text-text-muted">
-            Nothing was undone. See what was created so far on{' '}
-            <Link to={progress.failedStep.detailPath as never} className="niuu:text-brand-300">
-              its page
-            </Link>
-            .
+            Nothing was undone.
+            {tingPages || !progress.failedStep.detailPath.startsWith('/ting') ? (
+              <>
+                {' '}
+                See what was created so far on{' '}
+                <Link to={progress.failedStep.detailPath as never} className="niuu:text-brand-300">
+                  its page
+                </Link>
+                .
+              </>
+            ) : null}
           </span>
         </div>
       ) : null}

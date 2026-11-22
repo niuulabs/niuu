@@ -25,6 +25,14 @@ from tests.conftest import (
     MockPodManager,
     make_session_participant_service,
 )
+from tests.support.node_scope import (
+    NO_TAG_SELECTORS,
+    NODE_MEMBERSHIP,
+    NODE_REQUESTS,
+    OTHER_INSTANCE,
+    OTHER_INSTANCE_DETAIL,
+    TAG_SELECTORS,
+)
 from volundr.adapters.inbound.rest import (
     SessionCreate,
     SessionResponse,
@@ -2712,6 +2720,70 @@ class TestNodeInstanceFields:
             "guild.instanceId, guild.instanceName and guild.instanceSlug from the Guild's "
             "registry (GET /api/v1/niuu/targets/volundr)."
         )
+
+
+class TestLaunchingOnANode:
+    """A node takes the launch its own UI sends and never drops a selector it was given."""
+
+    @pytest.mark.parametrize("request_name", ["start_session", "start_session_without_a_host"])
+    def test_it_takes_the_session_its_own_ui_sends(
+        self, service: SessionService, stats_service: StatsService, request_name: str
+    ):
+        with _node_client(service, stats_service, NODE_MEMBERSHIP) as client:
+            response = client.post("/api/v1/forge/sessions", json=NODE_REQUESTS[request_name])
+
+        assert response.status_code == 201, response.text
+        assert response.json()["instance_id"] == NODE_REQUESTS["instance"]["id"]
+
+    @pytest.mark.parametrize("field", ["instance_id", "instanceId"])
+    def test_it_refuses_a_session_for_an_instance_that_is_not_itself(
+        self,
+        service: SessionService,
+        stats_service: StatsService,
+        pod_manager: MockPodManager,
+        field: str,
+    ):
+        body = {**NODE_REQUESTS["start_session_without_a_host"]}
+        del body["instance_id"]
+        body[field] = OTHER_INSTANCE
+        with _node_client(service, stats_service, NODE_MEMBERSHIP) as client:
+            refused = client.post("/api/v1/forge/sessions", json=body)
+        with _node_client(service, stats_service, None) as client:
+            unjoined = client.post("/api/v1/forge/sessions", json=body)
+            listed = client.get("/api/v1/forge/sessions").json()
+
+        assert (refused.status_code, refused.json()["detail"]) == (404, OTHER_INSTANCE_DETAIL)
+        assert unjoined.status_code == 404
+        assert "not joined to a Guild" in unjoined.json()["detail"]
+        assert listed == []
+        assert pod_manager.start_calls == []
+
+    @pytest.mark.parametrize("selector", TAG_SELECTORS)
+    def test_it_refuses_tags_it_cannot_match_and_says_where_they_go(
+        self,
+        service: SessionService,
+        stats_service: StatsService,
+        pod_manager: MockPodManager,
+        selector: dict,
+    ):
+        body = {**NODE_REQUESTS["start_session_without_a_host"], **selector}
+        with _node_client(service, stats_service, NODE_MEMBERSHIP) as client:
+            refused = client.post("/api/v1/forge/sessions", json=body)
+
+        assert refused.status_code == 422
+        assert "Send it to the Guild at https://guild.example" in refused.json()["detail"]
+        assert "workload_config.host_selector" in refused.json()["detail"]
+        assert pod_manager.start_calls == []
+
+    @pytest.mark.parametrize("selector", NO_TAG_SELECTORS)
+    def test_naming_no_tags_and_no_host_selects_nothing(
+        self, service: SessionService, stats_service: StatsService, selector: dict
+    ):
+        body = {**NODE_REQUESTS["start_session"], "instance_id": "", **selector}
+        with _node_client(service, stats_service, NODE_MEMBERSHIP) as client:
+            response = client.post("/api/v1/forge/sessions", json=body)
+
+        assert response.status_code == 201, response.text
 
 
 class TestListRepos:

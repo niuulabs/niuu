@@ -3,6 +3,7 @@ import { useOptionalService } from '@niuulabs/plugin-sdk';
 import { SessionChat, type ISessionHistoryLocator, useSkuldChat } from '@niuulabs/ui';
 import { questionAboutQuote, quotesFromMessages } from '../domain/review';
 import type { TicketCoordinatorRef } from '../domain/work';
+import { useSessionHere } from './useSessionHere';
 
 function QuotedQuestion({
   quote,
@@ -122,6 +123,7 @@ export function CoordinatorChat({
   /** Reports what the person has quoted in this chat, which the review marks. */
   onQuotes?: (quotes: string[]) => void;
 }) {
+  const here = useSessionHere(coordinator?.status === 'active' ? coordinator.sessionId : null);
   if (!coordinator) {
     return (
       <p className="ting-board-panel__text">
@@ -138,6 +140,16 @@ export function CoordinatorChat({
     return (
       <p className="ting-board-panel__text">
         This ticket&apos;s workflow runs in its own sessions, so there is no coordinator to talk to.
+      </p>
+    );
+  }
+  if (here === undefined) {
+    return <p className="ting-board-panel__text">Looking for the coordinator…</p>;
+  }
+  if (!here) {
+    return (
+      <p className="ting-board-panel__text">
+        This ticket&apos;s coordinator runs on another host, so its chat does not open here.
       </p>
     );
   }

@@ -14,10 +14,12 @@ export function ProjectGroupSection({
   group,
   collapsed,
   onToggle,
+  hasTing = true,
 }: {
   group: ProjectGroup<RealmHomeCard>;
   collapsed: boolean;
   onToggle: () => void;
+  hasTing?: boolean;
 }) {
   const bodyId = useId();
   const only = group.cards.length === 1 ? group.cards[0] : null;
@@ -83,6 +85,7 @@ export function ProjectGroupSection({
               boardName={card.boardName}
               waitingTickets={card.waitingTickets.length}
               runningSessions={card.runningSessions}
+              hasTing={hasTing}
             />
           ))}
         </div>

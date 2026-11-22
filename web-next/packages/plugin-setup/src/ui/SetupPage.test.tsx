@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { fireEvent, screen, waitFor } from '@testing-library/react';
+import { ConfigProvider } from '@niuulabs/plugin-sdk';
 import { renderWithSetup } from '../testing/renderWithSetup';
 import { createMockSetupService } from '../adapters/mock';
 import { SetupPage, initialStep } from './SetupPage';
@@ -341,6 +342,26 @@ describe('ReadyPage', () => {
     );
     expect(screen.getByText(/Forge → New session/)).toBeInTheDocument();
     expect(screen.getByTestId('ready-dashboard')).toHaveAttribute('href', '/');
+  });
+
+  it('walks through no plugin the host has off', async () => {
+    renderWithSetup(
+      <ConfigProvider
+        value={{
+          demoMode: false,
+          theme: 'niuu',
+          plugins: { ting: { enabled: false, order: 1 }, ravn: { enabled: true, order: 2 } },
+          services: {},
+        }}
+      >
+        <ReadyPage />
+      </ConfigProvider>,
+      { service: createMockSetupService({ latencyMs: 0 }) },
+    );
+    await waitFor(() => expect(screen.getByTestId('ready-page')).toBeInTheDocument());
+    expect(screen.queryByText('Turn an issue into a workflow')).not.toBeInTheDocument();
+    expect(screen.getByText('Meet the residents')).toBeInTheDocument();
+    expect(screen.getByText('Run your first session')).toBeInTheDocument();
   });
 
   it('sits on the continuity field', async () => {

@@ -1,7 +1,7 @@
 /**
  * useCampaignEvents — invalidate campaign queries when the runtime moves one.
  *
- * Ting streams `workflow.campaign.*` on `/api/v1/ting/events`. Every surface
+ * Ting streams `workflow.campaign.*` on its `/events`. Every surface
  * that lists campaigns wants the same reaction: invalidate its list so the
  * next paint is current. The subscription lives here so it exists once.
  *
@@ -10,18 +10,19 @@
 
 import { useEffect } from 'react';
 import { useQueryClient, type QueryKey } from '@tanstack/react-query';
-import { openEventStream } from '@niuulabs/query';
+import { useTingEvents } from './useTingEvents';
 
 const CAMPAIGN_EVENT_PREFIX = 'workflow.campaign.';
 
 export function useCampaignEvents(queryKeys: QueryKey[]): void {
   const queryClient = useQueryClient();
+  const events = useTingEvents();
   const serializedKeys = JSON.stringify(queryKeys);
 
   useEffect(() => {
-    if (typeof window === 'undefined') return;
+    if (typeof window === 'undefined' || !events) return;
     const keys = JSON.parse(serializedKeys) as QueryKey[];
-    const stream = openEventStream('/api/v1/ting/events', {
+    const stream = events.open({
       onMessage: () => {},
       onEvent: ({ event }) => {
         if (!event?.startsWith(CAMPAIGN_EVENT_PREFIX)) return;
@@ -31,5 +32,5 @@ export function useCampaignEvents(queryKeys: QueryKey[]): void {
       },
     });
     return () => stream.close();
-  }, [queryClient, serializedKeys]);
+  }, [events, queryClient, serializedKeys]);
 }

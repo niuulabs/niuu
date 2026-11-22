@@ -1,7 +1,11 @@
 {
-  "about": "The writes the web UI sends to one Forge node (services.forge.scope: node). http.test.ts checks the UI sends exactly these; the Forge route tests check a node takes them.",
+  "about": "The requests the web UI sends to one Forge node (services.forge.scope: node). The web adapters' tests check the UI sends exactly these; the Forge route tests check a node takes them.",
   "guild_url": "https://guild.example",
-  "instance": { "id": "70b502d8-noatun", "name": "Noatun", "slug": "noatun" },
+  "instance": {
+    "id": "70b502d8-noatun",
+    "name": "Noatun",
+    "slug": "noatun"
+  },
   "assign_session_project": {
     "project_id": "dd605b70-4d95-5f10-b698-e25a1b7b3bca",
     "project_instance_id": "70b502d8-noatun",
@@ -13,7 +17,11 @@
   },
   "start_team": {
     "name": "ship-it",
-    "source": { "type": "git", "repo": "https://github.com/acme/repo", "branch": "main" },
+    "source": {
+      "type": "git",
+      "repo": "https://github.com/acme/repo",
+      "branch": "main"
+    },
     "task": "Fix the login test",
     "task_to": "lead",
     "members": [
@@ -35,7 +43,11 @@
   },
   "start_team_without_a_host": {
     "name": "ship-it",
-    "source": { "type": "git", "repo": "https://github.com/acme/repo", "branch": "main" },
+    "source": {
+      "type": "git",
+      "repo": "https://github.com/acme/repo",
+      "branch": "main"
+    },
     "task": "",
     "members": [
       {
@@ -47,5 +59,34 @@
     ],
     "terminal_restricted": false,
     "instance_id": null
+  },
+  "start_session": {
+    "name": "on-noatun",
+    "source": {
+      "type": "git",
+      "repo": "https://github.com/acme/repo",
+      "branch": "main"
+    },
+    "model": "claude-sonnet-4-6",
+    "terminal_restricted": false,
+    "instance_id": "70b502d8-noatun",
+    "workload_config": {}
+  },
+  "start_session_without_a_host": {
+    "name": "on-noatun",
+    "source": {
+      "type": "git",
+      "repo": "https://github.com/acme/repo",
+      "branch": "main"
+    },
+    "model": "claude-sonnet-4-6",
+    "terminal_restricted": false,
+    "instance_id": null,
+    "workload_config": {}
+  },
+  "read_artifacts": {
+    "source": "present_file",
+    "instance_id": "70b502d8-noatun",
+    "after": "0"
   }
 }

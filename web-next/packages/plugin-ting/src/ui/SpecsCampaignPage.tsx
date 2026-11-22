@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import type { ReactNode } from 'react';
 import { useNavigate, useParams } from '@tanstack/react-router';
 import { useQueryClient } from '@tanstack/react-query';
-import { openEventStream } from '@niuulabs/query';
+import { useTingEvents } from './useTingEvents';
 import type { CampaignArtifactDetail, SpecCampaignDetail } from '../ports';
 import { actionableSpecGates } from '../domain/campaignProgress';
 import {
@@ -203,6 +203,7 @@ export function SpecsCampaignPage() {
   const { slug } = useParams({ from: '/ting/specs/$slug' });
   const navigate = useNavigate();
   const queryClient = useQueryClient();
+  const events = useTingEvents();
   const { data: campaign, isLoading, isError, error } = useSpecCampaign(slug);
   const deleteCampaign = useDeleteSpecCampaign();
   const reviewCampaign = useReviewSpecCampaign(slug);
@@ -219,8 +220,8 @@ export function SpecsCampaignPage() {
   const reviewNotesQuery = useSpecArtifact(slug, reviewNotesPath);
 
   useEffect(() => {
-    if (typeof window === 'undefined') return;
-    const stream = openEventStream('/api/v1/ting/events', {
+    if (typeof window === 'undefined' || !events) return;
+    const stream = events.open({
       onMessage: () => {},
       onEvent: ({ event, data }) => {
         if (!event?.startsWith('workflow.campaign.')) return;
@@ -235,7 +236,7 @@ export function SpecsCampaignPage() {
       },
     });
     return () => stream.close();
-  }, [queryClient, slug]);
+  }, [events, queryClient, slug]);
 
   const repos = useMemo(() => (campaign ? metadataRepos(campaign) : []), [campaign]);
 

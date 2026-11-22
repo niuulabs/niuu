@@ -169,6 +169,31 @@
   background: var(--color-bg-tertiary);
 }
 
+.ting-artifacts__row--file {
+  width: 100%;
+  border-width: 1px 0 0;
+  border-style: solid;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.ting-artifacts__row--plain:hover {
+  background: var(--color-bg-secondary);
+}
+
+.ting-artifacts__file {
+  width: min(64rem, calc(100vw - var(--space-6) * 2));
+  max-width: none;
+}
+
+.ting-artifacts__file iframe,
+.ting-artifacts__file .niuu-image-preview {
+  width: 100%;
+  height: 70vh;
+  border: 0;
+}
+
 .ting-artifacts__kind {
   min-width: 6rem;
   border-radius: var(--radius-sm);

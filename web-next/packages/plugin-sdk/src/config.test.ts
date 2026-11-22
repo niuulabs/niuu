@@ -64,6 +64,20 @@ describe('niuuConfigSchema', () => {
     ).toThrow();
   });
 
+  it('takes a service this host does not run, without a backend for it', () => {
+    const config = niuuConfigSchema.parse({
+      services: {
+        ting: { enabled: false, mode: 'http', baseUrl: '/api/v1/ting' },
+        mimir: { enabled: false },
+      },
+    });
+    expect(config.services.ting).toMatchObject({ enabled: false });
+    expect(config.services.mimir).toMatchObject({ enabled: false });
+    expect(() => niuuConfigSchema.parse({ services: { mimir: {} } })).toThrow(
+      'HTTP services require baseUrl',
+    );
+  });
+
   it('rejects an invalid theme', () => {
     expect(() => niuuConfigSchema.parse({ theme: 'ultraviolet' })).toThrow();
   });

@@ -6,6 +6,7 @@ import type { WorkBoardLayout } from '../domain/work';
 import type { Workflow } from '../domain/workflow';
 import { boardWorkflows } from '../domain/workBoard';
 import { useAssignSagaWorkflow, useSetBoardWorkflows } from './useSaga';
+import { useTingPages } from './useTingPages';
 import { useWorkflows } from './useWorkflows';
 
 interface BoardColumnShape {
@@ -100,6 +101,7 @@ export function BoardBandMenu({
   edits: BoardWorkflowEdits;
 }) {
   const [open, setOpen] = useState(false);
+  const pages = useTingPages();
   const index = edits.ids.indexOf(workflowId);
   return (
     <div className="ting-board-band-menu">
@@ -114,13 +116,15 @@ export function BoardBandMenu({
       </button>
       {open ? (
         <div role="menu" aria-label={`${name} options`} className="ting-board-band-menu__list">
-          <Link
-            role="menuitem"
-            to={'/ting/workflows' as never}
-            search={{ workflow: workflowId } as never}
-          >
-            Open workflow
-          </Link>
+          {pages ? (
+            <Link
+              role="menuitem"
+              to={'/ting/workflows' as never}
+              search={{ workflow: workflowId } as never}
+            >
+              Open workflow
+            </Link>
+          ) : null}
           {index > 0 ? (
             <button
               type="button"

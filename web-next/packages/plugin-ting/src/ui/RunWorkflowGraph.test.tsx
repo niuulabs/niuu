@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ServicesProvider } from '@niuulabs/plugin-sdk';
 import { RunWorkflowGraph } from './RunWorkflowGraph';
@@ -45,11 +45,15 @@ function runGraph(): RunGraph {
   };
 }
 
-function renderGraph(runGraphFn: () => Promise<RunGraph>, onOpenSession = vi.fn()) {
+function renderGraph(
+  runGraphFn: () => Promise<RunGraph>,
+  onOpenSession = vi.fn(),
+  services: Record<string, unknown> = {},
+) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(
     <QueryClientProvider client={client}>
-      <ServicesProvider services={{ 'ting.work': { runGraph: runGraphFn } }}>
+      <ServicesProvider services={{ 'ting.work': { runGraph: runGraphFn }, ...services }}>
         <RunWorkflowGraph runId="run-1" onOpenSession={onOpenSession} />
       </ServicesProvider>
     </QueryClientProvider>,
@@ -68,6 +72,24 @@ describe('RunWorkflowGraph', () => {
     expect(screen.getByTestId('workflow-run-state-approve')).toHaveTextContent('Needs you');
     expect(screen.getByTestId('workflow-run-state-go')).toHaveTextContent('Done');
     expect(screen.getByTestId('workflow-run-member-code-coder')).toHaveTextContent('coder · pass');
+  });
+
+  it('opens a member a node has, and says when its session is on another host', async () => {
+    const session = vi.fn().mockResolvedValueOnce(null);
+    const onOpenSession = renderGraph(async () => runGraph(), vi.fn(), {
+      'ting.runLog': { scope: 'node', session },
+    });
+    const chip = await screen.findByRole('button', { name: "Open coder's session" });
+    fireEvent.click(chip);
+    expect(await screen.findByText(/runs on another host/)).toBeInTheDocument();
+    expect(onOpenSession).not.toHaveBeenCalled();
+    expect(session).toHaveBeenCalledWith('session-coder', null);
+
+    // Moved here, or its read failed: its own page opens and says what is the matter.
+    session.mockRejectedValueOnce(new Error('API request failed: 502'));
+    fireEvent.click(chip);
+    await waitFor(() => expect(onOpenSession).toHaveBeenCalledWith('session-coder'));
+    expect(screen.queryByText(/runs on another host/)).not.toBeInTheDocument();
   });
 
   it('frames the run on its canvas once it has a size, as a viewer that only shows it', async () => {

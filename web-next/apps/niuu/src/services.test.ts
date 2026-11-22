@@ -38,6 +38,8 @@ const tingMocks = vi.hoisted(() => ({
   buildWorkflowHttpAdapter: vi.fn((client) => ({ kind: 'workflows', client })),
   buildWorkHttpAdapter: vi.fn((client) => ({ kind: 'work', client })),
   buildRunLogHttpAdapter: vi.fn((client) => ({ kind: 'run-log', client })),
+  buildTingEventsHttpAdapter: vi.fn((client) => ({ kind: 'ting-events', client })),
+  createMockTingEvents: vi.fn(() => ({ kind: 'mock-ting-events' })),
   buildWorkflowExecutionHttpAdapter: vi.fn((client) => ({ kind: 'workflow-executions', client })),
   buildDeliveryExecutionHttpAdapter: vi.fn((client) => ({ kind: 'delivery-executions', client })),
   buildResearchHttpAdapter: vi.fn((client) => ({ kind: 'research', client })),
@@ -117,7 +119,11 @@ const volundrMocks = vi.hoisted(() => ({
 vi.mock('@niuulabs/query', () => ({
   createApiClient: queryMocks.createApiClient,
 }));
-vi.mock('@niuulabs/plugin-sdk', () => pluginSdkMocks);
+vi.mock('@niuulabs/plugin-sdk', async (original) => {
+  const { isUnavailableService, UNAVAILABLE_SERVICE } =
+    await original<typeof import('@niuulabs/plugin-sdk')>();
+  return { ...pluginSdkMocks, isUnavailableService, UNAVAILABLE_SERVICE };
+});
 
 vi.mock('@niuulabs/plugin-bifrost', () => bifrostMocks);
 vi.mock('@niuulabs/plugin-ting', () => tingMocks);
@@ -194,13 +200,24 @@ describe('toHostPtyWsUrl', () => {
 });
 
 describe('resolveSharedApiBase', () => {
-  it('prefers the Ting shared base when Ting is live', () => {
+  it.each(['forge', 'volundr'])(
+    "is this host's own (%s), never moved by a Ting on another host",
+    (key) => {
+      expect(
+        resolveSharedApiBase({
+          services: {
+            ting: { mode: 'http', baseUrl: 'https://guild.example/api/v1/ting' },
+            [key]: { mode: 'http', baseUrl: `https://node.example/api/v1/${key}` },
+          },
+        } as any),
+      ).toBe('https://node.example/api/v1');
+    },
+  );
+
+  it('is beside Ting where that is all there is', () => {
     expect(
       resolveSharedApiBase({
-        services: {
-          ting: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/ting' },
-          volundr: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/volundr' },
-        },
+        services: { ting: { mode: 'http', baseUrl: 'http://localhost:8080/api/v1/ting' } },
       } as any),
     ).toBe('http://localhost:8080/api/v1');
   });
@@ -574,6 +591,116 @@ describe('buildServices live base selection', () => {
     const live = buildServices({ demoMode: false, services: {} } as any);
     expect(tingMocks.createMockWorkService).not.toHaveBeenCalled();
     expect(isUnavailableService(live['ting.work'])).toBe(true);
+  });
+
+  const TING_SERVICES = [
+    'ting',
+    'ting.work',
+    'ting.tracker',
+    'ting.workflows',
+    'ting.memoryImports',
+    'ting.workflowExecutions',
+    'ting.deliveryExecutions',
+    'ting.dispatch',
+    'ting.settings',
+    'ting.events',
+  ];
+  const NODE_SERVICES = {
+    forge: { mode: 'http', baseUrl: 'https://node.example/api/v1/forge', scope: 'node' },
+    // As the chart renders it: the default Ting base, and the tracker's, stay in place.
+    ting: { mode: 'http', baseUrl: '/api/v1/ting' },
+    tracker: { mode: 'http', baseUrl: '/api/v1' },
+  };
+
+  it('asks nothing of a Ting the host says it does not run', () => {
+    const services = buildServices({
+      demoMode: false,
+      services: { ...NODE_SERVICES, ting: { ...NODE_SERVICES.ting, enabled: false } },
+    } as any);
+
+    for (const key of TING_SERVICES)
+      expect([key, isUnavailableService(services[key])]).toEqual([key, true]);
+    expect(services['volundr.runWorkflowView']).toBeUndefined();
+    expect(services['volundr.runGates']).toBeUndefined();
+    // What the host has stays: its Forge serves the presented files.
+    expect(services['ting.runLog']).toMatchObject({ kind: 'run-log' });
+    expect(
+      resolveSharedApiBase({
+        services: { ...NODE_SERVICES, ting: { ...NODE_SERVICES.ting, enabled: false } },
+      } as any),
+    ).toBe('https://node.example/api/v1');
+  });
+
+  it('keeps a configured Ting in place, so one that fails can say so', () => {
+    const services = buildServices({ demoMode: false, services: NODE_SERVICES } as any);
+
+    for (const key of TING_SERVICES)
+      expect([key, isUnavailableService(services[key])]).toEqual([key, false]);
+  });
+
+  it("asks another host's Ting for everything of Ting's, and this host for the rest", () => {
+    queryMocks.createApiClient.mockClear();
+    const guild = { mode: 'http', baseUrl: 'https://guild.example/api/v1/ting' };
+    const config = { demoMode: false, services: { ...NODE_SERVICES, ting: guild } } as any;
+    const services = buildServices(config);
+
+    const tingBases = [
+      tingMocks.buildTingHttpAdapter,
+      tingMocks.buildWorkHttpAdapter,
+      tingMocks.buildWorkflowHttpAdapter,
+      tingMocks.buildTingEventsHttpAdapter,
+      tingMocks.buildMemoryImportsHttpAdapter,
+      tingMocks.buildWorkflowExecutionHttpAdapter,
+      tingMocks.buildDeliveryExecutionHttpAdapter,
+      tingMocks.buildDispatcherHttpAdapter,
+      tingMocks.buildDispatchBusHttpAdapter,
+      tingMocks.buildTingSessionHttpAdapter,
+      tingMocks.buildTingSettingsHttpAdapter,
+      tingMocks.buildResearchHttpAdapter,
+      tingMocks.buildSpecsHttpAdapter,
+    ].map((build) => (build as any).mock.lastCall[0].basePath);
+    expect(new Set(tingBases)).toEqual(new Set([guild.baseUrl]));
+    // /tracker/projects and /tracker/import are Ting's: beside it, not at the chart's
+    // `tracker` base on this host.
+    expect((tingMocks.buildTrackerHttpAdapter as any).mock.lastCall[0].basePath).toBe(
+      'https://guild.example/api/v1',
+    );
+    expect(buildServiceBackendStatus(config)['ting.tracker']).toMatchObject({
+      mode: 'live',
+      target: 'https://guild.example/api/v1',
+      source: 'ting',
+    });
+    expect(services['volundr.runWorkflowView']).toBe(tingMocks.RunWorkflowGraph);
+
+    // Nothing else of this host's moved to Ting's, and nothing of Ting's stayed here.
+    const onGuild = queryMocks.createApiClient.mock.calls
+      .map(([base]) => base as string)
+      .filter((base) => new URL(base, 'https://page.example').origin === 'https://guild.example');
+    expect(new Set(onGuild)).toEqual(new Set([guild.baseUrl, 'https://guild.example/api/v1']));
+    expect(queryMocks.createApiClient).not.toHaveBeenCalledWith('/api/v1/ting');
+    expect((realmsMocks.buildRealmGovernanceHttpAdapter as any).mock.lastCall).toEqual([
+      expect.objectContaining({ basePath: 'https://node.example/api/v1' }),
+      'https://node.example/api/v1',
+    ]);
+  });
+
+  it('has no tracker browser on a host without Ting', () => {
+    const config = {
+      services: { ...NODE_SERVICES, ting: { ...NODE_SERVICES.ting, enabled: false } },
+    } as any;
+    expect(buildServiceBackendStatus(config)['ting.tracker']).toMatchObject({
+      mode: 'unavailable',
+      target: null,
+    });
+  });
+
+  it('scopes presented files to the Forge node the UI is served from', () => {
+    buildServices({ demoMode: false, services: NODE_SERVICES } as any);
+    expect(tingMocks.buildRunLogHttpAdapter).toHaveBeenLastCalledWith(
+      expect.objectContaining({ basePath: 'https://node.example/api/v1/forge' }),
+      expect.anything(),
+      { forgeScope: 'node' },
+    );
   });
 
   it('wires the memory gateway and memory imports to Mímir and Ting, mocks only in demo', () => {
@@ -995,7 +1122,7 @@ describe('buildServices', () => {
     expect((services['ting.audit'] as any).kind).toBe('audit');
   });
 
-  it('prefers explicit tracker and audit domain configs over the derived shared base', () => {
+  it('reads the tracker browser beside Ting, and audit where it is configured', () => {
     buildServices({
       demoMode: true,
       theme: 'ice',
@@ -1008,7 +1135,7 @@ describe('buildServices', () => {
     } as any);
 
     expect(tingMocks.buildTrackerHttpAdapter).toHaveBeenCalledWith({
-      basePath: 'http://localhost:8080/api/v1/tracker',
+      basePath: 'http://localhost:8080/api/v1',
     });
     expect(tingMocks.buildTingAuditLogHttpAdapter).toHaveBeenCalledWith({
       basePath: 'http://localhost:8080/api/v1/audit',

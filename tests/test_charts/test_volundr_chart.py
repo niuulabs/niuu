@@ -2783,6 +2783,25 @@ class TestSessionVoice:
         assert "voice.enabled needs voice.providers" in stderr
 
 
+def _web_next_services(*extra_args: str) -> dict:
+    command = ["helm", "template", "test", str(CHART_DIR), *BIFROST_URL]
+    command += ["--set", "webNext.enabled=true", *extra_args]
+    docs = list(yaml.safe_load_all(subprocess.check_output(command)))
+    config = next(d for d in docs if d and "config.live.json" in d.get("data", {}))["data"]
+    live = json.loads(config["config.live.json"])["services"]
+    assert json.loads(config["config.json"])["services"] == live
+    return live
+
+
+@pytest.mark.skipif(shutil.which("helm") is None, reason="Helm is required")
+def test_a_host_without_ting_says_so_in_its_web_config():
+    services = _web_next_services("--set", "webNext.config.services.ting.enabled=false")
+
+    assert services["ting"]["enabled"] is False
+    assert "enabled" not in services["forge"]
+    assert "enabled" not in _web_next_services()["ting"]
+
+
 def test_claude_code_interactive_is_the_chart_default():
     values = yaml.safe_load((CHART_DIR / "values.yaml").read_text())
     assert values["defaultDefinition"] == "skuldClaudeInteractive"

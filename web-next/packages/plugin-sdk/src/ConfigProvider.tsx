@@ -60,6 +60,11 @@ export function useConfig(): NiuuConfig {
   return ctx;
 }
 
+/** The config where there is one: a page an embedding host renders without it still works. */
+export function useOptionalConfig(): NiuuConfig | null {
+  return useContext(ConfigContext);
+}
+
 function FetchedConfigProvider({
   endpoint,
   fallback,

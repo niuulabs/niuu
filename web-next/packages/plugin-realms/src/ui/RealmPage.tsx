@@ -5,6 +5,8 @@ import { usePluginCtx, useService } from '@niuulabs/plugin-sdk';
 import {
   TrackerBoard,
   WorkflowLaunchModal,
+  useNodeScoped,
+  useTingPages,
   useTrackerBoard,
   useWorkflows,
   type IWorkflowService,
@@ -46,6 +48,7 @@ const LINK = 'niuu:text-[11px] niuu:text-brand-300';
 
 const REALM_TABS = ['overview', 'board', 'sessions', 'memory', 'connections', 'settings'] as const;
 type RealmTab = (typeof REALM_TABS)[number];
+const TING_TABS: ReadonlySet<RealmTab> = new Set(['board', 'sessions']);
 
 // ---------------------------------------------------------------------------
 // Overview pieces (artboard E: four compact queues, a timeline, three small cards)
@@ -92,7 +95,17 @@ function CountTile({
  * overview that asks something of you, so it sits at the top and disappears the moment
  * it is empty.
  */
-function NeedsYouStrip({ tickets, workspace }: { tickets: WorkReviewItem[]; workspace: string }) {
+function NeedsYouStrip({
+  tickets,
+  workspace,
+  slug,
+  onOpenBoard,
+}: {
+  tickets: WorkReviewItem[];
+  workspace: string;
+  slug: string;
+  onOpenBoard: () => void;
+}) {
   if (tickets.length === 0) return null;
   return (
     <section
@@ -103,7 +116,13 @@ function NeedsYouStrip({ tickets, workspace }: { tickets: WorkReviewItem[]; work
         Needs you · {tickets.length}
       </span>
       {tickets.map((item) => (
-        <TicketReviewRow key={item.taskId} item={item} workspace={workspace} />
+        <TicketReviewRow
+          key={item.taskId}
+          item={item}
+          workspace={workspace}
+          slug={slug}
+          onOpenBoard={onOpenBoard}
+        />
       ))}
     </section>
   );
@@ -213,17 +232,21 @@ export function RealmPage() {
   const navigate = useNavigate();
   const data = useRealmView(slug);
   const projects = useForgeProjects();
-  const board = useTrackerBoard(data.view?.binding?.trackerBoard || null);
+  const board = useTrackerBoard((data.hasTing && data.view?.binding?.trackerBoard) || null);
   const ctx = usePluginCtx();
   const search = useSearch({ strict: false }) as { tab?: string };
-  const [tab, setTab] = useState<RealmTab>(
+  const [chosenTab, setTab] = useState<RealmTab>(
     REALM_TABS.find((entry) => entry === search.tab) ?? 'overview',
   );
+  // The board, and which sessions work its tickets, are Ting's to say.
+  const tab = !data.hasTing && TING_TABS.has(chosenTab) ? 'overview' : chosenTab;
   const [launchOpen, setLaunchOpen] = useState(false);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [workflowOpen, setWorkflowOpen] = useState(false);
   const [workflow, setWorkflow] = useState<Workflow | null>(null);
-  const workflows = useWorkflows();
+  const pages = useTingPages();
+  const here = useNodeScoped();
+  const workflows = useWorkflows({ enabled: data.hasTing });
   const workflowService = useService<IWorkflowService>('ting.workflows');
   const queryClient = useQueryClient();
   const launchWorkflow = useMutation({
@@ -313,16 +336,18 @@ export function RealmPage() {
             >
               Session
             </button>
-            <button
-              type="button"
-              className={BUTTON}
-              onClick={() => setPickerOpen(true)}
-              disabled={!workflows.data}
-              title="Run a workflow in this workspace"
-              data-testid="realm-run-workflow"
-            >
-              Workflow
-            </button>
+            {data.hasTing ? (
+              <button
+                type="button"
+                className={BUTTON}
+                onClick={() => setPickerOpen(true)}
+                disabled={!workflows.data}
+                title="Run a workflow in this workspace"
+                data-testid="realm-run-workflow"
+              >
+                Workflow
+              </button>
+            ) : null}
             <button
               type="button"
               className={BUTTON}
@@ -335,13 +360,17 @@ export function RealmPage() {
 
         <SegmentedFilter<RealmTab>
           options={[
-            { value: 'overview', label: 'Overview' },
-            { value: 'board', label: 'Board', count: data.intake.length + data.findings.length },
-            { value: 'sessions', label: 'Sessions', count: workspaceSessions.length },
-            { value: 'memory', label: 'Memory' },
-            { value: 'connections', label: 'Connections' },
-            { value: 'settings', label: 'Settings' },
-          ]}
+            { value: 'overview' as const, label: 'Overview' },
+            {
+              value: 'board' as const,
+              label: 'Board',
+              count: data.intake.length + data.findings.length,
+            },
+            { value: 'sessions' as const, label: 'Sessions', count: workspaceSessions.length },
+            { value: 'memory' as const, label: 'Memory' },
+            { value: 'connections' as const, label: 'Connections' },
+            { value: 'settings' as const, label: 'Settings' },
+          ].filter((option) => data.hasTing || !TING_TABS.has(option.value))}
           value={tab}
           onChange={switchTab}
           aria-label="Workspace section"
@@ -349,30 +378,37 @@ export function RealmPage() {
 
         {tab === 'overview' ? (
           <>
-            <NeedsYouStrip tickets={data.waitingTickets} workspace={view.name} />
-            <div className="niuu:grid niuu:grid-cols-3 niuu:gap-3">
-              <CountTile
-                id="intake"
-                label="Intake"
-                count={data.intake.length}
-                hint={view.binding?.trackerBoard ? 'tickets on the board' : 'no tracker'}
-                onOpen={() => switchTab('board')}
-              />
-              <CountTile
-                id="sessions"
-                label="In sessions"
-                count={activeSessionCount(workspaceSessions)}
-                hint={`${workspaceSessions.length} in all`}
-                onOpen={() => switchTab('sessions')}
-              />
-              <CountTile
-                id="findings"
-                label="QA findings"
-                count={data.findings.length}
-                hint={view.binding?.bugBoard ? 'on the bug board' : 'no bug board'}
-                onOpen={() => switchTab('board')}
-              />
-            </div>
+            <NeedsYouStrip
+              tickets={data.waitingTickets}
+              workspace={view.name}
+              slug={slug}
+              onOpenBoard={() => switchTab('board')}
+            />
+            {data.hasTing ? (
+              <div className="niuu:grid niuu:grid-cols-3 niuu:gap-3">
+                <CountTile
+                  id="intake"
+                  label="Intake"
+                  count={data.intake.length}
+                  hint={view.binding?.trackerBoard ? 'tickets on the board' : 'no tracker'}
+                  onOpen={() => switchTab('board')}
+                />
+                <CountTile
+                  id="sessions"
+                  label="In sessions"
+                  count={activeSessionCount(workspaceSessions)}
+                  hint={`${workspaceSessions.length} ${here ? 'on this host' : 'in all'}`}
+                  onOpen={() => switchTab('sessions')}
+                />
+                <CountTile
+                  id="findings"
+                  label="QA findings"
+                  count={data.findings.length}
+                  hint={view.binding?.bugBoard ? 'on the bug board' : 'no bug board'}
+                  onOpen={() => switchTab('board')}
+                />
+              </div>
+            ) : null}
 
             <SectionCard title="Trust" description={trustSentence(levels)}>
               <div className="niuu:flex niuu:flex-wrap niuu:gap-1" data-testid="trust-summary">
@@ -424,7 +460,9 @@ export function RealmPage() {
 
         {tab === 'sessions' ? (
           <div className="niuu:flex niuu:flex-col niuu:gap-4">
-            <SectionCard title={`Sessions · ${workspaceSessions.length}`}>
+            <SectionCard
+              title={`Sessions${here ? ' on this host' : ''} · ${workspaceSessions.length}`}
+            >
               <SessionsTable sessions={workspaceSessions} />
             </SectionCard>
           </div>
@@ -503,9 +541,11 @@ export function RealmPage() {
               title="No workflows yet"
               description="Build one under Work › Workflows, then run it here."
               action={
-                <Link to={'/ting/workflows' as never} className={PRIMARY}>
-                  Open Work › Workflows
-                </Link>
+                pages ? (
+                  <Link to={'/ting/workflows' as never} className={PRIMARY}>
+                    Open Work › Workflows
+                  </Link>
+                ) : undefined
               }
             />
           ) : (
@@ -529,33 +569,37 @@ export function RealmPage() {
               </button>
             ))
           )}
-          <Link to={'/ting/workflows' as never} className={`${LINK} niuu:self-start`}>
-            Manage workflows
-          </Link>
+          {pages ? (
+            <Link to={'/ting/workflows' as never} className={`${LINK} niuu:self-start`}>
+              Manage workflows
+            </Link>
+          ) : null}
         </div>
       </Modal>
-      <WorkflowLaunchModal
-        open={workflowOpen}
-        onOpenChange={(open) => {
-          setWorkflowOpen(open);
-          if (!open) setWorkflow(null);
-        }}
-        workflow={workflow ?? workflows.data?.[0] ?? null}
-        launching={launchWorkflow.isPending}
-        onLaunch={async (request) => {
-          const target = workflow ?? workflows.data?.[0];
-          if (!target) throw new Error('No workflow to run. Create one under Work › Workflows.');
-          await launchWorkflow.mutateAsync({
-            id: target.id,
-            request: {
-              ...request,
-              repo: request.repo ?? view.binding?.repo,
-              branch: request.branch ?? view.binding?.branch,
-            },
-          });
-          setWorkflowOpen(false);
-        }}
-      />
+      {data.hasTing ? (
+        <WorkflowLaunchModal
+          open={workflowOpen}
+          onOpenChange={(open) => {
+            setWorkflowOpen(open);
+            if (!open) setWorkflow(null);
+          }}
+          workflow={workflow ?? workflows.data?.[0] ?? null}
+          launching={launchWorkflow.isPending}
+          onLaunch={async (request) => {
+            const target = workflow ?? workflows.data?.[0];
+            if (!target) throw new Error('No workflow to run. Create one under Work › Workflows.');
+            await launchWorkflow.mutateAsync({
+              id: target.id,
+              request: {
+                ...request,
+                repo: request.repo ?? view.binding?.repo,
+                branch: request.branch ?? view.binding?.branch,
+              },
+            });
+            setWorkflowOpen(false);
+          }}
+        />
+      ) : null}
     </div>
   );
 }

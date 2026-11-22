@@ -22,9 +22,11 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
 
+from niuu.domain.guild_membership import GuildMembership
 from niuu.domain.notifications import NOTIFICATION_ADMIN_ROLE
 from niuu.domain.services.token_scope import FORGE_SESSION_READ_SCOPE, require_scope
 from volundr.adapters.inbound.auth import extract_principal
+from volundr.adapters.inbound.rest_guild import require_own_instance
 from volundr.domain.artifacts import PublicationFilter, PublicationSource
 from volundr.domain.models import Principal
 from volundr.domain.notifications import NotificationScope
@@ -56,8 +58,21 @@ def create_artifacts_router(
     prefix: str = "/api/v1/forge",
     default_page_size: int,
     max_page_size: int,
+    guild_membership: GuildMembership | None = None,
 ) -> APIRouter:
-    router = APIRouter(prefix=prefix, tags=["Artifacts"])
+    def own_instance_only(
+        instance_id: str | None = Query(
+            default=None,
+            description=(
+                "Guild instance id, as the Guild facade takes it; must be this node's own "
+                "(another Forge's id is a 404)"
+            ),
+        ),
+        _principal: Principal = Depends(extract_principal),
+    ) -> None:
+        require_own_instance(guild_membership, instance_id)
+
+    router = APIRouter(prefix=prefix, tags=["Artifacts"], dependencies=[Depends(own_instance_only)])
 
     @router.get(
         "/artifact-publications",

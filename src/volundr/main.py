@@ -2436,6 +2436,7 @@ def create_app(
                         prefix="/api/v1/forge",
                         default_page_size=settings.artifacts.default_page_size,
                         max_page_size=settings.artifacts.max_page_size,
+                        guild_membership=guild_membership,
                     )
                 )
             app.include_router(

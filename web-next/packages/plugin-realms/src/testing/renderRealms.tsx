@@ -15,6 +15,7 @@ import {
   PluginCtxProvider,
   ServicesProvider,
   createMockIdentityService,
+  definePlugin,
   type PluginDescriptor,
 } from '@niuulabs/plugin-sdk';
 import { ShellContext, type ShellContextValue } from '@niuulabs/shell';
@@ -62,7 +63,10 @@ export function defaultServices(log: CallLog, overrides: Record<string, unknown>
 }
 
 /** The shell context the home page reads the enabled plugin list from. */
-const SHELL_PLUGINS: PluginDescriptor[] = [homePlugin, realmsPlugin];
+const TING_PLUGIN = definePlugin({ id: 'ting', rune: 'T', title: 'Work', subtitle: 'work' });
+const SHELL_PLUGINS: PluginDescriptor[] = [homePlugin, realmsPlugin, TING_PLUGIN];
+/** A host that shows its projects with the Ting plugin off. */
+export const WITHOUT_TING_PLUGIN: PluginDescriptor[] = [homePlugin, realmsPlugin];
 
 function CtxProvider({ children }: { children: React.ReactNode }) {
   const [tweaks, setTweaks] = useState<Record<string, unknown>>({});

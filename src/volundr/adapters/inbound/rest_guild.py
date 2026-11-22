@@ -55,12 +55,13 @@ def require_own_instance(membership: GuildMembership | None, instance_id: str | 
     """Refuse a write whose body addresses another Forge than this node.
 
     The Guild facade routes by these ids and drops them before forwarding; a client
-    talking to the node directly sends them too. None addresses no Forge in particular.
+    talking to the node directly sends them too. An absent or empty id addresses no Forge
+    in particular, as at the facade.
 
     Raises:
         HTTPException: as ``own_instance``, for any id that is not this node's own.
     """
-    if instance_id is None:
+    if not instance_id:
         return
     own_instance(membership, instance_id)
 

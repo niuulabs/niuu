@@ -1,6 +1,11 @@
 import { useQueries, useQuery } from '@tanstack/react-query';
 import { useService } from '@niuulabs/plugin-sdk';
-import { useReviews, useSagas, type ReviewItem as WorkReviewItem } from '@niuulabs/plugin-ting';
+import {
+  useReviews,
+  useSagas,
+  useTingAvailable,
+  type ReviewItem as WorkReviewItem,
+} from '@niuulabs/plugin-ting';
 import type { IVolundrService } from '@niuulabs/plugin-volundr';
 import type { RealmSummary } from '../domain/governance';
 import {
@@ -60,8 +65,9 @@ export function orderCards(cards: RealmHomeCard[]): RealmHomeCard[] {
 /** One card's worth of data per realm, joined over the objects that already exist. */
 export function useRealmsHome() {
   const realms = useRealms();
-  const sagas = useSagas();
-  const workReviews = useReviews();
+  const hasTing = useTingAvailable();
+  const sagas = useSagas({ enabled: hasTing });
+  const workReviews = useReviews({ enabled: hasTing });
   const sessions = useVolundrSessions();
   const governance = useService<IRealmGovernanceService>(REALM_GOVERNANCE_SERVICE_KEY);
   const grants = useQueries({
@@ -90,6 +96,8 @@ export function useRealmsHome() {
   const sessionsRunning = cards.reduce((sum, card) => sum + card.runningSessions, 0);
 
   return {
+    /** False on a host without Ting: what its boards hold and wait on is not known here. */
+    hasTing,
     cards,
     waitingTickets: ticketsOf(cards),
     needsYouError: workReviews.error ?? sagas.error ?? null,

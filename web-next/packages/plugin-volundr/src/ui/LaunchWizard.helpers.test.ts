@@ -269,6 +269,8 @@ describe('LaunchWizard helpers', () => {
     ];
 
     expect(getTargetTagOptions(targets)).toEqual(['batch', 'gpu', 'prod']);
+    // One host is named, never matched: a lone Forge node refuses a tag selector.
+    expect(getTargetTagOptions(targets.slice(0, 1))).toEqual([]);
     expect(targetMatchesTags(targets[0]!, ['gpu', 'prod'], 'all')).toBe(true);
     expect(targetMatchesTags(targets[1]!, ['gpu', 'prod'], 'all')).toBe(false);
     expect(getMatchingTargets(targets, ['gpu', 'batch'], 'any').map((target) => target.id)).toEqual(

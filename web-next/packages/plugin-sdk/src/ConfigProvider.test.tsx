@@ -1,6 +1,11 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { act, render, screen, waitFor } from '@testing-library/react';
-import { ConfigProvider, resolveSafeConfigEndpoint, useConfig } from './ConfigProvider';
+import {
+  ConfigProvider,
+  resolveSafeConfigEndpoint,
+  useConfig,
+  useOptionalConfig,
+} from './ConfigProvider';
 
 function ConfigReader() {
   const cfg = useConfig();
@@ -73,6 +78,21 @@ describe('ConfigProvider', () => {
       </ConfigProvider>,
     );
     await waitFor(() => expect(screen.getByTestId('err')).toBeInTheDocument());
+  });
+
+  it('is optional to a page that asks for it that way', () => {
+    function OptionalReader() {
+      return <span data-testid="optional">{useOptionalConfig()?.theme ?? 'none'}</span>;
+    }
+    const { unmount } = render(<OptionalReader />);
+    expect(screen.getByTestId('optional').textContent).toBe('none');
+    unmount();
+    render(
+      <ConfigProvider value={{ demoMode: false, theme: 'ice', plugins: {}, services: {} }}>
+        <OptionalReader />
+      </ConfigProvider>,
+    );
+    expect(screen.getByTestId('optional').textContent).toBe('ice');
   });
 
   it('throws when useConfig is used outside the provider', () => {

@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, waitFor, fireEvent, act, within } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ServicesProvider } from '@niuulabs/plugin-sdk';
+import { ShellContext, type ShellContextValue } from '@niuulabs/shell';
 import { ChatConnectionsContext } from '@niuulabs/ui';
 import { createMockBifrostService } from '@niuulabs/plugin-bifrost';
 import { ApiClientError } from '@niuulabs/query';
@@ -579,6 +580,7 @@ function wrap(
     sessionStore?: Partial<ISessionStore>;
     openConnections?: () => void;
     services?: Record<string, unknown>;
+    shell?: ShellContextValue;
   } = {},
 ) {
   const session = opts.session === undefined ? RUNNING_SESSION : opts.session;
@@ -598,13 +600,15 @@ function wrap(
           ...opts.services,
         }}
       >
-        <ChatConnectionsContext.Provider value={opts.openConnections}>
-          <LiveSessionDetailPage
-            sessionId={sessionId}
-            readOnly={opts.readOnly}
-            onBackToUnread={opts.onBackToUnread}
-          />
-        </ChatConnectionsContext.Provider>
+        <ShellContext.Provider value={opts.shell ?? null}>
+          <ChatConnectionsContext.Provider value={opts.openConnections}>
+            <LiveSessionDetailPage
+              sessionId={sessionId}
+              readOnly={opts.readOnly}
+              onBackToUnread={opts.onBackToUnread}
+            />
+          </ChatConnectionsContext.Provider>
+        </ShellContext.Provider>
       </ServicesProvider>
     </QueryClientProvider>,
   );
@@ -976,6 +980,17 @@ describe('LiveSessionDetailPage', () => {
       wrap('test-session-id-1234');
       await screen.findByTestId('live-session-detail-page');
       expect(screen.queryByText('Archived')).not.toBeInTheDocument();
+    });
+
+    it('names the run without a link where the Ting plugin is off', async () => {
+      wrap('test-session-id-1234', {
+        session: { ...RUNNING_SESSION, runId: 'probe-9' },
+        shell: { enabled: [], brand: null, version: '0', ctx: { tweaks: {}, setTweak: () => {} } },
+      });
+
+      await screen.findByTestId('live-session-detail-page');
+      expect(screen.getByTestId('session-run')).toHaveTextContent('probe-9');
+      expect(within(screen.getByTestId('session-run')).queryByRole('link')).toBeNull();
     });
 
     it("links a workflow run's session to the run", async () => {

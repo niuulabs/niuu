@@ -17,13 +17,13 @@ from niuu.domain.guild_membership import GuildMembership
 from niuu.domain.services.token_scope import FORGE_SESSION_LIFECYCLE_SCOPE, require_scope
 from niuu.ports.identity import UserProvisioningError
 from volundr.adapters.inbound.auth import extract_principal
+from volundr.adapters.inbound.launch_target import LaunchTarget, require_own_target
 from volundr.adapters.inbound.rest import (
     ErrorResponse,
     SessionCreate,
     SessionResponse,
     _execution_catalog_http_error,
 )
-from volundr.adapters.inbound.rest_guild import require_own_instance
 from volundr.adapters.inbound.rest_projects import project_result
 from volundr.domain.execution_catalog import ExecutionCatalogError, ExecutionSelectionError
 from volundr.domain.models import (
@@ -99,7 +99,7 @@ class TeamMemberCreate(BaseModel):
         return {key: voice.strip() for key, voice in value.items()}
 
 
-class TeamCreate(BaseModel):
+class TeamCreate(LaunchTarget):
     """Request model for starting a team.
 
     Unknown fields are refused, never dropped: a field this route does not know would
@@ -128,13 +128,6 @@ class TeamCreate(BaseModel):
         "task and refused without one.",
     )
     members: list[TeamMemberCreate] = Field(min_length=1, description="The team's agents")
-    instance_id: str | None = Field(
-        default=None,
-        description=(
-            "Guild instance id of the Forge to start the team on, as the Guild facade takes "
-            "it; must be this node's own (another Forge's id is a 404)"
-        ),
-    )
     invitees: list[str] = Field(
         default_factory=list,
         description="User ids invited to the team's room with the viewer role (read and speak)",
@@ -269,7 +262,7 @@ def create_teams_router(
         left behind when any step fails before the team has started.
         """
         principal = await _principal(request)
-        require_own_instance(guild_membership, data.instance_id)
+        require_own_target(guild_membership, data)
         # project_result answers the errors every launch shares: a refused request (a
         # ValueError: TeamError, an unplayable persona, a removed workload type, project
         # memory) is 422, access denied is 403, an unavailable memory directory is 503.

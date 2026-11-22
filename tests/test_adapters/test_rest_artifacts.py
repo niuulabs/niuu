@@ -12,6 +12,12 @@ from fastapi.testclient import TestClient
 
 from identity.adapters.identity import EnvoyHeaderAuthenticationAdapter
 from tests.support.artifacts import T0, candidate, hook_row, service, session_uuid
+from tests.support.node_scope import (
+    NODE_MEMBERSHIP,
+    NODE_REQUESTS,
+    OTHER_INSTANCE,
+    OTHER_INSTANCE_DETAIL,
+)
 from volundr.adapters.inbound.rest_artifacts import (
     InstanceIdentity,
     create_artifacts_router,
@@ -102,6 +108,62 @@ async def test_publications_page_with_cursor_and_owner_scope(env):
 
     scope = repo.scopes[0]
     assert (scope.user_id, scope.is_admin) == ("owner-a", False)
+
+
+def _node_client(svc, membership) -> TestClient:
+    app = FastAPI()
+    app.state.identity = EnvoyHeaderAuthenticationAdapter()
+    app.include_router(
+        create_artifacts_router(
+            svc,
+            prefix=PREFIX,
+            default_page_size=2,
+            max_page_size=5,
+            guild_membership=membership,
+        )
+    )
+    return TestClient(app)
+
+
+async def test_a_node_serves_its_files_to_its_own_ui(env):
+    _, svc, _ = env
+    await _seed(svc)
+    own = NODE_REQUESTS["read_artifacts"]
+    client = _node_client(svc, NODE_MEMBERSHIP)
+
+    page = client.get(f"{PREFIX}/artifact-publications", params=own, headers=headers())
+    bursts = client.get(
+        f"{PREFIX}/artifact-bursts",
+        params={"instance_id": own["instance_id"]},
+        headers=headers(),
+    )
+
+    assert page.status_code == 200, page.text
+    assert bursts.status_code == 200 and len(bursts.json()["items"]) == 1
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "artifact-publications",
+        "artifact-bursts",
+        "artifact-bursts/00000000-0000-0000-0000-000000000001",
+    ],
+)
+async def test_a_node_never_shows_its_files_as_another_forges(env, path):
+    _, svc, repo = env
+    await _seed(svc)
+    other = {"instance_id": OTHER_INSTANCE}
+
+    refused = _node_client(svc, NODE_MEMBERSHIP).get(
+        f"{PREFIX}/{path}", params=other, headers=headers()
+    )
+    unjoined = _node_client(svc, None).get(f"{PREFIX}/{path}", params=other, headers=headers())
+
+    assert (refused.status_code, refused.json()["detail"]) == (404, OTHER_INSTANCE_DETAIL)
+    assert unjoined.status_code == 404
+    assert "not joined to a Guild" in unjoined.json()["detail"]
+    assert repo.scopes == []
 
 
 async def test_publications_narrow_by_session_source_and_key(env):

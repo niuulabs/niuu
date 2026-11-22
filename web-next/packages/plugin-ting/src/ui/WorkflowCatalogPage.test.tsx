@@ -14,7 +14,7 @@ const mockSearch = vi.hoisted(() => ({
   current: {} as { workflow?: string; id?: string; repo?: string; branch?: string },
 }));
 const mockDownload = vi.hoisted(() => vi.fn());
-const mockOpenEventStream = vi.hoisted(() => vi.fn());
+const openEvents = vi.hoisted(() => vi.fn());
 
 vi.mock('@tanstack/react-router', () => ({
   useNavigate: () => mockNavigate,
@@ -35,10 +35,6 @@ vi.mock('@tanstack/react-router', () => ({
       {children}
     </a>
   ),
-}));
-
-vi.mock('@niuulabs/query', () => ({
-  openEventStream: mockOpenEventStream,
 }));
 
 vi.mock('./workflowFiles', () => ({
@@ -249,7 +245,7 @@ function renderPage(services: Record<string, unknown> = makeServices()) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(
     <QueryClientProvider client={client}>
-      <ServicesProvider services={services}>
+      <ServicesProvider services={{ 'ting.events': { open: openEvents }, ...services }}>
         <WorkflowCatalogPage />
       </ServicesProvider>
     </QueryClientProvider>,
@@ -262,8 +258,8 @@ describe('WorkflowCatalogPage', () => {
     mockNavigate.mockReset();
     mockDownload.mockReset();
     mockSearch.current = {};
-    mockOpenEventStream.mockReset();
-    mockOpenEventStream.mockReturnValue({ close: vi.fn() });
+    openEvents.mockReset();
+    openEvents.mockReturnValue({ close: vi.fn() });
   });
 
   it('lists workflows with gate and stage counts and selects the first', async () => {
@@ -578,7 +574,7 @@ describe('WorkflowCatalogPage', () => {
 
     const specs = services['ting.specs'] as { listCampaigns: ReturnType<typeof vi.fn> };
     const callsBefore = specs.listCampaigns.mock.calls.length;
-    const options = mockOpenEventStream.mock.calls[0]?.[1] as {
+    const options = openEvents.mock.calls[0]?.[0] as {
       onEvent: (payload: { event: string; data: string }) => void;
     };
     options.onEvent({ event: 'workflow.campaign.updated', data: '{}' });
@@ -613,7 +609,7 @@ describe('WorkflowCatalogPage', () => {
 
     render(
       <QueryClientProvider client={client}>
-        <ServicesProvider services={makeServices()}>
+        <ServicesProvider services={{ 'ting.events': { open: openEvents }, ...makeServices() }}>
           <WorkflowCatalogPage />
         </ServicesProvider>
       </QueryClientProvider>,

@@ -4,6 +4,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import {
   TrackerWorkImportDialog,
   mergeWorkPages,
+  useTingAvailable,
   useTrackerBoard,
   useWorkCollection,
   type Saga,
@@ -202,7 +203,8 @@ export function ConnectionsPanel({
   view: RealmView;
   onOpenBoard: () => void;
 }) {
-  const board = useTrackerBoard(view.binding?.trackerBoard || null);
+  const hasTing = useTingAvailable();
+  const board = useTrackerBoard((hasTing && view.binding?.trackerBoard) || null);
   // Named from the board itself, which is what tickets actually run.
   const names = [
     ...new Set(
@@ -215,7 +217,7 @@ export function ConnectionsPanel({
     <div className="niuu:flex niuu:flex-col niuu:gap-4" data-testid="realm-connections">
       <div className="niuu:grid niuu:grid-cols-[repeat(auto-fit,minmax(260px,1fr))] niuu:gap-4">
         <ProjectCard realm={realm} />
-        <TrackerCard realm={realm} view={view} />
+        {hasTing ? <TrackerCard realm={realm} view={view} /> : null}
         <RepositoryCard view={view} />
       </div>
       {board.saga ? (

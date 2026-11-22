@@ -15,7 +15,7 @@ import { WorkCoverageNotices } from './WorkCoverageNotices';
 
 /** The Work project behind one tracker project, and its live detail. */
 export function useTrackerBoard(trackerId: string | null) {
-  const sagas = useSagas();
+  const sagas = useSagas({ enabled: trackerId !== null });
   const saga = sagas.data?.find((entry) => entry.trackerId === trackerId) ?? null;
   const detail = useWorkDetail(saga ? 'project' : null, saga?.id ?? null);
   return {
