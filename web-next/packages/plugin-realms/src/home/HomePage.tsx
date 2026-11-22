@@ -78,6 +78,13 @@ const CHOICES: Choice[] = [
   },
 ];
 
+/** Two cards fit side by side as well as three; one takes the row. */
+const GRID_COLUMNS: Record<number, string> = {
+  1: 'niuu:grid-cols-1',
+  2: 'niuu:grid-cols-2',
+  3: 'niuu:grid-cols-3',
+};
+
 function ChoiceCard({ choice }: { choice: Choice }) {
   return (
     <section className={CARD} data-testid={`home-choice-${choice.id}`}>
@@ -221,7 +228,10 @@ export function HomePage() {
   const realmCards = realmsEnabled ? home.cards : [];
   const tickets = realmsEnabled ? home.waitingTickets : [];
   const waiting = blocked.length + tickets.length;
-  const choices = realmsEnabled ? CHOICES : CHOICES.filter((choice) => choice.id !== 'realm');
+  const choices = CHOICES.filter(
+    (choice) =>
+      (choice.id !== 'realm' || realmsEnabled) && (choice.id !== 'workflow' || home.hasTing),
+  );
   const activeRealms = orderCards(realmCards)
     .filter((card) => card.runningSessions > 0)
     .slice(0, CONTINUE_LIMIT);
@@ -255,9 +265,7 @@ export function HomePage() {
         />
       </header>
 
-      <div
-        className={`niuu:grid niuu:gap-5 ${realmsEnabled ? 'niuu:grid-cols-3' : 'niuu:grid-cols-2'}`}
-      >
+      <div className={`niuu:grid niuu:gap-5 ${GRID_COLUMNS[choices.length]}`}>
         {choices.map((choice) => (
           <ChoiceCard key={choice.id} choice={choice} />
         ))}
@@ -275,7 +283,7 @@ export function HomePage() {
             aside={
               <span className="niuu:text-xs niuu:text-text-muted">
                 {waiting} open
-                {realmsEnabled ? (
+                {realmsEnabled && home.hasTing ? (
                   <>
                     {' '}
                     ·{' '}
@@ -290,7 +298,7 @@ export function HomePage() {
             <NeedsYouError error={home.needsYouError} />
             {waiting === 0 ? (
               <span className="niuu:py-3 niuu:text-xs niuu:text-text-faint">
-                Nothing is waiting on you.
+                {home.hasTing ? 'Nothing is waiting on you.' : 'No session is waiting on you.'}
               </span>
             ) : (
               <>

@@ -3,7 +3,7 @@ import { useNavigate, useSearch } from '@tanstack/react-router';
 import { useQuery } from '@tanstack/react-query';
 import { useService } from '@niuulabs/plugin-sdk';
 import type { IMimirService } from '@niuulabs/plugin-mimir';
-import type { ITrackerBrowserService } from '@niuulabs/plugin-ting';
+import { useTingAvailable, type ITrackerBrowserService } from '@niuulabs/plugin-ting';
 import {
   ConfirmRow,
   SectionCard,
@@ -151,6 +151,7 @@ function ConnectStep({
     getBranches(repoUrl: string): Promise<string[]>;
   }>('niuu.repos');
   const tracker = useService<ITrackerBrowserService>('ting.tracker');
+  const hasTing = useTingAvailable();
   const mimir = useService<IMimirService>('mimir');
   const template = templateById(draft.templateId);
 
@@ -158,6 +159,7 @@ function ConnectStep({
   const boards = useQuery({
     queryKey: ['ting', 'tracker', 'boards'],
     queryFn: () => tracker.listProjects(),
+    enabled: hasTing,
   });
   const integrations = useQuery({
     queryKey: ['volundr', 'integrations'],
@@ -260,36 +262,38 @@ function ConnectStep({
         )}
       </SectionCard>
 
-      <SectionCard
-        title="Tracker board"
-        description={
-          template.needsBoard
-            ? 'Optional. Where work comes from: sessions read the board and move tickets as they work.'
-            : 'Optional for this template.'
-        }
-      >
-        {boards.error ? (
-          <ErrorState message={String(boards.error)} />
-        ) : (
-          <div className="niuu:grid niuu:grid-cols-2 niuu:gap-3">
-            <Field label="Board">
-              <Select
-                options={boardOptions}
-                placeholder={boards.isLoading ? 'Loading boards…' : 'Pick a board'}
-                value={draft.trackerBoard}
-                onValueChange={(trackerBoard) => onChange({ ...draft, trackerBoard })}
-              />
-            </Field>
-            <Field label="Bug board" hint="Optional — where your QA team files findings">
-              <Select
-                options={[{ value: '', label: 'Use the tracker board' }, ...boardOptions]}
-                value={draft.bugBoard}
-                onValueChange={(bugBoard) => onChange({ ...draft, bugBoard })}
-              />
-            </Field>
-          </div>
-        )}
-      </SectionCard>
+      {hasTing ? (
+        <SectionCard
+          title="Tracker board"
+          description={
+            template.needsBoard
+              ? 'Optional. Where work comes from: sessions read the board and move tickets as they work.'
+              : 'Optional for this template.'
+          }
+        >
+          {boards.error ? (
+            <ErrorState message={String(boards.error)} />
+          ) : (
+            <div className="niuu:grid niuu:grid-cols-2 niuu:gap-3">
+              <Field label="Board">
+                <Select
+                  options={boardOptions}
+                  placeholder={boards.isLoading ? 'Loading boards…' : 'Pick a board'}
+                  value={draft.trackerBoard}
+                  onValueChange={(trackerBoard) => onChange({ ...draft, trackerBoard })}
+                />
+              </Field>
+              <Field label="Bug board" hint="Optional — where your QA team files findings">
+                <Select
+                  options={[{ value: '', label: 'Use the tracker board' }, ...boardOptions]}
+                  value={draft.bugBoard}
+                  onValueChange={(bugBoard) => onChange({ ...draft, bugBoard })}
+                />
+              </Field>
+            </div>
+          )}
+        </SectionCard>
+      ) : null}
 
       <SectionCard
         title="Connections"
@@ -630,12 +634,13 @@ export function NewRealmPage() {
     setStep('connect');
   }
 
+  const hasTing = useTingAvailable();
   // The tracker board key from a sentence is matched against real boards once they load.
   const tracker = useService<ITrackerBrowserService>('ting.tracker');
   const boards = useQuery({
     queryKey: ['ting', 'tracker', 'boards'],
     queryFn: () => tracker.listProjects(),
-    enabled: parsed?.boardKey !== null && parsed?.boardKey !== undefined,
+    enabled: hasTing && parsed?.boardKey !== null && parsed?.boardKey !== undefined,
   });
   const [matchedBoardKey, setMatchedBoardKey] = useState<string | null>(null);
   if (parsed?.boardKey && boards.data && matchedBoardKey !== parsed.boardKey) {
@@ -707,7 +712,7 @@ export function NewRealmPage() {
     ],
     launch: [
       sentence ? 'Here is how I read that.' : 'Ready to start.',
-      'Say go and the workspace is created: its memory, its trust and its board. Nothing runs until you start a session.',
+      `Say go and the workspace is created: its memory${hasTing ? ', its trust and its board' : ' and its trust'}. Nothing runs until you start a session.`,
     ],
   };
 

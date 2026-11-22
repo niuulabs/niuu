@@ -159,6 +159,7 @@ export function ProjectPage() {
               boardName={card.boardName}
               waitingTickets={card.waitingTickets.length}
               runningSessions={card.runningSessions}
+              hasTing={home.hasTing}
             />
           ))}
         </div>
@@ -166,18 +167,20 @@ export function ProjectPage() {
 
       <div className="niuu:grid niuu:grid-cols-[minmax(0,1.5fr)_minmax(0,1fr)] niuu:gap-4">
         <div className="niuu:flex niuu:min-w-0 niuu:flex-col niuu:gap-4">
-          <SectionCard title={`Needs you · ${waiting}`}>
-            <NeedsYouError error={home.needsYouError} />
-            {waiting === 0 ? (
-              <span className="niuu:text-xs niuu:text-text-faint">Nothing waiting on you.</span>
-            ) : (
-              <>
-                {tickets.map(({ item, card }) => (
-                  <TicketReviewRow key={item.taskId} item={item} workspace={card.realm.name} />
-                ))}
-              </>
-            )}
-          </SectionCard>
+          {home.hasTing ? (
+            <SectionCard title={`Needs you · ${waiting}`}>
+              <NeedsYouError error={home.needsYouError} />
+              {waiting === 0 ? (
+                <span className="niuu:text-xs niuu:text-text-faint">Nothing waiting on you.</span>
+              ) : (
+                <>
+                  {tickets.map(({ item, card }) => (
+                    <TicketReviewRow key={item.taskId} item={item} workspace={card.realm.name} />
+                  ))}
+                </>
+              )}
+            </SectionCard>
+          ) : null}
           <SectionCard title={`Sessions · ${projectSessions.length}`}>
             <SessionsTable sessions={projectSessions} ownerNames={ownerNames} />
           </SectionCard>

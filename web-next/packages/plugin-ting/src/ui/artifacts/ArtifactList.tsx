@@ -3,6 +3,7 @@ import { useMemo, useState } from 'react';
 import { Link } from '@tanstack/react-router';
 import { ARTIFACT_STATUS_LABEL, artifactKind, type ArtifactStatus } from '../../domain/artifacts';
 import { reviewPath, type ReviewItem } from '../../domain/review';
+import { useTingAvailable } from '../useTingAvailable';
 import { useReviews } from '../useWork';
 import {
   useArtifacts,
@@ -137,7 +138,7 @@ function Row({ row }: { row: ListRow }) {
  */
 export function ArtifactList({ projectId }: { projectId?: string }) {
   const artifacts = useArtifacts(projectId);
-  const reviews = useReviews();
+  const reviews = useReviews({ enabled: useTingAvailable() });
   const [status, setStatus] = useState<ArtifactStatus | null>(null);
   const [kind, setKind] = useState<string | null>(null);
   const [query, setQuery] = useState('');

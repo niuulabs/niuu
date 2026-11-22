@@ -98,8 +98,11 @@ import {
   buildIdentityAdapter,
   createMockFeatureCatalogService,
   createMockIdentityService,
+  isUnavailableService,
+  UNAVAILABLE_SERVICE,
   type IFeatureCatalogService,
   type IIdentityService,
+  type UnavailableServiceStatus,
 } from '@niuulabs/plugin-sdk';
 import type { NiuuConfig, ServiceConfig, ServicesMap } from '@niuulabs/plugin-sdk';
 import { buildRepoCatalogHttpAdapter, createMockRepoCatalogService } from './repoCatalog';
@@ -124,12 +127,6 @@ export class UnsupportedSessionStoreOperationError extends Error {
   }
 }
 
-export interface UnavailableServiceStatus {
-  available: false;
-  serviceName: string;
-  reason: string;
-}
-
 export class ServiceUnavailableError extends Error {
   readonly serviceName: string;
 
@@ -140,19 +137,7 @@ export class ServiceUnavailableError extends Error {
   }
 }
 
-export const UNAVAILABLE_SERVICE = Symbol('niuu.unavailable-service');
-
-export function isUnavailableService(
-  service: unknown,
-): service is { [UNAVAILABLE_SERVICE]: UnavailableServiceStatus } {
-  return Boolean(
-    service &&
-    typeof service === 'object' &&
-    UNAVAILABLE_SERVICE in service &&
-    (service as { [UNAVAILABLE_SERVICE]?: UnavailableServiceStatus })[UNAVAILABLE_SERVICE]
-      ?.available === false,
-  );
-}
+export { isUnavailableService, UNAVAILABLE_SERVICE, type UnavailableServiceStatus };
 
 function unavailableService<T>(
   serviceName: string,
@@ -186,11 +171,11 @@ function demoService<T>(config: Partial<NiuuConfig>, serviceName: string, factor
 function hasHttpBackend(
   svc: ServiceConfig | undefined,
 ): svc is ServiceConfig & { baseUrl: string } {
-  return svc?.mode === 'http' && typeof svc.baseUrl === 'string';
+  return svc?.enabled !== false && svc?.mode === 'http' && typeof svc.baseUrl === 'string';
 }
 
 function hasWsBackend(svc: ServiceConfig | undefined): svc is ServiceConfig & { wsUrl: string } {
-  return svc?.mode === 'ws' && typeof svc.wsUrl === 'string';
+  return svc?.enabled !== false && svc?.mode === 'ws' && typeof svc.wsUrl === 'string';
 }
 
 function resolveBrowserRelativeWsUrl(url: string): string {
@@ -1516,7 +1501,10 @@ export function buildServices(config: NiuuConfig): ServicesMap {
   const tingSettingsBase = resolveTingServiceBase(config, 'ting.settings');
   const tingSettingsClient = tingSettingsBase ? createApiClient(tingSettingsBase) : null;
   const trackerBase = resolveCanonicalServiceBase(config, 'tracker');
-  const trackerClient = trackerBase ? createApiClient(trackerBase) : null;
+  // The tracker browser's routes (/tracker/projects, /tracker/import) are Ting's, so a
+  // host that says it runs no Ting has none, whatever serves the rest of the tracker API.
+  const runsTing = config.services['ting']?.enabled !== false;
+  const trackerClient = trackerBase && runsTing ? createApiClient(trackerBase) : null;
   const auditBase = resolveCanonicalServiceBase(config, 'audit');
   const auditClient = auditBase ? createApiClient(auditBase) : null;
   const workflowBase = resolveTingServiceBase(config, 'ting.workflows');
@@ -1583,6 +1571,7 @@ export function buildServices(config: NiuuConfig): ServicesMap {
       ? buildRunLogHttpAdapter(
           createApiClient(forgeApiBasePath(forgeBase)),
           artifactRegistryBase ? createApiClient(artifactRegistryBase) : null,
+          { forgeScope: config.services.forge?.scope },
         )
       : demoService(config, 'ting.runLog', createMockRunLogService),
     [MEMORY_IMPORTS_SERVICE_KEY]: tingClient

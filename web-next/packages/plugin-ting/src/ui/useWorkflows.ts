@@ -18,11 +18,13 @@ import type {
 } from '../ports';
 import type { Workflow } from '../domain/workflow';
 
-export function useWorkflows() {
+/** `enabled: false` asks Ting nothing, for a host that runs none. */
+export function useWorkflows({ enabled = true }: { enabled?: boolean } = {}) {
   const svc = useService<IWorkflowService>('ting.workflows');
   return useQuery({
     queryKey: ['ting', 'workflows'],
     queryFn: () => svc.listWorkflows(),
+    enabled,
   });
 }
 

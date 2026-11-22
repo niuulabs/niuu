@@ -523,6 +523,7 @@ export { WorkflowCard } from './ui/WorkflowCard';
 export { StageProgressRail } from './ui/StageProgressRail';
 export { StepDots } from './ui/StepDots';
 export { useSagas } from './ui/useSagas';
+export { useTingAvailable } from './ui/useTingAvailable';
 export { useSaga } from './ui/useSaga';
 export {
   useWorkflows,

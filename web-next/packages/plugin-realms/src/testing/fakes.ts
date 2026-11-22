@@ -3,7 +3,9 @@
  * calls it received so tests can assert the recipe's order and payloads.
  */
 import { createMimirMockAdapter, type IMimirService } from '@niuulabs/plugin-mimir';
+import { UNAVAILABLE_SERVICE } from '@niuulabs/plugin-sdk';
 import {
+  MEMORY_IMPORTS_SERVICE_KEY,
   createMockTingService,
   createMockWorkService,
   type ITrackerBrowserService,
@@ -35,6 +37,44 @@ export const WAITING_TICKET: WorkReviewItem = {
   issueId: 'issue-1',
   identifier: 'NIU-1',
 };
+
+/** Every Ting service of a host that runs none: whatever is asked of one is recorded and throws. */
+export function withoutTing() {
+  const asked: string[] = [];
+  const absent = (serviceName: string) =>
+    new Proxy(
+      { [UNAVAILABLE_SERVICE]: { available: false, serviceName, reason: 'off' } },
+      {
+        get: (target, key) =>
+          key in target
+            ? Reflect.get(target, key)
+            : () => {
+                asked.push(`${serviceName}.${String(key)}`);
+                throw new Error(`asked an absent Ting: ${serviceName}.${String(key)}`);
+              },
+      },
+    );
+  const names = [
+    'ting',
+    'ting.work',
+    'ting.tracker',
+    'ting.workflows',
+    'ting.dispatch',
+    MEMORY_IMPORTS_SERVICE_KEY,
+  ];
+  return { asked, services: Object.fromEntries(names.map((name) => [name, absent(name)])) };
+}
+
+/** A configured Ting whose every read fails as a missing route does. */
+export function failingTing() {
+  const fail = async () => {
+    throw new Error('API request failed: 404');
+  };
+  return {
+    ting: { ...createMockTingService(), getSagas: fail },
+    'ting.work': { ...createMockWorkService(), reviews: fail, list: fail },
+  };
+}
 
 /** Overrides that put `slug` on a board with one ticket at a gate. */
 export async function workspaceWithWaitingTicket(log: CallLog, slug: string) {

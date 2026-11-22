@@ -117,7 +117,11 @@ const volundrMocks = vi.hoisted(() => ({
 vi.mock('@niuulabs/query', () => ({
   createApiClient: queryMocks.createApiClient,
 }));
-vi.mock('@niuulabs/plugin-sdk', () => pluginSdkMocks);
+vi.mock('@niuulabs/plugin-sdk', async (original) => {
+  const { isUnavailableService, UNAVAILABLE_SERVICE } =
+    await original<typeof import('@niuulabs/plugin-sdk')>();
+  return { ...pluginSdkMocks, isUnavailableService, UNAVAILABLE_SERVICE };
+});
 
 vi.mock('@niuulabs/plugin-bifrost', () => bifrostMocks);
 vi.mock('@niuulabs/plugin-ting', () => tingMocks);
@@ -574,6 +578,59 @@ describe('buildServices live base selection', () => {
     const live = buildServices({ demoMode: false, services: {} } as any);
     expect(tingMocks.createMockWorkService).not.toHaveBeenCalled();
     expect(isUnavailableService(live['ting.work'])).toBe(true);
+  });
+
+  const TING_SERVICES = [
+    'ting',
+    'ting.work',
+    'ting.tracker',
+    'ting.workflows',
+    'ting.memoryImports',
+    'ting.workflowExecutions',
+    'ting.deliveryExecutions',
+    'ting.dispatch',
+    'ting.settings',
+  ];
+  const NODE_SERVICES = {
+    forge: { mode: 'http', baseUrl: 'https://node.example/api/v1/forge', scope: 'node' },
+    // As the chart renders it: the default Ting base, and the tracker's, stay in place.
+    ting: { mode: 'http', baseUrl: '/api/v1/ting' },
+    tracker: { mode: 'http', baseUrl: '/api/v1' },
+  };
+
+  it('asks nothing of a Ting the host says it does not run', () => {
+    const services = buildServices({
+      demoMode: false,
+      services: { ...NODE_SERVICES, ting: { ...NODE_SERVICES.ting, enabled: false } },
+    } as any);
+
+    for (const key of TING_SERVICES)
+      expect([key, isUnavailableService(services[key])]).toEqual([key, true]);
+    expect(services['volundr.runWorkflowView']).toBeUndefined();
+    expect(services['volundr.runGates']).toBeUndefined();
+    // What the host has stays: its Forge serves the presented files.
+    expect(services['ting.runLog']).toMatchObject({ kind: 'run-log' });
+    expect(
+      resolveSharedApiBase({
+        services: { ...NODE_SERVICES, ting: { ...NODE_SERVICES.ting, enabled: false } },
+      } as any),
+    ).toBe('https://node.example/api/v1');
+  });
+
+  it('keeps a configured Ting in place, so one that fails can say so', () => {
+    const services = buildServices({ demoMode: false, services: NODE_SERVICES } as any);
+
+    for (const key of TING_SERVICES)
+      expect([key, isUnavailableService(services[key])]).toEqual([key, false]);
+  });
+
+  it('scopes presented files to the Forge node the UI is served from', () => {
+    buildServices({ demoMode: false, services: NODE_SERVICES } as any);
+    expect(tingMocks.buildRunLogHttpAdapter).toHaveBeenLastCalledWith(
+      expect.objectContaining({ basePath: 'https://node.example/api/v1/forge' }),
+      expect.anything(),
+      { forgeScope: 'node' },
+    );
   });
 
   it('wires the memory gateway and memory imports to Mímir and Ting, mocks only in demo', () => {

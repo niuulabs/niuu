@@ -152,6 +152,11 @@ export function RealmsHomePage({ view = 'all' }: { view?: RealmsHomeView }) {
         <LoadingState label="Loading projects…" />
       ) : view === 'templates' ? (
         <TemplatesView />
+      ) : view === 'needs-you' && !home.hasTing ? (
+        <EmptyState
+          title="No tickets on this host"
+          description="Tickets and their gates are kept by Work, which this host does not run."
+        />
       ) : view === 'needs-you' ? (
         <SectionCard
           title="Needs you"
@@ -184,6 +189,7 @@ export function RealmsHomePage({ view = 'all' }: { view?: RealmsHomeView }) {
                   group={group}
                   collapsed={collapsed.isCollapsed(group.id)}
                   onToggle={() => collapsed.toggle(group.id)}
+                  hasTing={home.hasTing}
                 />
               ))}
             </div>
@@ -208,30 +214,32 @@ export function RealmsHomePage({ view = 'all' }: { view?: RealmsHomeView }) {
             </div>
           ) : null}
           <div className="niuu:grid niuu:flex-1 niuu:grid-cols-[minmax(0,1.5fr)_minmax(0,1fr)] niuu:gap-4">
-            <div
-              className="niuu:flex niuu:flex-col niuu:rounded-xl niuu:border niuu:border-border-subtle niuu:bg-bg-secondary niuu:px-4 niuu:pb-1.5 niuu:pt-3.5"
-              data-testid="needs-you-panel"
-            >
-              <div className="niuu:flex niuu:items-center niuu:justify-between niuu:pb-1">
-                <span className="niuu:text-sm niuu:font-medium niuu:text-text-primary">
-                  Needs you
-                </span>
-                <span className="niuu:text-xs niuu:text-text-muted">
-                  {waiting} open ·{' '}
-                  <Link to="/realms/needs-you" className={LINK}>
-                    see all
-                  </Link>
-                </span>
+            {home.hasTing ? (
+              <div
+                className="niuu:flex niuu:flex-col niuu:rounded-xl niuu:border niuu:border-border-subtle niuu:bg-bg-secondary niuu:px-4 niuu:pb-1.5 niuu:pt-3.5"
+                data-testid="needs-you-panel"
+              >
+                <div className="niuu:flex niuu:items-center niuu:justify-between niuu:pb-1">
+                  <span className="niuu:text-sm niuu:font-medium niuu:text-text-primary">
+                    Needs you
+                  </span>
+                  <span className="niuu:text-xs niuu:text-text-muted">
+                    {waiting} open ·{' '}
+                    <Link to="/realms/needs-you" className={LINK}>
+                      see all
+                    </Link>
+                  </span>
+                </div>
+                <NeedsYouError error={home.needsYouError} />
+                {waiting === 0 ? (
+                  <span className="niuu:block niuu:py-3 niuu:text-xs niuu:text-text-faint">
+                    Nothing waiting on you.
+                  </span>
+                ) : (
+                  needsYouRows.slice(0, NEEDS_YOU_PREVIEW)
+                )}
               </div>
-              <NeedsYouError error={home.needsYouError} />
-              {waiting === 0 ? (
-                <span className="niuu:block niuu:py-3 niuu:text-xs niuu:text-text-faint">
-                  Nothing waiting on you.
-                </span>
-              ) : (
-                needsYouRows.slice(0, NEEDS_YOU_PREVIEW)
-              )}
-            </div>
+            ) : null}
             <div className="niuu:flex niuu:flex-col niuu:gap-4">
               <div className="niuu:flex niuu:flex-col niuu:gap-2.5 niuu:rounded-xl niuu:border niuu:border-border-subtle niuu:bg-bg-secondary niuu:p-4">
                 <div className="niuu:flex niuu:items-center niuu:justify-between">
@@ -242,8 +250,12 @@ export function RealmsHomePage({ view = 'all' }: { view?: RealmsHomeView }) {
                 </div>
                 <div className="niuu:grid niuu:grid-cols-2 niuu:gap-x-4 niuu:gap-y-3">
                   <Figure value={home.cards.length} label="workspaces" />
-                  <Figure value={home.sessionsRunning} label="sessions running" />
-                  <Figure value={waiting} label="awaiting you" attention={waiting > 0} />
+                  {home.hasTing ? (
+                    <>
+                      <Figure value={home.sessionsRunning} label="sessions running" />
+                      <Figure value={waiting} label="awaiting you" attention={waiting > 0} />
+                    </>
+                  ) : null}
                 </div>
               </div>
               <div

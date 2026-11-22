@@ -9,7 +9,8 @@ const BOARD_REFRESH_MS = 5000;
 /** A review reads a run's whole session log, so it refreshes more slowly than the board. */
 const REVIEW_REFRESH_MS = 15000;
 
-export function useWorkCollection() {
+/** `enabled: false` asks Ting nothing, for a host that runs none. */
+export function useWorkCollection({ enabled = true }: { enabled?: boolean } = {}) {
   const service = useService<IWorkService>('ting.work');
   return useInfiniteQuery({
     queryKey: ['ting', 'work'],
@@ -20,6 +21,7 @@ export function useWorkCollection() {
         ...(pageParam ? { executionCursor: pageParam } : {}),
       }),
     getNextPageParam: (page) => page.executionNextCursor ?? undefined,
+    enabled,
   });
 }
 
@@ -49,11 +51,13 @@ export function useWorkDetail(kind: WorkResourceKind | null, id: string | null) 
   });
 }
 
-export function useReviews() {
+/** `enabled: false` asks Ting nothing, for a host that runs none. */
+export function useReviews({ enabled = true }: { enabled?: boolean } = {}) {
   const service = useService<IWorkService>('ting.work');
   return useQuery({
     queryKey: ['ting', 'work', 'reviews'],
     queryFn: () => service.reviews(),
+    enabled,
     refetchInterval: REVIEW_REFRESH_MS,
   });
 }

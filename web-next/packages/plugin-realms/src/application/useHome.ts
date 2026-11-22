@@ -1,6 +1,11 @@
 import { keepPreviousData, useQuery } from '@tanstack/react-query';
 import { useSessionList } from '@niuulabs/plugin-volundr';
-import { useOptionalService, type AppIdentity, type IIdentityService } from '@niuulabs/plugin-sdk';
+import {
+  useOptionalService,
+  useServiceAvailable,
+  type AppIdentity,
+  type IIdentityService,
+} from '@niuulabs/plugin-sdk';
 import type { ITrackerBrowserService } from '@niuulabs/plugin-ting';
 
 /** The chips are decoration around the three choices; five minutes stale is fine. */
@@ -38,6 +43,7 @@ export function useHomeStatus(): HomeStatus {
   const bifrost = useOptionalService<ModelCatalogService>('bifrost');
   const repoCatalog = useOptionalService<RepoCatalogService>('niuu.repos');
   const tracker = useOptionalService<ITrackerBrowserService>('ting.tracker');
+  const hasTracker = useServiceAvailable('ting.tracker');
   const identityService = useOptionalService<IIdentityService>('identity');
 
   const catalog = useQuery({
@@ -57,7 +63,7 @@ export function useHomeStatus(): HomeStatus {
   const boards = useQuery({
     queryKey: ['ting', 'tracker', 'projects'],
     queryFn: () => tracker!.listProjects(),
-    enabled: tracker !== undefined,
+    enabled: hasTracker,
     staleTime: CHIP_STALE_MS,
     placeholderData: keepPreviousData,
   });
@@ -73,7 +79,7 @@ export function useHomeStatus(): HomeStatus {
     models: models.length,
     providers: new Set(models.map((model) => model.provider)).size,
     repos: (repos.data ?? []).length,
-    boards: tracker === undefined ? null : (boards.data ?? []).length,
+    boards: !hasTracker ? null : (boards.data ?? []).length,
     host: typeof window === 'undefined' ? '' : window.location.host,
     identity: identity.data ?? null,
   };

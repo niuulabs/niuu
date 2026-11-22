@@ -32,6 +32,11 @@ export const pluginConfigSchema = z.object({
 
 export const serviceConfigSchema = z
   .object({
+    /**
+     * `false` says this host does not run the service: pages leave out what only it
+     * knows and nothing calls it. A service that is on and fails shows its error.
+     */
+    enabled: z.boolean().optional(),
     baseUrl: absoluteOrRootRelativeUrlSchema.optional(),
     /**
      * Optional WebSocket URL for services with a bidirectional stream
@@ -84,6 +89,7 @@ export const niuuConfigSchema = z
   })
   .superRefine((config, ctx) => {
     for (const [serviceName, service] of Object.entries(config.services)) {
+      if (service.enabled === false) continue;
       if (service.mode === 'mock' && !config.demoMode) {
         ctx.addIssue({
           code: 'custom',
