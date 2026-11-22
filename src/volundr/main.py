@@ -2545,11 +2545,7 @@ def create_app(
                     ),
                     session_participant_service,
                     server_public_host=settings.server_public_host,
-                    instance_fields=(
-                        guild_membership.instance.fields()
-                        if guild_membership is not None and guild_membership.instance is not None
-                        else None
-                    ),
+                    guild_membership=guild_membership,
                 )
             )
             app.include_router(

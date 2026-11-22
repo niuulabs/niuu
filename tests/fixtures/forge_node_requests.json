@@ -1,0 +1,51 @@
+{
+  "about": "The writes the web UI sends to one Forge node (services.forge.scope: node). http.test.ts checks the UI sends exactly these; the Forge route tests check a node takes them.",
+  "guild_url": "https://guild.example",
+  "instance": { "id": "70b502d8-noatun", "name": "Noatun", "slug": "noatun" },
+  "assign_session_project": {
+    "project_id": "dd605b70-4d95-5f10-b698-e25a1b7b3bca",
+    "project_instance_id": "70b502d8-noatun",
+    "expected_revision": 0
+  },
+  "create_project": {
+    "name": "Shop",
+    "instance_id": "70b502d8-noatun"
+  },
+  "start_team": {
+    "name": "ship-it",
+    "source": { "type": "git", "repo": "https://github.com/acme/repo", "branch": "main" },
+    "task": "Fix the login test",
+    "task_to": "lead",
+    "members": [
+      {
+        "model": "claude-sonnet-4-6",
+        "definition": "skuldClaude",
+        "persona_name": "architect",
+        "lead": true
+      },
+      {
+        "model": "gpt-5",
+        "definition": "skuldCodex",
+        "persona_name": "coder",
+        "lead": false
+      }
+    ],
+    "terminal_restricted": false,
+    "instance_id": "70b502d8-noatun"
+  },
+  "start_team_without_a_host": {
+    "name": "ship-it",
+    "source": { "type": "git", "repo": "https://github.com/acme/repo", "branch": "main" },
+    "task": "",
+    "members": [
+      {
+        "model": "claude-sonnet-4-6",
+        "definition": "skuldClaude",
+        "persona_name": "architect",
+        "lead": true
+      }
+    ],
+    "terminal_restricted": false,
+    "instance_id": null
+  }
+}

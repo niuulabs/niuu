@@ -65,7 +65,11 @@ The facade also includes the session-owning instance's ID and name. PUT accepts:
 node where the chosen project is registered. Both are Guild registry selectors,
 not display names. For example, a Thor session can join Kit registered on Build
 Bro. Omitting the project selector uses the session's node. A direct Forge host
-accepts only `project_id` and `expected_revision`, after project registration.
+assigns only a project registered on it. It accepts `project_instance_id` only
+when that is its own Guild instance id (`GET /api/v1/forge/guild`), as its own web
+UI sends it; another instance's id, or any id on a host that belongs to no Guild,
+is a 404 and nothing changes. `POST /projects` and `POST /teams` treat
+`instance_id` the same way.
 
 The facade verifies session access, assignment support and revision before
 registering anything. It then reads the chosen active project from its host. If

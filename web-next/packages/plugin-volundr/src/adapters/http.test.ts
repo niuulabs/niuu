@@ -1,4 +1,6 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
+import { readFileSync } from 'fs';
+import { resolve } from 'path';
 
 const queryMocks = vi.hoisted(() => ({
   createApiClient: vi.fn((basePath: string) => ({
@@ -1805,6 +1807,75 @@ describe('buildVolundrHttpAdapter', () => {
       client.get.mockRejectedValue(new Error('This Forge node is not joined to a Guild'));
 
       await expect(svc.getTargets()).rejects.toThrow('This Forge node is not joined to a Guild');
+    });
+
+    /** Read by the Forge route tests too: a node must take exactly what is sent here. */
+    const NODE_REQUESTS = JSON.parse(
+      readFileSync(
+        resolve(__dirname, '../../../../../tests/fixtures/forge_node_requests.json'),
+        'utf-8',
+      ),
+    );
+
+    it('sends a node only the writes its routes take', async () => {
+      const { client, svc } = nodeAdapter({
+        ...NOATUN_MEMBERSHIP,
+        instance_id: NODE_REQUESTS.instance.id,
+      });
+      const instanceId = NODE_REQUESTS.instance.id;
+      const assignment = NODE_REQUESTS.assign_session_project;
+      client.put.mockResolvedValue({
+        session_id: 's1',
+        revision: 1,
+        coordination: { project_id: assignment.project_id, role: 'worker' },
+      });
+
+      await svc.assignSessionProject(
+        's1',
+        {
+          projectId: assignment.project_id,
+          projectInstanceId: instanceId,
+          expectedRevision: assignment.expected_revision,
+        },
+        { instanceId },
+      );
+      expect(client.put).toHaveBeenCalledExactlyOnceWith(
+        `/sessions/s1/project?instance_id=${instanceId}`,
+        assignment,
+      );
+
+      await svc.createProject('Shop', { instanceId });
+      expect(client.post).toHaveBeenLastCalledWith('/projects', NODE_REQUESTS.create_project);
+
+      const started = NODE_REQUESTS.start_team;
+      const members = started.members.map(
+        (member: { model: string; definition: string; persona_name: string; lead: boolean }) => ({
+          model: member.model,
+          definition: member.definition,
+          personaName: member.persona_name,
+          lead: member.lead,
+        }),
+      );
+      client.post.mockResolvedValue({ session: { id: 'root', name: 'ship-it' }, members: [] });
+      await svc.startTeam({
+        name: started.name,
+        source: started.source,
+        task: started.task,
+        taskTo: started.task_to,
+        members,
+        instanceId,
+      });
+      expect(client.post).toHaveBeenLastCalledWith('/teams', started);
+
+      await svc.startTeam({
+        name: started.name,
+        source: started.source,
+        members: members.slice(0, 1),
+      });
+      expect(client.post).toHaveBeenLastCalledWith(
+        '/teams',
+        NODE_REQUESTS.start_team_without_a_host,
+      );
     });
 
     it('lists every registered Forge in guild scope without asking the node', async () => {

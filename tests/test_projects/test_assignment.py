@@ -9,7 +9,14 @@ import pytest
 import respx
 from fastapi import FastAPI
 
+from niuu.domain.guild_membership import GuildMembership
 from tests.conftest import make_session_participant_service
+from tests.support.node_scope import (
+    NODE_MEMBERSHIP,
+    NODE_REQUESTS,
+    OTHER_INSTANCE,
+    OTHER_INSTANCE_DETAIL,
+)
 from tests.test_niuu.test_rest_volundr import _headers
 from tests.test_projects.test_mesh import client
 from volundr.adapters.inbound.rest import create_router
@@ -142,6 +149,82 @@ async def test_api_reports_missing_archived_stale_and_unknown_fields(rig):
         await service.update(project.id, {"status": "archived"}, 1, None)
         assert (await api.put(path, json={**body, "expected_revision": 1})).status_code == 409
         assert (await repo.get(session.id)).coordination.project_id == project.id
+
+
+def node_api(service, membership):
+    app = FastAPI()
+    app.include_router(
+        create_router(
+            service.sessions,
+            project_service=service,
+            session_participant_service=make_session_participant_service(service.sessions),
+            guild_membership=membership,
+        )
+    )
+    return httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url="http://test")
+
+
+async def test_a_node_takes_the_assignment_its_own_ui_sends(rig):
+    service, _, _, repo, _ = rig
+    body = NODE_REQUESTS["assign_session_project"]
+    await service.register(ForgeProject(id=body["project_id"], name="Kit"), None)
+    session = await repo.create(Session(name="free-session"))
+    async with node_api(service, NODE_MEMBERSHIP) as api:
+        response = await api.put(f"/api/v1/forge/sessions/{session.id}/project", json=body)
+    assert response.status_code == 200, response.text
+    assert response.json()["coordination"]["project_id"] == body["project_id"]
+    assert str((await repo.get(session.id)).coordination.project_id) == body["project_id"]
+
+
+@pytest.mark.parametrize(
+    ("membership", "status", "detail"),
+    [
+        (NODE_MEMBERSHIP, 404, OTHER_INSTANCE_DETAIL),
+        (None, 404, "not joined to a Guild"),
+        (GuildMembership(guild_url="https://guild.example"), 503, "guild.instanceId"),
+    ],
+)
+async def test_a_node_refuses_a_project_on_an_instance_that_is_not_itself(
+    rig, membership, status, detail
+):
+    service, _, project, repo, _ = rig
+    session = await repo.create(Session(name="free-session"))
+    body = {
+        "project_id": str(project.id),
+        "project_instance_id": OTHER_INSTANCE,
+        "expected_revision": 0,
+    }
+    async with node_api(service, membership) as api:
+        path = f"/api/v1/forge/sessions/{session.id}/project"
+        refused = await api.put(path, json=body)
+        assert refused.status_code == status
+        assert detail in refused.json()["detail"]
+        # A detach that names another host is refused too, not quietly carried out.
+        detach = await api.put(path, json={**body, "project_id": None})
+        assert detach.status_code == status
+    assert (await repo.get(session.id)).coordination is None
+
+
+async def test_a_node_creates_the_project_its_own_ui_sends_and_no_other(rig):
+    service, *_ = rig
+    body = NODE_REQUESTS["create_project"]
+    before = {project.id for project in await service.list(None)}
+    async with node_api(service, NODE_MEMBERSHIP) as api:
+        refused = await api.post(
+            "/api/v1/forge/projects", json={**body, "instance_id": OTHER_INSTANCE}
+        )
+        assert refused.status_code == 404
+        assert refused.json()["detail"] == OTHER_INSTANCE_DETAIL
+        unknown = await api.post("/api/v1/forge/projects", json={**body, "unknown": None})
+        assert unknown.status_code == 422
+        created = await api.post("/api/v1/forge/projects", json=body)
+    assert created.status_code == 201, created.text
+    assert created.json()["name"] == "Shop"
+    assert "instance_id" not in created.json()
+    added = [project for project in await service.list(None) if project.id not in before]
+    assert [(type(project), str(project.id)) for project in added] == [
+        (ForgeProject, created.json()["id"])
+    ]
 
 
 async def test_session_update_access_and_project_scope_are_enforced(rig):
