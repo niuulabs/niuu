@@ -2,10 +2,11 @@ import { fireEvent, render, screen, waitFor, within } from '@testing-library/rea
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ServicesProvider } from '@niuulabs/plugin-sdk';
 import { ApiClientError } from '@niuulabs/query';
+import { ShellContext, type ShellContextValue } from '@niuulabs/shell';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createMockWorkService } from '../adapters/mock';
 import type { WorkDetail, WorkTask } from '../domain/work';
-import type { IWorkService } from '../ports';
+import type { IRunLogService, IWorkService } from '../ports';
 import { ProjectBoard } from './ProjectBoard';
 
 vi.mock('@tanstack/react-router', () => ({
@@ -17,11 +18,24 @@ vi.mock('@tanstack/react-router', () => ({
 
 const GATED = 'demo-issue-207';
 
-function renderBoard(detail: WorkDetail, service: IWorkService) {
+function renderBoard(
+  detail: WorkDetail,
+  service: IWorkService,
+  { runLog, pluginOff = false }: { runLog?: Partial<IRunLogService>; pluginOff?: boolean } = {},
+) {
+  const shell: ShellContextValue | null = pluginOff
+    ? { enabled: [], brand: null, version: '0', ctx: { tweaks: {}, setTweak: () => {} } }
+    : null;
   render(
-    <QueryClientProvider client={new QueryClient()}>
-      <ServicesProvider services={{ 'ting.work': service }}>
-        <ProjectBoard board={detail.board!} projectId="demo-platform" tasks={detail.tasks} />
+    <QueryClientProvider
+      client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}
+    >
+      <ServicesProvider
+        services={{ 'ting.work': service, ...(runLog ? { 'ting.runLog': runLog } : {}) }}
+      >
+        <ShellContext.Provider value={shell}>
+          <ProjectBoard board={detail.board!} projectId="demo-platform" tasks={detail.tasks} />
+        </ShellContext.Provider>
       </ServicesProvider>
     </QueryClientProvider>,
   );
@@ -399,6 +413,87 @@ describe('ProjectBoard', () => {
     fireEvent.click(screen.getByRole('tab', { name: 'Coordinator' }));
 
     expect(screen.getByText('The coordinator is starting up.')).toBeInTheDocument();
+  });
+
+  describe("on a node, with a Ting that knows other hosts' sessions", () => {
+    const coordinated = () =>
+      withTask(detail, GATED, {
+        coordinator: {
+          sessionId: 'coordinator-1',
+          status: 'active',
+          connectionId: 'other-forge',
+          chatEndpoint: 'wss://other-forge.example/s/coordinator-1/session',
+        },
+        operationalRun: null,
+        workflowRun: {
+          taskId: 'run-1',
+          workflowName: 'Planning',
+          status: 'running',
+          sessionId: 'run-session',
+        },
+      });
+    const openTicket = () => {
+      openGate();
+      fireEvent.click(screen.getByRole('tab', { name: 'Coordinator' }));
+    };
+
+    it('opens neither the chat nor the session of a coordinator it does not have', async () => {
+      const session = vi.fn(async () => null);
+      renderBoard(coordinated(), service, { runLog: { scope: 'node', session } });
+      openTicket();
+
+      expect(
+        await screen.findByText(/coordinator runs on another host, so its chat does not open here/),
+      ).toBeInTheDocument();
+      fireEvent.click(screen.getByRole('tab', { name: 'Workflow' }));
+      expect(await screen.findByText('Open run: on another host')).toBeInTheDocument();
+      expect(screen.getByText('Open coordinator: on another host')).toBeInTheDocument();
+      expect(screen.queryByRole('link', { name: /Open (run|coordinator)/ })).toBeNull();
+      // Asked of this node itself, not of the connection Ting names.
+      expect(session).toHaveBeenCalledWith('coordinator-1', null);
+    });
+
+    it('opens a session the node has, and one whose read failed, on its own page', async () => {
+      const session = vi.fn(async (id: string) => {
+        if (id === 'run-session') throw new Error('API request failed: 502');
+        return { sessionId: id, instanceId: null, title: id, running: true };
+      });
+      const starting = coordinated();
+      const ticket = starting.tasks.find((task) => task.source.issueId === GATED)!;
+      ticket.coordinator = { ...ticket.coordinator!, chatEndpoint: null };
+      renderBoard(starting, service, { runLog: { scope: 'node', session } });
+      openTicket();
+
+      expect(await screen.findByText('The coordinator is starting up.')).toBeInTheDocument();
+      fireEvent.click(screen.getByRole('tab', { name: 'Workflow' }));
+      expect(await screen.findByRole('link', { name: 'Open coordinator' })).toHaveAttribute(
+        'href',
+        '/volundr/sessions/coordinator-1',
+      );
+      expect(await screen.findByRole('link', { name: 'Open run' })).toBeInTheDocument();
+    });
+
+    it('asks nothing in Guild scope, where the Guild opens any host’s session', async () => {
+      const session = vi.fn();
+      renderBoard(coordinated(), service, { runLog: { scope: 'guild', session } });
+      openTicket();
+      fireEvent.click(screen.getByRole('tab', { name: 'Workflow' }));
+      expect(await screen.findByRole('link', { name: 'Open run' })).toBeInTheDocument();
+      expect(session).not.toHaveBeenCalled();
+    });
+  });
+
+  it('links to no Ting page where the Ting plugin is off', async () => {
+    renderBoard(detail, service, { pluginOff: true });
+
+    openGate();
+    expect(screen.getByText('Is this ready to merge?')).toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: 'Open the run' })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /Reviewed Delivery Flow/ }));
+    expect(screen.getByText(/It is changed on the workflow/)).toBeInTheDocument();
+    for (const link of screen.getAllByRole('link')) {
+      expect(link.getAttribute('href')).not.toMatch(/^\/ting/);
+    }
   });
 
   it('says a ticket run on its own sessions has no coordinator to talk to', () => {

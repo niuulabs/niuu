@@ -6,7 +6,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ResearchCampaign } from '../ports';
 import { WorkflowRunsCard } from './WorkflowRunsCard';
 
-const mockOpenEventStream = vi.hoisted(() => vi.fn());
+const openEvents = vi.hoisted(() => vi.fn());
 
 vi.mock('@tanstack/react-router', () => ({
   Link: ({
@@ -23,10 +23,6 @@ vi.mock('@tanstack/react-router', () => ({
       {children}
     </a>
   ),
-}));
-
-vi.mock('@niuulabs/query', () => ({
-  openEventStream: mockOpenEventStream,
 }));
 
 const WORKFLOW_ID = '11111111-1111-4111-8111-111111111111';
@@ -57,7 +53,7 @@ function renderCard(services: Record<string, unknown>) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(
     <QueryClientProvider client={client}>
-      <ServicesProvider services={services}>
+      <ServicesProvider services={{ 'ting.events': { open: openEvents }, ...services }}>
         <WorkflowRunsCard workflowId={WORKFLOW_ID} />
       </ServicesProvider>
     </QueryClientProvider>,
@@ -66,8 +62,8 @@ function renderCard(services: Record<string, unknown>) {
 
 describe('WorkflowRunsCard', () => {
   beforeEach(() => {
-    mockOpenEventStream.mockReset();
-    mockOpenEventStream.mockReturnValue({ close: vi.fn() });
+    openEvents.mockReset();
+    openEvents.mockReturnValue({ close: vi.fn() });
   });
 
   it('shows a loading state first', () => {

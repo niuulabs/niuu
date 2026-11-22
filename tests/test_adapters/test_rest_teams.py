@@ -19,6 +19,7 @@ from tests.support.node_scope import (
     NODE_REQUESTS,
     OTHER_INSTANCE,
     OTHER_INSTANCE_DETAIL,
+    TAG_SELECTORS,
 )
 from tests.support.team_rig import DIRECTORY, TENANT, TeamRig
 from volundr.adapters.inbound.rest_session_participants import invitations_refused
@@ -140,6 +141,22 @@ class TestStartingATeam:
         assert (refused.status_code, refused.json()["detail"]) == (404, OTHER_INSTANCE_DETAIL)
         assert unjoined.status_code == 404
         assert "not joined to a Guild" in unjoined.json()["detail"]
+        assert await rig.repository.list() == []
+
+    @pytest.mark.parametrize("selector", TAG_SELECTORS)
+    async def test_a_node_refuses_tags_it_cannot_match_and_says_where_they_go(
+        self, rig: TeamRig, selector: dict
+    ):
+        refused = _post(_client(rig, membership=NODE_MEMBERSHIP), _body(**selector))
+        unjoined = _post(
+            _client(rig), _body(**{k: v for k, v in selector.items() if k != "instance_id"})
+        )
+
+        assert refused.status_code == 422
+        assert "Send it to the Guild at https://guild.example" in refused.json()["detail"]
+        assert "workload_config.host_selector" in refused.json()["detail"]
+        assert unjoined.status_code == 422
+        assert "belongs to no Guild" in unjoined.json()["detail"]
         assert await rig.repository.list() == []
 
     async def test_the_gateways_host_selector_places_the_whole_unit(self, rig: TeamRig):

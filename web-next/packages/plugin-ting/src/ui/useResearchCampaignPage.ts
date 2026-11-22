@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams } from '@tanstack/react-router';
 import { useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useService } from '@niuulabs/plugin-sdk';
-import { openEventStream } from '@niuulabs/query';
+import { useTingEvents } from './useTingEvents';
 import type { IDispatcherService, IResearchService } from '../ports';
 import type { CampaignArtifactDetail } from '../domain/research';
 import { useDeleteResearchCampaign, useResearchCampaign } from './useResearch';
@@ -34,6 +34,7 @@ export function useResearchCampaignPage() {
   const { slug } = useParams({ from: '/ting/research/$slug' });
   const navigate = useNavigate();
   const queryClient = useQueryClient();
+  const events = useTingEvents();
   const research = useService<IResearchService>('ting.research');
   const dispatcher = useService<IDispatcherService>('ting.dispatcher');
   const mimir = useService<MimirServiceLike>('mimir');
@@ -64,8 +65,8 @@ export function useResearchCampaignPage() {
   }, [drawer]);
 
   useEffect(() => {
-    if (typeof window === 'undefined') return;
-    const stream = openEventStream('/api/v1/ting/events', {
+    if (typeof window === 'undefined' || !events) return;
+    const stream = events.open({
       onMessage: () => {},
       onEvent: ({ event, data }) => {
         if (
@@ -91,7 +92,7 @@ export function useResearchCampaignPage() {
       },
     });
     return () => stream.close();
-  }, [queryClient, slug]);
+  }, [events, queryClient, slug]);
 
   const artifactQueries = useQueries({
     queries: (campaign?.artifacts ?? []).map((artifact) => ({

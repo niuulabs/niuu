@@ -1,10 +1,13 @@
 import { useIntegrations, useSetupState, useStackStatus } from './hooks';
+import { useOptionalConfig } from '@niuulabs/plugin-sdk';
 import { ContinuityField, NiuuMark } from '@niuulabs/ui';
 import { summarizeConnections } from './FinishStep';
 import { LocalModelCard } from './LocalModelCard';
 import './SetupPage.css';
 
 export interface Walkthrough {
+  /** The plugin whose pages it walks through. */
+  plugin: string;
   href: string;
   title: string;
   desc: string;
@@ -14,6 +17,7 @@ export interface Walkthrough {
 
 export const WALKTHROUGHS: readonly Walkthrough[] = [
   {
+    plugin: 'volundr',
     href: '/volundr',
     title: 'Run your first session',
     desc: 'Open a repository and hand Claude or Codex a task in an isolated sandbox.',
@@ -24,6 +28,7 @@ export const WALKTHROUGHS: readonly Walkthrough[] = [
     ],
   },
   {
+    plugin: 'ting',
     href: '/ting',
     title: 'Turn an issue into a workflow',
     desc: 'Pick an issue from your tracker; Niuu plans it into a project with gates you approve.',
@@ -34,6 +39,7 @@ export const WALKTHROUGHS: readonly Walkthrough[] = [
     ],
   },
   {
+    plugin: 'ravn',
     href: '/ravn',
     title: 'Meet the residents',
     desc: 'Long-lived agents that watch your environment and ask before they act.',
@@ -46,6 +52,11 @@ export const WALKTHROUGHS: readonly Walkthrough[] = [
 ];
 
 export function ReadyPage() {
+  const config = useOptionalConfig();
+  // A plugin the host has off has no pages to walk through.
+  const walkthroughs = WALKTHROUGHS.filter(
+    (item) => config?.plugins[item.plugin]?.enabled !== false,
+  );
   const stateQuery = useSetupState();
   const integrationsQuery = useIntegrations();
   // The local model keeps downloading and loading after setup finishes; keep
@@ -83,7 +94,7 @@ export function ReadyPage() {
           ))}
         </div>
         <div className="setup-links">
-          {WALKTHROUGHS.map((item) => (
+          {walkthroughs.map((item) => (
             <a key={item.href} className="setup-link" href={item.href}>
               <span className="setup-link__title">{item.title}</span>
               <span className="setup-link__desc">{item.desc}</span>

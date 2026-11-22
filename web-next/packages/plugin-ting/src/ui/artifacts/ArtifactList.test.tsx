@@ -1,13 +1,14 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { describe, expect, it, vi } from 'vitest';
-import { ServicesProvider } from '@niuulabs/plugin-sdk';
+import { ServicesProvider, UNAVAILABLE_SERVICE } from '@niuulabs/plugin-sdk';
 import type { IRunLogService, IWorkService } from '../../ports';
 import type { WorkSummary } from '../../domain/work';
 import type { ReviewItem } from '../../domain/review';
 import type { Publication, SessionRef } from '../../domain/artifacts';
 import { ArtifactList } from './ArtifactList';
 import { ArtifactsPage } from './ArtifactsPage';
+import { ShellContext, type ShellContextValue } from '@niuulabs/shell';
 
 vi.mock('@tanstack/react-router', () => ({
   useRouterState: () => '/here',
@@ -102,6 +103,10 @@ function setup({
     run('a2a-plan', 'blocked', 'needsAttention'),
     run('a2a-tool', 'completed', 'completed'),
   ],
+  node,
+  work: workOverride,
+  pluginOff = false,
+  filesystem,
 }: {
   reviews?: ReviewItem[];
   publications?: IRunLogService['publications'];
@@ -110,6 +115,11 @@ function setup({
   page?: boolean;
   session?: IRunLogService['session'];
   campaigns?: WorkSummary[];
+  /** The one host a node-scoped UI covers. */
+  node?: string;
+  work?: unknown;
+  pluginOff?: boolean;
+  filesystem?: unknown;
 } = {}) {
   const work = {
     list: vi.fn().mockResolvedValue({
@@ -122,7 +132,8 @@ function setup({
     reviews: vi.fn().mockResolvedValue({ items: reviews }),
   } as unknown as IWorkService;
   const runLog = {
-    hosts: vi.fn().mockResolvedValue(['valhalla', 'ymir']),
+    ...(node ? { scope: 'node' } : {}),
+    hosts: vi.fn().mockResolvedValue(node ? [node] : ['valhalla', 'ymir']),
     session,
     publications,
     projectSessions: vi.fn().mockResolvedValue(projects),
@@ -132,17 +143,170 @@ function setup({
     <QueryClientProvider
       client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}
     >
-      <ServicesProvider services={{ 'ting.work': work, 'ting.runLog': runLog }}>
-        {page ? <ArtifactsPage /> : <ArtifactList projectId={projectId} />}
+      <ServicesProvider
+        services={{
+          'ting.work': workOverride ?? work,
+          'ting.runLog': runLog,
+          ...(filesystem ? { filesystem } : {}),
+        }}
+      >
+        <ShellContext.Provider value={pluginOff ? SHELL_WITHOUT_TING : null}>
+          {page ? <ArtifactsPage /> : <ArtifactList projectId={projectId} />}
+        </ShellContext.Provider>
       </ServicesProvider>
     </QueryClientProvider>,
   );
   return { publications, session };
 }
 
+const SHELL_WITHOUT_TING: ShellContextValue = {
+  enabled: [],
+  brand: null,
+  version: '0',
+  ctx: { tweaks: {}, setTweak: () => {} },
+};
+
+function storedFiles(read: () => Promise<Blob>) {
+  return { downloadPresentedFile: vi.fn(read) };
+}
+
+/** A host without Ting: anything asked of it throws. */
+function absentTing() {
+  const asked = vi.fn((method: string) => {
+    throw new Error(`asked an absent Ting for ${method}`);
+  });
+  const service = new Proxy(
+    { [UNAVAILABLE_SERVICE]: { available: false, serviceName: 'ting.work', reason: 'off' } },
+    {
+      get: (target, key) => (key in target ? Reflect.get(target, key) : () => asked(String(key))),
+    },
+  );
+  return { service, asked };
+}
+
+/** The row of a file, once its host's files are read. */
+const fileRow = (text: string) =>
+  waitFor(() => {
+    const found = screen
+      .getAllByTestId('artifact-row')
+      .find((row) => row.tagName === 'BUTTON' && row.textContent?.includes(text));
+    expect(found).toBeDefined();
+    return found!;
+  });
+
 const rowTexts = () => screen.getAllByTestId('artifact-row').map((row) => row.textContent);
 
 describe('ArtifactList', () => {
+  it("lists one node's files once, whatever other hosts Ting knows runs on", async () => {
+    const publications = vi.fn(async () => PUBLICATIONS.valhalla!);
+    const { session } = setup({
+      node: 'valhalla',
+      publications,
+      campaigns: [
+        run('a2a-plan', 'completed', 'completed'),
+        run('a2a-tool', 'completed', 'completed'),
+        // A step-engine run names no session, and so no host.
+        { ...run('a2a-steps', 'running', 'active'), session: null },
+      ],
+    });
+
+    await waitFor(() => expect(rowTexts()).toHaveLength(3));
+    expect(rowTexts()).toEqual([
+      expect.stringContaining('Ad hoc notes'),
+      expect.stringContaining('Developer Planning'),
+      expect.stringContaining('(gone)'),
+    ]);
+    expect(new Set(publications.mock.calls.map(([host]: unknown[]) => host))).toEqual(
+      new Set(['valhalla']),
+    );
+    expect(session).toHaveBeenCalledTimes(2);
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+
+  it('lists what sessions presented on a host without Ting, asking Ting nothing', async () => {
+    const { service, asked } = absentTing();
+    setup({ node: 'valhalla', work: service });
+
+    // Forge names no run here, so the session that presented the plan is looked up too.
+    await waitFor(() => expect(rowTexts()).toHaveLength(3));
+    expect(asked).not.toHaveBeenCalled();
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    expect(screen.queryByText('Reading artifacts…')).not.toBeInTheDocument();
+  });
+
+  it('opens the newest file itself where the Ting plugin is off', async () => {
+    const filesystem = storedFiles(async () => new Blob(['# The plan'], { type: 'text/markdown' }));
+    setup({
+      node: 'valhalla',
+      pluginOff: true,
+      filesystem,
+      campaigns: [run('a2a-plan', 'completed', 'completed')],
+    });
+
+    const row = await fileRow('Developer Planning');
+    expect(row.tagName).toBe('BUTTON');
+    expect(screen.queryByRole('link')).not.toBeInTheDocument();
+    fireEvent.click(row);
+
+    const dialog = await screen.findByRole('dialog');
+    expect(await within(dialog).findByText('The plan')).toBeInTheDocument();
+    // Forge's stored copy, from the session that presented it.
+    expect(filesystem.downloadPresentedFile).toHaveBeenCalledExactlyOnceWith(
+      'session-a2a-plan',
+      'pf_2',
+      expect.anything(),
+    );
+    fireEvent.keyDown(dialog, { key: 'Escape' });
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+  });
+
+  it('opens the file on a host without Ting, whose plugin has nothing to show', async () => {
+    const filesystem = storedFiles(async () => new Blob(['notes'], { type: 'text/markdown' }));
+    setup({ node: 'valhalla', work: absentTing().service, filesystem });
+
+    fireEvent.click(await fileRow('Ad hoc notes'));
+    expect(await within(await screen.findByRole('dialog')).findByText('notes')).toBeInTheDocument();
+  });
+
+  it('shows why a file cannot be read', async () => {
+    const filesystem = storedFiles(async () => {
+      throw new Error('Session session-gone was deleted');
+    });
+    setup({ node: 'valhalla', pluginOff: true, filesystem });
+
+    fireEvent.click(await fileRow('(gone)'));
+    expect(await within(await screen.findByRole('dialog')).findByRole('alert')).toHaveTextContent(
+      'Session session-gone was deleted',
+    );
+  });
+
+  it('says when the app has no file browser to open one with', async () => {
+    setup({ node: 'valhalla', pluginOff: true });
+    fireEvent.click(await fileRow('Ad hoc notes'));
+    expect(await screen.findByText('This app has no file browser connected.')).toBeInTheDocument();
+  });
+
+  it('lists a decision with nothing presented as a plain line where its page is not here', async () => {
+    setup({
+      pluginOff: true,
+      publications: vi.fn(async () => []),
+      campaigns: [run('a2a-plan', 'blocked', 'needsAttention')],
+    });
+    const row = await screen.findByTestId('artifact-row');
+    expect(row.tagName).toBe('DIV');
+    expect(row).toHaveTextContent('Waiting at a gate');
+  });
+
+  it('shows the error of a configured Ting that fails, 404 or not', async () => {
+    const work = {
+      list: vi.fn().mockRejectedValue(new Error('API request failed: 404')),
+      reviews: vi.fn().mockRejectedValue(new Error('API request failed: 404')),
+    };
+    setup({ node: 'valhalla', work });
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('API request failed: 404');
+  });
+
   it('lists what every session presented, newest first, and what waits on a person', async () => {
     setup({ page: true });
 

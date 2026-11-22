@@ -22,6 +22,8 @@ import {
   buildWorkflowHttpAdapter,
   buildWorkHttpAdapter,
   buildRunLogHttpAdapter,
+  buildTingEventsHttpAdapter,
+  createMockTingEvents,
   type IWorkService,
   buildWorkflowExecutionHttpAdapter,
   buildDeliveryExecutionHttpAdapter,
@@ -98,8 +100,11 @@ import {
   buildIdentityAdapter,
   createMockFeatureCatalogService,
   createMockIdentityService,
+  isUnavailableService,
+  UNAVAILABLE_SERVICE,
   type IFeatureCatalogService,
   type IIdentityService,
+  type UnavailableServiceStatus,
 } from '@niuulabs/plugin-sdk';
 import type { NiuuConfig, ServiceConfig, ServicesMap } from '@niuulabs/plugin-sdk';
 import { buildRepoCatalogHttpAdapter, createMockRepoCatalogService } from './repoCatalog';
@@ -124,12 +129,6 @@ export class UnsupportedSessionStoreOperationError extends Error {
   }
 }
 
-export interface UnavailableServiceStatus {
-  available: false;
-  serviceName: string;
-  reason: string;
-}
-
 export class ServiceUnavailableError extends Error {
   readonly serviceName: string;
 
@@ -140,19 +139,7 @@ export class ServiceUnavailableError extends Error {
   }
 }
 
-export const UNAVAILABLE_SERVICE = Symbol('niuu.unavailable-service');
-
-export function isUnavailableService(
-  service: unknown,
-): service is { [UNAVAILABLE_SERVICE]: UnavailableServiceStatus } {
-  return Boolean(
-    service &&
-    typeof service === 'object' &&
-    UNAVAILABLE_SERVICE in service &&
-    (service as { [UNAVAILABLE_SERVICE]?: UnavailableServiceStatus })[UNAVAILABLE_SERVICE]
-      ?.available === false,
-  );
-}
+export { isUnavailableService, UNAVAILABLE_SERVICE, type UnavailableServiceStatus };
 
 function unavailableService<T>(
   serviceName: string,
@@ -186,11 +173,11 @@ function demoService<T>(config: Partial<NiuuConfig>, serviceName: string, factor
 function hasHttpBackend(
   svc: ServiceConfig | undefined,
 ): svc is ServiceConfig & { baseUrl: string } {
-  return svc?.mode === 'http' && typeof svc.baseUrl === 'string';
+  return svc?.enabled !== false && svc?.mode === 'http' && typeof svc.baseUrl === 'string';
 }
 
 function hasWsBackend(svc: ServiceConfig | undefined): svc is ServiceConfig & { wsUrl: string } {
-  return svc?.mode === 'ws' && typeof svc.wsUrl === 'string';
+  return svc?.enabled !== false && svc?.mode === 'ws' && typeof svc.wsUrl === 'string';
 }
 
 function resolveBrowserRelativeWsUrl(url: string): string {
@@ -269,17 +256,43 @@ export function toHostPtyWsUrl(baseUrl: string): string {
   return `${hostBase}/s/{sessionId}/session`;
 }
 
+/**
+ * The API of the host this UI is for, which serves what names no base of its own. Its Forge
+ * says where that is: Ting may be another host's, so it decides only where there is no Forge.
+ */
 export function resolveSharedApiBase(config: Pick<NiuuConfig, 'services'>): string | null {
-  const tingSvc = config.services['ting'];
-  if (hasHttpBackend(tingSvc)) return toSharedApiBase(tingSvc.baseUrl);
-
   const forgeSvc = config.services['forge'];
   if (hasHttpBackend(forgeSvc)) return toSharedApiBase(forgeSvc.baseUrl);
 
   const volundrSvc = config.services['volundr'];
   if (hasHttpBackend(volundrSvc)) return toSharedApiBase(volundrSvc.baseUrl);
 
+  const tingSvc = config.services['ting'];
+  if (hasHttpBackend(tingSvc)) return toSharedApiBase(tingSvc.baseUrl);
+
   return null;
+}
+
+/**
+ * Where the tracker browser's routes are (`/tracker/projects`, `/tracker/import`): they are
+ * Ting's, so beside Ting on its own host, whatever host serves the rest of `/tracker`.
+ */
+export function resolveTrackerBrowserBase(config: Pick<NiuuConfig, 'services'>): string | null {
+  const tingSvc = config.services['ting'];
+  if (tingSvc?.enabled === false) return null;
+  if (hasHttpBackend(tingSvc)) return toSharedApiBase(tingSvc.baseUrl);
+  return resolveCanonicalServiceBase(config, 'tracker');
+}
+
+function resolveTrackerBrowserStatus(config: Pick<NiuuConfig, 'services'>): ServiceBackendStatus {
+  const target = resolveTrackerBrowserBase(config);
+  if (!target) {
+    return { mode: 'unavailable', transport: 'none', target: null, source: 'configuration' };
+  }
+  if (hasHttpBackend(config.services['ting'])) {
+    return { mode: 'live', transport: 'http', target, source: 'ting' };
+  }
+  return resolveCanonicalServiceStatus(config, 'tracker');
 }
 
 export function resolveNiuuRegistryBase(config: Pick<NiuuConfig, 'services'>): string | null {
@@ -708,7 +721,8 @@ export function buildServiceBackendStatus(
     'ting.sessions': resolveDirectServiceStatus(config, 'http', 'ting.sessions', 'ting'),
     'ting.dispatch': resolveDirectServiceStatus(config, 'http', 'ting.dispatch', 'ting'),
     'ting.settings': resolveDirectServiceStatus(config, 'http', 'ting.settings', 'ting'),
-    'ting.tracker': resolveCanonicalServiceStatus(config, 'tracker'),
+    'ting.tracker': resolveTrackerBrowserStatus(config),
+    'ting.events': resolveDirectServiceStatus(config, 'http', 'ting'),
     'ting.audit': resolveCanonicalServiceStatus(config, 'audit'),
     'ting.workflows': resolveDirectServiceStatus(config, 'http', 'ting.workflows', 'ting'),
     'ting.work': resolveDirectServiceStatus(config, 'http', 'ting.work', 'ting'),
@@ -1515,7 +1529,7 @@ export function buildServices(config: NiuuConfig): ServicesMap {
   const dispatchClient = dispatchBase ? createApiClient(dispatchBase) : null;
   const tingSettingsBase = resolveTingServiceBase(config, 'ting.settings');
   const tingSettingsClient = tingSettingsBase ? createApiClient(tingSettingsBase) : null;
-  const trackerBase = resolveCanonicalServiceBase(config, 'tracker');
+  const trackerBase = resolveTrackerBrowserBase(config);
   const trackerClient = trackerBase ? createApiClient(trackerBase) : null;
   const auditBase = resolveCanonicalServiceBase(config, 'audit');
   const auditClient = auditBase ? createApiClient(auditBase) : null;
@@ -1583,8 +1597,12 @@ export function buildServices(config: NiuuConfig): ServicesMap {
       ? buildRunLogHttpAdapter(
           createApiClient(forgeApiBasePath(forgeBase)),
           artifactRegistryBase ? createApiClient(artifactRegistryBase) : null,
+          { forgeScope: config.services.forge?.scope },
         )
       : demoService(config, 'ting.runLog', createMockRunLogService),
+    'ting.events': tingClient
+      ? buildTingEventsHttpAdapter(tingClient)
+      : demoService(config, 'ting.events', createMockTingEvents),
     [MEMORY_IMPORTS_SERVICE_KEY]: tingClient
       ? buildMemoryImportsHttpAdapter(tingClient)
       : demoService(config, MEMORY_IMPORTS_SERVICE_KEY, createMockMemoryImportsService),

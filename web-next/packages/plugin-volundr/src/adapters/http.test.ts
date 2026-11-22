@@ -1847,6 +1847,17 @@ describe('buildVolundrHttpAdapter', () => {
       await svc.createProject('Shop', { instanceId });
       expect(client.post).toHaveBeenLastCalledWith('/projects', NODE_REQUESTS.create_project);
 
+      const launched = NODE_REQUESTS.start_session;
+      const launch = { name: launched.name, source: launched.source, model: launched.model };
+      client.post.mockResolvedValue({ id: 's2', name: launched.name });
+      await svc.startSession({ ...launch, instanceId });
+      expect(client.post).toHaveBeenLastCalledWith('/sessions', launched);
+      await svc.startSession(launch);
+      expect(client.post).toHaveBeenLastCalledWith(
+        '/sessions',
+        NODE_REQUESTS.start_session_without_a_host,
+      );
+
       const started = NODE_REQUESTS.start_team;
       const members = started.members.map(
         (member: { model: string; definition: string; persona_name: string; lead: boolean }) => ({

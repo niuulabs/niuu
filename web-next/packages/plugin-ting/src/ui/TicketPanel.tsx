@@ -9,6 +9,8 @@ import { CoordinatorChat } from './CoordinatorChat';
 import { useGateDecision } from './useWork';
 import { Dockable } from './review/Dockable';
 import { useReturnTo } from './review/reviewBack';
+import { useSessionHere } from './useSessionHere';
+import { useTingPages } from './useTingPages';
 
 const QUESTION: Record<NonNullable<WorkBoardColumn['review']>, string> = {
   plan: 'Is this the right plan?',
@@ -66,7 +68,8 @@ function PullRequestLink({ task }: { task: WorkTask }) {
 /** The run's review page: the same one Artifacts and Work open, with a way back here. */
 function OpenReview({ task }: { task: WorkTask }) {
   const returnTo = useReturnTo();
-  if (!task.workflowRun) return null;
+  const pages = useTingPages();
+  if (!task.workflowRun || !pages) return null;
   return (
     <div className="ting-board-panel__links">
       <Link
@@ -179,6 +182,9 @@ function ReviewTab({
 }
 
 function SessionLink({ sessionId, label }: { sessionId: string; label: string }) {
+  const here = useSessionHere(sessionId);
+  if (here === undefined) return null;
+  if (!here) return <span className="ting-board-panel__text">{label}: on another host</span>;
   return <Link to={`/volundr/sessions/${sessionId}` as never}>{label}</Link>;
 }
 

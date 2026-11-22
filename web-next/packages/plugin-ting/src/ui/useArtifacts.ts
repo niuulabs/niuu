@@ -20,6 +20,7 @@ import {
   RUN_ENDED,
 } from '../domain/artifacts';
 import type { WorkSummary } from '../domain/work';
+import { useTingAvailable } from './useTingAvailable';
 import { mergeWorkPages, useReviews, useWorkCollection } from './useWork';
 
 /** A running session may present again; what was presented is read again on this cadence. */
@@ -49,7 +50,7 @@ function runIsSettled(run: RunRef): boolean {
 }
 
 function useWaitingSlugs(): ReadonlySet<string> {
-  const reviews = useReviews();
+  const reviews = useReviews({ enabled: useTingAvailable() });
   return useMemo(
     () =>
       new Set(
@@ -102,7 +103,8 @@ function goneSession(sessionId: string, host: string | null): SessionRef {
  */
 export function useArtifacts(projectId?: string) {
   const runLog = useService<IRunLogService>('ting.runLog');
-  const work = useWorkCollection();
+  const ting = useTingAvailable();
+  const work = useWorkCollection({ enabled: ting });
   const waiting = useWaitingSlugs();
   const projects = useProjectSessions();
   const registry = useQuery({
@@ -133,15 +135,26 @@ export function useArtifacts(projectId?: string) {
       projects.data?.find((project) => project.projectId === projectId)?.sessionIds ?? [],
     );
   }, [projectId, projects.data]);
+  // A UI on one Forge node reads that node's files: Ting may know runs on other hosts,
+  // but their files are not here. A run that names no host is on the one it talks to.
+  const node = runLog.scope === 'node';
+  const ownHost = node ? registry.data?.[0] : undefined;
+  const localRuns = useMemo(() => {
+    if (!node) return allRuns;
+    if (ownHost === undefined) return [];
+    return allRuns
+      .filter((run) => run.instanceId === null || run.instanceId === ownHost)
+      .map((run) => ({ ...run, instanceId: ownHost }));
+  }, [allRuns, node, ownHost]);
   const ready = !projectId || Boolean(projects.data);
   const runs = useMemo(
     () =>
       ready
-        ? allRuns.filter(
+        ? localRuns.filter(
             (run) => !inProject || (run.sessionId !== '' && inProject.has(run.sessionId)),
           )
         : [],
-    [allRuns, inProject, ready],
+    [localRuns, inProject, ready],
   );
   const hosts = useMemo(
     () => [...new Set([...(registry.data ?? []), ...runs.map((run) => run.instanceId)])],
@@ -240,7 +253,7 @@ export function useArtifacts(projectId?: string) {
     rows,
     waitingRuns,
     loading:
-      work.isPending ||
+      (ting && work.isPending) ||
       registry.isPending ||
       (Boolean(projectId) && projects.isPending) ||
       feeds.some((query) => query.isPending) ||

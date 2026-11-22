@@ -11,7 +11,13 @@ export {
   useService,
   type ServicesMap,
 } from './ServicesProvider';
-export { ConfigProvider, useConfig } from './ConfigProvider';
+export {
+  isUnavailableService,
+  UNAVAILABLE_SERVICE,
+  useServiceAvailable,
+  type UnavailableServiceStatus,
+} from './serviceAvailability';
+export { ConfigProvider, useConfig, useOptionalConfig } from './ConfigProvider';
 export { FeatureCatalogProvider, useFeatureCatalog, type FeatureCatalog } from './FeatureCatalog';
 export {
   niuuConfigSchema,

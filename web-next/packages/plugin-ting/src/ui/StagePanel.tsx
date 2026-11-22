@@ -1,6 +1,7 @@
 import { Link } from '@tanstack/react-router';
 import type { WorkBoardColumn, WorkBoardLayout } from '../domain/work';
 import { boardWorkflows } from '../domain/workBoard';
+import { useTingPages } from './useTingPages';
 
 const REVIEWED: Record<NonNullable<WorkBoardColumn['review']>, string> = {
   plan: 'The plan',
@@ -22,6 +23,7 @@ export function StagePanel({
   workflowId: string;
   onClose: () => void;
 }) {
+  const pages = useTingPages();
   const workflows = boardWorkflows(board);
   const position = workflows.findIndex(({ id }) => id === workflowId);
   const workflow = workflows[position];
@@ -58,9 +60,11 @@ export function StagePanel({
         </dl>
       ))}
       <p className="ting-board-panel__text">
-        The board only shows this. To change it, open the workflow.
+        {pages
+          ? 'The board only shows this. To change it, open the workflow.'
+          : 'The board only shows this. It is changed on the workflow.'}
       </p>
-      {workflow.id ? (
+      {workflow.id && pages ? (
         <div className="ting-board-panel__links">
           <Link to={'/ting/workflows' as never} search={{ workflow: workflow.id } as never}>
             Open workflow

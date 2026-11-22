@@ -2,7 +2,12 @@ import { useEffect, useMemo } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useService } from '@niuulabs/plugin-sdk';
 import type { IMimirService } from '@niuulabs/plugin-mimir';
-import { useReviews, useSagas, type ITrackerBrowserService } from '@niuulabs/plugin-ting';
+import {
+  useReviews,
+  useSagas,
+  useTingAvailable,
+  type ITrackerBrowserService,
+} from '@niuulabs/plugin-ting';
 import type { RealmSummary } from '../domain/governance';
 import { buildRealmView, waitingOnBoard, workProjectForBoard } from '../domain/join';
 import { mountNameFor } from '../domain/realm';
@@ -47,16 +52,17 @@ export function useRealmView(slug: string) {
   );
 
   // With two tracker connections a project id alone is ambiguous, so name the connection.
-  const sagas = useSagas();
+  const hasTing = useTingAvailable();
+  const sagas = useSagas({ enabled: hasTing });
   const connectionFor = (projectId: string) =>
     sagas.data?.find((saga) => saga.trackerId === projectId)?.trackerConnectionId || undefined;
 
-  const workReviews = useReviews();
+  const workReviews = useReviews({ enabled: hasTing });
   const boardId = view?.binding?.trackerBoard ?? '';
   const intake = useQuery({
     queryKey: ['ting', 'tracker', 'issues', boardId],
     queryFn: () => tracker.listIssues(boardId, undefined, connectionFor(boardId)),
-    enabled: boardId.length > 0 && !sagas.isLoading,
+    enabled: hasTing && boardId.length > 0 && !sagas.isLoading,
     refetchInterval: 60_000,
   });
 
@@ -64,7 +70,7 @@ export function useRealmView(slug: string) {
   const findings = useQuery({
     queryKey: ['ting', 'tracker', 'issues', bugBoardId],
     queryFn: () => tracker.listIssues(bugBoardId, undefined, connectionFor(bugBoardId)),
-    enabled: bugBoardId.length > 0 && !sagas.isLoading,
+    enabled: hasTing && bugBoardId.length > 0 && !sagas.isLoading,
     refetchInterval: 60_000,
   });
 
@@ -77,6 +83,8 @@ export function useRealmView(slug: string) {
   const mount = mounts.data?.find((entry) => entry.name === mountName) ?? null;
 
   return {
+    /** False on a host without Ting: the workspace's board and its sessions live in Ting. */
+    hasTing,
     realm,
     view,
     allSessions: sessions.data,

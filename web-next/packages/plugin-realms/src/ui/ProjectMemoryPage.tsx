@@ -4,7 +4,11 @@ import { useQueryClient } from '@tanstack/react-query';
 import { useService } from '@niuulabs/plugin-sdk';
 import { ErrorState, LoadingState } from '@niuulabs/ui';
 import type { ForgeProject, IVolundrService } from '@niuulabs/plugin-volundr';
-import { MEMORY_IMPORTS_SERVICE_KEY, type IMemoryImportsService } from '@niuulabs/plugin-ting';
+import {
+  MEMORY_IMPORTS_SERVICE_KEY,
+  useTingAvailable,
+  type IMemoryImportsService,
+} from '@niuulabs/plugin-ting';
 import { useForgeProjects, PROJECTS_QUERY_KEY } from '../application/useProjects';
 import { canManageMembers, useProjectMembers, useViewer } from '../application/useProjectMembers';
 import { useTeamIntegrations } from '../application/useProjectIntegrations';
@@ -53,9 +57,10 @@ function MemorySettings({ project, owner }: { project: ForgeProject; owner: bool
   const registered = useRegisteredMemories();
   const integrations = useTeamIntegrations(project);
   const linear = (integrations.data ?? []).find((connection) => connection.slug === 'linear');
-  const imports = useMemoryImports(project.id, owner);
+  const hasTing = useTingAvailable();
+  const imports = useMemoryImports(project.id, owner && hasTing);
   const existing = imports.data?.find((item) => item.connector === 'linear');
-  const trackers = useTrackerProjects(owner && Boolean(linear));
+  const trackers = useTrackerProjects(owner && hasTing && Boolean(linear));
 
   const mountedIds = (mounts.data ?? []).map((mount) => mount.registry_entry_id);
   const [reads, setReads] = useState<Set<string> | null>(null);
@@ -201,65 +206,67 @@ function MemorySettings({ project, owner }: { project: ForgeProject; owner: bool
         />
       </Section>
 
-      <Section title="Bring in tickets">
-        {linear ? (
-          <div className={`${BOX} niuu:gap-3 niuu:px-4 niuu:py-3.5`}>
-            <label className="niuu:flex niuu:items-center niuu:justify-between niuu:gap-3 niuu:text-text-primary">
-              <span>
-                Linear
-                {existing ? ` · ${trackerName(existing.trackerProjectId)}` : ''}
-                <span className={`niuu:block ${MUTED}`}>
-                  New and changed tickets are added, and summarised into the project&apos;s pages.
+      {hasTing ? (
+        <Section title="Bring in tickets">
+          {linear ? (
+            <div className={`${BOX} niuu:gap-3 niuu:px-4 niuu:py-3.5`}>
+              <label className="niuu:flex niuu:items-center niuu:justify-between niuu:gap-3 niuu:text-text-primary">
+                <span>
+                  Linear
+                  {existing ? ` · ${trackerName(existing.trackerProjectId)}` : ''}
+                  <span className={`niuu:block ${MUTED}`}>
+                    New and changed tickets are added, and summarised into the project&apos;s pages.
+                  </span>
                 </span>
-              </span>
-              <input
-                type="checkbox"
-                className={CHECK}
-                checked={importOn}
-                disabled={locked || imports.isLoading}
-                onChange={(event) => {
-                  setImportOn(event.target.checked);
-                  setSaved(false);
-                }}
-              />
-            </label>
-            {importOn && !existing ? (
-              (trackers.data ?? []).length > 0 ? (
-                <select
-                  aria-label="Linear project"
-                  className={INPUT}
-                  value={pickedTracker}
-                  disabled={locked}
-                  onChange={(event) => setTrackerProject(event.target.value)}
-                >
-                  {(trackers.data ?? []).map((candidate) => (
-                    <option key={candidate.id} value={candidate.id}>
-                      {candidate.name}
-                    </option>
-                  ))}
-                </select>
-              ) : (
                 <input
-                  aria-label="Linear project"
-                  type="text"
-                  className={INPUT}
-                  placeholder="The Linear project's id"
-                  value={trackerProject}
-                  disabled={locked}
-                  onChange={(event) => setTrackerProject(event.target.value)}
+                  type="checkbox"
+                  className={CHECK}
+                  checked={importOn}
+                  disabled={locked || imports.isLoading}
+                  onChange={(event) => {
+                    setImportOn(event.target.checked);
+                    setSaved(false);
+                  }}
                 />
-              )
-            ) : null}
-            {existing?.lastError ? (
-              <p className="niuu:m-0 niuu:text-sm niuu:text-critical-fg">{existing.lastError}</p>
-            ) : null}
-          </div>
-        ) : (
-          <p className={QUIET}>
-            Connect Linear in the project&apos;s integrations to bring in its tickets.
-          </p>
-        )}
-      </Section>
+              </label>
+              {importOn && !existing ? (
+                (trackers.data ?? []).length > 0 ? (
+                  <select
+                    aria-label="Linear project"
+                    className={INPUT}
+                    value={pickedTracker}
+                    disabled={locked}
+                    onChange={(event) => setTrackerProject(event.target.value)}
+                  >
+                    {(trackers.data ?? []).map((candidate) => (
+                      <option key={candidate.id} value={candidate.id}>
+                        {candidate.name}
+                      </option>
+                    ))}
+                  </select>
+                ) : (
+                  <input
+                    aria-label="Linear project"
+                    type="text"
+                    className={INPUT}
+                    placeholder="The Linear project's id"
+                    value={trackerProject}
+                    disabled={locked}
+                    onChange={(event) => setTrackerProject(event.target.value)}
+                  />
+                )
+              ) : null}
+              {existing?.lastError ? (
+                <p className="niuu:m-0 niuu:text-sm niuu:text-critical-fg">{existing.lastError}</p>
+              ) : null}
+            </div>
+          ) : (
+            <p className={QUIET}>
+              Connect Linear in the project&apos;s integrations to bring in its tickets.
+            </p>
+          )}
+        </Section>
+      ) : null}
 
       {owner ? (
         <div className="niuu:flex niuu:items-center niuu:gap-3">

@@ -19,17 +19,13 @@ import { SpecsNewPage } from './SpecsNewPage';
 
 const mockNavigate = vi.fn();
 const mockSetTweak = vi.fn();
-const mockOpenEventStream = vi.hoisted(() => vi.fn());
+const openEvents = vi.hoisted(() => vi.fn());
 let mockSlug = 'sdcp-operator';
 
 vi.mock('@tanstack/react-router', () => ({
   useNavigate: () => mockNavigate,
   useParams: () => ({ slug: mockSlug }),
   useSearch: () => ({}),
-}));
-
-vi.mock('@niuulabs/query', () => ({
-  openEventStream: mockOpenEventStream,
 }));
 
 const now = '2026-07-02T12:00:00.000Z';
@@ -240,7 +236,7 @@ function wrap(services: Record<string, unknown>, pluginCtx?: PluginCtx) {
   return function Wrapper({ children }: { children: React.ReactNode }) {
     return (
       <QueryClientProvider client={client}>
-        <ServicesProvider services={services}>
+        <ServicesProvider services={{ 'ting.events': { open: openEvents }, ...services }}>
           <PluginCtxProvider value={ctx}>{children}</PluginCtxProvider>
         </ServicesProvider>
       </QueryClientProvider>
@@ -252,8 +248,8 @@ describe('Specs pages', () => {
   beforeEach(() => {
     mockNavigate.mockClear();
     mockSetTweak.mockClear();
-    mockOpenEventStream.mockReset();
-    mockOpenEventStream.mockReturnValue({ close: vi.fn() });
+    openEvents.mockReset();
+    openEvents.mockReturnValue({ close: vi.fn() });
     mockSlug = 'sdcp-operator';
   });
 
@@ -268,7 +264,7 @@ describe('Specs pages', () => {
     expect(screen.getByText('Stage')).toBeInTheDocument();
     expect(screen.getByText('Review PRD')).toBeInTheDocument();
 
-    const streamOptions = mockOpenEventStream.mock.calls[0]?.[1] as {
+    const streamOptions = openEvents.mock.calls[0]?.[0] as {
       onEvent?: (payload: { event?: string }) => void;
     };
     expect(streamOptions.onEvent).toBeDefined();
@@ -917,7 +913,7 @@ Plain fallback content.`,
         ).toBeInTheDocument(),
       );
 
-      const streamOptions = mockOpenEventStream.mock.calls[0]?.[1] as {
+      const streamOptions = openEvents.mock.calls[0]?.[0] as {
         onEvent?: (payload: { event?: string; data: string }) => void;
       };
       expect(streamOptions.onEvent).toBeDefined();
