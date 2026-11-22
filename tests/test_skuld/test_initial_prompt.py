@@ -383,8 +383,6 @@ async def test_a_routed_room_reports_at_startup_and_starts_no_harness(forge, mon
     monkeypatch.setattr(broker, "_create_transport", lambda: broker._transport)
     for name in ("_ensure_session_trace_started", "_init_telegram_channel", "_init_event_log"):
         monkeypatch.setattr(broker, name, AsyncMock())
-    manager = MagicMock(init=AsyncMock())
-    monkeypatch.setattr("skuld.transport_lifecycle.ServiceManager", lambda _workspace: manager)
 
     await broker.startup()
 
