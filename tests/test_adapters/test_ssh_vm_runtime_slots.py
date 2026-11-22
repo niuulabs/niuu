@@ -109,7 +109,11 @@ async def test_start_creates_the_slot_then_places_the_session_in_it(slots):
     assert [item["path"] for item in files] == ["/var/lib/niuu/slots/1/etc/session-launch.json"]
     key = f"{lease.id}-slot-1"
     assert programs[2] == runtime._python(
-        module._PREPARE, key, "empty", '["home/.codex/tmp"]', "/var/lib/niuu/slots/1/session"
+        module._PREPARE,
+        key,
+        "empty",
+        '["home/.codex/tmp", "home/.cache/niuu/programs"]',
+        "/var/lib/niuu/slots/1/session",
     )
     tunnel = runtime._guest_access.open_tunnel.await_args.kwargs
     assert tunnel["remote_host"] == "10.249.0.6" and tunnel["key"] == key
@@ -137,7 +141,7 @@ async def test_a_restored_slot_keeps_its_own_storage_key(slots):
         module._PREPARE,
         f"{lease.id}-slot-1",
         "restore",
-        '["home/.codex/tmp"]',
+        '["home/.codex/tmp", "home/.cache/niuu/programs"]',
         "/var/lib/niuu/slots/1/session",
     )
     assert "stdin" in restore.kwargs

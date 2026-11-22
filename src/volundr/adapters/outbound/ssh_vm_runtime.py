@@ -24,6 +24,7 @@ import httpx
 
 from niuu.cap_telemetry import record_cap_hit
 from niuu.domain.services.forge_session_token import IssuedForgeSessionToken
+from niuu.domain.session_program import PROGRAM_CACHE
 from niuu.observability import get_observability
 from niuu.ports.session_proxy import SessionProxyTarget
 from volundr.adapters.outbound import vm_slot_supervisor
@@ -95,6 +96,9 @@ _LAUNCH = SESSION_LAUNCH
 #: The guest's local DNS stub (systemd-resolved on 127.0.0.53): never a preview.
 VM_GUEST_RESOLVER_PORT = 53
 _REMOTE_DATA = SESSION_DATA
+#: What a session archive leaves out unless its runtime is told otherwise: Codex's launch
+#: wrappers, and installed programs, which Skuld fetches again by digest.
+_DISPOSABLE = ("home/.codex/tmp", f"home/{PROGRAM_CACHE}")
 _SECRETS = SESSION_SECRETS + "/"
 # Pod volumes Kubernetes would keep in memory: guest tmpfs, gone on reboot and
 # recreated on every start.
@@ -653,7 +657,7 @@ class SshContainerVmRuntime(BrokeredCredentialPodManager, VmRuntime):
         self._data.mkdir(parents=True, exist_ok=True, mode=0o700)
         self._archive_excludes = tuple(
             str(PurePosixPath(p))
-            for p in (archive_excludes if archive_excludes is not None else ("home/.codex/tmp",))
+            for p in (archive_excludes if archive_excludes is not None else _DISPOSABLE)
         )
         if any(
             p == "."

@@ -216,10 +216,14 @@ def test_host_mode_offers_no_grants_and_runs_as_host(tmp_path):
 def test_container_storage_is_never_archived(tmp_path):
     assert _runtime(tmp_path)._archive_excludes == (
         "home/.codex/tmp",
+        "home/.cache/niuu/programs",
         "home/.local/share/containers",
         "home/.cache/containers",
     )
-    assert _runtime(tmp_path, containers=None)._archive_excludes == ("home/.codex/tmp",)
+    assert _runtime(tmp_path, containers=None)._archive_excludes == (
+        "home/.codex/tmp",
+        "home/.cache/niuu/programs",
+    )
 
 
 def test_subordinate_ids_must_fit_and_miss_the_slots_own_uids(tmp_path):
@@ -859,7 +863,8 @@ async def test_a_host_session_restores_its_links_to_absolute_paths(host):
         ssh_vm_runtime._PREPARE,
         f"{lease.id}-slot-2",
         "empty",
-        '["home/.codex/tmp", "home/.local/share/containers", "home/.cache/containers"]',
+        '["home/.codex/tmp", "home/.cache/niuu/programs", '
+        '"home/.local/share/containers", "home/.cache/containers"]',
         "/var/lib/niuu/slots/2/session",
         "absolute-links",
     )

@@ -22,6 +22,10 @@ mcpServers:
           url: https://github.com/tangency-labs/solidcraft/releases/download/v0.46.0/solidcraft-0.46.0-linux-x86_64.tar.gz
           sha256: 27b3b8334fbf99ab376d0bea176afaf55ef83b7aff822eb731eddb8d632b9112
           command: solidcraft-0.46.0-linux-x86_64/bin/solidcraft-cli
+        darwin-arm64:   # one universal build: list it as darwin-x86_64 too for Intel Macs
+          url: https://github.com/tangency-labs/solidcraft/releases/download/v0.46.0/solidcraft-cli-0.46.0-macos-universal.zip
+          sha256: ca187eadc1da31ba0729c500e8fa4984ddcc7373571b55b47d6b3adf21e034ab
+          command: solidcraft-cli-0.46.0-macos-universal/solidcraft-cli
 ```
 
 - `platforms` keys are `linux-x86_64`, `linux-arm64`, `darwin-x86_64` and `darwin-arm64`.
@@ -54,7 +58,8 @@ Before the engine starts, Skuld picks this platform's archive, downloads it, che
 SHA-256, unpacks it and runs its `command` as the MCP server. That is the same in a pod, on
 a VM, on a registered Linux host or Mac, and in mini mode. Programs are kept in
 `.cache/niuu/programs/<sha256>` in the session's home (`programs.cache_dir`), so the next
-session with that home starts without a download.
+session with that home starts without a download. On VMs and registered hosts each session
+has its own home, and its archive leaves the programs out, so every start downloads them.
 
 The session does not start, and says why, when:
 

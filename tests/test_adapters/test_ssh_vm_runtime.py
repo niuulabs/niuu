@@ -596,6 +596,7 @@ async def test_archive_is_atomic_and_failure_keeps_previous_copy(setup):
     await runtime.stop(lease, bootstrap)
     assert archive.read_bytes() == b"complete"
     assert "--exclude=./home/.codex/tmp" in commands[-1]
+    assert "--exclude=./home/.cache/niuu/programs" in commands[-1]
 
 
 async def test_command_failure_is_sanitized_and_timeout_kills_process(setup, monkeypatch):
