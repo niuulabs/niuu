@@ -1632,6 +1632,12 @@ config:
   conversationDurableFoldSessions: 256
   # -- Raw frames that fold holds while a log has no assistant turn row to settle on
   conversationDurableFoldMaxPending: 50000
+  # -- Sessions whose shallow durable transcript is kept in memory between polls
+  conversationShallowSessions: 16
+  # -- Durable turn rows decoded at a time while a conversation is folded
+  conversationTurnPageSize: 50
+  # -- Durable conversation reads that decode the event log at once; others wait their turn
+  conversationRebuildConcurrency: 1
   # -- Timeout (seconds) for the runtime-version health probe against a session's runtime
   runtimeHealthTimeoutSeconds: 3.0
   # -- Log level (debug, info, warning, error)

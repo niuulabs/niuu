@@ -36,6 +36,9 @@ async def setup_api(monkeypatch, *, mode="archive", source=None, upstream_status
     source = source if source is not None else rows(50)
     archive = AsyncMock()
     archive.get_transcript.side_effect = lambda sid: {"turns": copy.deepcopy(source)}
+    archive.get_shallow_transcript.side_effect = lambda sid, *, elide_turn: {
+        "turns": [elide_turn(turn) for turn in copy.deepcopy(source)]
+    }
     archive.latest_event_seq.return_value = 0
     app = FastAPI()
     app.include_router(
@@ -116,6 +119,7 @@ async def test_actual_http_pages_survive_appends_and_refresh_without_duplicates(
             }
             assert captures[1]["cursor"] == first["older_cursor"]
             archive.get_transcript.assert_not_awaited()
+            archive.get_shallow_transcript.assert_not_awaited()
 
 
 @pytest.mark.parametrize("mode", ["archive", "legacy_gateway"])
@@ -144,6 +148,7 @@ async def test_new_gateway_gap_or_busy_cannot_switch_to_stale_archive(monkeypatc
         )
     assert response.status_code == upstream_status
     archive.get_transcript.assert_not_awaited()
+    archive.get_shallow_transcript.assert_not_awaited()
 
 
 @pytest.mark.parametrize("mode", ["archive", "legacy_gateway"])
@@ -179,6 +184,7 @@ async def test_history_and_expansion_use_existing_authorization_adapter(monkeypa
         assert client.get(url + "/turns/0").status_code == 403
     assert captures == []
     archive.get_transcript.assert_not_awaited()
+    archive.get_shallow_transcript.assert_not_awaited()
 
 
 @pytest.mark.parametrize("mode", ["archive", "legacy_gateway", "gateway"])

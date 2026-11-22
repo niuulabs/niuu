@@ -50,6 +50,7 @@ from niuu.utils import import_class, resolve_secret_kwargs
 from sleipnir.adapters.audit_postgres import PostgresAuditRepository
 from sleipnir.adapters.audit_subscriber import AuditSubscriber
 from volundr.adapters.inbound.auth import extract_principal
+from volundr.adapters.inbound.durable_transcripts import DurableTranscripts
 from volundr.adapters.inbound.forge_session_auth import ForgeSessionAuthMiddleware
 from volundr.adapters.inbound.rest import create_router
 from volundr.adapters.inbound.rest_admin_settings import create_admin_settings_router
@@ -1979,6 +1980,9 @@ def create_app(
                 tail_growth=settings.conversation_tail_growth,
                 turn_tail_sessions=settings.conversation_durable_fold_sessions,
                 turn_tail_max_pending=settings.conversation_durable_fold_max_pending,
+                shallow_sessions=settings.conversation_shallow_sessions,
+                turn_page_size=settings.conversation_turn_page_size,
+                rebuild_concurrency=settings.conversation_rebuild_concurrency,
             )
             app.state.archive_service = archive_service
             app.state.session_event_log = session_event_log
@@ -2125,6 +2129,7 @@ def create_app(
                 runtime_health_timeout=settings.runtime_health_timeout_seconds,
                 history_max_turns=settings.conversation_recent_max_turns,
                 history_max_bytes=settings.conversation_recent_max_bytes,
+                durable_transcripts=DurableTranscripts(settings.conversation_shallow_sessions),
                 session_participant_service=session_participant_service,
                 presented_file_store=presented_file_store,
                 guild_membership=guild_membership,

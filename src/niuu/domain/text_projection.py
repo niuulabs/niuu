@@ -56,7 +56,8 @@ def projection_revision(turns: list[dict]) -> str:
     return f"text-items-{SCHEMA}:{suffix}" + (";timeline-1" if timed else "")
 
 
-def _legacy(turn: dict) -> bool:
+def is_legacy_text_turn(turn: dict) -> bool:
+    """True for an old aggregate-only assistant turn: prose, but no text parts."""
     parts = turn.get("parts", [])
     return (
         turn.get("role") == "assistant"
@@ -83,7 +84,7 @@ def repair_legacy_turn(
     ordered nontext dictionaries must also match. Every text item must have a
     captured boundary and explicit completion. Missing evidence stays legacy.
     """
-    if not _legacy(original) or candidate.get("id") != original.get("id"):
+    if not is_legacy_text_turn(original) or candidate.get("id") != original.get("id"):
         return None
     if candidate.get("role") != "assistant":
         return None
@@ -137,7 +138,7 @@ def repair_legacy_turns(turns: list[dict], frames: list[Frame]) -> list[dict]:
     Grouping by both native thread and turn avoids treating that queue arrival
     as an assistant boundary. Untagged history has insufficient evidence here.
     """
-    eligible = {turn["id"] for turn in turns if _legacy(turn)}
+    eligible = {turn["id"] for turn in turns if is_legacy_text_turn(turn)}
     if not eligible or any(frame.kind in ("log_gap", "log_conflict") for frame in frames):
         return turns
     groups: dict[tuple[str, str], list[Frame]] = defaultdict(list)

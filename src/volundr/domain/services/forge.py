@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
@@ -1094,6 +1094,15 @@ class ForgeService:
         if tail_turns > 0:
             return await self._archive_service.get_transcript(session_id, tail_turns=tail_turns)
         return await self._archive_service.get_transcript(session_id)
+
+    async def get_shallow_transcript(
+        self, session_id: UUID, *, elide_turn: Callable[[Any], Any]
+    ) -> dict:
+        """The persisted transcript with every turn elided, folded incrementally from the
+        event log: the read for a client that pages or polls."""
+        if self._archive_service is None:
+            raise RuntimeError("Session archive service not available")
+        return await self._archive_service.get_shallow_transcript(session_id, elide_turn=elide_turn)
 
     async def get_attachments(self, session_id: UUID) -> dict:
         """The session's document/image index (LEX-1259), from the durable rebuild."""

@@ -251,7 +251,7 @@ def assistant_turn_id(session_id: str, seq: int, role: str = "assistant") -> str
 # frames) and the rebuild (below) call ``steering_state_from_frame`` so they cannot diverge.
 
 # Frame kinds that carry a user-turn delivery-state transition, keyed by the user-turn id.
-_STEERING_FRAME_KINDS = frozenset({"user_confirmed", "user_active", "user_delivery_failed"})
+STEERING_FRAME_KINDS = frozenset({"user_confirmed", "user_active", "user_delivery_failed"})
 
 
 def steering_state_from_frame(kind: str, payload: dict) -> str | None:
@@ -750,6 +750,9 @@ def _result_error_text(payload: dict) -> str:
 # --------------------------------------------------------------------------- batch driver
 
 
+# Markers of a hole or a collision in the log: not content, but they veto text repair.
+GAP_KINDS = frozenset({"log_gap", "log_conflict"})
+
 # Frame kinds that are session chrome / control, never conversational content.
 _IGNORED_KINDS = frozenset(
     {
@@ -770,7 +773,7 @@ _IGNORED_KINDS = frozenset(
     }
 )
 
-_CONVERSATIONAL_KINDS = frozenset(
+CONVERSATIONAL_KINDS = frozenset(
     {
         "user",
         "user_confirmed",
@@ -868,7 +871,7 @@ def reduce_frames(
         # Raw DB reads carry the boundary marker; public replay filters it out,
         # so native provenance supplies the SAME boundary at the next live frame.
         if imported_prefix_open and (
-            k == "history_import" or (not is_imported and k in _CONVERSATIONAL_KINDS)
+            k == "history_import" or (not is_imported and k in CONVERSATIONAL_KINDS)
         ):
             flush(status="interrupted")
             imported_prefix_open = False
@@ -881,7 +884,7 @@ def reduce_frames(
         seq = int(r.seq)
         ts = _ts_of(r)
 
-        if k in _STEERING_FRAME_KINDS:
+        if k in STEERING_FRAME_KINDS:
             _record_steering(steering, k, p, seq)
             # user_confirmed also seeds/dedups the user turn (handled below); user_active /
             # user_delivery_failed carry no content, so they are pure state transitions.
