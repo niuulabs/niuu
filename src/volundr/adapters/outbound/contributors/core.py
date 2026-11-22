@@ -48,6 +48,10 @@ class CoreSessionContributor(SessionContributor):
                 "id": session_id,
                 "name": session.name,
                 "model": session.model,
+                # Every session, not only one with an A2A card: Skuld serves the voice
+                # channel to the owner alone and refuses to start without one.
+                "ownerId": session.owner_id or "",
+                "tenantId": session.tenant_id or "",
             },
         }
 
@@ -66,8 +70,6 @@ class CoreSessionContributor(SessionContributor):
                     "a2aVisibility": str(
                         workload.get("a2aVisibility") or workload.get("a2a_visibility") or "user"
                     ).strip(),
-                    "ownerId": session.owner_id or "",
-                    "tenantId": session.tenant_id or "",
                 }
             )
 

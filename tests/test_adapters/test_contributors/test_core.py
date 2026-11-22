@@ -25,6 +25,28 @@ class TestCoreSessionContributor:
         assert result.values["session"]["model"] == "claude-sonnet-4-20250514"
         assert result.values["ingress"]["host"] == "test-session.example.com"
 
+    async def test_an_ordinary_session_carries_its_owner_and_tenant(self, session):
+        """Skuld's voice channel needs the owner; without it every Flux session crash-looped."""
+        session.owner_id = "owner-1"
+        session.tenant_id = "tenant-1"
+        result = await CoreSessionContributor(base_domain="example.com").contribute(
+            session, SessionContext()
+        )
+        assert result.values["session"] == {
+            "id": str(session.id),
+            "name": "test-session",
+            "model": "claude-sonnet-4-20250514",
+            "ownerId": "owner-1",
+            "tenantId": "tenant-1",
+        }
+
+    async def test_a_session_with_no_owner_says_so_with_empty_values(self, session):
+        result = await CoreSessionContributor(base_domain="example.com").contribute(
+            session, SessionContext()
+        )
+        assert result.values["session"]["ownerId"] == ""
+        assert result.values["session"]["tenantId"] == ""
+
     async def test_terminal_restricted(self, session):
         c = CoreSessionContributor(base_domain="example.com")
         ctx = SessionContext(terminal_restricted=True)
