@@ -110,7 +110,7 @@ class IntegrationConnection:
                 f"Integration connection {self.id} belongs to project {self.project_id}; "
                 f"its owner_id must be {project_owner_id(self.project_id)!r}"
             )
-        if not self.project_id and self.owner_id.startswith(_PROJECT_OWNER_PREFIX):
+        if not self.project_id and is_project_owner_id(self.owner_id):
             raise ValueError(
                 f"Integration connection {self.id} has a project owner but no project_id"
             )
@@ -142,6 +142,11 @@ USER_CREDENTIAL_OWNER = "user"
 #: Credential owner type of a connection a Forge project owns.
 PROJECT_CREDENTIAL_OWNER = "project"
 _PROJECT_OWNER_PREFIX = "project:"
+
+
+def is_project_owner_id(owner_id: str) -> bool:
+    """Whether an integration connection's owner is a project rather than a person."""
+    return owner_id.startswith(_PROJECT_OWNER_PREFIX)
 
 
 def project_owner_id(project_id: str | UUID) -> str:

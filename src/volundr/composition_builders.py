@@ -11,6 +11,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Any
 
+from niuu.adapters.routed_integrations import RoutedIntegrationRepository
 from niuu.adapters.workload_identity.key_file import (
     SigningKeyFileError,
     load_or_create_rsa_key_pem,
@@ -541,6 +542,25 @@ async def integration_database_pool(settings: Settings, service_pool):
 
     async with database_pool(settings.database.model_copy(update={"name": name})) as pool:
         yield pool
+
+
+def create_integration_repository(settings: Settings, integration_pool, own_pool):
+    """The integration connections this Forge reads: its database, or the configured store.
+
+    A store that answers only for the calling person cannot hold a connection a project
+    owns, so those are kept in this Forge's own database, beside the project.
+    """
+    from volundr.adapters.outbound.postgres_integrations import PostgresIntegrationRepository
+
+    config = settings.integrations.repository
+    if config is None:
+        return PostgresIntegrationRepository(integration_pool)
+    repository = import_class(config.adapter)(
+        **resolve_secret_kwargs(config.kwargs, config.secret_kwargs_env)
+    )
+    if repository.holds_project_connections:
+        return repository
+    return RoutedIntegrationRepository(repository, PostgresIntegrationRepository(own_pool))
 
 
 def _create_codex_credential_broker(

@@ -6,7 +6,7 @@ from datetime import datetime
 
 import httpx
 
-from niuu.domain.models import IntegrationConnection, IntegrationType
+from niuu.domain.models import IntegrationConnection, IntegrationType, is_project_owner_id
 from niuu.ports.integrations import IntegrationRepository
 
 
@@ -16,6 +16,9 @@ class UnsupportedIntegrationQueryError(NotImplementedError):
 
 class HTTPIntegrationRepository(IntegrationRepository):
     """Resolve integration connections from the shared niuu service over HTTP."""
+
+    #: The API is the caller's own connections: it neither lists nor saves a project's.
+    holds_project_connections = False
 
     def __init__(
         self,
@@ -87,6 +90,12 @@ class HTTPIntegrationRepository(IntegrationRepository):
         self,
         connection: IntegrationConnection,
     ) -> IntegrationConnection:
+        if is_project_owner_id(connection.owner_id):
+            raise UnsupportedIntegrationQueryError(
+                "The HTTP integration API saves the caller's own connections, not those of "
+                f"{connection.owner_id}; keep project connections in the host's own store "
+                "(RoutedIntegrationRepository)"
+            )
         existing = await self.get_connection(connection.id)
         payload = {
             "integration_type": str(connection.integration_type),
