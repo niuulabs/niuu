@@ -246,6 +246,20 @@ class TransportLifecycleMixin:
             if not self._transport.is_alive:
                 await self._transport.start()
 
+    async def _auto_start_transport(self) -> None:
+        """Start the transport in the background, and hand it the session's first message."""
+        if self._settings.session.initial_prompt:
+            await self._start_with_initial_prompt()
+            return
+        await self._warm_transport()
+
+    async def _warm_transport(self) -> None:
+        try:
+            await self._ensure_transport_started()
+            logger.info("Transport auto-started successfully")
+        except Exception:
+            logger.error("Transport auto-start failed", exc_info=True)
+
     def _start_preview(self) -> None:
         """Start live-preview port discovery and forwarding when configured."""
         if not self._settings.preview.enabled:

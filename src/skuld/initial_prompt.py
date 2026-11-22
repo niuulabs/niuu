@@ -47,20 +47,6 @@ class InitialPromptError(RuntimeError):
 class InitialPromptMixin:
     """Own the delivery of ``session.initial_prompt``."""
 
-    async def _auto_start_transport(self) -> None:
-        """Start the transport in the background, and hand it the session's first message."""
-        if self._settings.session.initial_prompt:
-            await self._start_with_initial_prompt()
-            return
-        await self._warm_transport()
-
-    async def _warm_transport(self) -> None:
-        try:
-            await self._ensure_transport_started()
-            logger.info("Transport auto-started successfully")
-        except Exception:
-            logger.error("Transport auto-start failed", exc_info=True)
-
     async def _start_with_initial_prompt(self) -> None:
         """Deliver the first message unless its turn already ran; say so when it cannot be."""
         prompt = self._settings.session.initial_prompt
