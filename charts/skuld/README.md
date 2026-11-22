@@ -4,7 +4,7 @@
 ![Type: application](https://img.shields.io/badge/Type-application-informational?style=flat-square)
 ![AppVersion: 0.55.0](https://img.shields.io/badge/AppVersion-0.55.0-informational?style=flat-square)
 
-Helm chart for deploying **Skuld** -- a Claude Code CLI session pod with a WebSocket broker and terminal/local-service sidecars.
+Helm chart for deploying **Skuld** -- a Claude Code CLI session pod with a WebSocket broker and a terminal sidecar.
 
 ## Overview
 
@@ -12,7 +12,7 @@ Skuld is the session runtime for [Volundr](../volundr/). Each session deploys as
 
 - **Nginx** -- single entry point routing all traffic to internal containers
 - **Skuld broker** -- WebSocket bridge between Claude Code CLI and the AI model
-- **Devrunner** (optional) -- terminal access and dynamic local service management
+- **Devrunner** (optional) -- terminal access
 - **Envoy** (optional) -- JWT validation and header extraction sidecar
 
 ```
@@ -155,15 +155,13 @@ Nginx is the single entry point for all traffic. It routes requests to the appro
 | `nginx.resources.limits.memory` | string | `"128Mi"` | Nginx memory limit |
 | `nginx.resources.limits.cpu` | string | `"100m"` | Nginx CPU limit |
 
-### Local Services (Devrunner)
+### Terminal (Devrunner)
 
-Optional sidecar for terminal access and dynamic local service management. Provides a WebSocket-based shell and port forwarding for services running inside the session.
+Optional sidecar that hosts the session's terminal, a WebSocket-based shell.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `localServices.enabled` | bool | `true` | Enable local service management |
-| `localServices.portRange.start` | int | `9001` | Start of dynamic port range |
-| `localServices.portRange.end` | int | `9020` | End of dynamic port range |
+| `localServices.enabled` | bool | `true` | Run the devrunner sidecar, which hosts the session terminal |
 | `localServices.terminal.port` | int | `7681` | Terminal WebSocket port |
 | `localServices.terminal.restricted` | bool | `false` | Run the terminal in restricted-shell mode |
 | `localServices.terminal.allowedCommands` | string | `""` | Override allowed commands in restricted mode (comma-separated, empty = use defaults) |
@@ -471,7 +469,6 @@ External → Ingress/Gateway → Service (:8444) → Envoy → nginx → backend
 | `/health`, `/ready` | Skuld broker (:8081) | Health and readiness probes |
 | `/terminal/` | Devrunner (:7681) | WebSocket terminal (if localServices enabled) |
 | `/debug/` | Static HTML | xterm.js debug UI (if terminal.debug enabled) |
-| `/svc/` | Dynamic | Local services from `.services/nginx.conf` |
 | `/` | Skuld broker (:8081) | Default catch-all route |
 
 ### Init Containers
@@ -480,10 +477,6 @@ External → Ingress/Gateway → Service (:8444) → Envoy → nginx → backend
 |-----------|-----------|-------------|
 | `home-setup` | `homeVolume.enabled` | Creates home directory structure on NFS volumes, symlinks credential files from K8s secret |
 | `git-clone` | `git.repoUrl` set | Clones git repository into workspace using `git init` + `fetch` + `checkout` (works with non-empty dirs) |
-
-### Dynamic Service Discovery
-
-Services running inside the session pod can register themselves by writing to `.services/nginx.conf` in the workspace directory. Nginx includes this file and routes `/svc/` prefixed requests to registered services. The devrunner container manages the port range (`9001-9020` by default).
 
 ## Secrets
 

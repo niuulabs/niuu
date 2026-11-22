@@ -40,7 +40,7 @@ from skuld.room_role_port import RoomRoleResolutionError
 
 def _request(
     *,
-    path: str = "/api/services",
+    path: str = "/api/harness/stop",
     method: str = "POST",
     room_role_header: str | None = None,
     client_host: str | None = "127.0.0.1",
@@ -115,7 +115,7 @@ class TestEffectiveRoomRoleProxyMode:
     """room_role_source="proxy" — the process backend only."""
 
     async def test_missing_header_loopback_no_xff_is_owner(self, monkeypatch):
-        """Same-pod tooling: containers/skuld/svc, hooks, present-file."""
+        """Same-pod tooling: hooks, present-file."""
         _set_room_role_source(monkeypatch, "proxy")
         role = await _effective_room_role(
             _request(room_role_header=None, client_host="127.0.0.1", x_forwarded_for=None)
@@ -218,9 +218,9 @@ class TestEffectiveRoomRoleRemoteMode:
 
     async def test_no_verified_identity_headers_loopback_no_xff_is_owner(self, monkeypatch):
         """Same-pod tooling exception "proxy" mode already carries:
-        containers/skuld/svc, hooks, present-file, in-pod Ravn/Ting service
-        clients dialing localhost — none of them present verified identity
-        headers, and only an in-pod caller can be loopback with no XFF."""
+        hooks, present-file, in-pod Ravn/Ting service clients dialing
+        localhost — none of them present verified identity headers, and only
+        an in-pod caller can be loopback with no XFF."""
         resolver = _FakeResolver("owner")
         _set_remote_room_role_source(monkeypatch, resolver)
         result = await _effective_room_role(
@@ -292,7 +292,7 @@ class TestEnforceRoomRoleMiddleware:
     async def test_deployment_mode_missing_header_passes_an_owner_only_route(self, monkeypatch):
         _set_room_role_source(monkeypatch, "deployment")
         response = await _enforce_room_role(
-            _request(path="/api/services", room_role_header=None, client_host="10.0.0.5"),
+            _request(path="/api/harness/stop", room_role_header=None, client_host="10.0.0.5"),
             _call_next_ok,
         )
         assert getattr(response, "marker", None) == "passed-through"
@@ -302,7 +302,7 @@ class TestEnforceRoomRoleMiddleware:
     ):
         _set_room_role_source(monkeypatch, "proxy")
         response = await _enforce_room_role(
-            _request(path="/api/services", room_role_header=None, client_host="203.0.113.9"),
+            _request(path="/api/harness/stop", room_role_header=None, client_host="203.0.113.9"),
             _call_next_ok,
         )
         assert response.status_code == 403
@@ -325,7 +325,7 @@ class TestEnforceRoomRoleMiddleware:
         call_next = AsyncMock(return_value=SimpleNamespace(status_code=200, marker="preflight-ok"))
         response = await _enforce_room_role(
             _request(
-                path="/api/services", method="OPTIONS", room_role_header=None, client_host=None
+                path="/api/harness/stop", method="OPTIONS", room_role_header=None, client_host=None
             ),
             call_next,
         )

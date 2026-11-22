@@ -124,11 +124,6 @@ from skuld.peer_inbox import PEER_STATE_RPC_TYPE, PeerInboxMixin, PeerMessageUnc
 from skuld.person_questions import PersonQuestionMixin
 from skuld.preview import PreviewForwarder, PreviewPortWatcher
 from skuld.room_delivery import ROOM_MESSAGE_RPC_TYPE, RoomDelivery, RoomDeliveryError
-from skuld.service_manager import (  # noqa: F401
-    ServiceCreateRequest,
-    ServiceManager,
-    ServiceStatus,
-)
 from skuld.session_artifacts import (  # noqa: F401
     GitWorkspaceCheckpoint,
     SessionArtifacts,
@@ -599,7 +594,6 @@ class Broker(
         self.volundr_api_url = self._settings.volundr_api_url
         self._transport: CLITransport | None = None
         self._transport_start_lock = asyncio.Lock()
-        self.service_manager: ServiceManager | None = None
         # Live preview (skuld.preview): built at startup when preview.enabled.
         self.preview_watcher: PreviewPortWatcher | None = None
         self.preview_forwarder: PreviewForwarder | None = None
@@ -5216,12 +5210,6 @@ from skuld.broker_api import (  # noqa: E402, F401
     get_slash_commands,
     send_slash_command,
     receive_claude_hook,
-    create_service,
-    list_services,
-    get_service,
-    delete_service,
-    get_service_logs,
-    restart_service,
     _presented_staging_dir,
     _rebuild_presented_registry,
     _resume_presented_uploads,

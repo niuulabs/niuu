@@ -18,7 +18,6 @@ from skuld.codex_auth import CodexAuthProviderPort
 from skuld.memory_mcp.gateway import MemoryContextPackError
 from skuld.personas.projection import PersonaProjectionError, ProjectionContext
 from skuld.personas.registry import projector_for
-from skuld.service_manager import ServiceManager
 from skuld.session_artifacts import _capture_git_workspace_checkpoint
 from skuld.session_runtime import write_private_file
 
@@ -351,10 +350,8 @@ class TransportLifecycleMixin:
             return
         self._transport.on_event(self._handle_cli_event)
 
-        # Initialize service manager
-        self.service_manager = ServiceManager(self.workspace_dir)
-        await self.service_manager.init()
-        logger.info("Service manager initialized")
+        # A session without a checkout starts with no workspace directory.
+        Path(self.workspace_dir).mkdir(parents=True, exist_ok=True)
         self._start_preview()
         self._git_workspace_checkpoint = _capture_git_workspace_checkpoint(self.workspace_dir)
 

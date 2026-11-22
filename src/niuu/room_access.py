@@ -3,7 +3,7 @@
 Widening the session proxy's attach guard to any active participant (not
 just owner/admin) means "attach" alone is no longer enough authority to call
 every route under a session's ``/api/*`` — a viewer who can attach must not
-also be able to POST /api/services (host code execution in local mode).
+also be able to POST /api/message (dispatch into any other session).
 
 This table is enforced in TWO places that must never drift from each other:
 the session proxy (``niuu.session_proxy``, which forwards browser HTTP
