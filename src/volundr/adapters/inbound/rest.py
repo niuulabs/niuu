@@ -80,6 +80,7 @@ from volundr.adapters.inbound.auth import extract_principal, require_role
 from volundr.adapters.inbound.conversation_voice import VOICE_DETAIL, voice_page
 from volundr.adapters.inbound.durable_transcripts import DurableTranscripts
 from volundr.adapters.inbound.forge_session_auth import require_bound_session
+from volundr.adapters.inbound.launch_target import LaunchTarget, require_own_target
 from volundr.adapters.inbound.rest_guild import own_instance
 from volundr.adapters.inbound.rest_project_integrations import (
     create_project_integrations_router,
@@ -692,7 +693,7 @@ class PlayabilityResponse(BaseModel):
     members: list[PlayabilityVerdict]
 
 
-class SessionCreate(BaseModel):
+class SessionCreate(LaunchTarget):
     """Request model for creating a session."""
 
     coordination: SessionCoordination | None = None
@@ -3359,6 +3360,7 @@ def create_router(
         ordinary human PATs and workload tokens are unaffected.
         """
         principal = await _optional_principal(request)
+        require_own_target(guild_membership, data)
         try:
             started = await project_result(
                 forge.create_and_start_session(data, principal=principal)

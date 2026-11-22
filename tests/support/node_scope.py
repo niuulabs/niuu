@@ -19,3 +19,13 @@ OTHER_INSTANCE_DETAIL = (
     f"Instance {OTHER_INSTANCE} is not this Forge node (Noatun, 70b502d8-noatun); "
     "reach other Forges through the Guild at https://guild.example"
 )
+#: Every way a launch may name tags; a node refuses each, for sessions and teams alike.
+TAG_SELECTORS = [
+    {"target_tags": ["gpu"], "target_match": "any"},
+    {"target_tags": ["gpu"]},
+    {"target_match": "all"},
+    {"targetTags": ["gpu"], "targetMatch": "all"},
+    {"target_tags": ["gpu"], "instance_id": "70b502d8-noatun"},
+]
+#: Naming no tags selects nothing, as at the Guild facade.
+NO_TAG_SELECTORS = [{"target_tags": []}, {"target_tags": None, "target_match": None}]

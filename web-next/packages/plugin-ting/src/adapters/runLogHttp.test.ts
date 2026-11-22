@@ -1,3 +1,5 @@
+import { readFileSync } from 'fs';
+import { resolve } from 'path';
 import { describe, expect, it, vi } from 'vitest';
 import { ApiClientError, type ApiClient } from '@niuulabs/query';
 import { buildRunLogHttpAdapter } from './runLogHttp';
@@ -20,6 +22,14 @@ const row = (seq: number, overrides: Record<string, unknown> = {}) => ({
   source: 'present_file',
   ...overrides,
 });
+
+/** Read by the Forge route tests too: a node must take exactly what is sent here. */
+const NODE_REQUESTS = JSON.parse(
+  readFileSync(
+    resolve(__dirname, '../../../../../tests/fixtures/forge_node_requests.json'),
+    'utf-8',
+  ),
+);
 
 describe('buildRunLogHttpAdapter', () => {
   it('reads every page of the presented-file publications on one host', async () => {
@@ -82,6 +92,37 @@ describe('buildRunLogHttpAdapter', () => {
     expect(await adapter.hosts()).toEqual(['valhalla', 'ymir']);
     expect(registryGet).toHaveBeenCalledWith('/instances?kind=volundr&enabledOnly=true');
     expect(await buildRunLogHttpAdapter(client(vi.fn())).hosts()).toEqual([null]);
+  });
+
+  it('covers only the node it talks to in node scope, under the name that node gives', async () => {
+    const request = NODE_REQUESTS.read_artifacts;
+    const get = vi.fn(async (endpoint: string) =>
+      endpoint === '/guild'
+        ? { instance_id: NODE_REQUESTS.instance.id }
+        : { items: [row(1)], next_after: 1, has_more: false },
+    );
+    const registryGet = vi.fn();
+    const adapter = buildRunLogHttpAdapter(
+      client(get as unknown as ApiClient['get']),
+      client(registryGet),
+      { forgeScope: 'node' },
+    );
+
+    expect(adapter.scope).toBe('node');
+    const hosts = await adapter.hosts();
+    expect(hosts).toEqual([NODE_REQUESTS.instance.id]);
+    expect(registryGet).not.toHaveBeenCalled();
+
+    await adapter.publications(hosts[0]!);
+    const sent = new URLSearchParams(String(get.mock.lastCall![0]).split('?')[1]);
+    expect(Object.fromEntries(sent)).toEqual(request);
+    expect(buildRunLogHttpAdapter(client(vi.fn())).scope).toBe('guild');
+  });
+
+  it('fails when the node cannot say which Forge it is', async () => {
+    const get = vi.fn().mockRejectedValue(new ApiClientError('not joined to a Guild', 404));
+    const adapter = buildRunLogHttpAdapter(client(get), null, { forgeScope: 'node' });
+    await expect(adapter.hosts()).rejects.toThrow('not joined to a Guild');
   });
 
   it('reads the session that presented files, and knows when Forge no longer has it', async () => {

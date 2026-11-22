@@ -36,6 +36,19 @@ interface ForgeInstance {
   id: string;
 }
 
+/** How one Forge node names itself in its Guild's registry. */
+interface GuildMembership {
+  instance_id: string;
+}
+
+export interface RunLogHttpOptions {
+  /**
+   * `guild` (default): `client` is the Guild facade and every Forge in the registry is
+   * read. `node`: `client` is one Forge node and only its own files are read.
+   */
+  forgeScope?: 'guild' | 'node';
+}
+
 /** Only a running session takes a message. */
 const RUNNING = 'running';
 const NOT_FOUND = 404;
@@ -73,14 +86,21 @@ function toPublication(row: PublicationRow): Publication {
 /**
  * Reads what sessions presented through the Forge API: `client` is rooted at
  * `/api/v1/forge`, `registry` (the platform registry, `/api/v1/niuu`) lists the Forge
- * hosts. Without a registry there is one Forge: the one `client` talks to.
+ * hosts. Without a registry there is one Forge: the one `client` talks to. In node
+ * scope the registry is not read: the node names itself at `GET /guild`.
  */
 export function buildRunLogHttpAdapter(
   client: ApiClient,
   registry: ApiClient | null = null,
+  { forgeScope = 'guild' }: RunLogHttpOptions = {},
 ): IRunLogService {
   return {
+    scope: forgeScope,
     async hosts() {
+      if (forgeScope === 'node') {
+        const membership = await client.get<GuildMembership>('/guild');
+        return [membership.instance_id];
+      }
       if (!registry) return [null];
       const instances = await registry.get<ForgeInstance[]>(
         '/instances?kind=volundr&enabledOnly=true',

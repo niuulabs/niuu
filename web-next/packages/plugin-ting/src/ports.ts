@@ -25,6 +25,8 @@ export interface ProjectSessions {
 
 /** What runs presented as Forge artifacts, and a run's session itself; Forge owns both. */
 export interface IRunLogService {
+  /** `node`: this covers only the host `hosts` names. Default `guild`: every host. */
+  readonly scope?: 'guild' | 'node';
   /** Every presented-file publication on one Forge, or one session's when given. */
   publications(
     instanceId: string | null,

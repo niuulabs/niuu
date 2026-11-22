@@ -296,7 +296,12 @@ export function pickDefaultModelForDefinition(
   return pickDefaultModel(compatibleModels);
 }
 
+/**
+ * The tags a launch can be routed by. With one host there is nothing to choose between,
+ * so there are none: the host itself is named (a lone Forge node refuses a tag selector).
+ */
 export function getTargetTagOptions(targets: VolundrTarget[]): string[] {
+  if (targets.length < 2) return [];
   return Array.from(new Set(targets.flatMap((target) => target.tags ?? []))).sort((a, b) =>
     a.localeCompare(b),
   );
