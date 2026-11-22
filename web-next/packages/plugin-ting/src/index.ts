@@ -25,6 +25,7 @@ export {
 } from './adapters/workflowExecution';
 export { buildWorkHttpAdapter } from './adapters/workHttp';
 export { buildRunLogHttpAdapter } from './adapters/runLogHttp';
+export { buildTingEventsHttpAdapter, createMockTingEvents } from './adapters/eventsHttp';
 export { ArtifactList } from './ui/artifacts/ArtifactList';
 export type { IRunLogService, ProjectSessions } from './ports';
 export type * from './domain/artifacts';
@@ -524,6 +525,8 @@ export { StageProgressRail } from './ui/StageProgressRail';
 export { StepDots } from './ui/StepDots';
 export { useSagas } from './ui/useSagas';
 export { useTingAvailable } from './ui/useTingAvailable';
+export { useTingPages } from './ui/useTingPages';
+export { useNodeScoped } from './ui/useSessionHere';
 export { useSaga } from './ui/useSaga';
 export {
   useWorkflows,

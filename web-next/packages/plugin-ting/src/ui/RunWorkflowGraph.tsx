@@ -1,8 +1,9 @@
 import { useState } from 'react';
-import { useQuery } from '@tanstack/react-query';
-import { useService } from '@niuulabs/plugin-sdk';
-import type { IWorkService } from '../ports';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useOptionalService, useService } from '@niuulabs/plugin-sdk';
+import type { IRunLogService, IWorkService } from '../ports';
 import { runGraphIsMoving } from '../domain/runGraph';
+import { sessionHereQuery } from './useSessionHere';
 import { GraphView } from './WorkflowBuilder/GraphView';
 import './RunWorkflowGraph.css';
 
@@ -25,6 +26,20 @@ export interface RunWorkflowGraphProps {
  */
 export function RunWorkflowGraph({ runId, onOpenSession }: RunWorkflowGraphProps) {
   const work = useService<IWorkService>('ting.work');
+  const runLog = useOptionalService<IRunLogService>('ting.runLog');
+  const queryClient = useQueryClient();
+  // A member a node does not have: Ting runs members on any host, a node opens its own.
+  const [elsewhere, setElsewhere] = useState(false);
+  const openMember = async (sessionId: string) => {
+    const here =
+      runLog?.scope !== 'node' ||
+      (await queryClient
+        .fetchQuery(sessionHereQuery(runLog, sessionId))
+        // The session's own page shows what is wrong with it.
+        .catch(() => true));
+    setElsewhere(!here);
+    if (here) onOpenSession?.(sessionId);
+  };
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const graph = useQuery({
     queryKey: ['ting', 'work', 'run-graph', runId],
@@ -49,6 +64,11 @@ export function RunWorkflowGraph({ runId, onOpenSession }: RunWorkflowGraphProps
   }
   return (
     <div className="ting-run-graph" data-testid="run-graph">
+      {elsewhere ? (
+        <p className="ting-run-graph__status" role="status">
+          That session runs on another host, so it does not open here.
+        </p>
+      ) : null}
       <GraphView
         readOnly
         fitOnLoad
@@ -56,7 +76,7 @@ export function RunWorkflowGraph({ runId, onOpenSession }: RunWorkflowGraphProps
         nodes={graph.data.nodes}
         edges={graph.data.edges}
         runStates={graph.data.states}
-        onOpenMemberSession={onOpenSession}
+        onOpenMemberSession={onOpenSession ? (id) => void openMember(id) : undefined}
         selectedNodeId={selectedNodeId}
         connectingFromId={null}
         onSelectNode={setSelectedNodeId}

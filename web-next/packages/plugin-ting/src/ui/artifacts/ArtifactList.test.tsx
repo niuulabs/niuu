@@ -8,6 +8,7 @@ import type { ReviewItem } from '../../domain/review';
 import type { Publication, SessionRef } from '../../domain/artifacts';
 import { ArtifactList } from './ArtifactList';
 import { ArtifactsPage } from './ArtifactsPage';
+import { ShellContext, type ShellContextValue } from '@niuulabs/shell';
 
 vi.mock('@tanstack/react-router', () => ({
   useRouterState: () => '/here',
@@ -104,6 +105,8 @@ function setup({
   ],
   node,
   work: workOverride,
+  pluginOff = false,
+  filesystem,
 }: {
   reviews?: ReviewItem[];
   publications?: IRunLogService['publications'];
@@ -115,6 +118,8 @@ function setup({
   /** The one host a node-scoped UI covers. */
   node?: string;
   work?: unknown;
+  pluginOff?: boolean;
+  filesystem?: unknown;
 } = {}) {
   const work = {
     list: vi.fn().mockResolvedValue({
@@ -138,12 +143,31 @@ function setup({
     <QueryClientProvider
       client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}
     >
-      <ServicesProvider services={{ 'ting.work': workOverride ?? work, 'ting.runLog': runLog }}>
-        {page ? <ArtifactsPage /> : <ArtifactList projectId={projectId} />}
+      <ServicesProvider
+        services={{
+          'ting.work': workOverride ?? work,
+          'ting.runLog': runLog,
+          ...(filesystem ? { filesystem } : {}),
+        }}
+      >
+        <ShellContext.Provider value={pluginOff ? SHELL_WITHOUT_TING : null}>
+          {page ? <ArtifactsPage /> : <ArtifactList projectId={projectId} />}
+        </ShellContext.Provider>
       </ServicesProvider>
     </QueryClientProvider>,
   );
   return { publications, session };
+}
+
+const SHELL_WITHOUT_TING: ShellContextValue = {
+  enabled: [],
+  brand: null,
+  version: '0',
+  ctx: { tweaks: {}, setTweak: () => {} },
+};
+
+function storedFiles(read: () => Promise<Blob>) {
+  return { downloadPresentedFile: vi.fn(read) };
 }
 
 /** A host without Ting: anything asked of it throws. */
@@ -159,6 +183,16 @@ function absentTing() {
   );
   return { service, asked };
 }
+
+/** The row of a file, once its host's files are read. */
+const fileRow = (text: string) =>
+  waitFor(() => {
+    const found = screen
+      .getAllByTestId('artifact-row')
+      .find((row) => row.tagName === 'BUTTON' && row.textContent?.includes(text));
+    expect(found).toBeDefined();
+    return found!;
+  });
 
 const rowTexts = () => screen.getAllByTestId('artifact-row').map((row) => row.textContent);
 
@@ -198,6 +232,69 @@ describe('ArtifactList', () => {
     expect(asked).not.toHaveBeenCalled();
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
     expect(screen.queryByText('Reading artifacts…')).not.toBeInTheDocument();
+  });
+
+  it('opens the newest file itself where the Ting plugin is off', async () => {
+    const filesystem = storedFiles(async () => new Blob(['# The plan'], { type: 'text/markdown' }));
+    setup({
+      node: 'valhalla',
+      pluginOff: true,
+      filesystem,
+      campaigns: [run('a2a-plan', 'completed', 'completed')],
+    });
+
+    const row = await fileRow('Developer Planning');
+    expect(row.tagName).toBe('BUTTON');
+    expect(screen.queryByRole('link')).not.toBeInTheDocument();
+    fireEvent.click(row);
+
+    const dialog = await screen.findByRole('dialog');
+    expect(await within(dialog).findByText('The plan')).toBeInTheDocument();
+    // Forge's stored copy, from the session that presented it.
+    expect(filesystem.downloadPresentedFile).toHaveBeenCalledExactlyOnceWith(
+      'session-a2a-plan',
+      'pf_2',
+      expect.anything(),
+    );
+    fireEvent.keyDown(dialog, { key: 'Escape' });
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+  });
+
+  it('opens the file on a host without Ting, whose plugin has nothing to show', async () => {
+    const filesystem = storedFiles(async () => new Blob(['notes'], { type: 'text/markdown' }));
+    setup({ node: 'valhalla', work: absentTing().service, filesystem });
+
+    fireEvent.click(await fileRow('Ad hoc notes'));
+    expect(await within(await screen.findByRole('dialog')).findByText('notes')).toBeInTheDocument();
+  });
+
+  it('shows why a file cannot be read', async () => {
+    const filesystem = storedFiles(async () => {
+      throw new Error('Session session-gone was deleted');
+    });
+    setup({ node: 'valhalla', pluginOff: true, filesystem });
+
+    fireEvent.click(await fileRow('(gone)'));
+    expect(await within(await screen.findByRole('dialog')).findByRole('alert')).toHaveTextContent(
+      'Session session-gone was deleted',
+    );
+  });
+
+  it('says when the app has no file browser to open one with', async () => {
+    setup({ node: 'valhalla', pluginOff: true });
+    fireEvent.click(await fileRow('Ad hoc notes'));
+    expect(await screen.findByText('This app has no file browser connected.')).toBeInTheDocument();
+  });
+
+  it('lists a decision with nothing presented as a plain line where its page is not here', async () => {
+    setup({
+      pluginOff: true,
+      publications: vi.fn(async () => []),
+      campaigns: [run('a2a-plan', 'blocked', 'needsAttention')],
+    });
+    const row = await screen.findByTestId('artifact-row');
+    expect(row.tagName).toBe('DIV');
+    expect(row).toHaveTextContent('Waiting at a gate');
   });
 
   it('shows the error of a configured Ting that fails, 404 or not', async () => {

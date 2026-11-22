@@ -106,7 +106,12 @@ export function RealmsHomePage({ view = 'all' }: { view?: RealmsHomeView }) {
   );
   const waiting = home.waitingTickets.length;
   const needsYouRows = home.waitingTickets.map(({ item, card }) => (
-    <TicketReviewRow key={item.taskId} item={item} workspace={card.realm.name} />
+    <TicketReviewRow
+      key={item.taskId}
+      item={item}
+      workspace={card.realm.name}
+      slug={card.realm.slug}
+    />
   ));
 
   return (

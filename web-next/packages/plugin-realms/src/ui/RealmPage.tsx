@@ -5,6 +5,8 @@ import { usePluginCtx, useService } from '@niuulabs/plugin-sdk';
 import {
   TrackerBoard,
   WorkflowLaunchModal,
+  useNodeScoped,
+  useTingPages,
   useTrackerBoard,
   useWorkflows,
   type IWorkflowService,
@@ -93,7 +95,17 @@ function CountTile({
  * overview that asks something of you, so it sits at the top and disappears the moment
  * it is empty.
  */
-function NeedsYouStrip({ tickets, workspace }: { tickets: WorkReviewItem[]; workspace: string }) {
+function NeedsYouStrip({
+  tickets,
+  workspace,
+  slug,
+  onOpenBoard,
+}: {
+  tickets: WorkReviewItem[];
+  workspace: string;
+  slug: string;
+  onOpenBoard: () => void;
+}) {
   if (tickets.length === 0) return null;
   return (
     <section
@@ -104,7 +116,13 @@ function NeedsYouStrip({ tickets, workspace }: { tickets: WorkReviewItem[]; work
         Needs you · {tickets.length}
       </span>
       {tickets.map((item) => (
-        <TicketReviewRow key={item.taskId} item={item} workspace={workspace} />
+        <TicketReviewRow
+          key={item.taskId}
+          item={item}
+          workspace={workspace}
+          slug={slug}
+          onOpenBoard={onOpenBoard}
+        />
       ))}
     </section>
   );
@@ -226,6 +244,8 @@ export function RealmPage() {
   const [pickerOpen, setPickerOpen] = useState(false);
   const [workflowOpen, setWorkflowOpen] = useState(false);
   const [workflow, setWorkflow] = useState<Workflow | null>(null);
+  const pages = useTingPages();
+  const here = useNodeScoped();
   const workflows = useWorkflows({ enabled: data.hasTing });
   const workflowService = useService<IWorkflowService>('ting.workflows');
   const queryClient = useQueryClient();
@@ -358,7 +378,12 @@ export function RealmPage() {
 
         {tab === 'overview' ? (
           <>
-            <NeedsYouStrip tickets={data.waitingTickets} workspace={view.name} />
+            <NeedsYouStrip
+              tickets={data.waitingTickets}
+              workspace={view.name}
+              slug={slug}
+              onOpenBoard={() => switchTab('board')}
+            />
             {data.hasTing ? (
               <div className="niuu:grid niuu:grid-cols-3 niuu:gap-3">
                 <CountTile
@@ -372,7 +397,7 @@ export function RealmPage() {
                   id="sessions"
                   label="In sessions"
                   count={activeSessionCount(workspaceSessions)}
-                  hint={`${workspaceSessions.length} in all`}
+                  hint={`${workspaceSessions.length} ${here ? 'on this host' : 'in all'}`}
                   onOpen={() => switchTab('sessions')}
                 />
                 <CountTile
@@ -435,7 +460,9 @@ export function RealmPage() {
 
         {tab === 'sessions' ? (
           <div className="niuu:flex niuu:flex-col niuu:gap-4">
-            <SectionCard title={`Sessions · ${workspaceSessions.length}`}>
+            <SectionCard
+              title={`Sessions${here ? ' on this host' : ''} · ${workspaceSessions.length}`}
+            >
               <SessionsTable sessions={workspaceSessions} />
             </SectionCard>
           </div>
@@ -514,9 +541,11 @@ export function RealmPage() {
               title="No workflows yet"
               description="Build one under Work › Workflows, then run it here."
               action={
-                <Link to={'/ting/workflows' as never} className={PRIMARY}>
-                  Open Work › Workflows
-                </Link>
+                pages ? (
+                  <Link to={'/ting/workflows' as never} className={PRIMARY}>
+                    Open Work › Workflows
+                  </Link>
+                ) : undefined
               }
             />
           ) : (
@@ -540,9 +569,11 @@ export function RealmPage() {
               </button>
             ))
           )}
-          <Link to={'/ting/workflows' as never} className={`${LINK} niuu:self-start`}>
-            Manage workflows
-          </Link>
+          {pages ? (
+            <Link to={'/ting/workflows' as never} className={`${LINK} niuu:self-start`}>
+              Manage workflows
+            </Link>
+          ) : null}
         </div>
       </Modal>
       {data.hasTing ? (

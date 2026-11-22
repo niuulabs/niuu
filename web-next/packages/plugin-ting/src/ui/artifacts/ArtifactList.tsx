@@ -1,9 +1,12 @@
 import './Artifacts.css';
 import { useMemo, useState } from 'react';
 import { Link } from '@tanstack/react-router';
+import { useOptionalService } from '@niuulabs/plugin-sdk';
+import { Modal, SessionFilePreview, type IFileSystemPort } from '@niuulabs/ui';
 import { ARTIFACT_STATUS_LABEL, artifactKind, type ArtifactStatus } from '../../domain/artifacts';
 import { reviewPath, type ReviewItem } from '../../domain/review';
 import { useTingAvailable } from '../useTingAvailable';
+import { useTingPages } from '../useTingPages';
 import { useReviews } from '../useWork';
 import {
   useArtifacts,
@@ -12,6 +15,14 @@ import {
   type WaitingRun,
 } from '../useArtifacts';
 import { useReturnTo } from '../review/reviewBack';
+
+/** One presented file, as Forge keeps it. */
+interface PresentedFile {
+  sessionId: string;
+  fileId: string;
+  name: string;
+  mime: string | null;
+}
 
 /** One line of the list: an artifact, or a gate waiting on someone with nothing to read yet. */
 interface ListRow {
@@ -22,8 +33,10 @@ interface ListRow {
   status: ArtifactStatus;
   project: ArtifactProject | null;
   updatedAt: string;
+  /** Its page in Ting; a host without Ting's pages opens `file` instead. */
   href: string;
   search?: Record<string, string>;
+  file?: PresentedFile;
 }
 
 const NO_PROJECT = 'No project';
@@ -46,6 +59,16 @@ function artifactLine(row: ArtifactRow): ListRow {
     status: row.status,
     project: row.project,
     updatedAt: row.updatedAt,
+    ...(latest
+      ? {
+          file: {
+            sessionId: row.session.sessionId,
+            fileId: latest.fileId,
+            name: latest.name,
+            mime: latest.mime,
+          },
+        }
+      : {}),
   };
   if (row.run) {
     return {
@@ -107,16 +130,12 @@ function age(iso: string): string {
   return `${Math.round(hours / 24)}d`;
 }
 
-function Row({ row }: { row: ListRow }) {
+function Row({ row, onOpenFile }: { row: ListRow; onOpenFile: (row: ListRow) => void }) {
   // The review page sends the person back to this list, filtered as they left it.
   const returnTo = useReturnTo();
-  return (
-    <Link
-      className="ting-artifacts__row"
-      to={row.href as never}
-      search={{ ...row.search, returnTo } as never}
-      data-testid="artifact-row"
-    >
+  const pages = useTingPages();
+  const line = (
+    <>
       <span className="ting-artifacts__kind">{row.kind}</span>
       <span className="ting-artifacts__text">
         <span className="ting-artifacts__title">{row.title}</span>
@@ -128,7 +147,65 @@ function Row({ row }: { row: ListRow }) {
       <time className="ting-artifacts__age" dateTime={row.updatedAt}>
         {age(row.updatedAt)}
       </time>
-    </Link>
+    </>
+  );
+  if (pages) {
+    return (
+      <Link
+        className="ting-artifacts__row"
+        to={row.href as never}
+        search={{ ...row.search, returnTo } as never}
+        data-testid="artifact-row"
+      >
+        {line}
+      </Link>
+    );
+  }
+  if (row.file) {
+    return (
+      <button
+        type="button"
+        className="ting-artifacts__row ting-artifacts__row--file"
+        onClick={() => onOpenFile(row)}
+        data-testid="artifact-row"
+      >
+        {line}
+      </button>
+    );
+  }
+  // A decision with nothing presented: there is no file, and its page is not here.
+  return (
+    <div className="ting-artifacts__row ting-artifacts__row--plain" data-testid="artifact-row">
+      {line}
+    </div>
+  );
+}
+
+/** A presented file where Ting's pages are not: the same preview Forge opens files in. */
+function FilePreview({ row, onClose }: { row: ListRow; onClose: () => void }) {
+  const filesystem = useOptionalService<IFileSystemPort>('filesystem');
+  const file = row.file!;
+  return (
+    <Modal
+      open
+      onOpenChange={(open) => {
+        if (!open) onClose();
+      }}
+      title={row.title}
+      description={row.byline}
+      className="ting-artifacts__file"
+    >
+      {filesystem ? (
+        <SessionFilePreview
+          sessionId={file.sessionId}
+          path={file.fileId}
+          presented={{ name: file.name, ...(file.mime ? { mime: file.mime } : {}) }}
+          filesystem={filesystem}
+        />
+      ) : (
+        <p role="alert">This app has no file browser connected.</p>
+      )}
+    </Modal>
   );
 }
 
@@ -142,6 +219,7 @@ export function ArtifactList({ projectId }: { projectId?: string }) {
   const [status, setStatus] = useState<ArtifactStatus | null>(null);
   const [kind, setKind] = useState<string | null>(null);
   const [query, setQuery] = useState('');
+  const [opened, setOpened] = useState<ListRow | null>(null);
 
   const rows = useMemo(() => {
     const withArtifacts = new Set(artifacts.rows.flatMap((row) => (row.run ? [row.run.slug] : [])));
@@ -250,7 +328,7 @@ export function ArtifactList({ projectId }: { projectId?: string }) {
         <section className="ting-artifacts__waiting" aria-label="Waiting on you">
           <h2>Waiting on you · {waiting.length}</h2>
           {waiting.map((row) => (
-            <Row key={row.key} row={row} />
+            <Row key={row.key} row={row} onOpenFile={setOpened} />
           ))}
         </section>
       ) : null}
@@ -264,7 +342,7 @@ export function ArtifactList({ projectId }: { projectId?: string }) {
           )}
           <div className="ting-artifacts__rows">
             {inGroup.map((row) => (
-              <Row key={row.key} row={row} />
+              <Row key={row.key} row={row} onOpenFile={setOpened} />
             ))}
           </div>
         </section>
@@ -277,6 +355,8 @@ export function ArtifactList({ projectId }: { projectId?: string }) {
             : 'Nothing matches these filters.'}
         </p>
       ) : null}
+
+      {opened ? <FilePreview row={opened} onClose={() => setOpened(null)} /> : null}
     </div>
   );
 }

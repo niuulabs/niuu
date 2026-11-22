@@ -12,14 +12,10 @@ import { createMockDispatcherService } from '../adapters/mock';
 import { ResearchCenterPage } from './ResearchCenterPage';
 
 const mockNavigate = vi.fn();
-const mockOpenEventStream = vi.hoisted(() => vi.fn());
+const openEvents = vi.hoisted(() => vi.fn());
 
 vi.mock('@tanstack/react-router', () => ({
   useNavigate: () => mockNavigate,
-}));
-
-vi.mock('@niuulabs/query', () => ({
-  openEventStream: mockOpenEventStream,
 }));
 
 const now = '2026-05-25T12:00:00.000Z';
@@ -303,7 +299,9 @@ function wrap(services: Record<string, unknown>) {
   return function Wrapper({ children }: { children: React.ReactNode }) {
     return (
       <QueryClientProvider client={client}>
-        <ServicesProvider services={services}>{children}</ServicesProvider>
+        <ServicesProvider services={{ 'ting.events': { open: openEvents }, ...services }}>
+          {children}
+        </ServicesProvider>
       </QueryClientProvider>
     );
   };
@@ -312,8 +310,8 @@ function wrap(services: Record<string, unknown>) {
 describe('ResearchCenterPage', () => {
   beforeEach(() => {
     mockNavigate.mockClear();
-    mockOpenEventStream.mockReset();
-    mockOpenEventStream.mockReturnValue({ close: vi.fn() });
+    openEvents.mockReset();
+    openEvents.mockReturnValue({ close: vi.fn() });
   });
 
   it('renders the research dashboard and can switch to table mode', async () => {
@@ -704,7 +702,7 @@ describe('ResearchCenterPage', () => {
       params: { slug: 'rag-landscape' },
     });
 
-    mockOpenEventStream.mock.calls[0]?.[1].onEvent?.({
+    openEvents.mock.calls[0]?.[0].onEvent?.({
       event: 'workflow.campaign.updated',
       data: '{}',
     });

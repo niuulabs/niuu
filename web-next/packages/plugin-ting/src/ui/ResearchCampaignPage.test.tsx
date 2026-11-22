@@ -9,16 +9,12 @@ import { ResearchCampaignPage } from './ResearchCampaignPage';
 
 const mockNavigate = vi.fn();
 const mockSetTweak = vi.fn();
-const mockOpenEventStream = vi.hoisted(() => vi.fn());
+const openEvents = vi.hoisted(() => vi.fn());
 let mockSlug = 'local-model-serving';
 
 vi.mock('@tanstack/react-router', () => ({
   useNavigate: () => mockNavigate,
   useParams: () => ({ slug: mockSlug }),
-}));
-
-vi.mock('@niuulabs/query', () => ({
-  openEventStream: mockOpenEventStream,
 }));
 
 const now = '2026-05-25T12:00:00.000Z';
@@ -743,7 +739,7 @@ function wrap(services: Record<string, unknown>, pluginCtx?: PluginCtx) {
   return function Wrapper({ children }: { children: React.ReactNode }) {
     return (
       <QueryClientProvider client={client}>
-        <ServicesProvider services={services}>
+        <ServicesProvider services={{ 'ting.events': { open: openEvents }, ...services }}>
           <PluginCtxProvider value={ctx}>{children}</PluginCtxProvider>
         </ServicesProvider>
       </QueryClientProvider>
@@ -755,8 +751,8 @@ describe('ResearchCampaignPage', () => {
   beforeEach(() => {
     mockNavigate.mockClear();
     mockSetTweak.mockClear();
-    mockOpenEventStream.mockReset();
-    mockOpenEventStream.mockReturnValue({ close: vi.fn() });
+    openEvents.mockReset();
+    openEvents.mockReturnValue({ close: vi.fn() });
     mockSlug = 'local-model-serving';
     window.history.replaceState({}, '', '/');
     vi.stubGlobal(

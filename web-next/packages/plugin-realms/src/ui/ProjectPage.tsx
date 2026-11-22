@@ -175,7 +175,12 @@ export function ProjectPage() {
               ) : (
                 <>
                   {tickets.map(({ item, card }) => (
-                    <TicketReviewRow key={item.taskId} item={item} workspace={card.realm.name} />
+                    <TicketReviewRow
+                      key={item.taskId}
+                      item={item}
+                      workspace={card.realm.name}
+                      slug={card.realm.slug}
+                    />
                   ))}
                 </>
               )}

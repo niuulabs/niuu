@@ -33,8 +33,9 @@ export const pluginConfigSchema = z.object({
 export const serviceConfigSchema = z
   .object({
     /**
-     * `false` says this host does not run the service: pages leave out what only it
-     * knows and nothing calls it. A service that is on and fails shows its error.
+     * `false` says this host uses no such service, its own or another host's: pages leave
+     * out what only it knows and nothing calls it. A service that is on and fails shows
+     * its error.
      */
     enabled: z.boolean().optional(),
     baseUrl: absoluteOrRootRelativeUrlSchema.optional(),

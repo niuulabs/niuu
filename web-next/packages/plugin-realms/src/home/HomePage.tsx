@@ -2,6 +2,7 @@ import type { ReactNode } from 'react';
 import { Link } from '@tanstack/react-router';
 import { Boxes, Terminal, Workflow } from 'lucide-react';
 import { usePluginEnabled } from '@niuulabs/shell';
+import { useTingPages } from '@niuulabs/plugin-ting';
 import type { Session } from '@niuulabs/plugin-volundr';
 import { Chip, EmptyState, ErrorState, LoadingState, StateDot } from '@niuulabs/ui';
 import { useDomainSessions, useHomeStatus } from '../application/useHome';
@@ -218,6 +219,7 @@ function Panel({
 export function HomePage() {
   const home = useRealmsHome();
   const realmsEnabled = usePluginEnabled('realms');
+  const tingPages = useTingPages();
   const status = useHomeStatus();
   const sessions = useDomainSessions();
 
@@ -229,8 +231,7 @@ export function HomePage() {
   const tickets = realmsEnabled ? home.waitingTickets : [];
   const waiting = blocked.length + tickets.length;
   const choices = CHOICES.filter(
-    (choice) =>
-      (choice.id !== 'realm' || realmsEnabled) && (choice.id !== 'workflow' || home.hasTing),
+    (choice) => (choice.id !== 'realm' || realmsEnabled) && (choice.id !== 'workflow' || tingPages),
   );
   const activeRealms = orderCards(realmCards)
     .filter((card) => card.runningSessions > 0)
@@ -303,7 +304,12 @@ export function HomePage() {
             ) : (
               <>
                 {tickets.slice(0, NEEDS_YOU_LIMIT).map(({ item, card }) => (
-                  <TicketReviewRow key={item.taskId} item={item} workspace={card.realm.name} />
+                  <TicketReviewRow
+                    key={item.taskId}
+                    item={item}
+                    workspace={card.realm.name}
+                    slug={card.realm.slug}
+                  />
                 ))}
                 {blocked.slice(0, NEEDS_YOU_LIMIT).map((session) => (
                   <SessionRow

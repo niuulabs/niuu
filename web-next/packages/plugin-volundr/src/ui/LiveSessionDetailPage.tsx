@@ -7,6 +7,7 @@ import { SessionActivityElapsed } from './SessionActivityElapsed';
 import { SessionStartupProgress } from './SessionStartupProgress';
 import { useNavigate } from '@tanstack/react-router';
 import { useOptionalService, useService } from '@niuulabs/plugin-sdk';
+import { usePluginEnabled } from '@niuulabs/shell';
 import { getAuthHeaders } from '@niuulabs/query';
 import {
   Dialog,
@@ -2642,7 +2643,18 @@ function SessionIdChip({ sessionId }: { sessionId: string }) {
 /** The workflow run a session works for, opened on the run's review page. */
 function RunLink({ runId }: { runId: string }) {
   const navigate = useNavigate();
+  const tingPages = usePluginEnabled('ting');
   const to = `/ting/review/run/${encodeURIComponent(runId)}`;
+  if (!tingPages) {
+    return (
+      <span
+        className="niuu-live-session__ticket niuu-live-session__ticket--static"
+        data-testid="session-run"
+      >
+        {runId}
+      </span>
+    );
+  }
   return (
     <span className="niuu-live-session__ticket" data-testid="session-run">
       <a

@@ -7,6 +7,7 @@
  * Implementations live in src/adapters/.
  */
 
+import type { EventStreamHandle, EventStreamOptions } from '@niuulabs/query';
 import type { Saga, SagaBoardWorkflow, Phase, SagaRepoRef } from './domain/saga';
 import type { DispatcherState } from './domain/dispatcher';
 import type { SessionInfo } from './domain/session';
@@ -21,6 +22,11 @@ export interface ProjectSessions {
   projectId: string;
   name: string;
   sessionIds: string[];
+}
+
+/** Ting's server-sent events (`workflow.campaign.*` and the rest), under key `ting.events`. */
+export interface ITingEvents {
+  open(options: EventStreamOptions): EventStreamHandle;
 }
 
 /** What runs presented as Forge artifacts, and a run's session itself; Forge owns both. */

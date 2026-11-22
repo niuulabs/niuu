@@ -2415,10 +2415,12 @@ webNext:
     # (hosts, sessions, metrics and resources of that node only, which names its
     # own Guild registry entry at GET /api/v1/forge/guild). The default, `guild`,
     # expects the Guild's Forge facade and covers every registered Forge.
-    # `<service>.enabled: false` says this host does not run a service the chart would
-    # otherwise point at its own origin: set `ting.enabled: false` where the umbrella
-    # chart has `ting.enabled: false`, and the UI leaves out what only Ting knows instead
-    # of calling it. A service that is on and fails shows its error.
+    # A service the chart points at this host by default may be another host's: the
+    # umbrella chart's `ting.enabled: false` only says no Ting is deployed here, so set
+    # `ting.baseUrl` to the Ting this host uses (its /api/v1/ting; the browser calls it, so
+    # it must allow this UI's origin). Its tracker browser is then read beside it.
+    # `<service>.enabled: false` says there is none at all: the UI leaves out what only that
+    # service knows instead of calling it. A service that is on and fails shows its error.
     services: {}
 
   resources:
