@@ -29,6 +29,7 @@ from pydantic_settings import (
 from identity.authz_config import AuthorizationAdapterConfig
 from niuu.config import DynamicAdapterConfig
 from niuu.domain.observability import ObservabilityConfig
+from niuu.domain.session_program import PROGRAM_CACHE
 from niuu.forge_mcp.models import ForgeMcpGrant
 from niuu.mesh.config import DEFAULT_RPC_REPLY_CACHE_SIZE, MeshAttestationConfig, MeshNatsConfig
 from personas.archived import reject_archived_persona
@@ -2128,7 +2129,7 @@ class SkuldSettings(BaseSettings):
         """Where the programs of the session's MCP servers are installed."""
         if self.programs.cache_dir:
             return self.programs.cache_dir
-        return f"{self.home_path}/.cache/niuu/programs"
+        return f"{self.home_path}/{PROGRAM_CACHE}"
 
     @property
     def presented_files_path(self) -> str:

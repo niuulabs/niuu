@@ -6,6 +6,7 @@ import logging
 import re
 from typing import Any
 
+from credentials.models import MCPServerConfig
 from credentials.ports import MCPServerProvider
 from volundr.domain.models import LaunchSpec, Session
 from volundr.domain.ports import (
@@ -18,8 +19,9 @@ from volundr.domain.project_memory import MIMIR_SERVER_PREFIX
 from volundr.domain.services.memory_context import MemoryContextError, attached_mounts
 from volundr.domain.services.session_mcp_servers import (
     MCP_SERVERS_KEY,
-    catalogue_entries,
+    catalogue_servers,
     requested_mcp_servers,
+    session_entry,
 )
 
 logger = logging.getLogger(__name__)
@@ -396,15 +398,29 @@ class SessionMCPContributor(SessionContributor):
         session: Session,
         context: SessionContext,
     ) -> SessionContribution:
+        requested = catalogue_servers(
+            requested_mcp_servers(context.workload_config), self._mcp_server_provider
+        )
+        if context.runtime_backend == "openshell":
+            self._refuse_credentials(requested)
         servers = [
             *self._mimir_servers(self._resolve_workload(context)),
-            *catalogue_entries(
-                requested_mcp_servers(context.workload_config), self._mcp_server_provider
-            ),
+            *(session_entry(server) for server in requested),
         ]
         if not servers:
             return SessionContribution()
         return SessionContribution(values={"mcpServers": servers})
+
+    @staticmethod
+    def _refuse_credentials(servers: list[MCPServerConfig]) -> None:
+        """An OpenShell sandbox mounts no secret files; its gateway holds credentials."""
+        for server in servers:
+            if server.credential:
+                raise ValueError(
+                    f"MCP server {server.name!r} needs the stored credential "
+                    f"{server.credential!r}, which a session on OpenShell cannot be given; "
+                    "launch the session on another Forge, or without this server"
+                )
 
     def _mimir_servers(self, workload_config: dict[str, Any]) -> list[dict[str, Any]]:
         raw_mimir = workload_config.get("mimir")

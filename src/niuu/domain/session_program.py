@@ -12,6 +12,10 @@ from pathlib import PurePosixPath
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+#: Where a session keeps the programs it installed, in its home. It is a cache: every entry
+#: is fetched again by digest, so session archives leave it out.
+PROGRAM_CACHE = ".cache/niuu/programs"
+
 PLATFORM_PATTERN = re.compile(r"(linux|darwin)-(x86_64|arm64)")
 
 #: What the operating system calls an architecture, and what a platform key calls it.

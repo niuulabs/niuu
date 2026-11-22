@@ -1,14 +1,18 @@
 """Tests for SecretInjectionContributor and SecretsContributor."""
 
+from dataclasses import replace
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from niuu.domain.oauth_credentials import OAUTH_ENGINE
+from volundr.adapters.outbound.config_mcp_servers import ConfigMCPServerProvider
 from volundr.adapters.outbound.contributors.secrets import (
     SecretInjectionContributor,
     SecretsContributor,
 )
+from volundr.config import MCPServerEntry
 from volundr.domain.models import (
     CredentialMapping,
     GitSource,
@@ -24,6 +28,9 @@ from volundr.domain.models import (
 from volundr.domain.ports import SessionContext
 from volundr.domain.services.integration_registry import IntegrationRegistry
 from volundr.domain.services.mount_strategies import SecretMountStrategyRegistry
+from volundr.domain.services.session_mcp_servers import token_file
+
+RENEWED = {"renewal_owner": OAUTH_ENGINE}
 
 
 @pytest.fixture
@@ -897,3 +904,67 @@ async def test_brokered_codex_does_not_require_file_or_agent_injection(session, 
     assert result.values["broker"]["codexAuth"]["kwargs"]["credential_name"] == "selected-codex"
     assert "explicit-test-preflight" not in repr(result)
     store.get_value.assert_awaited_once_with("user", session.owner_id, "selected-codex")
+
+
+class TestToolTokens:
+    """A catalogue MCP server's token is the session owner's stored credential."""
+
+    CONTEXT = SessionContext(workload_config={"mcp_servers": ["parts", "cad"]})
+
+    @staticmethod
+    def _contributor(stored):
+        catalogue = ConfigMCPServerProvider(
+            [
+                MCPServerEntry(name="parts", type="http", url="http://x/mcp", credential="stokk"),
+                MCPServerEntry(name="cad", command="cad"),
+            ]
+        )
+        store = AsyncMock()
+        store.get.return_value = stored
+        contributor = SecretInjectionContributor(
+            credential_store=store, mcp_server_provider=catalogue
+        )
+        return contributor, store, token_file(catalogue.get("parts"))
+
+    @staticmethod
+    def _stored(keys=("token",), **metadata):
+        stored = MagicMock(keys=keys, metadata=metadata)
+        stored.name = "stokk"
+        return stored
+
+    async def test_it_is_rendered_where_the_session_reads_it(self):
+        contributor, store, path = self._contributor(self._stored())
+
+        mappings = await contributor._build_mappings(self.CONTEXT, "user-1")
+
+        store.get.assert_awaited_once_with("user", "user-1", "stokk")
+        assert [(m.credential_name, m.file_mappings) for m in mappings] == [
+            ("stokk", {path: "token"})
+        ]
+
+    async def test_a_credential_also_attached_by_name_is_rendered_once(self):
+        contributor, _store, path = self._contributor(self._stored())
+        context = replace(self.CONTEXT, credential_names=("stokk",))
+
+        mappings = await contributor._build_mappings(context, "user-1")
+
+        assert [(m.credential_name, m.file_mappings) for m in mappings] == [
+            ("stokk", {path: "token"})
+        ]
+
+    @pytest.mark.parametrize(
+        "stored",
+        [None, MagicMock(keys=("api_key",)), MagicMock(keys=("token",), metadata=RENEWED)],
+    )
+    async def test_without_a_usable_one_the_launch_fails_and_says_what_to_store(self, stored):
+        contributor, _store, _path = self._contributor(stored)
+
+        with pytest.raises(ValueError, match="needs your credential 'stokk'.*Settings"):
+            await contributor._build_mappings(self.CONTEXT, "user-1")
+
+    async def test_a_forge_without_a_credential_store_says_so(self):
+        contributor, _store, _path = self._contributor(None)
+        contributor._credential_store = None
+
+        with pytest.raises(ValueError, match="no credential store"):
+            await contributor._build_mappings(self.CONTEXT, "user-1")

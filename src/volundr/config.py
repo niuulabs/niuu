@@ -532,6 +532,17 @@ class MCPServerEntry(BaseModel):
     env: dict[str, str] = Field(
         default_factory=dict, description="Environment of the server's process; no secrets."
     )
+    credential: str = Field(
+        default="",
+        description=(
+            "Name of the credential each session owner stores for this `url` (Settings → "
+            "Credentials), sent to it as a bearer token. A session whose owner has not stored "
+            "it does not start. The token is never in this config."
+        ),
+    )
+    credential_key: str = Field(
+        default="token", min_length=1, description="Field of `credential` that holds the token."
+    )
     default_tools_approval_mode: Literal["auto", "prompt", "writes", "approve"] | None = Field(
         default=None,
         description="Codex's approval mode for the server's tools; unset keeps the harness's own.",
@@ -553,6 +564,15 @@ class MCPServerEntry(BaseModel):
             raise ValueError(
                 f"mcp_servers entry {self.name!r}: a program is the server's stdio command, so "
                 "leave out command, url and type"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _credential_is_for_a_url(self) -> "MCPServerEntry":
+        if self.credential and not self.url:
+            raise ValueError(
+                f"mcp_servers entry {self.name!r}: credential is the token sent to a url; "
+                "set url or leave credential out"
             )
         return self
 

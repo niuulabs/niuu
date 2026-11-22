@@ -683,7 +683,7 @@ async def test_stop_ends_the_jobs_archives_then_removes_the_slot_verified(mac):
     assert calls[0].kwargs["safe_error_prefix"] == STAGE_PREFIX
     spec = {
         "root": "/var/lib/niuu/slots/0/session",
-        "excludes": [".allocation", "home/.codex/tmp"],
+        "excludes": [".allocation", "home/.codex/tmp", "home/.cache/niuu/programs"],
         "report": "/var/run/niuu/host-sessions/0/archive-unreadable.json",
     }
     # Measured first, so an archive Forge's volume cannot hold is refused before it starts.
@@ -706,7 +706,7 @@ async def test_a_stop_that_left_files_root_may_not_read_out_of_the_archive_says_
         json.dumps(
             {
                 "root": "/var/lib/niuu/slots/0/session",
-                "excludes": [".allocation", "home/.codex/tmp"],
+                "excludes": [".allocation", "home/.codex/tmp", "home/.cache/niuu/programs"],
                 "report": "/var/run/niuu/host-sessions/0/archive-unreadable.json",
             }
         ),
@@ -1149,7 +1149,7 @@ def test_the_slot_programs_find_every_job_of_the_slot_on_the_mac(tmp_path):
 def _archive(tmp_path, root, *, env=None):
     spec = {
         "root": str(root),
-        "excludes": [".allocation", "home/.codex/tmp"],
+        "excludes": [".allocation", "home/.codex/tmp", "home/.cache/niuu/programs"],
         "report": str(tmp_path / "state" / "archive-unreadable.json"),
     }
     return subprocess.run(
@@ -1165,6 +1165,9 @@ def _storage(tmp_path) -> Path:
     (root / "workspace" / "src" / "main.py").write_text("print('hi')\n")
     (root / "home" / ".codex" / "tmp").mkdir(parents=True)
     (root / "home" / ".codex" / "tmp" / "scratch").write_text("x")
+    program = root / "home" / ".cache" / "niuu" / "programs" / "abc"
+    program.mkdir(parents=True)
+    (program / "solidcraft-cli").write_text("x")
     (root / "home" / "notes").symlink_to("../workspace/src/main.py")
     (root / ".allocation").write_text("marker")
     return root
@@ -1180,7 +1183,8 @@ def test_the_archive_program_archives_the_storage_but_its_exclusions(tmp_path):
         names = set(archive.getnames())
         assert archive.getmember("./home/notes").issym()
     assert {"./workspace/src/main.py", "./home/notes", "./home/.codex"} <= names
-    assert not any(n.startswith(("./home/.codex/tmp", "./.allocation")) for n in names)
+    left_out = ("./home/.codex/tmp", "./home/.cache/niuu/programs", "./.allocation")
+    assert not any(n.startswith(left_out) for n in names)
     assert not (tmp_path / "state").exists()
 
 
@@ -1265,7 +1269,7 @@ def test_the_archive_program_measures_at_least_what_it_would_archive(tmp_path):
     (root / "workspace" / "big").write_bytes(b"x" * 5000)
     spec = {
         "root": str(root),
-        "excludes": [".allocation", "home/.codex/tmp"],
+        "excludes": [".allocation", "home/.codex/tmp", "home/.cache/niuu/programs"],
         "report": str(tmp_path / "state" / "archive-unreadable.json"),
     }
 

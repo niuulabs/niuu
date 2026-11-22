@@ -469,3 +469,15 @@ class TestServersAskedForByName:
             session, SessionContext(launch_spec="s", workload_config={"mcp_servers": ["cad"]})
         )
         assert [s["name"] for s in result.values["mcpServers"]] == ["mimir-shared", "cad"]
+
+    async def test_openshell_cannot_give_a_server_its_stored_credential(self, session):
+        contributor = SessionMCPContributor(
+            mcp_server_provider=ConfigMCPServerProvider(
+                [MCPServerEntry(name="parts", type="http", url="http://x/mcp", credential="parts")]
+            )
+        )
+        context = SessionContext(
+            workload_config={"mcp_servers": ["parts"]}, runtime_backend="openshell"
+        )
+        with pytest.raises(ValueError, match="OpenShell cannot be given"):
+            await contributor.contribute(session, context)

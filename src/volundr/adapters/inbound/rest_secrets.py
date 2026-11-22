@@ -52,6 +52,10 @@ class MCPServerResponse(BaseModel):
         examples=["Linear issue tracker MCP server"],
     )
     version: str = Field(default="", description="Version of the pinned program it runs, if any")
+    credential: str = Field(
+        default="",
+        description="The credential its user must have stored for it, by name; empty for none",
+    )
 
     @classmethod
     def from_config(cls, cfg: MCPServerConfig) -> MCPServerResponse:
@@ -64,6 +68,7 @@ class MCPServerResponse(BaseModel):
             args=list(cfg.args),
             description=cfg.description,
             version=str((cfg.program or {}).get("version", "")),
+            credential=cfg.credential,
         )
 
 

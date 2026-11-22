@@ -20,6 +20,9 @@ class MCPServerConfig:
     #: A pinned program Skuld installs and runs (``niuu.domain.session_program``).
     program: dict[str, Any] | None = None
     env: dict[str, str] | None = None
+    #: The session owner's stored credential whose ``credential_key`` is sent to ``url``.
+    credential: str = ""
+    credential_key: str = "token"
     default_tools_approval_mode: str | None = None
     startup_timeout_sec: float | None = None
     tool_timeout_sec: float | None = None

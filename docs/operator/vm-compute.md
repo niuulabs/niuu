@@ -1216,9 +1216,11 @@ new JSONB field so the older controller can read the ledger.
 ## Disposable runtime files in session archives
 
 `SshContainerVmRuntime` accepts `archive_excludes`, a list of explicit paths
-relative to the archived session root (`home/` and `workspace/`). Configure
-`["home/.codex/tmp"]` for Codex sessions: this directory contains disposable
-process launch wrappers that can point at absolute paths in the old container.
+relative to the archived session root (`home/` and `workspace/`). The default is
+`["home/.codex/tmp", "home/.cache/niuu/programs"]`; a list of your own replaces it, so keep
+both in it. The first holds disposable Codex launch wrappers that can point at absolute paths
+in the old container. The second holds the programs Skuld installed for the session's tools
+([session tools](session-tools.md)): hundreds of megabytes that it fetches again by digest.
 The same exclusions apply while writing new archives and restoring older ones.
 No provider-specific behavior is involved, and credentials, conversation history
 and workspace files remain under their existing preservation rules.

@@ -70,7 +70,13 @@ class LaunchSpecContributor(SessionContributor):
         refuse_own_programs([server])
         if server.get("command") or server.get("url"):
             return server
-        return catalogue_entries([str(server.get("name") or "")], self._mcp_server_provider)[0]
+        entry = catalogue_entries([str(server.get("name") or "")], self._mcp_server_provider)[0]
+        if "credential_file" in entry:
+            raise ValueError(
+                f"MCP server {entry['name']!r} sends its session owner's stored credential, "
+                "which a launch spec cannot attach; ask for it with mcp_servers on create"
+            )
+        return entry
 
     def _apply(self, values: dict, source: LaunchSpec) -> None:
         """Merge runtime config from a launch spec into values.

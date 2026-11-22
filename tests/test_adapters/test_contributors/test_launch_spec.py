@@ -181,3 +181,16 @@ async def test_a_program_outside_the_catalogue_fails_the_launch(session: Session
 
     with pytest.raises(ProgramNotInCatalogueError):
         await contributor.contribute(session, SessionContext(launch_spec="cad"))
+
+
+async def test_a_server_with_a_credential_cannot_come_from_a_launch_spec(session: Session) -> None:
+    provider = MagicMock()
+    provider.get.return_value = LaunchSpec(name="s", mcp_servers=[{"name": "parts"}])
+    contributor = LaunchSpecContributor(
+        launch_spec_provider=provider,
+        mcp_server_provider=ConfigMCPServerProvider(
+            [MCPServerEntry(name="parts", type="http", url="http://x/mcp", credential="parts")]
+        ),
+    )
+    with pytest.raises(ValueError, match="ask for it with mcp_servers on create"):
+        await contributor.contribute(session, SessionContext(launch_spec="s"))
