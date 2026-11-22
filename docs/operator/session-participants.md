@@ -139,23 +139,21 @@ verified against a live cluster.** Do not describe `remote` mode as
 trip has been exercised against a running deployment with
 `enforce_ownership: false`.
 
-**`enforce_ownership: false` also means `/terminal/` and devrunner's
-`.services` routes stay unrestricted by room role.** Room-role gating
-(`_enforce_room_role`, and the `GET .../participants/role` endpoint this
-whole feature adds) only covers `/api/*` — it was never in scope for
-`/terminal/` (routed straight to `ttyd` by `charts/skuld/templates/nginx
--configmap.yaml`, not through the broker's ASGI app at all) or the
-devrunner-local-service-manager surface. With `enforce_ownership: true`,
-the pod's ext_authz sidecar gates every path including those. With it
+**`enforce_ownership: false` also means `/terminal/` stays unrestricted by
+room role.** Room-role gating (`_enforce_room_role`, and the
+`GET .../participants/role` endpoint this whole feature adds) only covers
+`/api/*` — it was never in scope for `/terminal/` (routed straight to
+devrunner's terminal server by `charts/skuld/templates/nginx-configmap.yaml`,
+not through the broker's ASGI app at all). With `enforce_ownership: true`,
+the pod's ext_authz sidecar gates every path including that one. With it
 `false` — which `remote` mode *requires* — any caller who can reach the
 pod with a valid IdP-authenticated identity reaches `/terminal/` (a raw
-shell) and `.services` unrestricted, same as any other non-enforced
-deployment today. This is **not a new regression `remote` mode
-introduces**; it is the existing, unchanged behavior of running with
+shell) unrestricted, same as any other non-enforced deployment today. This
+is **not a new regression `remote` mode introduces**; it is the existing, unchanged behavior of running with
 `enforce_ownership: false` at all. It does mean a participant grant is a
 narrower promise than "may reach this pod" on such a deployment — an
 invited viewer and an uninvited caller who can route to the pod get the
-same terminal/devrunner exposure either way; only the room-gated `/api/*`
+same terminal exposure either way; only the room-gated `/api/*`
 surface actually distinguishes them.
 
 Room-role resolution follows Skuld's `ws_auth.room_role_source` setting
@@ -179,16 +177,16 @@ Room-role resolution follows Skuld's `ws_auth.room_role_source` setting
   request (subject to its cache), and denies outright — never a default
   role — when it cannot get an answer. A genuine loopback caller presenting
   no verified identity headers and no `x-forwarded-for` still gets the
-  same same-pod-tooling exception `proxy` mode grants (`containers/skuld/
-  svc`, hooks, present-file, in-pod Ravn/Ting clients).
+  same same-pod-tooling exception `proxy` mode grants (hooks, present-file,
+  in-pod Ravn/Ting clients).
 
 ## Same-OS-user risk on the `process` backend
 
 On the `process` backend, every session's agent runs as the **same OS
 user** as every other session on that host. A loopback caller with no
 `x-forwarded-for` header is treated as owner (the same-pod-tooling
-exception `ws_auth.room_role_source="proxy"` needs for `containers/skuld/
-svc`, hooks, and present-file). Any other process co-located on that host
+exception `ws_auth.room_role_source="proxy"` needs for hooks and
+present-file). Any other process co-located on that host
 — including another session's own agent, if it can reach the loopback
 broker port directly — inherits that same trust. Prefer viewer-only
 invitees for participants you do not fully trust on a shared host, and do

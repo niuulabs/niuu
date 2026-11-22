@@ -196,10 +196,6 @@ RUN existing=$(getent passwd 1000 | cut -d: -f1) && \
 COPY containers/skuld/entrypoint.sh /app/entrypoint.sh
 RUN chmod +x /app/entrypoint.sh
 
-# Copy svc CLI tool
-COPY containers/skuld/svc /usr/local/bin/svc
-RUN chmod +x /usr/local/bin/svc
-
 # OpenShell local Docker proof bootstrap: starts the installed broker and exits
 # after its health endpoint is ready, leaving the sandbox resident.
 COPY scripts/openshell-run-installed-skuld.sh /usr/local/bin/openshell-run-installed-skuld

@@ -524,14 +524,12 @@ class TestBroker:
 
         with (
             patch.object(broker, "_create_transport", return_value=mock_transport),
-            patch("skuld.broker.ServiceManager") as mock_service_manager_cls,
             patch.object(
                 broker,
                 "_start_mesh_adapter",
                 new=AsyncMock(side_effect=RuntimeError("mesh bind failed")),
             ),
         ):
-            mock_service_manager_cls.return_value = AsyncMock()
             await broker.startup()
 
         assert broker.startup_status() == {
@@ -3448,7 +3446,6 @@ class TestShutdownEdgeCases:
             try:
                 await test_broker.startup()
                 assert test_broker._transport is not None
-                assert test_broker.service_manager is not None
                 assert test_broker._event_log_seq == 41
             finally:
                 await test_broker.shutdown()
@@ -3478,7 +3475,19 @@ class TestShutdownEdgeCases:
         broker = Broker(settings=settings)
         await broker.startup()
         assert broker._transport is not None
-        assert broker.service_manager is not None
+
+    @pytest.mark.asyncio
+    async def test_startup_creates_a_missing_workspace(self, tmp_path):
+        """A session without a checkout has no workspace directory until startup."""
+        workspace = tmp_path / "session" / "workspace"
+        settings = SkuldSettings(
+            session={"id": "s1", "workspace_dir": str(workspace)},
+            volundr_api_url="http://volundr.test:80",
+            event_log_enabled=False,
+        )
+        await Broker(settings=settings).startup()
+        assert workspace.is_dir()
+        assert not (workspace / ".services").exists()
 
 
 class TestHandleWebSocket:
@@ -3923,173 +3932,6 @@ class TestHandleWebSocket:
 
         mock_transport.attach_cli_websocket.assert_called_once_with(mock_ws)
         mock_transport.wait_for_cli_disconnect.assert_called_once()
-
-
-class TestServiceAPIEndpoints:
-    """Tests for service management API endpoints."""
-
-    @pytest.fixture
-    def client(self):
-        from fastapi.testclient import TestClient
-
-        # These tests exercise routes/behavior unrelated to room-role
-        # gating (logs, CORS, service management); simulate a trusted
-        # proxy-stamped owner connection so _enforce_room_role doesn't
-        # block them (see tests/test_skuld/test_broker_api_gate_room_role.py
-        # and test_room_role_message_gating.py for the gate's own coverage).
-        client = TestClient(app, headers={"x-niuu-room-role": "owner"})
-        yield client
-        client.close()
-
-    def test_create_service_no_manager(self, client):
-        broker.service_manager = None
-        response = client.post(
-            "/api/services",
-            json={"name": "test-svc", "command": "echo hello", "port": 3000},
-        )
-        assert response.status_code == 503
-
-    def test_list_services_no_manager(self, client):
-        broker.service_manager = None
-        response = client.get("/api/services")
-        assert response.status_code == 503
-
-    def test_get_service_no_manager(self, client):
-        broker.service_manager = None
-        response = client.get("/api/services/foo")
-        assert response.status_code == 503
-
-    def test_delete_service_no_manager(self, client):
-        broker.service_manager = None
-        response = client.delete("/api/services/foo")
-        assert response.status_code == 503
-
-    def test_get_service_logs_no_manager(self, client):
-        broker.service_manager = None
-        response = client.get("/api/services/foo/logs")
-        assert response.status_code == 503
-
-    def test_restart_service_no_manager(self, client):
-        broker.service_manager = None
-        response = client.post("/api/services/foo/restart")
-        assert response.status_code == 503
-
-    def test_get_service_not_found(self, client):
-        mock_manager = AsyncMock()
-        mock_manager.get_service = AsyncMock(return_value=None)
-        broker.service_manager = mock_manager
-
-        response = client.get("/api/services/nonexistent")
-        assert response.status_code == 404
-        broker.service_manager = None
-
-    def test_delete_service_not_found(self, client):
-        mock_manager = AsyncMock()
-        mock_manager.remove_service = AsyncMock(return_value=False)
-        broker.service_manager = mock_manager
-
-        response = client.delete("/api/services/nonexistent")
-        assert response.status_code == 404
-        broker.service_manager = None
-
-    def test_get_service_logs_not_found(self, client):
-        mock_manager = AsyncMock()
-        mock_manager.get_logs = AsyncMock(return_value=None)
-        broker.service_manager = mock_manager
-
-        response = client.get("/api/services/notfound/logs")
-        assert response.status_code == 404
-        broker.service_manager = None
-
-    def test_restart_service_not_found(self, client):
-        mock_manager = AsyncMock()
-        mock_manager.restart_service = AsyncMock(return_value=None)
-        broker.service_manager = mock_manager
-
-        response = client.post("/api/services/notfound/restart")
-        assert response.status_code == 404
-        broker.service_manager = None
-
-    def test_create_service_success(self, client):
-        mock_status = {
-            "name": "my-svc",
-            "status": "running",
-            "port": 3000,
-            "command": "node app.js",
-        }
-        mock_manager = AsyncMock()
-        mock_manager.add_service = AsyncMock(return_value=mock_status)
-        broker.service_manager = mock_manager
-
-        response = client.post(
-            "/api/services",
-            json={"name": "my-svc", "command": "node app.js", "port": 3000},
-        )
-        assert response.status_code == 200
-        broker.service_manager = None
-
-    def test_list_services_success(self, client):
-        mock_manager = AsyncMock()
-        mock_manager.list_services = AsyncMock(return_value=[])
-        broker.service_manager = mock_manager
-
-        response = client.get("/api/services")
-        assert response.status_code == 200
-        assert response.json() == []
-        broker.service_manager = None
-
-    def test_get_service_success(self, client):
-        mock_status = {
-            "name": "svc1",
-            "status": "running",
-            "port": 8080,
-            "command": "python app.py",
-        }
-        mock_manager = AsyncMock()
-        mock_manager.get_service = AsyncMock(return_value=mock_status)
-        broker.service_manager = mock_manager
-
-        response = client.get("/api/services/svc1")
-        assert response.status_code == 200
-        assert response.json()["name"] == "svc1"
-        broker.service_manager = None
-
-    def test_delete_service_success(self, client):
-        mock_manager = AsyncMock()
-        mock_manager.remove_service = AsyncMock(return_value=True)
-        broker.service_manager = mock_manager
-
-        response = client.delete("/api/services/svc1")
-        assert response.status_code == 200
-        assert response.json()["status"] == "removed"
-        broker.service_manager = None
-
-    def test_get_service_logs_success(self, client):
-        mock_manager = AsyncMock()
-        mock_manager.get_logs = AsyncMock(return_value="line1\nline2")
-        broker.service_manager = mock_manager
-
-        response = client.get("/api/services/svc1/logs?lines=50")
-        assert response.status_code == 200
-        assert response.json()["logs"] == "line1\nline2"
-        broker.service_manager = None
-
-    def test_restart_service_success(self, client):
-        mock_status = {
-            "name": "svc1",
-            "status": "running",
-            "port": 8080,
-            "command": "python app.py",
-            "restart_count": 1,
-        }
-        mock_manager = AsyncMock()
-        mock_manager.restart_service = AsyncMock(return_value=mock_status)
-        broker.service_manager = mock_manager
-
-        response = client.post("/api/services/svc1/restart")
-        assert response.status_code == 200
-        assert response.json()["restart_count"] == 1
-        broker.service_manager = None
 
 
 class TestRecordToolUseReturnsEvents:

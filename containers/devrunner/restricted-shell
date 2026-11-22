@@ -12,12 +12,6 @@ import sys
 # Commands allowed to run. Each entry is a prefix match on argv[0].
 # Override via ALLOWED_COMMANDS env var (comma-separated).
 DEFAULT_ALLOWED = [
-    "svc",
-    "psql",
-    "pg_dump",
-    "pg_restore",
-    "createdb",
-    "dropdb",
     "ls",
     "cat",
     "head",

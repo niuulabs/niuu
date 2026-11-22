@@ -1,5 +1,5 @@
 # Skuld Helm Chart Values
-# Claude Code CLI session pod with WebSocket broker and terminal/local-service support
+# Claude Code CLI session pod with WebSocket broker and terminal
 
 # Global values (can be set by parent chart)
 global:
@@ -69,7 +69,7 @@ resources:
 
 # Nginx entry point (routes all traffic internally)
 # All external traffic enters via nginx on port 8080 and is routed
-# to the broker, terminal, and local services based on URL path.
+# to the broker and terminal based on URL path.
 nginx:
   image:
     # -- Nginx image repository
@@ -90,16 +90,10 @@ nginx:
       # -- Nginx CPU limit
       cpu: "100m"
 
-# Local service testing (devrunner sidecar)
+# Session terminal (devrunner sidecar)
 localServices:
-  # -- Enable local service management
+  # -- Run the devrunner sidecar, which hosts the session terminal
   enabled: true
-  # -- Port range for dynamic services
-  portRange:
-    # -- Start of dynamic port range
-    start: 9001
-    # -- End of dynamic port range
-    end: 9020
   # -- Terminal (shell over WebSocket)
   terminal:
     # -- Terminal WebSocket port
@@ -449,7 +443,6 @@ envoy:
     # Optional central identity/PAT revocation check before gateway admission.
     # Use identity.adapters.remote.RemoteHeaderAuthenticationAdapter with HTTPS authority_url.
     identity: null
-    # Keep outside localServices.portRange (9001-9020).
     port: 9000
     # -- Envoy's budget for the authorization decision. When identityAuthority is
     # enabled, identityAuthority.timeout is added so the identity lookup fits.
@@ -913,9 +906,8 @@ preview:
   # -- Audience of the router credential (Forge's session_preview.credential_audience)
   routerAudience: "volundr-api"
   # -- Ports never offered as previews. The pod's own infrastructure ports
-  # (nginx, broker, Envoy, authz, terminal, mesh) are excluded
-  # automatically; 5432 is the devrunner's Postgres.
-  excludedPorts: [5432]
+  # (nginx, broker, Envoy, authz, terminal, mesh) are excluded automatically.
+  excludedPorts: []
   # -- How long nginx keeps an idle preview stream (hot-reload WebSocket, SSE)
   # open. Past it the dev server's client reconnects (Vite reloads the page).
   streamIdleTimeout: "3600s"

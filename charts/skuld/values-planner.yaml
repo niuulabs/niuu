@@ -1,6 +1,6 @@
 # Skuld Planner Profile
 # Lightweight session broker for interactive saga planning.
-# Disables local service sidecars so only the chat broker runs.
+# Disables the terminal sidecar so only the chat broker runs.
 #
 # Usage (Helm):
 #   helm install plan-session ./charts/skuld \
@@ -11,7 +11,7 @@
 #   Set workload_type: "planner" in the SpawnRequest — Volundr's
 #   FluxPodManager selects this values overlay automatically.
 
-# Disable devrunner sidecar (no local services needed)
+# Disable devrunner sidecar (no terminal needed)
 localServices:
   enabled: false
 
@@ -24,7 +24,7 @@ resources:
     memory: "1Gi"
     cpu: "500m"
 
-# Lighter nginx (no local service routes)
+# Lighter nginx (no terminal route)
 nginx:
   resources:
     requests:

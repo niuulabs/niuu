@@ -25,15 +25,13 @@ ENV DEBIAN_FRONTEND=noninteractive
 # CI passes the UTC date, so the registry layer cache cannot keep this upgrade
 # (and the security fixes it pulls) for more than a day.
 ARG OS_PACKAGES_REFRESH=
-# Install system dependencies: Node.js, PostgreSQL server, shells, inotify-tools
+# Install system dependencies and shells
 # bubblewrap: Codex looks for bwrap on PATH at startup for its Linux sandbox.
 RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends \
     bubblewrap \
     curl \
     ca-certificates \
     gnupg \
-    lsb-release \
-    inotify-tools \
     git \
     tmux \
     vim \
@@ -92,15 +90,6 @@ RUN cd /opt/npm-bootstrap \
     && ln -sf /opt/devrunner-tools/node_modules/.bin/grok /usr/local/bin/grok \
     && ln -sf /opt/devrunner-tools/node_modules/.bin/pi /usr/local/bin/pi
 
-# Install PostgreSQL 16
-RUN echo "deb http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
-    > /etc/apt/sources.list.d/pgdg.list \
-    && curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc | gpg --dearmor \
-    -o /etc/apt/trusted.gpg.d/postgresql.gpg \
-    && apt-get update \
-    && apt-get install -y --no-install-recommends postgresql-16 \
-    && rm -rf /var/lib/apt/lists/*
-
 # Pin pip past its published advisories. --no-cache keeps a second, scannable
 # copy of every wheel out of /root/.cache/uv.
 RUN uv pip install --system --break-system-packages --no-cache --upgrade pip==26.2.2
@@ -126,16 +115,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Create devrunner user (UID 1000 to match skuld)
 RUN useradd -m -s /bin/bash -u 1000 devrunner
 
-# Allow devrunner user to run PostgreSQL
-RUN mkdir -p /run/postgresql && chown devrunner:devrunner /run/postgresql
-
 # Copy default dotfiles into /etc/skel for first-launch seeding
 COPY containers/devrunner/configs/.bashrc /etc/skel/.bashrc
 COPY containers/devrunner/configs/.zshrc /etc/skel/.zshrc
 COPY containers/devrunner/configs/.config/fish/config.fish /etc/skel/.config/fish/config.fish
 COPY containers/devrunner/configs/.config/fish/functions/fish_prompt.fish /etc/skel/.config/fish/functions/fish_prompt.fish
 
-# Copy process manager, terminal server, and init script
+# Copy entrypoint, terminal server, and init script
 COPY containers/devrunner/devrunner.py /usr/local/bin/devrunner
 COPY containers/devrunner/terminal.py /usr/local/bin/terminal.py
 COPY containers/devrunner/restricted-shell /usr/local/bin/restricted-shell

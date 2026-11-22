@@ -287,7 +287,6 @@ async def test_a_call_survives_a_restart_through_forges_real_log_route(tmp_path)
 
 
 async def test_startup_starts_the_channel_before_it_hydrates(tmp_path, monkeypatch):
-    module = importlib.import_module("skuld.broker")
     broker = _broker(tmp_path)
     seen: dict[str, object] = {}
 
@@ -305,9 +304,6 @@ async def test_startup_starts_the_channel_before_it_hydrates(tmp_path, monkeypat
     monkeypatch.setattr(broker, "_auto_start_transport", AsyncMock())
     for name in ("_ensure_session_trace_started", "_init_telegram_channel", "_init_event_log"):
         monkeypatch.setattr(broker, name, AsyncMock())
-    manager = MagicMock()
-    manager.init = AsyncMock()
-    monkeypatch.setattr(module, "ServiceManager", MagicMock(return_value=manager))
 
     await broker.startup()
 
@@ -316,15 +312,11 @@ async def test_startup_starts_the_channel_before_it_hydrates(tmp_path, monkeypat
 
 
 async def test_startup_with_voice_off_has_no_channel(tmp_path, monkeypatch):
-    module = importlib.import_module("skuld.broker")
     broker = _broker(tmp_path, voice=False)
     monkeypatch.setattr(broker, "_create_transport", lambda: broker._transport)
     monkeypatch.setattr(broker, "_auto_start_transport", AsyncMock())
     for name in ("_ensure_session_trace_started", "_init_telegram_channel", "_init_event_log"):
         monkeypatch.setattr(broker, name, AsyncMock())
-    manager = MagicMock()
-    manager.init = AsyncMock()
-    monkeypatch.setattr(module, "ServiceManager", MagicMock(return_value=manager))
 
     await broker.startup()
 

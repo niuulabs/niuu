@@ -32,10 +32,8 @@ class TestRoomRoutedStartupLeavesProvisioning:
             patch.object(broker, "_report_activity_state", new=report),
             patch.object(broker, "_hydrate_conversation_history", new=AsyncMock()),
             patch.object(broker, "_create_transport", return_value=transport),
-            patch("skuld.broker.ServiceManager") as service_manager_cls,
             patch.object(broker, "_start_mesh_adapter", new=AsyncMock(side_effect=start_mesh)),
         ):
-            service_manager_cls.return_value = AsyncMock()
             await broker.startup()
             await asyncio.sleep(0)
         if broker._room_bridge is not None:
