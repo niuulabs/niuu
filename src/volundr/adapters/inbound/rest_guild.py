@@ -24,10 +24,10 @@ INSTANCE_UNKNOWN_DETAIL = (
 
 
 def own_instance(membership: GuildMembership | None, instance_id: str | None) -> GuildInstance:
-    """This node's own Guild instance, for a read that names an ``instance_id``.
+    """This node's own Guild instance, for a request that names an ``instance_id``.
 
-    A node answers only for itself: a client scoped to one node reads its
-    figures from the node, keyed by the registry id the Guild facade uses.
+    A node answers only for itself: a client scoped to one node addresses the
+    node by the registry id the Guild facade uses, in reads and writes alike.
 
     Raises:
         HTTPException: 404 when the node belongs to no Guild or *instance_id*
@@ -45,10 +45,24 @@ def own_instance(membership: GuildMembership | None, instance_id: str | None) ->
         raise HTTPException(
             status.HTTP_404_NOT_FOUND,
             f"Instance {instance_id} is not this Forge node ({instance.name}, "
-            f"{instance.id}); read other Forges through the Guild at "
+            f"{instance.id}); reach other Forges through the Guild at "
             f"{membership.guild_url}",
         )
     return instance
+
+
+def require_own_instance(membership: GuildMembership | None, instance_id: str | None) -> None:
+    """Refuse a write whose body addresses another Forge than this node.
+
+    The Guild facade routes by these ids and drops them before forwarding; a client
+    talking to the node directly sends them too. None addresses no Forge in particular.
+
+    Raises:
+        HTTPException: as ``own_instance``, for any id that is not this node's own.
+    """
+    if instance_id is None:
+        return
+    own_instance(membership, instance_id)
 
 
 class GuildMembershipResponse(BaseModel):

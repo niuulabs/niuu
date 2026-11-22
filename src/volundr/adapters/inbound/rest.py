@@ -2760,8 +2760,12 @@ def create_router(
         async def project_principal(request: Request):
             return await _optional_principal(request)
 
-        router.include_router(create_projects_router(project_service, project_principal))
-        router.include_router(create_session_projects_router(project_service, project_principal))
+        router.include_router(
+            create_projects_router(project_service, project_principal, guild_membership)
+        )
+        router.include_router(
+            create_session_projects_router(project_service, project_principal, guild_membership)
+        )
         if project_integration_service is not None:
             router.include_router(
                 create_project_integrations_router(project_integration_service, project_principal)

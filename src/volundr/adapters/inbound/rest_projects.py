@@ -7,7 +7,9 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from niuu.domain.agent_directory import AgentSkill
+from niuu.domain.guild_membership import GuildMembership
 from niuu.domain.services.token_scope import FORGE_SESSION_LIFECYCLE_SCOPE, require_scope
+from volundr.adapters.inbound.rest_guild import require_own_instance
 from volundr.domain.execution_catalog import ExecutionSelectionError
 from volundr.domain.project_memory import (
     MemoryDirectoryUnavailableError,
@@ -29,6 +31,23 @@ from volundr.domain.projects import (
 )
 from volundr.domain.services.projects import UNCHANGED, ProjectNotFoundError, ProjectService
 from volundr.domain.services.session import SessionAccessDeniedError
+
+
+class ProjectRegistration(ForgeProject):
+    """A new project, optionally naming the Forge to create it on."""
+
+    instance_id: str | None = Field(
+        default=None,
+        description=(
+            "Guild instance id of the Forge to create the project on, as the Guild facade "
+            "takes it; must be this node's own (another Forge's id is a 404)"
+        ),
+    )
+
+    def to_project(self) -> ForgeProject:
+        return ForgeProject.model_validate(
+            self.model_dump(exclude={"instance_id"}, exclude_unset=True)
+        )
 
 
 class ProjectCheckout(BaseModel):
@@ -87,12 +106,24 @@ class SessionProjectAssignment(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
     project_id: UUID | None = None
+    project_instance_id: str | None = Field(
+        default=None,
+        description=(
+            "Guild instance id of the Forge that holds the project, as the Guild facade "
+            "takes it; must be this node's own (another Forge's id is a 404). Only the "
+            "facade can bring a project here from another Forge"
+        ),
+    )
     expected_revision: int = Field(ge=0)
     role: str | None = Field(default=None, pattern=r"^[a-z][a-z0-9_-]{0,39}$")
     parent: SessionReference | None = None
 
 
-def create_session_projects_router(service: ProjectService, principal_for_request) -> APIRouter:
+def create_session_projects_router(
+    service: ProjectService,
+    principal_for_request,
+    guild_membership: GuildMembership | None = None,
+) -> APIRouter:
     router = APIRouter(prefix="/sessions", tags=["Projects"])
 
     def membership(session):
@@ -114,6 +145,7 @@ def create_session_projects_router(service: ProjectService, principal_for_reques
         request: Request, session_id: UUID, data: SessionProjectAssignment
     ) -> dict:
         principal = await principal_for_request(request)
+        require_own_instance(guild_membership, data.project_instance_id)
         session = await project_result(
             service.assign_session(
                 session_id,
@@ -154,7 +186,11 @@ async def project_result(operation):
         ) from exc
 
 
-def create_projects_router(service: ProjectService, principal_for_request) -> APIRouter:
+def create_projects_router(
+    service: ProjectService,
+    principal_for_request,
+    guild_membership: GuildMembership | None = None,
+) -> APIRouter:
     router = APIRouter(prefix="/projects", tags=["Projects"])
 
     @router.get("")
@@ -163,11 +199,12 @@ def create_projects_router(service: ProjectService, principal_for_request) -> AP
         return await project_result(service.list(principal))
 
     @router.post("", status_code=201)
-    async def register_project(request: Request, project: ForgeProject) -> ForgeProject:
+    async def register_project(request: Request, data: ProjectRegistration) -> ForgeProject:
         # A name is a complete request. Send a client-generated id to make retries
         # idempotent; a repository and checkout can be attached later.
         principal = await principal_for_request(request)
-        return await project_result(service.register(project, principal))
+        require_own_instance(guild_membership, data.instance_id)
+        return await project_result(service.register(data.to_project(), principal))
 
     @router.post("/discover")
     async def discover_project(request: Request, data: ProjectCheckout) -> ForgeProject:

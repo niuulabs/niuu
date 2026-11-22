@@ -14,6 +14,12 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from niuu.domain.services.forge_session_policy import match_policy
+from tests.support.node_scope import (
+    NODE_MEMBERSHIP,
+    NODE_REQUESTS,
+    OTHER_INSTANCE,
+    OTHER_INSTANCE_DETAIL,
+)
 from tests.support.team_rig import DIRECTORY, TENANT, TeamRig
 from volundr.adapters.inbound.rest_session_participants import invitations_refused
 from volundr.adapters.inbound.rest_teams import TASK_MAX_CHARS, create_teams_router
@@ -51,14 +57,14 @@ def _body(**fields) -> dict:
     return body
 
 
-def _client(rig: TeamRig, service=None, instance_fields=None) -> TestClient:
+def _client(rig: TeamRig, service=None, membership=None) -> TestClient:
     app = FastAPI()
     app.include_router(
         create_teams_router(
             service or rig.service,
             rig.participants,
             server_public_host="127.0.0.1",
-            instance_fields=instance_fields,
+            guild_membership=membership,
             prefix=PREFIX,
         )
     )
@@ -110,12 +116,31 @@ class TestStartingATeam:
         assert [(g.user_id, g.role.value) for g in grants] == [("bo", "viewer")]
 
     async def test_the_instance_a_guild_node_names_is_on_every_session(self, rig: TeamRig):
-        response = _post(_client(rig, instance_fields={"instance_name": "thor"}), _body())
+        response = _post(_client(rig, membership=NODE_MEMBERSHIP), _body())
         await rig.settle()
 
         answer = response.json()
-        assert answer["session"]["instance_name"] == "thor"
-        assert {m["instance_name"] for m in answer["members"]} == {"thor"}
+        assert answer["session"]["instance_name"] == "Noatun"
+        assert {m["instance_name"] for m in answer["members"]} == {"Noatun"}
+
+    @pytest.mark.parametrize("request_name", ["start_team", "start_team_without_a_host"])
+    async def test_a_node_takes_the_team_its_own_ui_sends(self, rig: TeamRig, request_name: str):
+        response = _post(_client(rig, membership=NODE_MEMBERSHIP), NODE_REQUESTS[request_name])
+        await rig.settle()
+
+        assert response.status_code == 201, response.text
+        assert response.json()["session"]["instance_id"] == "70b502d8-noatun"
+
+    async def test_a_node_refuses_a_team_for_an_instance_that_is_not_itself(self, rig: TeamRig):
+        named = _body(instance_id=OTHER_INSTANCE)
+
+        refused = _post(_client(rig, membership=NODE_MEMBERSHIP), named)
+        unjoined = _post(_client(rig), named)
+
+        assert (refused.status_code, refused.json()["detail"]) == (404, OTHER_INSTANCE_DETAIL)
+        assert unjoined.status_code == 404
+        assert "not joined to a Guild" in unjoined.json()["detail"]
+        assert await rig.repository.list() == []
 
     async def test_the_gateways_host_selector_places_the_whole_unit(self, rig: TeamRig):
         selector = {"tags": ["gpu"], "match": "all"}
