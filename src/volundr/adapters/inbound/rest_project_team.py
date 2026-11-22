@@ -21,7 +21,7 @@ from pydantic import BaseModel, Field
 
 from niuu.domain.project_team import ProjectTeam
 from volundr.adapters.inbound.rest_project_results import project_result
-from volundr.domain.project_ports import TeamGuildError
+from volundr.domain.project_ports import TeamGuildError, TeamGuildReply
 from volundr.domain.projects import ProjectTeamSync
 from volundr.domain.services.project_teams import ProjectTeamService
 from volundr.domain.services.projects import ProjectService
@@ -83,8 +83,8 @@ class ProjectTeamRoute(APIRoute):
             if request.method in READ_METHODS:
                 await teams.refresh_for_read(copy, bearer)
                 return await answer(request)
-            try:
-                reply = await teams.forward(
+            return await team_reply(
+                teams.forward(
                     copy,
                     method=request.method,
                     operation=operation,
@@ -92,11 +92,18 @@ class ProjectTeamRoute(APIRoute):
                     body=await request.body(),
                     bearer=bearer,
                 )
-            except TeamGuildError as exc:
-                raise HTTPException(503, f"Nothing was changed. {exc}") from exc
-            return Response(reply.content, status_code=reply.status, media_type=reply.media_type)
+            )
 
         return handle
+
+
+async def team_reply(asked: Awaitable[TeamGuildReply]) -> Response:
+    """What the home answered, or that it could not be asked and nothing was changed."""
+    try:
+        reply = await asked
+    except TeamGuildError as exc:
+        raise HTTPException(503, f"Nothing was changed. {exc}") from exc
+    return Response(reply.content, status_code=reply.status, media_type=reply.media_type)
 
 
 def _team_operation(request: Request, project_id: Any) -> str | None:

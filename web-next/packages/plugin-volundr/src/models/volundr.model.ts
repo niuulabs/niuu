@@ -259,6 +259,19 @@ export interface TeamIntegration {
   connected_by: string;
   created_at: string;
   updated_at: string;
+  /** False where this Forge does not have the connection's credential; it cannot use it. */
+  available?: boolean;
+}
+
+/** Where a project's team stands between the Forges that have the project. */
+export interface ProjectTeamState {
+  /** Whether the Forge asked decides who is on the project. */
+  home: boolean;
+  /** The Forge that does; empty when it is the one asked. */
+  home_instance_id: string;
+  /** Whether the team is shared with other Forges. */
+  guild: boolean;
+  sync: { pending: boolean; synced_at: string | null; error: string };
 }
 
 export type TeamRouteEvent = 'needs_decision' | 'person_question' | 'progress' | 'errors';

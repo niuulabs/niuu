@@ -1,7 +1,8 @@
 """The Guild's record of each project's team, and how it reaches every Forge.
 
 * ``GET  /projects/{id}/team/record``   the team the Guild holds, to the people on it and
-  the org's admins, who hold an owner's authority over the org's projects on every Forge
+  the org's admins, who hold an owner's authority over the org's projects on every Forge;
+  ``?fresh=true`` asks the home first, so a change it could not publish is not missed
 * ``POST /projects/{id}/team/publish``  take the newest team from the project's home Forge
   and have every other Forge copy it
 * ``POST /projects/memberships``        which projects the caller is on, for Ting, which
@@ -41,6 +42,8 @@ from niuu.ports.project_teams import ProjectTeamHomeConflictError, ProjectTeamRe
 #: A request to one Forge with the caller's login: instance, request, method, path.
 ForgeCall = Callable[[RegisteredInstance, Request, str, str], Awaitable[httpx.Response]]
 
+#: A Forge's answer to someone who is not on a project, or for one it does not have.
+PROJECT_NOT_FOUND = "Project not found"
 NOT_FOUND = "No team is recorded for this project, or you are not on it"
 
 
@@ -104,10 +107,15 @@ def add_project_team_routes(
 
     @router.get("/projects/{project_id}/team/record")
     async def team_record(
-        project_id: UUID, principal: Principal = Depends(extract_principal)
+        request: Request,
+        project_id: UUID,
+        fresh: bool = False,
+        principal: Principal = Depends(extract_principal),
     ) -> ProjectTeamRecord:
         person(principal)
         record = await records.get(project_id)
+        if fresh and record is not None and record.team.tenant_id == principal.tenant_id:
+            record = await _newest(request, record, principal)
         # One answer for "none", "another org's" and "not on it", as GET project gives.
         if (
             record is None
@@ -142,12 +150,45 @@ def add_project_team_routes(
             kept = await records.put(ProjectTeamRecord(home_instance_id=home.id, team=team))
         except ProjectTeamHomeConflictError as exc:
             raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
-        outcomes = await asyncio.gather(*(_copy_to(request, f, project_id) for f in others))
         return PublishedTeam(
             home_instance_id=home.id,
             version=kept.team.version,
-            forges={forge.id: outcome for forge, outcome in zip(others, outcomes, strict=True)},
+            forges=await _copy_to_all(request, others, project_id),
         )
+
+    async def _newest(
+        request: Request, record: ProjectTeamRecord, principal: Principal
+    ) -> ProjectTeamRecord | None:
+        """The home's team now, when the home can be asked and it is newer than the record.
+
+        ``None`` when the home answers that the caller is not on the project. A home that is
+        away leaves the record, which is what every Forge goes by meanwhile.
+        """
+        project_id = record.team.project_id
+        try:
+            home = await resolve(principal, record.home_instance_id)
+            team = await _team_of(request, home, project_id, principal)
+        except (HTTPException, httpx.HTTPError) as exc:
+            if isinstance(exc, HTTPException) and exc.status_code == status.HTTP_404_NOT_FOUND:
+                return None if exc.detail == PROJECT_NOT_FOUND else record
+            record_degraded(
+                "guild.project_team.home",
+                f"the home of project {project_id}, Forge {record.home_instance_id}, could "
+                f"not be asked for its team: {exc}",
+            )
+            return record
+        if team.version <= record.team.version:
+            return record
+        kept = await records.put(ProjectTeamRecord(home_instance_id=home.id, team=team))
+        others = [forge for forge in await visible(principal) if forge.id != home.id]
+        await _copy_to_all(request, others, project_id)
+        return kept
+
+    async def _copy_to_all(
+        request: Request, forges: list[RegisteredInstance], project_id: UUID
+    ) -> dict[str, str]:
+        outcomes = await asyncio.gather(*(_copy_to(request, f, project_id) for f in forges))
+        return {forge.id: outcome for forge, outcome in zip(forges, outcomes, strict=True)}
 
     async def _team_of(
         request: Request, home: RegisteredInstance, project_id: UUID, principal: Principal

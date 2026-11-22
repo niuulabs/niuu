@@ -13,6 +13,7 @@ import { ArtifactList } from '@niuulabs/plugin-ting';
 import { RealmCard } from './RealmCard';
 import { ProjectIntegrations } from './ProjectIntegrations';
 import { ProjectMembers } from './ProjectMembers';
+import { ProjectTeamNotice } from './ProjectTeamNotice';
 import { SessionsTable } from './SessionsTable';
 import { NeedsYouError, TicketReviewRow } from './TicketReviewRow';
 
@@ -195,6 +196,7 @@ export function ProjectPage() {
         </div>
         {project ? (
           <div className="niuu:flex niuu:min-w-0 niuu:flex-col niuu:gap-4">
+            <ProjectTeamNotice project={project} />
             <ProjectMembers project={project} />
             <ProjectIntegrations project={project} />
             <SharedSettings project={project} />

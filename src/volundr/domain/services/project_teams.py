@@ -180,12 +180,16 @@ class ProjectTeamService:
         if self._failed_lately(project.id):
             return
         try:
-            await self.refresh(project.id, bearer)
+            await self.refresh(project.id, bearer, fresh=True)
         except (TeamGuildError, ProjectConflictError) as exc:
             await self._failed(project.id, "copy", exc)
 
-    async def refresh(self, project_id: UUID, bearer: str) -> tuple[str, int]:
+    async def refresh(
+        self, project_id: UUID, bearer: str, *, fresh: bool = False
+    ) -> tuple[str, int]:
         """Take the team from the Guild; what was done and the version now held.
+
+        ``fresh`` has the Guild ask the home first; without it the Guild's record is enough.
 
         Raises ``TeamGuildError`` when the Guild cannot answer and ``ProjectConflictError``
         when what it holds is not this project's team.
@@ -197,7 +201,7 @@ class ProjectTeamService:
             return ABSENT, 0
         if project is not None and not self.is_copy(project):
             return HOME, (await self._sync.get(project_id)).version
-        record = await self._record(project_id, project, bearer)
+        record = await self._record(project_id, project, bearer, fresh)
         if isinstance(record, str):
             return record, 0
         if project is None:
@@ -234,15 +238,23 @@ class ProjectTeamService:
                 await self._failed(project.id, "copy", exc)
         return reply
 
+    async def start_install(
+        self, project: ForgeProject, *, body: bytes, bearer: str
+    ) -> TeamGuildReply:
+        """Start an app install at the home, which is where the provider comes back to."""
+        if self._guild is None:
+            raise TeamGuildError("This Forge has no Guild to reach the project's home through")
+        return await self._guild.start_install(project.home_instance_id, body=body, bearer=bearer)
+
     # --- applying -----------------------------------------------------------
 
     async def _record(
-        self, project_id: UUID, project: ForgeProject | None, bearer: str
+        self, project_id: UUID, project: ForgeProject | None, bearer: str, fresh: bool
     ) -> ProjectTeamRecord | str:
         """The Guild's record, or what to report instead of one."""
         assert self._guild is not None
         try:
-            return await self._guild.record(project_id, bearer)
+            return await self._guild.record(project_id, bearer, fresh=fresh)
         except TeamNotVisibleError:
             if project is None:
                 return HIDDEN

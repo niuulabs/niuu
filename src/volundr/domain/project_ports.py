@@ -199,9 +199,12 @@ class TeamGuild(ABC):
     """The Guild as a Forge's project teams see it. Each call carries the caller's login."""
 
     @abstractmethod
-    async def record(self, project_id: UUID, bearer: str) -> ProjectTeamRecord:
-        """The team the Guild holds. Raises ``TeamNotVisibleError`` when it holds none, or
-        none this caller may see, and ``TeamGuildError`` when it cannot answer."""
+    async def record(
+        self, project_id: UUID, bearer: str, *, fresh: bool = False
+    ) -> ProjectTeamRecord:
+        """The team the Guild holds, after it asked the home when *fresh*. Raises
+        ``TeamNotVisibleError`` when it holds none, or none this caller may see, and
+        ``TeamGuildError`` when it cannot answer."""
 
     @abstractmethod
     async def publish(
@@ -223,6 +226,10 @@ class TeamGuild(ABC):
     ) -> TeamGuildReply:
         """Make a change to the project's team on its home *instance_id*. Raises
         ``TeamGuildError`` when the Guild cannot be reached: then nothing was changed."""
+
+    @abstractmethod
+    async def start_install(self, instance_id: str, *, body: bytes, bearer: str) -> TeamGuildReply:
+        """Start a provider's app install on the project's home *instance_id*."""
 
 
 class ProjectWorkspace(ABC):

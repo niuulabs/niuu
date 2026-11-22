@@ -28,8 +28,15 @@ class HttpTeamGuild(TeamGuild):
         self._guild_url = guild_url
         self._timeout = timeout_seconds
 
-    async def record(self, project_id: UUID, bearer: str) -> ProjectTeamRecord:
-        response = await self._send("GET", f"/projects/{project_id}/team/record", bearer)
+    async def record(
+        self, project_id: UUID, bearer: str, *, fresh: bool = False
+    ) -> ProjectTeamRecord:
+        response = await self._send(
+            "GET",
+            f"/projects/{project_id}/team/record",
+            bearer,
+            params={"fresh": "true"} if fresh else None,
+        )
         payload = self._payload(response)
         try:
             return ProjectTeamRecord.model_validate(payload)
@@ -76,11 +83,18 @@ class HttpTeamGuild(TeamGuild):
             content=body,
             headers={"content-type": "application/json"} if body else None,
         )
-        return TeamGuildReply(
-            status=response.status_code,
-            content=response.content,
-            media_type=response.headers.get("content-type"),
+        return _reply(response)
+
+    async def start_install(self, instance_id: str, *, body: bytes, bearer: str) -> TeamGuildReply:
+        response = await self._send(
+            "POST",
+            "/integrations/oauth/authorize-team",
+            bearer,
+            params={"instance_id": instance_id},
+            content=body,
+            headers={"content-type": "application/json"},
         )
+        return _reply(response)
 
     async def _send(
         self,
@@ -122,3 +136,11 @@ class HttpTeamGuild(TeamGuild):
         if response.status_code == 404 and detail != ROUTE_MISSING_DETAIL:
             raise TeamNotVisibleError(message)
         raise TeamGuildError(message, route_missing=response.status_code in (404, 405))
+
+
+def _reply(response: httpx.Response) -> TeamGuildReply:
+    return TeamGuildReply(
+        status=response.status_code,
+        content=response.content,
+        media_type=response.headers.get("content-type"),
+    )

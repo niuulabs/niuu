@@ -8,7 +8,8 @@ from __future__ import annotations
 
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
+from urllib.parse import parse_qs, urlparse
 from uuid import uuid4
 
 import httpx
@@ -43,10 +44,13 @@ from tests.test_niuu.test_rest_volundr import StubInstanceService, _instance
 from tests.test_projects.conftest import MemoryProjectMembers, MemoryProjects, MemoryUsers
 from tests.test_projects.test_team_integrations import GITHUB, JIRA, SLACK, FakeMinter, MemoryUsage
 from volundr.adapters.inbound.rest import create_router
+from volundr.adapters.inbound.rest_oauth import create_team_oauth_router
 from volundr.adapters.outbound.http_team_guild import HttpTeamGuild
 from volundr.adapters.outbound.memory_integrations import InMemoryIntegrationRepository
+from volundr.adapters.outbound.oauth2_provider import OAuth2Provider
 from volundr.composition_builders import create_project_team_service
-from volundr.config import Settings
+from volundr.config import OAuthClientConfig, OAuthConfig, Settings
+from volundr.domain.models import OAuthSpec
 from volundr.domain.notifications import TeamDeliverTo, TeamRouteEvent
 from volundr.domain.project_ports import (
     ProjectConflictError,
@@ -66,6 +70,16 @@ from volundr.domain.services.projects import ProjectService
 from volundr.domain.services.session import SessionService
 
 GUILD = "http://guild.test"
+SLACK_APP = replace(
+    SLACK,
+    oauth=OAuthSpec(
+        authorize_url="https://slack.test/authorize",
+        token_url="https://slack.test/token",
+        token_field_mapping={"access_token": "access_token"},
+        extra_authorize_params={},
+        extra_token_params={},
+    ),
+)
 API = "/api/v1/forge"
 
 
@@ -162,7 +176,7 @@ class Forge:
             self.projects,
             integrations=self.integrations,
             credentials=credentials,
-            registry=IntegrationRegistry([SLACK, JIRA, GITHUB]),
+            registry=IntegrationRegistry([SLACK_APP, JIRA, GITHUB]),
             rules=self.rules,
             usage=MemoryUsage(),
             minter=FakeMinter(),
@@ -243,6 +257,7 @@ class World:
         self.reach("guild.test", self.guild)
         for forge in forges:
             self.reach(f"{forge.name}.test", forge.app)
+            self.installs(forge)
 
     def reach(self, host, app):
         async def deliver(request: httpx.Request) -> httpx.Response:
@@ -252,6 +267,22 @@ class World:
             )
 
         self.router.route(host=host).mock(side_effect=deliver)
+
+    def installs(self, forge):
+        """The Forge's team install routes, for a Slack app its operator configured."""
+        config = OAuthConfig(
+            redirect_base_url=f"https://{forge.name}.public",
+            clients={"slack": OAuthClientConfig(client_id="id", client_secret="secret")},
+        )
+        forge.app.include_router(
+            create_team_oauth_router(
+                oauth_config=config,
+                integration_registry=forge.service._registry,
+                credential_store=self.credentials,
+                integration_repo=forge.integrations,
+                team_integrations=forge.service,
+            )
+        )
 
     def cut_off(self, host):
         self.router.route(host=host).mock(side_effect=httpx.ConnectError("no route"))
@@ -332,6 +363,52 @@ async def test_removing_it_at_the_home_removes_it_everywhere(world):
         assert await forge.connections(world.project) == []
     assert await world.noatun.rules.list_for_owner(project_owner_id(world.project.id)) == []
     assert await world.noatun.roles(world.project) == {"alice": "owner"}
+
+
+async def test_an_install_started_on_a_copy_is_made_at_the_home_and_seen_on_the_copy(world):
+    await world.noatun.copy(world.project, "bob")
+    started = await world.noatun.call(
+        "POST",
+        "/integrations/oauth/authorize-team",
+        "alice",
+        json={"slug": "slack", "project_id": str(world.project.id), "config": {"channel": "#p"}},
+    )
+    assert started.status_code == 200, started.text
+    sent_to = parse_qs(urlparse(started.json()["url"]).query)
+    assert sent_to["redirect_uri"] == [
+        "https://valhalla.public/api/v1/forge/integrations/oauth/callback"
+    ]
+    refused = await world.noatun.call(
+        "POST",
+        "/integrations/oauth/authorize-team",
+        "bob",
+        json={"slug": "slack", "project_id": str(world.project.id)},
+    )
+    assert refused.status_code == 403
+
+    with patch.object(
+        OAuth2Provider, "exchange_code", AsyncMock(return_value={"access_token": "xoxb-2"})
+    ):
+        back = await world.valhalla.call(
+            "GET", f"/integrations/oauth/callback?code=c&state={sent_to['state'][0]}", ""
+        )
+    assert back.status_code == 200, back.text
+    # Nobody has read it at the home, which the provider's callback could not publish for.
+    listed = await world.noatun.call("GET", f"{world.path}/integrations", "bob")
+    assert [(c["slug"], c["available"]) for c in listed.json()] == [("slack", True)]
+    assert len(await world.ymir.connections(world.project)) == 1
+
+
+async def test_with_the_guild_away_no_install_starts_on_a_copy(world):
+    await world.noatun.copy(world.project, "bob")
+    world.cut_off("guild.test")
+    started = await world.noatun.call(
+        "POST",
+        "/integrations/oauth/authorize-team",
+        "alice",
+        json={"slug": "slack", "project_id": str(world.project.id)},
+    )
+    assert started.status_code == 503 and "Nothing was changed" in started.json()["detail"]
 
 
 async def test_an_install_with_no_login_is_published_on_the_next_read(world):
@@ -465,6 +542,18 @@ async def test_an_org_admins_change_reaches_the_copies_though_they_are_not_on_th
         assert set(await forge.roles(world.project)) == {"alice", "bob", "cara", "dana"}
     assert (await memberships(world, "admin")).json()["member_of"] == []
     assert (await record(world, "admin@other")).status_code == 404
+
+
+async def test_someone_taken_off_at_the_home_reads_nothing_new_on_a_copy(world):
+    await publish(world)
+    await world.noatun.copy(world.project, "bob")
+    # The home could not publish: its Guild was away when Bob was removed.
+    await world.valhalla.members.remove(world.project.id, "bob")
+    await world.valhalla.sync.changed(world.project.id)
+    fresh = await ask(world.guild, "GET", f"{API}{world.path}/team/record?fresh=true", "bob")
+    assert fresh.status_code == 404
+    kept = await ask(world.guild, "GET", f"{API}{world.path}/team/record?fresh=true", "alice")
+    assert [m["user_id"] for m in kept.json()["team"]["members"]] == ["alice"]
 
 
 async def test_an_owner_who_leaves_is_published_by_whoever_reads_next(world):

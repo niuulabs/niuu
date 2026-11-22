@@ -8,6 +8,7 @@ import {
   teamIntegrationsKey,
   useConnectServiceAccount,
   useStartTeamOAuth,
+  useTeamIntegrations,
 } from '../application/useProjectIntegrations';
 import { BUTTON, CONTROL } from './ProjectMembers';
 
@@ -40,6 +41,9 @@ function ConnectForm({
   const [clientSecret, setClientSecret] = useState('');
   const [config, setConfig] = useState<Record<string, string>>({});
   const [waiting, setWaiting] = useState(false);
+  const [installedBefore, setInstalledBefore] = useState(0);
+  const connections = useTeamIntegrations(project);
+  const installed = (connections.data ?? []).filter((one) => one.slug === entry.slug).length;
   const fields = fieldsOf(entry);
   const serviceAccount = entry.team_install === 'client_credentials';
   const error = connect.error ?? authorize.error;
@@ -56,9 +60,21 @@ function ConnectForm({
       void queryClient.invalidateQueries({ queryKey: teamIntegrationsKey(project.id) });
       onDone();
     };
+    // An install that ended on another cluster's address cannot signal this window; the
+    // person coming back to it does.
+    const returned = () =>
+      void queryClient.invalidateQueries({ queryKey: teamIntegrationsKey(project.id) });
     window.addEventListener('storage', notified);
-    return () => window.removeEventListener('storage', notified);
+    window.addEventListener('focus', returned);
+    return () => {
+      window.removeEventListener('storage', notified);
+      window.removeEventListener('focus', returned);
+    };
   }, [waiting, project.id, entry.slug, queryClient, onDone]);
+
+  useEffect(() => {
+    if (waiting && installed > installedBefore) onDone();
+  }, [waiting, installed, installedBefore, onDone]);
 
   const submit = () => {
     const settings = Object.fromEntries(
@@ -81,6 +97,7 @@ function ConnectForm({
       { slug: entry.slug, config: settings },
       {
         onSuccess: ({ url }) => {
+          setInstalledBefore(installed);
           setWaiting(true);
           if (popup) popup.location.href = url;
           else window.open(url, `${entry.slug}-team-oauth`, POPUP_FEATURES);

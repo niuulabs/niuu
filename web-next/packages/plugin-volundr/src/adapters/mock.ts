@@ -1676,6 +1676,12 @@ export function createMockVolundrService(): IVolundrService {
         throw new Error('A project needs at least one owner');
       members.splice(index, 1);
     },
+    getProjectTeamState: async () => ({
+      home: true,
+      home_instance_id: '',
+      guild: true,
+      sync: { pending: false, synced_at: '2026-11-01T10:00:00Z', error: '' },
+    }),
     getTeamIntegrationCatalog: async (project) => {
       membersOf(project.id);
       return MOCK_TEAM_CATALOG.map((entry) => ({ ...entry }));

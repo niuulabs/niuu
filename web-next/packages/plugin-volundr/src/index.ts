@@ -318,6 +318,7 @@ export type {
   TeamInstallMethod,
   TeamConfigField,
   TeamCatalogEntry,
+  ProjectTeamState,
   TeamIntegration,
   ProjectMemoryMount,
   TeamRouteEvent,

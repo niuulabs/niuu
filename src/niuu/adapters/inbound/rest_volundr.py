@@ -3118,7 +3118,7 @@ def create_volundr_router(
                 status_code=status.HTTP_502_BAD_GATEWAY,
                 detail=(
                     "Team installs run on the Forge that holds the project; this node has "
-                    "no Forge of its own, so install from the project's home node"
+                    "no Forge of its own; name the project's Forge with instance_id"
                 ),
             )
         transport = httpx.ASGITransport(app=embedded_forge_app)
@@ -3151,8 +3151,27 @@ def create_volundr_router(
     ) -> Response:
         """Start a project team's app install (project owners only, checked by Forge).
 
-        The integration travels in the body, so the forwarded path is a constant.
+        The integration travels in the body, so the forwarded path is a constant. With
+        ``instance_id`` it starts on that Forge, where the provider then comes back to, at
+        the Forge's own ``oauth.redirect_base_url``.
         """
+        instance_id = request.query_params.get("instance_id")
+        if instance_id:
+            instance = await _resolve_target_instance(service, principal, instance_id)
+            if not _uses_embedded_transport(instance):
+                response = await _request_remote(
+                    instance,
+                    request,
+                    method="POST",
+                    path="/integrations/oauth/authorize-team",
+                    content_body=await request.body(),
+                    extra_headers={"content-type": "application/json"},
+                )
+                return Response(
+                    content=response.content,
+                    status_code=response.status_code,
+                    media_type=response.headers.get("content-type"),
+                )
         return await _team_oauth_on_this_node(
             request, "POST", "/integrations/oauth/authorize-team", _forward_local_headers(request)
         )

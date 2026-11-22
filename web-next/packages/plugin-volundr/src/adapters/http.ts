@@ -72,6 +72,7 @@ import type {
   SessionStartup,
   StartupStageState,
   ForgeProject,
+  ProjectTeamState,
   ParticipantRole,
   ParticipantStatus,
   ProjectRole,
@@ -2336,17 +2337,28 @@ export function buildVolundrHttpAdapter(
         projectMembersPath(project, `members/${encodeURIComponent(userId)}`),
       );
     },
+    getProjectTeamState: async (project) => {
+      try {
+        return await forgeClient.get<ProjectTeamState>(projectMembersPath(project, 'team'));
+      } catch (error) {
+        // A Forge from before shared teams has no such route: its team is its own.
+        if (error instanceof ApiClientError && error.status === 404) return null;
+        throw error;
+      }
+    },
     getTeamIntegrationCatalog: (project) =>
       forgeClient.get(projectMembersPath(project, 'integrations/catalog')),
     getTeamIntegrations: (project) => forgeClient.get(projectMembersPath(project, 'integrations')),
     connectTeamServiceAccount: (project, connect) =>
       forgeClient.post(projectMembersPath(project, 'integrations'), connect),
     startTeamOAuth: (project, slug, config) =>
-      forgeClient.post('/integrations/oauth/authorize-team', {
-        slug,
-        project_id: project.id,
-        config,
-      }),
+      forgeClient.post(
+        // The install starts on the Forge the project is shown from, or its home.
+        `/integrations/oauth/authorize-team${
+          project.instance_id ? `?instance_id=${encodeURIComponent(project.instance_id)}` : ''
+        }`,
+        { slug, project_id: project.id, config },
+      ),
     updateTeamIntegration: (project, connectionId, change) =>
       forgeClient.patch(
         projectMembersPath(project, `integrations/${encodeURIComponent(connectionId)}`),
