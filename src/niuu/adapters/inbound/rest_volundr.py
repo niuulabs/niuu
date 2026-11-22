@@ -55,6 +55,7 @@ from niuu.adapters.inbound.remote_urls import (
 from niuu.adapters.inbound.remote_urls import (
     forward_websocket_identity_headers as _forward_websocket_headers,
 )
+from niuu.adapters.inbound.rest_project_teams import add_project_team_routes
 from niuu.adapters.inbound.source_health import (
     SOURCE_FAILURES_HEADER,
     SourceFailure,
@@ -94,6 +95,7 @@ from niuu.domain.session_owners import SessionOwners
 from niuu.domain.tags import matches_tags, residual_selector, satisfiable, validate_match
 from niuu.forge_mcp.credentials import token_scopes
 from niuu.ports.instances import InvalidInstanceIdError
+from niuu.ports.project_teams import ProjectTeamRecords
 
 logger = logging.getLogger(__name__)
 
@@ -1432,6 +1434,7 @@ def create_volundr_router(
     forge_stream_keepalive_seconds: float = 15.0,
     forge_stream_queue_maxsize: int = 256,
     guild_membership: GuildMembership | None = None,
+    project_teams: ProjectTeamRecords | None = None,
     presented_file_max_bytes: int = PRESENTED_FILE_DEFAULT_MAX_BYTES,
     feedless_recheck_seconds: float | None = None,
     session_owner_ttl_seconds: float | None = None,
@@ -2034,6 +2037,18 @@ def create_volundr_router(
             )
         if registered.status_code != 409:
             _ensure_remote_success(registered)
+        # Its people and team integrations too, so whoever launched here is not left as the
+        # copy's only owner, and someone on the team sees a copy another person made. A host
+        # from before project teams has no such route.
+        team = await _request_remote(
+            target,
+            request,
+            method="POST",
+            path=f"{path}/team/refresh",
+            embedded_app=embedded_forge_app,
+        )
+        if not _route_missing(team):
+            _ensure_remote_success(team)
         # A simultaneous registration may have won; validate the actual record.
         existing = await _request_remote(
             target, request, method="GET", path=path, embedded_app=embedded_forge_app
@@ -2143,6 +2158,26 @@ def create_volundr_router(
     ) -> dict[str, Any]:
         return await _project_checkout_request(request, body, principal, "/projects/connect")
 
+    if project_teams is not None:
+
+        async def _resolve_forge(principal: Principal, instance_id: str) -> RegisteredInstance:
+            return await _resolve_target_instance(service, principal, instance_id)
+
+        async def _call_forge(
+            instance: RegisteredInstance, request: Request, method: str, path: str
+        ) -> httpx.Response:
+            return await _request_remote(
+                instance, request, method=method, path=path, embedded_app=embedded_forge_app
+            )
+
+        add_project_team_routes(
+            router,
+            project_teams,
+            resolve=_resolve_forge,
+            visible=lambda principal: _visible_instances(service, principal),
+            call=_call_forge,
+        )
+
     @router.get("/projects/{project_id}")
     @router.patch("/projects/{project_id}")
     @router.get("/projects/{project_id}/{operation:path}")
@@ -2167,6 +2202,8 @@ def create_volundr_router(
             ("POST", "members"),
             ("GET", "member-candidates"),
             ("GET", "role"),
+            ("GET", "team"),
+            ("POST", "team/refresh"),
         }
         pieces = operation.split("/")
         is_ack = len(pieces) == 3 and pieces[0] == "receipts" and pieces[2] == "ack"
@@ -2211,7 +2248,9 @@ def create_volundr_router(
         if response.status_code == status.HTTP_204_NO_CONTENT:
             return Response(status_code=status.HTTP_204_NO_CONTENT)
         payload = response.json()
-        return _with_instance(payload, instance) if not operation else payload
+        if not operation:
+            return _with_instance(payload, instance)
+        return JSONResponse(payload, status_code=response.status_code)
 
     @router.get("/sessions")
     async def list_sessions(
@@ -3079,7 +3118,7 @@ def create_volundr_router(
                 status_code=status.HTTP_502_BAD_GATEWAY,
                 detail=(
                     "Team installs run on the Forge that holds the project; this node has "
-                    "no Forge of its own, so install from the project's home node"
+                    "no Forge of its own; name the project's Forge with instance_id"
                 ),
             )
         transport = httpx.ASGITransport(app=embedded_forge_app)
@@ -3112,8 +3151,27 @@ def create_volundr_router(
     ) -> Response:
         """Start a project team's app install (project owners only, checked by Forge).
 
-        The integration travels in the body, so the forwarded path is a constant.
+        The integration travels in the body, so the forwarded path is a constant. With
+        ``instance_id`` it starts on that Forge, where the provider then comes back to, at
+        the Forge's own ``oauth.redirect_base_url``.
         """
+        instance_id = request.query_params.get("instance_id")
+        if instance_id:
+            instance = await _resolve_target_instance(service, principal, instance_id)
+            if not _uses_embedded_transport(instance):
+                response = await _request_remote(
+                    instance,
+                    request,
+                    method="POST",
+                    path="/integrations/oauth/authorize-team",
+                    content_body=await request.body(),
+                    extra_headers={"content-type": "application/json"},
+                )
+                return Response(
+                    content=response.content,
+                    status_code=response.status_code,
+                    media_type=response.headers.get("content-type"),
+                )
         return await _team_oauth_on_this_node(
             request, "POST", "/integrations/oauth/authorize-team", _forward_local_headers(request)
         )

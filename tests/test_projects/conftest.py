@@ -104,6 +104,14 @@ class MemoryProjectMembers(ProjectMemberRepository):
             raise LastOwnerError("last owner")
         return self.rows.pop((project_id, user_id), None) is not None
 
+    async def replace(self, project_id, members):
+        if not any(m.role == ProjectRole.OWNER for m in members):
+            raise LastOwnerError("no owner")
+        for key in [key for key in self.rows if key[0] == project_id]:
+            del self.rows[key]
+        for member in members:
+            self.rows[(project_id, member.user_id)] = member
+
     async def candidates(self, project_id, tenant_id, query):
         found = []
         for user in await self.users.list():

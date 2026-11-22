@@ -14,6 +14,7 @@ from niuu.domain.models import IntegrationConnection, IntegrationType, Integrati
 from niuu.ports.integrations import IntegrationUsageLog
 from tests.test_ting.conftest import StubCredentialStore, StubIntegrationRepo
 from ting.adapters.native import NativeTrackerAdapter
+from ting.adapters.team_projects import TeamProject
 from ting.adapters.team_tracker import TeamTrackerRecorder
 from ting.adapters.tracker_factory import TrackerAdapterFactory
 from ting.ports.tracker import TrackerPort
@@ -546,9 +547,9 @@ async def test_team_trackers_come_after_the_owners_own_and_record_their_writes()
     log = _UsageLog()
     asked: list[str] = []
 
-    async def member_projects(owner_id: str) -> list[str]:
+    async def member_projects(owner_id: str):  # noqa: ANN202
         asked.append(owner_id)
-        return ["proj-1", "proj-2"]
+        return [TeamProject("proj-1"), TeamProject("proj-2")], []
 
     factory = _team_factory(
         [
@@ -583,8 +584,8 @@ async def test_team_trackers_come_after_the_owners_own_and_record_their_writes()
 
 @pytest.mark.asyncio
 async def test_a_team_connection_is_resolved_once() -> None:
-    async def member_projects(owner_id: str) -> list[str]:
-        return ["proj-1", "proj-1"]
+    async def member_projects(owner_id: str):  # noqa: ANN202
+        return [TeamProject("proj-1"), TeamProject("proj-1")], []
 
     factory = _team_factory([_team_connection("proj-1")], member_projects, _UsageLog())
 
@@ -595,8 +596,8 @@ async def test_a_team_connection_is_resolved_once() -> None:
 
 @pytest.mark.asyncio
 async def test_disabled_team_connection_is_skipped() -> None:
-    async def member_projects(owner_id: str) -> list[str]:
-        return ["proj-1"]
+    async def member_projects(owner_id: str):  # noqa: ANN202
+        return [TeamProject("proj-1")], []
 
     factory = _team_factory(
         [_team_connection("proj-1", enabled=False)], member_projects, _UsageLog()
@@ -609,26 +610,49 @@ async def test_disabled_team_connection_is_skipped() -> None:
 
 
 @pytest.mark.asyncio
-async def test_membership_failure_is_a_loud_failure_not_only_personal_trackers(caplog) -> None:  # noqa: ANN001
-    async def member_projects(owner_id: str) -> list[str]:
-        raise ConnectionError("forge down")
+async def test_a_membership_that_could_not_be_read_is_reported(caplog) -> None:  # noqa: ANN001
+    async def member_projects(owner_id: str):  # noqa: ANN202
+        return [TeamProject("proj-1")], ["the primary Forge is down"]
 
     factory = _team_factory(
-        [_make_connection(id="own-1", credential_name="linear-cred")], member_projects, _UsageLog()
+        [
+            _make_connection(id="own-1", credential_name="linear-cred"),
+            _team_connection("proj-1", id="team-1"),
+        ],
+        member_projects,
+        _UsageLog(),
     )
 
     with caplog.at_level(logging.ERROR):
         resolution = await factory.for_owner_with_resolution("owner-1")
 
-    assert [a.connection_id for a in resolution.adapters] == ["own-1"]
+    # What could be read is used, and what could not is reported.
+    assert [a.connection_id for a in resolution.adapters] == ["own-1", "team-1"]
     assert [f.code for f in resolution.failures] == ["teamTrackersUnavailable"]
-    assert "Could not list the projects of owner owner-1" in caplog.text
+    assert "the primary Forge is down" in resolution.failures[0].message
+    assert "Could not read every project of owner owner-1" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_a_connection_the_recorded_team_does_not_have_is_not_used() -> None:
+    async def member_projects(owner_id: str):  # noqa: ANN202
+        return [TeamProject("proj-1", frozenset({"team-1"}))], []
+
+    factory = _team_factory(
+        [_team_connection("proj-1", id="team-1"), _team_connection("proj-1", id="someone-elses")],
+        member_projects,
+        _UsageLog(),
+    )
+
+    resolution = await factory.for_owner_with_resolution("owner-1")
+
+    assert [a.connection_id for a in resolution.adapters] == ["team-1"]
 
 
 @pytest.mark.asyncio
 async def test_team_tracker_without_a_usage_log_is_refused(caplog) -> None:  # noqa: ANN001
-    async def member_projects(owner_id: str) -> list[str]:
-        return ["proj-1"]
+    async def member_projects(owner_id: str):  # noqa: ANN202
+        return [TeamProject("proj-1")], []
 
     factory = _team_factory([_team_connection("proj-1")], member_projects, None)
 

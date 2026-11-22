@@ -52,6 +52,15 @@ export function useTeamIntegrations(project: ForgeProject) {
   });
 }
 
+/** Where the project's team stands between the Forges that have the project. */
+export function useProjectTeamState(project: ForgeProject) {
+  const volundr = useService<IVolundrService>('volundr');
+  return useQuery({
+    queryKey: [...teamIntegrationsKey(project.id), 'team-state'] as const,
+    queryFn: () => volundr.getProjectTeamState(project),
+  });
+}
+
 /** Where each kind of event goes. */
 export function useTeamRoutes(project: ForgeProject) {
   const volundr = useService<IVolundrService>('volundr');

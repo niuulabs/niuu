@@ -15,6 +15,7 @@ from niuu.domain.models import (
     Principal,
     RegisteredInstance,
 )
+from niuu.domain.project_team import TeamMemberships
 from niuu.domain.services.token_scope import scoped_credential_claims
 from niuu.ports.http_auth import HttpAuthPort
 from ting.adapters.inbound.auth import current_bearer_token
@@ -59,6 +60,31 @@ class GuildInstanceRegistryClient:
                 f"Guild instance registry returned a non-list payload: {type(payload).__name__}"
             )
         return [_to_instance(item) for item in payload if isinstance(item, dict)]
+
+    async def memberships(self, owner_id: str, project_ids: list[str]) -> TeamMemberships:
+        """What the Guild records of the owner's projects; ``TeamRecords`` for TeamProjects.
+
+        The Guild answers for the login it sees, so an answer about anyone else is refused:
+        one person's teams are never another's.
+        """
+        principal = Principal(
+            user_id=owner_id, email="", tenant_id="default", roles=["volundr:developer"]
+        )
+        response = await self._client.post(
+            "/api/v1/forge/projects/memberships",
+            json={"project_ids": project_ids},
+            headers=_principal_headers(
+                principal, auth_headers=self._auth.headers() if self._auth else None
+            ),
+        )
+        response.raise_for_status()
+        known = TeamMemberships.model_validate(response.json())
+        if known.user_id != owner_id:
+            raise PermissionError(
+                f"the Guild answered for {known.user_id!r}, not {owner_id!r}: Ting's credential "
+                "for the Guild (guild_registry.auth) does not act for this owner"
+            )
+        return known
 
     async def get_volundr_target(
         self,

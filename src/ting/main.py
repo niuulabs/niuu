@@ -72,6 +72,7 @@ from ting.adapters.postgres_ticket_coordinators import PostgresTicketCoordinator
 from ting.adapters.postgres_workflow_campaigns import PostgresWorkflowCampaignRepository
 from ting.adapters.postgres_workflow_executions import PostgresWorkflowExecutionRepository
 from ting.adapters.postgres_workflow_steps import PostgresWorkflowStepRepository
+from ting.adapters.team_projects import TeamProjects
 from ting.adapters.tracker_factory import TrackerAdapterFactory
 from ting.adapters.volundr_factory import GuildRegistryUnavailableError, VolundrAdapterFactory
 from ting.adapters.workflow_execution_worker import ExecutionReconciler, WorkflowExecutionWorker
@@ -803,20 +804,11 @@ def create_app(
                 )
             volundr_factory = app.state.volundr_factory
 
-            async def member_projects(owner_id: str) -> list[str]:
-                primary = await volundr_factory.primary_for_owner(owner_id)
-                if primary is None:
-                    raise LookupError(
-                        f"owner {owner_id} has no Forge connection, so their project "
-                        "memberships cannot be read; connect a Forge for this owner"
-                    )
-                return await primary.list_member_project_ids()
-
             app.state.tracker_factory = TrackerAdapterFactory(
                 integration_repo,
                 credential_store,
                 pool=pool,
-                member_projects=member_projects,
+                member_projects=TeamProjects(volundr_factory, guild_registry_client),
                 usage_log=integration_stores.usage_log,
             )
 

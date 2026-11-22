@@ -206,6 +206,7 @@ from volundr.composition_builders import (  # noqa: F401
     create_oauth_client_registry,
     create_presented_file_store,
     create_project_memory,
+    create_project_team_service,
     create_session_voice_service,
     integration_database_pool,
     require_memory_credentials,
@@ -2014,6 +2015,7 @@ def create_app(
             # Projects add durable coordination metadata to ordinary Forge sessions.
             project_service = None
             project_integration_service = None
+            project_team_service = None
             project_memory_service = None
             if settings.projects.enabled:
                 from volundr.domain.project_ports import ProjectRepository, ProjectWorkspace
@@ -2066,6 +2068,16 @@ def create_app(
                     usage_page_size=project_config.team_usage_page_size,
                 )
                 app.state.project_integration_service = project_integration_service
+                project_team_service = create_project_team_service(
+                    settings,
+                    project_service,
+                    members=project_member_repository,
+                    integrations=integration_repo,
+                    rules=PostgresNotificationRuleRepository(pool),
+                    pool=pool,
+                    guild_membership=guild_membership,
+                )
+                app.state.project_team_service = project_team_service
                 from volundr.domain.services.project_memory import ProjectMemoryService
 
                 project_memory_service = ProjectMemoryService(
@@ -2105,6 +2117,7 @@ def create_app(
                 preview_edge_limit=settings.tool_result_preview.max_edge,
                 project_service=project_service,
                 project_integration_service=project_integration_service,
+                project_team_service=project_team_service,
                 project_memory_service=project_memory_service,
                 runtime_build=build_identity()
                 if pod_manager.runtime_backend == "process"

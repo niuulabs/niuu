@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import json
 from uuid import uuid4
 
 import pytest
+import respx
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse
 
@@ -106,4 +108,27 @@ def test_a_node_without_its_own_forge_refuses_team_installs():
     client = _client([LOCAL])
     response = client.get(f"{PREFIX}/integrations/oauth/callback?code=c&state=s")
     assert response.status_code == 502
-    assert "home node" in response.json()["detail"]
+    assert "instance_id" in response.json()["detail"]
+
+
+@respx.mock
+def test_a_team_install_starts_on_the_forge_it_names():
+    remote = _instance("thor", base_url="http://thor.test")
+    started = respx.post(f"http://thor.test{PREFIX}/integrations/oauth/authorize-team")
+    started.respond(json={"url": "https://provider/authorize"})
+    body = {"slug": "slack", "project_id": str(uuid4())}
+    client = _client([LOCAL, remote])
+    response = client.post(
+        f"{PREFIX}/integrations/oauth/authorize-team?instance_id=thor",
+        json=body,
+        headers=_headers(),
+    )
+    assert response.json() == {"url": "https://provider/authorize"}
+    assert json.loads(started.calls.last.request.content) == body
+    started.respond(403, json={"detail": "owners only"})
+    refused = client.post(
+        f"{PREFIX}/integrations/oauth/authorize-team?instance_id=thor",
+        json=body,
+        headers=_headers(),
+    )
+    assert refused.status_code == 403 and refused.json() == {"detail": "owners only"}

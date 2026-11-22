@@ -18,6 +18,7 @@ from niuu.http_compat import LegacyRouteNotice, warn_on_legacy_route
 from niuu.ports.credentials import CredentialRefreshLockPort
 from volundr.adapters.inbound.auth import extract_principal
 from volundr.adapters.inbound.rest_project_integrations import team_http_errors
+from volundr.adapters.inbound.rest_project_team import bearer_of, team_reply, team_service
 from volundr.adapters.outbound.oauth2_provider import OAuth2Provider
 from volundr.config import OAuthConfig
 from volundr.domain.models import (
@@ -318,9 +319,19 @@ def _build_oauth_router(
         data: TeamAuthorizeRequest,
         request: Request,
         principal: Principal = Depends(extract_principal),
-    ) -> AuthorizeResponse:
-        """Start a provider's app install for a project's team; project owners only."""
+    ) -> Any:
+        """Start a provider's app install for a project's team; project owners only.
+
+        On a copy of the project it starts at the home, which checks the caller and is
+        where the provider comes back to.
+        """
         assert team_integrations is not None
+        teams = team_service(request)
+        copy = await teams.copy_of(data.project_id) if teams is not None else None
+        if teams is not None and copy is not None:
+            return await team_reply(
+                teams.start_install(copy, body=await request.body(), bearer=bearer_of(request))
+            )
         with team_http_errors():
             await team_integrations.owner_project(data.project_id, principal)
             team_integrations.definition(data.slug)

@@ -1618,6 +1618,10 @@ config:
     git_timeout_seconds: 15
     dispatch_wait_seconds: 30
     dispatch_poll_seconds: 0.05
+    # -- How old a copied project team may be before a read copies it from the Guild again
+    team_refresh_after_seconds: 15
+    # -- How long one exchange with the Guild about a project's team may take
+    team_guild_timeout_seconds: 60
   conversationRecentMaxTurns: 15
   conversationRecentMaxBytes: 262144
   # -- First durable event-log window (frames) for a `?tail=N` conversation read

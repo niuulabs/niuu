@@ -52,12 +52,15 @@ def test_launch_on_another_host_replicates_a_repository_less_project():
     ]
     respx.get(f"{THOR}/projects/{project_id}").respond(200, json=home)
     register = respx.post(f"{SPARK}/projects").respond(201, json=home)
+    copied = respx.post(f"{SPARK}/projects/{project_id}/team/refresh")
+    copied.respond(200, json={"state": "updated", "version": 1})
     respx.get(f"{THOR}/feature-flags").respond(200, json={"project_instance_id": "thor-native"})
     created = respx.post(f"{SPARK}/sessions").respond(201, json={"id": str(uuid4())})
     response = client().post(
         "/api/v1/forge/sessions", json=launch_body(project_id), headers=_headers()
     )
     assert response.status_code == 201, response.text
+    assert copied.called
     replica = json.loads(register.calls[0].request.content)
     assert replica == {
         "id": str(project_id),
@@ -121,6 +124,9 @@ def test_old_host_gets_the_version_1_shape_for_a_repository_project():
     ]
     respx.get(f"{THOR}/projects/{project_id}").respond(200, json=project(project_id, repo_url=repo))
     register = respx.post(f"{SPARK}/projects")
+    respx.post(f"{SPARK}/projects/{project_id}/team/refresh").respond(
+        404, json={"detail": "Not Found"}
+    )
     register.side_effect = [httpx.Response(422), httpx.Response(201, json={})]
     respx.get(f"{THOR}/feature-flags").respond(200, json={"project_instance_id": "thor"})
     respx.post(f"{SPARK}/sessions").respond(201, json={"id": str(uuid4())})

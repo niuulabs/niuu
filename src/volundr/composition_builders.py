@@ -17,6 +17,7 @@ from niuu.adapters.workload_identity.key_file import (
     load_or_create_rsa_key_pem,
 )
 from niuu.config_models import WorkloadIdentityConfig
+from niuu.domain.guild_membership import GuildMembership
 from niuu.domain.services.forge_session_token import ForgeSessionTokenService
 from niuu.domain.services.mesh_certificate import MeshCertificateIssuer
 from niuu.domain.services.workload_identity import WorkloadIdentityService
@@ -40,6 +41,7 @@ from volundr.adapters.outbound.mesh_revocation import MeshRevocationPublisher
 from volundr.adapters.outbound.mesh_settings import parse_mesh_settings
 from volundr.config import ALLOW_ALL_IDENTITY_ADAPTERS, Settings
 from volundr.domain.mesh_peer_claims import MeshPeerClaims
+from volundr.domain.notification_ports import NotificationRuleRepository
 from volundr.domain.ports import (
     ArchiveStorePort,
     AuthorizationPort,
@@ -62,6 +64,7 @@ from volundr.domain.project_memory import (
     ProjectMemoryRepository,
     ProjectMemoryResolver,
 )
+from volundr.domain.project_ports import ProjectMemberRepository
 from volundr.domain.services.client_credentials import ClientCredentialsMinter
 from volundr.domain.services.integration_registry import IntegrationRegistry
 from volundr.domain.services.mesh_identity import ForgeMeshCertificateSource
@@ -74,6 +77,8 @@ from volundr.domain.services.oauth_token_refresh import (
     DEFAULT_REQUEST_TIMEOUT_SECONDS,
     OAuthTokenRefreshService,
 )
+from volundr.domain.services.project_teams import ProjectTeamService
+from volundr.domain.services.projects import ProjectService
 from volundr.domain.services.session_voice import (
     SessionVoiceCredentialService,
     VoiceProviderBinding,
@@ -561,6 +566,48 @@ def create_integration_repository(settings: Settings, integration_pool, own_pool
     if repository.holds_project_connections:
         return repository
     return RoutedIntegrationRepository(repository, PostgresIntegrationRepository(own_pool))
+
+
+def create_project_team_service(
+    settings: Settings,
+    projects: ProjectService,
+    *,
+    members: ProjectMemberRepository,
+    integrations: IntegrationRepository,
+    rules: NotificationRuleRepository,
+    pool,
+    guild_membership: GuildMembership | None,
+) -> ProjectTeamService:
+    """Share project teams through the Guild this Forge belongs to, when it belongs to one."""
+    from volundr.adapters.outbound.http_team_guild import HttpTeamGuild
+    from volundr.adapters.outbound.postgres_project_team_sync import (
+        PostgresProjectTeamSyncRepository,
+    )
+
+    instance = guild_membership.instance if guild_membership is not None else None
+    guild = None
+    if guild_membership is not None and instance is not None:
+        guild = HttpTeamGuild(
+            guild_membership.guild_url,
+            timeout_seconds=settings.projects.team_guild_timeout_seconds,
+        )
+    teams = ProjectTeamService(
+        projects,
+        members=members,
+        integrations=integrations,
+        rules=rules,
+        sync=PostgresProjectTeamSyncRepository(pool),
+        guild=guild,
+        instance_id=instance.id if instance is not None else "",
+        # Its connections are the integrations service's own database, the shared store.
+        keeps_shared_connections=bool(settings.integrations.database_name)
+        and settings.integrations.repository is None,
+        refresh_after_seconds=settings.projects.team_refresh_after_seconds,
+    )
+    if guild is not None:
+        projects.team_changed = teams.changed
+        projects.team_is_copy = teams.is_copy
+    return teams
 
 
 def _create_codex_credential_broker(

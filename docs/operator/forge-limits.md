@@ -11,6 +11,8 @@ The limits of the shared helpers and the other services are in [limits.md](limit
 
 | Limit | Default | Real bound | When it is hit |
 |---|---|---|---|
+| `projects.team_refresh_after_seconds` | 15 | One project page makes several team reads at once | Not a cap on content: a read within it uses the copied team, and does not wait again for a Guild that just failed ([project teams](project-teams.md)) |
+| `projects.team_guild_timeout_seconds` | 60 | Publishing a project's team waits for every other Forge to copy it | The change is kept and published on a later read; error log, counted as degraded (`project_team.publish` / `project_team.copy`) |
 | `projects.team_usage_page_size` | 50 | How many uses of a project's team integrations one page shows | Older uses are paged with `before` (the response's `next_before`), never dropped |
 | `presented_files.max_bytes` | 50 MiB | Size of one file a session hands over (matches Skuld's `max_presented_file_bytes`) | The upload is refused with 413, and `present-file` fails |
 | `conversation_durable_fold_max_pending` | 50000 frames | Forge's memory: raw frames the FAULT-C turn-count fold holds while a session's log has no assistant `conversation.turn` row to settle on (a pure raw-frame session); the same bound as the full durable rebuild | The newest frames are kept and the older turns are not counted, so the desync check can miss a short live body; error log and counted on `ravn.cap.hits` (the knob) once per session |

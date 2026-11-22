@@ -52,6 +52,7 @@ import type {
   SessionProjectPerson,
   SessionProjectMembership,
   TeamCatalogEntry,
+  ProjectTeamState,
   TeamIntegration,
   TeamIntegrationUsagePage,
   ProjectMemoryMount,
@@ -284,6 +285,8 @@ export interface IVolundrService {
   ): Promise<ProjectMember>;
   removeProjectMember(project: ForgeProject, userId: string): Promise<void>;
   /** What the project's owners can install for the team. */
+  /** Where the team stands between Forges; null on a Forge from before shared teams. */
+  getProjectTeamState(project: ForgeProject): Promise<ProjectTeamState | null>;
   getTeamIntegrationCatalog(project: ForgeProject): Promise<TeamCatalogEntry[]>;
   /** The integrations the project owns, readable by every member. */
   getTeamIntegrations(project: ForgeProject): Promise<TeamIntegration[]>;

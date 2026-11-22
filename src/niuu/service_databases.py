@@ -522,6 +522,16 @@ GUILD_BOOTSTRAP_SQL: tuple[str, ...] = (
     CREATE UNIQUE INDEX IF NOT EXISTS idx_niuu_instances_node_kind
         ON niuu_instances(node_id, kind) WHERE node_id IS NOT NULL;
     """,
+    """
+    CREATE TABLE IF NOT EXISTS guild_project_teams (
+        project_id       UUID PRIMARY KEY,
+        home_instance_id TEXT NOT NULL,
+        version          BIGINT NOT NULL,
+        team             JSONB NOT NULL,
+        created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    """,
 )
 
 OBSERVATORY_BOOTSTRAP_SQL: tuple[str, ...] = (

@@ -18,6 +18,7 @@ from pydantic import BaseModel, Field
 
 from niuu.domain.models import IntegrationConnection, IntegrationUsage
 from volundr.adapters.inbound.rest_integrations import CatalogEntryResponse
+from volundr.adapters.inbound.rest_project_team import ProjectTeamRoute
 from volundr.domain.notifications import (
     TEAM_CHANNEL_KEY,
     TEAM_DELIVER_TO_KEY,
@@ -58,12 +59,22 @@ class TeamIntegrationResponse(BaseModel):
     config: dict[str, Any] = Field(description="Non-secret settings, such as the team channel")
     enabled: bool
     connected_by: str = Field(description="The owner who installed it")
+    available: bool = Field(
+        default=True,
+        description=(
+            "Whether this Forge has the credential it uses. False on a Forge that copied the "
+            "project's team but keeps its credentials in another store"
+        ),
+    )
     created_at: datetime
     updated_at: datetime
 
     @classmethod
-    def of(cls, connection: IntegrationConnection) -> TeamIntegrationResponse:
+    def of(
+        cls, connection: IntegrationConnection, *, available: bool = True
+    ) -> TeamIntegrationResponse:
         return cls(
+            available=available,
             id=connection.id,
             slug=connection.slug,
             integration_type=str(connection.integration_type),
@@ -143,7 +154,11 @@ class TeamUsagePage(BaseModel):
 def create_project_integrations_router(
     service: ProjectIntegrationService, principal_for_request
 ) -> APIRouter:
-    router = APIRouter(prefix="/projects/{project_id}/integrations", tags=["Projects"])
+    router = APIRouter(
+        prefix="/projects/{project_id}/integrations",
+        tags=["Projects"],
+        route_class=ProjectTeamRoute,
+    )
 
     @router.get("/catalog")
     async def catalog(request: Request, project_id: UUID) -> list[CatalogEntryResponse]:
@@ -159,8 +174,10 @@ def create_project_integrations_router(
     ) -> list[TeamIntegrationResponse]:
         principal = await principal_for_request(request)
         with team_http_errors():
+            connections = await service.list(project_id, principal)
+            missing = await service.not_here(project_id, connections)
             return [
-                TeamIntegrationResponse.of(c) for c in await service.list(project_id, principal)
+                TeamIntegrationResponse.of(c, available=c.id not in missing) for c in connections
             ]
 
     @router.post("", status_code=201)

@@ -3177,6 +3177,12 @@ describe('Forge project grouping contract', () => {
     const service = buildVolundrHttpAdapter(client);
     const project = { id: 'lexi', name: 'Lexi', slug: 'lexi', status: 'active' as const };
     const remote = { ...project, instance_id: 'ymir' };
+    await service.getProjectTeamState(remote);
+    expect(client.get).toHaveBeenLastCalledWith('/projects/lexi/team?instance_id=ymir');
+    client.get.mockRejectedValueOnce(new ApiClientError('old', 404, 'Not Found'));
+    expect(await service.getProjectTeamState(project)).toBeNull();
+    client.get.mockRejectedValueOnce(new ApiClientError('broken', 500, 'broken'));
+    await expect(service.getProjectTeamState(project)).rejects.toThrow('broken');
     await service.getTeamIntegrationCatalog(project);
     expect(client.get).toHaveBeenLastCalledWith('/projects/lexi/integrations/catalog');
     await service.getTeamIntegrations(remote);
@@ -3196,6 +3202,11 @@ describe('Forge project grouping contract', () => {
     };
     await service.connectTeamServiceAccount(project, connect);
     expect(client.post).toHaveBeenLastCalledWith('/projects/lexi/integrations', connect);
+    await service.startTeamOAuth(remote, 'slack', {});
+    expect(client.post).toHaveBeenLastCalledWith(
+      '/integrations/oauth/authorize-team?instance_id=ymir',
+      { slug: 'slack', project_id: 'lexi', config: {} },
+    );
     await service.startTeamOAuth(project, 'slack', { channel: '#eng' });
     expect(client.post).toHaveBeenLastCalledWith('/integrations/oauth/authorize-team', {
       slug: 'slack',

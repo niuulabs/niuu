@@ -73,6 +73,11 @@ function channelLabel(connection: TeamIntegration): string {
   return channel.startsWith('#') ? channel : `#${channel}`;
 }
 
+function stateLabel(connection: TeamIntegration): string {
+  if (connection.available === false) return 'Not available here';
+  return connection.enabled ? 'Connected' : 'Paused';
+}
+
 function host(url: string): string {
   try {
     return new URL(url).host;
@@ -209,12 +214,17 @@ function ConnectionRow({
           <span className="niuu:flex niuu:flex-wrap niuu:items-center niuu:gap-2 niuu:text-sm niuu:text-text-primary">
             {name}
             <span className="niuu:rounded-full niuu:bg-bg-tertiary niuu:px-2 niuu:py-0.5 niuu:text-[11px] niuu:text-text-secondary">
-              {connection.enabled ? 'Connected' : 'Paused'}
+              {stateLabel(connection)}
             </span>
           </span>
           <span className="niuu:truncate niuu:text-xs niuu:text-text-secondary">
             {subLine(connection, entry, members)}
           </span>
+          {connection.available === false ? (
+            <span className="niuu:text-xs niuu:text-critical-fg">
+              This cluster does not have its credential, so sessions here cannot use it.
+            </span>
+          ) : null}
         </div>
         {manage ? (
           <button

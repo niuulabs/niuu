@@ -77,7 +77,7 @@ class ProjectMemberService:
         project = await self._projects.get(project_id, principal, ProjectRole.OWNER)
         await self._require_org_member(project, user_id)
         now = datetime.now(UTC)
-        return await self._projects.members.add(
+        added = await self._projects.members.add(
             ProjectMember(
                 project_id=project.id,
                 user_id=user_id,
@@ -90,6 +90,8 @@ class ProjectMemberService:
                 updated_at=now,
             )
         )
+        await self._projects.team_changed(project.id)
+        return added
 
     async def change(
         self,
@@ -112,6 +114,7 @@ class ProjectMemberService:
         )
         if updated is None:
             raise ProjectMemberNotFoundError("That person is not a member of this project")
+        await self._projects.team_changed(project.id)
         return updated
 
     async def remove(self, project_id: UUID, principal: Principal | None, user_id: str) -> None:
@@ -119,3 +122,4 @@ class ProjectMemberService:
         project = await self._projects.get(project_id, principal, ProjectRole.OWNER)
         if not await self._projects.members.remove(project.id, user_id):
             raise ProjectMemberNotFoundError("That person is not a member of this project")
+        await self._projects.team_changed(project.id)

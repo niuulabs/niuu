@@ -345,6 +345,41 @@ describe('ProjectIntegrations', () => {
     expect(await screen.findByText('Linear')).toBeInTheDocument();
   });
 
+  it('finishes an install made on another cluster when the person comes back', async () => {
+    const user = userEvent.setup();
+    const base = createMockVolundrService();
+    vi.spyOn(window, 'open').mockReturnValue(null);
+    let elsewhere = false;
+    renderRealms(PAGE, {
+      volundr: {
+        ...base,
+        startTeamOAuth: async () => ({ url: 'https://linear.example.com' }),
+        getTeamIntegrations: async (project) => {
+          const held = await base.getTeamIntegrations(project);
+          if (!elsewhere) return held;
+          return [...held, { ...held[0]!, id: 'conn-linear', slug: 'linear', available: false }];
+        },
+      },
+    });
+    await screen.findByTestId(`project-integration-${SLACK}`);
+    const connect = screen.getByRole('button', { name: 'Connect' });
+    await waitFor(() => expect(connect).toBeEnabled());
+    await user.click(connect);
+    const picker = await screen.findByTestId('project-integration-connect');
+    await user.click(within(picker).getByRole('button', { name: 'Linear' }));
+    await user.click(within(picker).getByRole('button', { name: 'Install Linear' }));
+    await within(picker).findByText('Finish approval in the provider window.');
+
+    elsewhere = true;
+    act(() => void window.dispatchEvent(new Event('focus')));
+    await waitFor(() =>
+      expect(screen.queryByTestId('project-integration-connect')).not.toBeInTheDocument(),
+    );
+    const linear = await screen.findByTestId('project-integration-conn-linear');
+    expect(within(linear).getByText('Not available here')).toBeInTheDocument();
+    expect(within(linear).getByText(/does not have its credential/)).toBeInTheDocument();
+  });
+
   it('opens the provider in a window of its own when the popup was blocked, and asks for config first', async () => {
     const user = userEvent.setup();
     const base = createMockVolundrService();

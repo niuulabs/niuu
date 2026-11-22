@@ -1091,6 +1091,7 @@ describe('mock team integrations', () => {
 
   it('offers the catalog and connects a service account with its required settings', async () => {
     const service = createMockVolundrService();
+    expect(await service.getProjectTeamState(project)).toMatchObject({ home: true });
     expect((await service.getTeamIntegrationCatalog(project)).map((e) => e.slug)).toContain('jira');
     await expect(
       service.connectTeamServiceAccount(project, {
