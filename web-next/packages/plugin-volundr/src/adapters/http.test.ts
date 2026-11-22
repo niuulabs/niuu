@@ -3635,6 +3635,23 @@ describe('session read state', () => {
     });
   });
 
+  it('asks a host for its tools and names the chosen ones on the session', async () => {
+    const client = makeClient();
+    client.get.mockResolvedValue([]);
+    client.post.mockResolvedValue({ id: 's1', name: 'cad' });
+    const svc = buildVolundrHttpAdapter(client);
+
+    await svc.getAvailableMcpServers({ instanceId: 'node a' });
+    expect(client.get).toHaveBeenLastCalledWith('/mcp-servers?instance_id=node%20a');
+
+    const source = { type: 'git' as const, repo: 'r', branch: 'main' };
+    const start = { name: 'cad', source, model: 'm' };
+    await svc.startSession({ ...start, mcpServers: ['solidcraft'] });
+    expect(client.post.mock.calls.at(-1)?.[1]).toMatchObject({ mcp_servers: ['solidcraft'] });
+    await svc.startSession({ ...start, mcpServers: [] });
+    expect(client.post.mock.calls.at(-1)?.[1]).not.toHaveProperty('mcp_servers');
+  });
+
   it('sends only the Forge tool grants that were asked for', async () => {
     const client = makeClient();
     client.post.mockResolvedValue({ id: 'sess-9', name: 'n', status: 'starting', model: 'm' });

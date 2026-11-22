@@ -911,7 +911,7 @@ class SessionCreate(LaunchTarget):
         default_factory=list,
         description=(
             "Names of MCP servers to give the session, from this Forge's catalogue "
-            "(GET /api/v1/credentials/mcp-servers). An unknown name is refused"
+            "(GET /api/v1/forge/mcp-servers). An unknown name is refused"
         ),
     )
     forge_mcp: ForgeMcpSessionOptions | None = Field(

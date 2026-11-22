@@ -92,7 +92,10 @@ from volundr.adapters.inbound.rest_resources import (
     create_resources_router,
 )
 from volundr.adapters.inbound.rest_secret_requests import create_secret_requests_router
-from volundr.adapters.inbound.rest_secrets import create_canonical_secrets_router
+from volundr.adapters.inbound.rest_secrets import (
+    create_canonical_secrets_router,
+    create_forge_mcp_servers_router,
+)
 from volundr.adapters.inbound.rest_session_log import create_session_log_router
 from volundr.adapters.inbound.rest_session_members import create_session_members_router
 from volundr.adapters.inbound.rest_session_participants import (
@@ -2204,6 +2207,7 @@ def create_app(
             app.include_router(create_credentials_settings_router())
             app.include_router(create_canonical_credentials_router(credential_service))
             app.include_router(create_canonical_secrets_router(mcp_provider, secret_manager))
+            app.include_router(create_forge_mcp_servers_router(mcp_provider, guild_membership))
 
             app.include_router(create_integrations_settings_router())
             app.include_router(

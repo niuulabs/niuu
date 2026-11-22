@@ -209,6 +209,7 @@ function makeForm(overrides: Partial<WizardForm> = {}): WizardForm {
     trackerIssue: null,
     selectedCredentials: [],
     selectedIntegrations: [],
+    tools: [],
     mcpServers: [],
     envVars: [],
     setupScripts: [],
@@ -419,9 +420,16 @@ describe('LaunchWizard step components', () => {
         clusterResources={CLUSTER_RESOURCES}
         presets={[PRESET]}
         selectedPreset={PRESET}
-        availableMcpServers={[
-          { name: 'filesystem', type: 'stdio', command: 'uvx', args: ['mcp-filesystem'] },
+        toolServers={[
+          {
+            name: 'solidcraft',
+            type: 'stdio',
+            description: 'Parametric CAD',
+            version: '0.46.0',
+          },
         ]}
+        toolsError={null}
+        sessionTools={[]}
         sessionDefinitions={DEFINITIONS}
         targets={TARGETS}
         onApplyPreset={onApplyPreset}
@@ -501,7 +509,9 @@ describe('LaunchWizard step components', () => {
         clusterResources={null}
         presets={[]}
         selectedPreset={null}
-        availableMcpServers={[]}
+        toolServers={[]}
+        toolsError={null}
+        sessionTools={[]}
         sessionDefinitions={DEFINITIONS}
         targets={[]}
         onApplyPreset={vi.fn()}
@@ -527,7 +537,9 @@ describe('LaunchWizard step components', () => {
         clusterResources={null}
         presets={[]}
         selectedPreset={null}
-        availableMcpServers={[]}
+        toolServers={[]}
+        toolsError={null}
+        sessionTools={[]}
         sessionDefinitions={DEFINITIONS}
         targets={[]}
         onApplyPreset={vi.fn()}
@@ -555,7 +567,9 @@ describe('LaunchWizard step components', () => {
         clusterResources={null}
         presets={[]}
         selectedPreset={null}
-        availableMcpServers={[]}
+        toolServers={[]}
+        toolsError={null}
+        sessionTools={[]}
         sessionDefinitions={DEFINITIONS}
         targets={TARGETS}
         onApplyPreset={vi.fn()}
@@ -597,9 +611,16 @@ describe('LaunchWizard step components', () => {
         clusterResources={CLUSTER_RESOURCES}
         presets={[PRESET]}
         selectedPreset={null}
-        availableMcpServers={[
-          { name: 'filesystem', type: 'stdio', command: 'uvx', args: ['mcp-filesystem'] },
+        toolServers={[
+          {
+            name: 'solidcraft',
+            type: 'stdio',
+            description: 'Parametric CAD',
+            version: '0.46.0',
+          },
         ]}
+        toolsError={null}
+        sessionTools={[]}
         sessionDefinitions={DEFINITIONS}
         targets={TARGETS}
         onApplyPreset={vi.fn()}
@@ -614,7 +635,8 @@ describe('LaunchWizard step components', () => {
     fireEvent.change(screen.getByPlaceholderText('0'), { target: { value: '1' } });
 
     fireEvent.click(screen.getByText('show advanced'));
-    fireEvent.click(screen.getByText('filesystem'));
+    fireEvent.click(screen.getByLabelText('solidcraft'));
+    expect(screen.getByText('Parametric CAD · 0.46.0')).toBeInTheDocument();
     fireEvent.click(screen.getAllByText('remove')[0]!);
     fireEvent.change(screen.getByDisplayValue('LOG_LEVEL'), { target: { value: 'API_KEY' } });
     fireEvent.change(screen.getByDisplayValue('debug'), { target: { value: 'secret' } });
@@ -629,12 +651,7 @@ describe('LaunchWizard step components', () => {
     expect(update).toHaveBeenCalledWith({ cpu: '3' });
     expect(update).toHaveBeenCalledWith({ mem: '12Gi' });
     expect(update).toHaveBeenCalledWith({ gpu: '1' });
-    expect(update).toHaveBeenCalledWith({
-      mcpServers: [
-        { name: 'existing-mcp', type: 'stdio', command: 'uvx', args: ['server'] },
-        { name: 'filesystem', type: 'stdio', command: 'uvx', args: ['mcp-filesystem'] },
-      ],
-    });
+    expect(update).toHaveBeenCalledWith({ tools: ['solidcraft'] });
     expect(update).toHaveBeenCalledWith({ mcpServers: [] });
     expect(update).toHaveBeenCalledWith({ envVars: [{ key: 'API_KEY', value: 'debug' }] });
     expect(update).toHaveBeenCalledWith({ envVars: [{ key: 'LOG_LEVEL', value: 'secret' }] });
@@ -659,7 +676,9 @@ describe('LaunchWizard step components', () => {
         clusterResources={CLUSTER_RESOURCES}
         presets={[]}
         selectedPreset={null}
-        availableMcpServers={[]}
+        toolServers={[]}
+        toolsError={null}
+        sessionTools={[]}
         sessionDefinitions={DEFINITIONS}
         targets={TARGETS}
         onApplyPreset={vi.fn()}
@@ -691,7 +710,9 @@ describe('LaunchWizard step components', () => {
         clusterResources={CLUSTER_RESOURCES}
         presets={[]}
         selectedPreset={null}
-        availableMcpServers={[]}
+        toolServers={[]}
+        toolsError={null}
+        sessionTools={[]}
         sessionDefinitions={DEFINITIONS}
         targets={TARGETS}
         onApplyPreset={vi.fn()}
@@ -781,7 +802,9 @@ describe('LaunchWizard step components', () => {
         clusterResources={CLUSTER_RESOURCES}
         presets={[]}
         selectedPreset={null}
-        availableMcpServers={[]}
+        toolServers={[]}
+        toolsError={null}
+        sessionTools={[]}
         sessionDefinitions={DEFINITIONS}
         targets={TARGETS}
         onApplyPreset={vi.fn()}
@@ -825,7 +848,9 @@ describe('LaunchWizard step components', () => {
         clusterResources={null}
         presets={[]}
         selectedPreset={null}
-        availableMcpServers={[]}
+        toolServers={[]}
+        toolsError={null}
+        sessionTools={[]}
         sessionDefinitions={[
           {
             key: 'skuld-custom',
@@ -866,7 +891,9 @@ describe('LaunchWizard step components', () => {
         clusterResources={null}
         presets={[]}
         selectedPreset={null}
-        availableMcpServers={[]}
+        toolServers={[]}
+        toolsError={null}
+        sessionTools={[]}
         sessionDefinitions={[
           {
             key: 'skuld-custom',

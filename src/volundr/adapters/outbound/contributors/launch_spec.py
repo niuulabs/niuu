@@ -17,7 +17,7 @@ from volundr.domain.ports import (
     SessionContribution,
     SessionContributor,
 )
-from volundr.domain.services.session_mcp_servers import catalogue_entries
+from volundr.domain.services.session_mcp_servers import catalogue_entries, refuse_own_programs
 
 logger = logging.getLogger(__name__)
 
@@ -67,7 +67,8 @@ class LaunchSpecContributor(SessionContributor):
 
     def _mcp_server(self, server: dict[str, Any]) -> dict[str, Any]:
         """A launch spec's server; one that gives only a name is the catalogue's."""
-        if any(server.get(key) for key in ("command", "url", "program")):
+        refuse_own_programs([server])
+        if server.get("command") or server.get("url"):
             return server
         return catalogue_entries([str(server.get("name") or "")], self._mcp_server_provider)[0]
 

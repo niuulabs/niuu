@@ -30,10 +30,16 @@ mcpServers:
 - `command` is the executable's path inside the archive.
 - To upgrade, change the version, URLs and digests. Sessions that start afterwards get it.
 
-`GET /api/v1/credentials/mcp-servers` lists the catalogue, with each program's version.
+`GET /api/v1/forge/mcp-servers` lists the catalogue, with each program's version.
+
+Only this list may name a program. A user's launch spec that brings its own is refused, so
+which tools a Forge installs is its operator's decision. What an agent itself downloads
+inside a session is governed by the session's network policy, not by this list.
 
 ## Asking for a tool
 
+- The New session page (**Tools**) and the launch wizard (**Access → Integrations**) list
+  the chosen host's catalogue, each entry on or off for that session. A team takes none yet.
 - `POST /api/v1/forge/sessions` with `"mcp_servers": ["solidcraft"]`.
 - The Forge MCP's `create_session` with `mcp_servers`, so a coordinator gives its workers
   the tools it has itself.

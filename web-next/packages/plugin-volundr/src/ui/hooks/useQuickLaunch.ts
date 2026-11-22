@@ -55,6 +55,8 @@ export interface QuickLaunchRequest {
   model?: string;
   /** Credentials and integrations to attach; omitted means the server's default set. */
   integrationIds?: string[];
+  /** Names of the host's MCP servers to turn on. */
+  mcpServers?: string[];
   /** Forge MCP grants for the session; omitted means none beyond the host's defaults. */
   forgeMcp?: ForgeMcpSessionOptions;
 }
@@ -127,6 +129,7 @@ export function useQuickLaunch() {
           initialPrompt: request.initialPrompt?.trim() || undefined,
           personaName: request.personaName?.trim() || undefined,
           integrationIds: request.integrationIds,
+          mcpServers: request.mcpServers,
           forgeMcp: request.forgeMcp,
           terminalRestricted: false,
           workloadConfig: {},

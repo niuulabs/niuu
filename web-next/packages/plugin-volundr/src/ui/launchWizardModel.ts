@@ -40,6 +40,8 @@ export interface WizardForm {
   trackerIssue: TrackerIssue | null;
   selectedCredentials: string[];
   selectedIntegrations: string[];
+  /** Names of the host's MCP servers the session turns on. */
+  tools: string[];
   mcpServers: McpServerConfig[];
   envVars: Array<{ key: string; value: string }>;
   setupScripts: string[];

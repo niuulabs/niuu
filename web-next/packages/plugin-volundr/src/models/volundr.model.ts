@@ -851,6 +851,10 @@ export interface McpServerConfig {
   url?: string;
   args?: string[];
   env?: Record<string, string>;
+  /** What the operator says it is for; only catalogue servers have one. */
+  description?: string;
+  /** Version of the pinned program a catalogue server runs, if any. */
+  version?: string;
 }
 
 // ---------------------------------------------------------------------------

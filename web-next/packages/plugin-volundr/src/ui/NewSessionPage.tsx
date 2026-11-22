@@ -37,6 +37,8 @@ import { useSessionList } from './hooks/useSessionStore';
 import { useForgePreference } from './useForgePreference';
 import { SESSION_DOT, compareSessionsByActivity } from './sessions/sessionLabels';
 import { LaunchWizard } from './LaunchWizard';
+import { SessionToolOptions } from './SessionToolOptions';
+import { offeredTools, useSessionTools } from './hooks/useSessionTools';
 import { TaskToPicker, TeamMembersEditor, TeamRoomPreview } from './NewTeamPanels';
 import {
   buildStartTeamRequest,
@@ -119,6 +121,7 @@ export function NewSessionPage() {
     readParam(search.mode) === 'team' ? 'team' : 'one',
   );
   const [agents, setAgents] = useState<TeamAgentDraft[]>(initialTeamAgents);
+  const [tools, setTools] = useState<string[]>([]);
   const [taskTo, setTaskTo] = useState<SessionTeamTaskTo>('lead');
   const [invitees, setInvitees] = useState<TeamInvitee[]>([]);
 
@@ -179,6 +182,10 @@ export function NewSessionPage() {
     targets.find((target) => target.id === preferredHost) ??
     targets.find((target) => target.isDefault) ??
     targets[0];
+  // Offered for the host the session starts on; a team's agents take none yet.
+  const toolsQuery = useSessionTools(host?.id, mode !== 'team' && targetsQuery.isSuccess);
+  const toolServers = useMemo(() => toolsQuery.data ?? [], [toolsQuery.data]);
+  const sessionTools = offeredTools(tools, toolServers);
   const recent = useMemo(
     () => [...(sessionsQuery.data ?? [])].sort(compareSessionsByActivity).slice(0, RECENT_LIMIT),
     [sessionsQuery.data],
@@ -258,6 +265,7 @@ export function NewSessionPage() {
           repoUrl: repoValue.trim(),
           local: false,
         }),
+        mcpServers: sessionTools,
       },
       backTo ? { returnTo: backTo } : {},
     );
@@ -277,6 +285,7 @@ export function NewSessionPage() {
           initialPrompt: task,
           definition: selectedDefinition?.key ?? '',
           model: selectedDefinition?.defaultModel ?? '',
+          tools: sessionTools,
         }}
       />
     );
@@ -488,6 +497,29 @@ export function NewSessionPage() {
                   ))}
                 </select>
               </Field>
+            ) : null}
+
+            {toolServers.length > 0 ? (
+              <fieldset
+                className="niuu:m-0 niuu:flex niuu:flex-col niuu:gap-2 niuu:border-0 niuu:p-0"
+                data-testid="new-session-tools"
+              >
+                <legend className="niuu:mb-2 niuu:p-0 niuu:text-xs niuu:font-semibold niuu:text-text-primary">
+                  Tools
+                </legend>
+                <div className="niuu:grid niuu:grid-cols-1 niuu:gap-2 niuu:sm:grid-cols-2">
+                  <SessionToolOptions
+                    servers={toolServers}
+                    selected={sessionTools}
+                    onChange={setTools}
+                  />
+                </div>
+              </fieldset>
+            ) : null}
+            {toolsQuery.error ? (
+              <p role="alert" className="niuu:text-xs niuu:text-critical">
+                This host&apos;s tools could not be loaded: {toolsQuery.error.message}
+              </p>
             ) : null}
           </>
         )}

@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
+from volundr.adapters.inbound.rest_launch_specs import LaunchSpecCreate, LaunchSpecUpdate
 from volundr.adapters.outbound.config_mcp_servers import ConfigMCPServerProvider
 from volundr.config import MCPServerEntry
 from volundr.domain.services.session import SessionService
@@ -93,3 +94,12 @@ def test_the_session_service_refuses_an_unknown_name() -> None:
     service.check_mcp_servers(["cad"])
     with pytest.raises(UnknownMCPServerError):
         service.check_mcp_servers(["cda"])
+
+
+@pytest.mark.parametrize("model", [LaunchSpecCreate, LaunchSpecUpdate])
+def test_a_launch_spec_cannot_bring_its_own_program(model) -> None:
+    own = {"name": "cad", "program": PROGRAM}
+    with pytest.raises(ValidationError, match="Only this Forge's mcp_servers catalogue"):
+        model(name="mine", mcp_servers=[own])
+    assert model(name="mine", mcp_servers=[{"name": "cad"}]).mcp_servers == [{"name": "cad"}]
+    assert LaunchSpecUpdate(mcp_servers=None).mcp_servers is None

@@ -666,6 +666,7 @@ function buildStartSessionBody(
     workspace_id: config.workspaceId,
     credential_names: config.credentialNames,
     integration_ids: config.integrationIds,
+    mcp_servers: config.mcpServers?.length ? config.mcpServers : undefined,
     resource_config: config.resourceConfig,
     system_prompt: config.systemPrompt,
     initial_prompt: config.initialPrompt,
@@ -2547,7 +2548,12 @@ export function buildVolundrHttpAdapter(
         : catalogClient.post<VolundrLaunchSpec>('/launch-specs', spec),
     deleteLaunchSpec: (id) => catalogClient.delete<void>(`/launch-specs/${id}`),
 
-    getAvailableMcpServers: () => forgeClient.get<McpServerConfig[]>('/mcp-servers'),
+    getAvailableMcpServers: (options) =>
+      forgeClient.get<McpServerConfig[]>(
+        options?.instanceId
+          ? `/mcp-servers?instance_id=${encodeURIComponent(options.instanceId)}`
+          : '/mcp-servers',
+      ),
     getAvailableSecrets: () => client.get<string[]>('/secrets'),
     createSecret: (name, data) =>
       client.post<{ name: string; keys: string[] }>('/secrets', { name, data }),

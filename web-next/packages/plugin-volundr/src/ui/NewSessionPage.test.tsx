@@ -133,6 +133,48 @@ describe('NewSessionPage', () => {
     );
   });
 
+  it('turns on the tools the host offers, and only those', async () => {
+    const service = createMockVolundrService();
+    const getTools = vi.fn().mockResolvedValue([
+      { name: 'solidcraft', type: 'stdio', description: 'Parametric CAD', version: '0.46.0' },
+      { name: 'docs', type: 'http' },
+    ]);
+    service.getAvailableMcpServers = getTools;
+    const startSession = vi.fn(service.startSession);
+    service.startSession = startSession;
+    setSearch({ repo: 'github.com/niuulabs/volundr', branch: 'main' });
+    renderPage(service);
+
+    const solidcraft = await screen.findByLabelText('solidcraft');
+    expect(screen.getByText('Parametric CAD · 0.46.0')).toBeInTheDocument();
+    const [host] = await service.getTargets();
+    expect(getTools).toHaveBeenCalledWith({ instanceId: host!.id });
+    fireEvent.change(screen.getByTestId('new-session-task'), { target: { value: 'Model a hub' } });
+    fireEvent.click(solidcraft);
+    fireEvent.click(screen.getByLabelText('docs'));
+    fireEvent.click(screen.getByLabelText('docs'));
+    await waitFor(() => expect(screen.getByTestId('new-session-start')).toBeEnabled());
+    fireEvent.click(screen.getByTestId('new-session-start'));
+
+    await waitFor(() => expect(startSession).toHaveBeenCalledTimes(1));
+    expect(startSession.mock.calls[0]![0].mcpServers).toEqual(['solidcraft']);
+  });
+
+  it('shows no tools where the host offers none, and says when they cannot be read', async () => {
+    const service = createMockVolundrService();
+    service.getAvailableMcpServers = vi.fn().mockResolvedValue([]);
+    const { unmount } = renderPage(service);
+    await screen.findByTestId('new-session-engine-codex');
+    expect(screen.queryByTestId('new-session-tools')).not.toBeInTheDocument();
+    unmount();
+
+    service.getAvailableMcpServers = vi.fn().mockRejectedValue(new Error('no catalogue'));
+    renderPage(service);
+    expect(
+      await screen.findByText("This host's tools could not be loaded: no catalogue"),
+    ).toBeInTheDocument();
+  });
+
   it('starts a session with the chosen engine and repository, then opens it', async () => {
     const service = createMockVolundrService();
     const startSession = vi.fn(service.startSession);

@@ -13,6 +13,24 @@ from credentials.ports import MCPServerProvider
 MCP_SERVERS_KEY = "mcp_servers"
 
 
+class ProgramNotInCatalogueError(ValueError):
+    """A launch spec brings its own program; only the operator's catalogue may name one."""
+
+
+def refuse_own_programs(servers: Iterable[dict[str, Any]]) -> None:
+    """Refuse servers that name a program to install: what a Forge installs, its operator decides.
+
+    Raises:
+        ProgramNotInCatalogueError: for the first server that does.
+    """
+    for server in servers:
+        if "program" in server:
+            raise ProgramNotInCatalogueError(
+                f"MCP server {server.get('name')!r} brings its own program. Only this Forge's "
+                "mcp_servers catalogue may name one; give the server's catalogue name alone"
+            )
+
+
 class UnknownMCPServerError(ValueError):
     """A session asks for an MCP server the catalogue does not have."""
 

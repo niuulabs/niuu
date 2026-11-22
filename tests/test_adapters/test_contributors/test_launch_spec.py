@@ -11,7 +11,10 @@ from volundr.adapters.outbound.contributors.launch_spec import LaunchSpecContrib
 from volundr.config import MCPServerEntry
 from volundr.domain.models import GitSource, LaunchSpec, Session
 from volundr.domain.ports import SessionContext
-from volundr.domain.services.session_mcp_servers import UnknownMCPServerError
+from volundr.domain.services.session_mcp_servers import (
+    ProgramNotInCatalogueError,
+    UnknownMCPServerError,
+)
 
 
 @pytest.fixture
@@ -166,4 +169,15 @@ async def test_a_name_the_catalogue_does_not_have_fails_the_launch(session: Sess
     contributor = LaunchSpecContributor(launch_spec_provider=provider)
 
     with pytest.raises(UnknownMCPServerError):
+        await contributor.contribute(session, SessionContext(launch_spec="cad"))
+
+
+async def test_a_program_outside_the_catalogue_fails_the_launch(session: Session) -> None:
+    provider = MagicMock()
+    provider.get.return_value = LaunchSpec(
+        name="cad", mcp_servers=[{"name": "cad", "program": {"version": "1"}}]
+    )
+    contributor = LaunchSpecContributor(launch_spec_provider=provider)
+
+    with pytest.raises(ProgramNotInCatalogueError):
         await contributor.contribute(session, SessionContext(launch_spec="cad"))

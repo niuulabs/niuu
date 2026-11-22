@@ -6,10 +6,13 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from tests.support.node_scope import NODE_MEMBERSHIP, OTHER_INSTANCE, OTHER_INSTANCE_DETAIL
+from volundr.adapters.inbound.auth import extract_principal
 from volundr.adapters.inbound.rest_secrets import (
     MCPServerResponse,
     SecretResponse,
     _build_secrets_router,
+    create_forge_mcp_servers_router,
     create_secrets_router,
 )
 from volundr.adapters.outbound.config_mcp_servers import ConfigMCPServerProvider
@@ -291,3 +294,26 @@ class TestCreateSecret:
         )
         assert response.status_code == 400
         assert "invalid" in response.json()["detail"].lower()
+
+
+class TestForgeMCPServers:
+    """A UI scoped to one node reads that node's catalogue from its Forge API."""
+
+    @staticmethod
+    def _client(membership=NODE_MEMBERSHIP) -> TestClient:
+        app = FastAPI()
+        provider = ConfigMCPServerProvider([MCPServerEntry(name="docs", url="https://docs/mcp")])
+        app.include_router(create_forge_mcp_servers_router(provider, membership))
+        app.dependency_overrides[extract_principal] = lambda: None
+        return TestClient(app)
+
+    def test_the_node_lists_its_catalogue(self):
+        own = NODE_MEMBERSHIP.instance.id
+        for path in ("/api/v1/forge/mcp-servers", f"/api/v1/forge/mcp-servers?instance_id={own}"):
+            response = self._client().get(path)
+            assert response.status_code == 200
+            assert [server["name"] for server in response.json()] == ["docs"]
+
+    def test_another_forges_catalogue_is_not_this_nodes_to_give(self):
+        response = self._client().get(f"/api/v1/forge/mcp-servers?instance_id={OTHER_INSTANCE}")
+        assert (response.status_code, response.json()["detail"]) == (404, OTHER_INSTANCE_DETAIL)

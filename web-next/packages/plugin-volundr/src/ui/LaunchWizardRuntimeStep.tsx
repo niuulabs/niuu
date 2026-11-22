@@ -39,6 +39,7 @@ import {
   SectionCard,
   WizardSelect,
 } from './LaunchWizardPrimitives';
+import { SessionToolOptions } from './SessionToolOptions';
 import { AdvancedRuntimeSection } from './LaunchWizardAdvancedRuntime';
 import { EngineSelect } from './EngineSelect';
 import { availableEngines, providerModels, withEngineProvider } from './launchEngines';
@@ -58,7 +59,9 @@ export function RuntimeStep({
   clusterResources,
   presets,
   selectedPreset,
-  availableMcpServers,
+  toolServers,
+  toolsError,
+  sessionTools,
   sessionDefinitions,
   integrationCatalog = [],
   providerError = null,
@@ -77,7 +80,10 @@ export function RuntimeStep({
   clusterResources: ClusterResourceInfo | null;
   presets: VolundrLaunchSpec[];
   selectedPreset: VolundrLaunchSpec | null;
-  availableMcpServers: McpServerConfig[];
+  /** The MCP servers the chosen host's operator offers, and those this session turns on. */
+  toolServers: McpServerConfig[];
+  toolsError: Error | null;
+  sessionTools: string[];
   sessionDefinitions: SessionDefinition[];
   /** The integration catalog; says which model vendor each AI provider unlocks. */
   integrationCatalog?: CatalogEntry[];
@@ -523,16 +529,22 @@ export function RuntimeStep({
                   </span>
                 </label>
               ))}
+              <SessionToolOptions
+                servers={toolServers}
+                selected={sessionTools}
+                onChange={(tools) => update({ tools })}
+              />
             </div>
+            {toolsError ? (
+              <p role="alert" className="niuu:text-xs niuu:text-critical">
+                This host&apos;s tools could not be loaded: {toolsError.message}
+              </p>
+            ) : null}
           </div>
         </div>
       </SectionCard>
 
-      <AdvancedRuntimeSection
-        form={form}
-        update={update}
-        availableMcpServers={availableMcpServers}
-      />
+      <AdvancedRuntimeSection form={form} update={update} />
     </div>
   );
 }
