@@ -456,35 +456,29 @@ class TestDeploymentTemplate:
 
         assert pod_spec["securityContext"]["fsGroupChangePolicy"] == "OnRootMismatch"
 
-    @pytest.mark.parametrize("repo_url", ["", "https://github.com/org/repo"])
-    def test_services_setup_precreates_dynamic_nginx_include(self, tmp_path, repo_url):
-        """nginx must not wait on devrunner for the include it loads at startup."""
+    def test_pod_has_no_local_service_path(self, tmp_path):
+        """The terminal sidecar is served; no /svc/ route or services include is."""
+        rendered = _render_skuld_chart(tmp_path, {"session": {"id": "abc"}})
+        pod_spec = _deployment_from_rendered(rendered)["spec"]["template"]["spec"]
+
+        assert "initContainers" not in pod_spec
+        nginx = next(c for c in pod_spec["containers"] if c["name"] == "nginx")
+        assert [m["name"] for m in nginx["volumeMounts"]] == ["nginx-config"]
+        assert "devrunner" in [c["name"] for c in pod_spec["containers"]]
+        assert "location /terminal/" in rendered
+        assert ".services" not in rendered
+        assert "/svc" not in rendered
+
+    def test_retired_port_range_value_still_renders(self, tmp_path):
+        """Values written for the removed service runner must not break a release."""
         rendered = _render_skuld_chart(
-            tmp_path, {"session": {"id": "abc"}, "git": {"repoUrl": repo_url}}
+            tmp_path, {"localServices": {"portRange": {"start": 9001, "end": 9020}}}
         )
-        pod_spec = _deployment_from_rendered(rendered)["spec"]["template"]["spec"]
-        init_containers = pod_spec["initContainers"]
 
-        assert init_containers[-1]["name"] == "services-setup"
-        script = init_containers[-1]["args"][0]
-        assert 'WORKSPACE="/volundr/sessions/abc/workspace"' in script
-        assert 'mkdir -p "$WORKSPACE/.services"' in script
-        assert 'touch "$WORKSPACE/.services/nginx.conf"' in script
-        assert init_containers[-1]["securityContext"] == {
-            "runAsUser": 1000,
-            "allowPrivilegeEscalation": False,
-        }
-        assert init_containers[-1]["volumeMounts"] == [
-            {"name": "sessions", "mountPath": "/volundr/sessions"}
+        assert "devrunner" in [
+            c["name"]
+            for c in _deployment_from_rendered(rendered)["spec"]["template"]["spec"]["containers"]
         ]
-        assert not any(".services" in " ".join(c.get("args", [])) for c in init_containers[:-1])
-
-    def test_services_setup_omitted_without_local_services(self, tmp_path):
-        """No nginx include is rendered, so there is nothing to pre-create."""
-        rendered = _render_skuld_chart(tmp_path, {"localServices": {"enabled": False}})
-        pod_spec = _deployment_from_rendered(rendered)["spec"]["template"]["spec"]
-
-        assert "services-setup" not in [c["name"] for c in pod_spec.get("initContainers", [])]
 
     def test_has_no_reh_container(self, deployment_yaml):
         """Test deployment no longer contains the retired REH container."""
@@ -561,11 +555,8 @@ class TestDeploymentTemplate:
         deployment = _deployment_from_rendered(rendered)
         pod_spec = deployment["spec"]["template"]["spec"]
 
-        assert [container["name"] for container in pod_spec["initContainers"]] == [
-            "services-setup",
-            "write-config",
-        ]
-        assert pod_spec["initContainers"][1]["securityContext"] == {
+        assert [container["name"] for container in pod_spec["initContainers"]] == ["write-config"]
+        assert pod_spec["initContainers"][0]["securityContext"] == {
             "runAsUser": 1000,
             "runAsGroup": 1000,
             "runAsNonRoot": True,

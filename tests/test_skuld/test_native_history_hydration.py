@@ -323,7 +323,6 @@ async def test_in_progress_snapshot_does_not_mutate_after_text_or_tool_refresh(t
 
 
 async def test_startup_hydrates_before_creating_or_warming_transport(tmp_path, monkeypatch):
-    module = importlib.import_module("skuld.broker")
     broker = _broker(tmp_path)
     expected = ["Review Forge", "Original work"]
 
@@ -338,9 +337,6 @@ async def test_startup_hydrates_before_creating_or_warming_transport(tmp_path, m
     monkeypatch.setattr(broker, "_auto_start_transport", AsyncMock(side_effect=warm))
     for name in ("_ensure_session_trace_started", "_init_telegram_channel", "_init_event_log"):
         monkeypatch.setattr(broker, name, AsyncMock())
-    manager = MagicMock()
-    manager.init = AsyncMock()
-    monkeypatch.setattr(module, "ServiceManager", MagicMock(return_value=manager))
     client, _ = _client()
     async with client:
         broker._http_client = client

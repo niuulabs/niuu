@@ -193,11 +193,7 @@ class TestStartupWithFailingTelegram:
     async def _start(self, broker: Broker) -> None:
         transport = AsyncMock()
         transport.on_event = MagicMock()
-        with (
-            patch.object(broker, "_create_transport", return_value=transport),
-            patch("skuld.broker.ServiceManager") as service_manager_cls,
-        ):
-            service_manager_cls.return_value = AsyncMock()
+        with patch.object(broker, "_create_transport", return_value=transport):
             await broker.startup()
 
     async def test_startup_reports_the_telegram_reason_and_stays_unready(self, tmp_path):

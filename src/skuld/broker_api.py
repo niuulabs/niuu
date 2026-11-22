@@ -73,7 +73,6 @@ from skuld.presented_durable import (
 )
 from skuld.preview import PreviewMiddleware
 from skuld.room_role_port import RoomRoleResolutionError
-from skuld.service_manager import ServiceCreateRequest, ServiceStatus
 from skuld.voice.channel import register_voice_routes
 from skuld.websocket_auth import author_from_headers
 from skuld.workflow_steps import WorkflowOfferRefusedError, WorkflowStepNotHostedError
@@ -293,9 +292,9 @@ async def _effective_room_role(request: Request) -> str | None:
       (niuu.session_proxy) resolves and stamps the header itself from
       session_participants grants, so trust it — a missing header means
       viewer, except a loopback caller carrying no x-forwarded-for (same-pod
-      tooling a reverse proxy could never present as: containers/skuld/svc,
-      tmux_interactive.py's present-file/hooks calls, Ravn/Ting service
-      clients dialing localhost).
+      tooling a reverse proxy could never present as: tmux_interactive.py's
+      present-file/hooks calls, Ravn/Ting service clients dialing
+      localhost).
     - "remote" (Kubernetes/OpenShell/VM pods deliberately opted in — see
       ``PodManagerConfig.room_role_source``): asks Forge for this caller's
       grant via ``broker._room_role_resolver``
@@ -315,11 +314,11 @@ async def _effective_room_role(request: Request) -> str | None:
         identity = _resolve_http_principal(request, cfg)
         if identity is None:
             # Same-pod tooling exception "proxy" mode already carries
-            # (containers/skuld/svc, hooks, present-file, in-pod Ravn/Ting
-            # service clients dialing localhost): a genuine loopback caller
-            # presenting no verified identity headers AND no x-forwarded-for
-            # cannot be a browser routed through the deployment's Gateway —
-            # only in-pod callers can present as loopback with no XFF.
+            # (hooks, present-file, in-pod Ravn/Ting service clients dialing
+            # localhost): a genuine loopback caller presenting no verified
+            # identity headers AND no x-forwarded-for cannot be a browser routed
+            # through the deployment's Gateway — only in-pod callers can present
+            # as loopback with no XFF.
             if _is_loopback_http_client(request) and not request.headers.get("x-forwarded-for"):
                 return "owner"
             return None
@@ -929,73 +928,6 @@ async def receive_claude_hook(payload: dict[str, Any]) -> dict[str, bool]:
     """Receive Claude Code HTTP hook callbacks for interactive tmux sessions."""
     await broker.handle_claude_hook(payload)
     return {"ok": True}
-
-
-# --- Service Management API ---
-
-
-@app.post("/api/services", response_model=ServiceStatus)
-async def create_service(request: ServiceCreateRequest) -> ServiceStatus:
-    """Start a new local service."""
-    if not broker.service_manager:
-        raise HTTPException(status_code=503, detail="Service manager not initialized")
-    return await broker.service_manager.add_service(request)
-
-
-@app.get("/api/services", response_model=list[ServiceStatus])
-async def list_services() -> list[ServiceStatus]:
-    """List all local services."""
-    if not broker.service_manager:
-        raise HTTPException(status_code=503, detail="Service manager not initialized")
-    return await broker.service_manager.list_services()
-
-
-@app.get("/api/services/{name}", response_model=ServiceStatus)
-async def get_service(name: str) -> ServiceStatus:
-    """Get status of a specific service."""
-    if not broker.service_manager:
-        raise HTTPException(status_code=503, detail="Service manager not initialized")
-
-    result = await broker.service_manager.get_service(name)
-    if not result:
-        raise HTTPException(status_code=404, detail=f"Service '{name}' not found")
-    return result
-
-
-@app.delete("/api/services/{name}")
-async def delete_service(name: str) -> dict:
-    """Stop and remove a local service."""
-    if not broker.service_manager:
-        raise HTTPException(status_code=503, detail="Service manager not initialized")
-
-    removed = await broker.service_manager.remove_service(name)
-    if not removed:
-        raise HTTPException(status_code=404, detail=f"Service '{name}' not found")
-    return {"status": "removed", "name": name}
-
-
-@app.get("/api/services/{name}/logs")
-async def get_service_logs(name: str, lines: int = 100) -> dict:
-    """Get logs for a service."""
-    if not broker.service_manager:
-        raise HTTPException(status_code=503, detail="Service manager not initialized")
-
-    logs = await broker.service_manager.get_logs(name, lines=lines)
-    if logs is None:
-        raise HTTPException(status_code=404, detail=f"No logs found for service '{name}'")
-    return {"name": name, "lines": lines, "logs": logs}
-
-
-@app.post("/api/services/{name}/restart", response_model=ServiceStatus)
-async def restart_service(name: str) -> ServiceStatus:
-    """Restart a local service."""
-    if not broker.service_manager:
-        raise HTTPException(status_code=503, detail="Service manager not initialized")
-
-    result = await broker.service_manager.restart_service(name)
-    if not result:
-        raise HTTPException(status_code=404, detail=f"Service '{name}' not found")
-    return result
 
 
 register_file_routes(app, lambda: broker)

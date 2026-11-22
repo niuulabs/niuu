@@ -212,9 +212,6 @@ spec:
                 fi
                 echo "Repository cloned successfully"
               fi
-              mkdir -p "$WORKSPACE/.services"
-              touch "$WORKSPACE/.services/nginx.conf"
-              echo "Ensured dynamic service nginx config exists"
           {{- if or .Values.homeVolume.enabled (and .Values.git.credentials.secretName (not .Values.git.credentials.tokenFile)) }}
           env:
             {{- if .Values.homeVolume.enabled }}
