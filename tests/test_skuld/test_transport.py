@@ -221,7 +221,6 @@ class TestSubprocessTransport:
         assert transport._skip_permissions is False
         assert transport._agent_teams is False
         assert transport._system_prompt == ""
-        assert transport._initial_prompt == ""
         assert transport.session_id is None
         assert transport.last_result is None
         assert transport.is_alive is False
@@ -233,14 +232,12 @@ class TestSubprocessTransport:
             skip_permissions=False,
             agent_teams=True,
             system_prompt="Be precise.",
-            initial_prompt="Fix the bug.",
         )
 
         assert transport._model == "claude-opus-4-6"
         assert transport._skip_permissions is False
         assert transport._agent_teams is True
         assert transport._system_prompt == "Be precise."
-        assert transport._initial_prompt == "Fix the bug."
 
     def test_init_with_mcp_servers(self, tmp_path):
         transport = SubprocessTransport(
@@ -318,17 +315,7 @@ class TestSubprocessTransport:
                 await transport.send_message("coordinate")
 
     @pytest.mark.asyncio
-    async def test_start_with_initial_prompt_sends_message(self, tmp_path):
-        transport = SubprocessTransport(str(tmp_path), initial_prompt="bootstrap prompt")
-
-        with patch.object(transport, "send_message", new_callable=AsyncMock) as mock_send:
-            await transport.start()
-
-        mock_send.assert_awaited_once_with("bootstrap prompt")
-        assert transport._initial_prompt_sent is True
-
-    @pytest.mark.asyncio
-    async def test_start_without_initial_prompt_no_send(self, transport):
+    async def test_start_sends_no_message(self, transport):
         with patch.object(transport, "send_message", new_callable=AsyncMock) as mock_send:
             await transport.start()
 
@@ -1439,22 +1426,19 @@ class TestSdkWebSocketTransport:
 
         callback.assert_called_once_with(hook_msg)
 
-    # --- System prompt and initial prompt ---
+    # --- System prompt ---
 
-    def test_init_prompt_defaults_empty(self, transport):
+    def test_init_system_prompt_defaults_empty(self, transport):
         assert transport._system_prompt == ""
-        assert transport._initial_prompt == ""
 
-    def test_init_stores_prompts(self, tmp_path):
+    def test_init_stores_system_prompt(self, tmp_path):
         t = SdkWebSocketTransport(
             workspace_dir=str(tmp_path),
             sdk_port=8081,
             session_id="s1",
             system_prompt="You are an agent.",
-            initial_prompt="Fix the bug.",
         )
         assert t._system_prompt == "You are an agent."
-        assert t._initial_prompt == "Fix the bug."
 
     @pytest.mark.asyncio
     async def test_spawn_with_system_prompt(self, tmp_path):
@@ -1527,34 +1511,7 @@ class TestSdkWebSocketTransport:
             assert "--append-system-prompt" not in call_args
 
     @pytest.mark.asyncio
-    async def test_spawn_with_initial_prompt_queues_pending_message(self, tmp_path):
-        t = SdkWebSocketTransport(
-            workspace_dir=str(tmp_path),
-            sdk_port=8081,
-            session_id="s1",
-            initial_prompt="Break down ticket TK-123.",
-        )
-        with patch(
-            "skuld.transports.sdk_websocket.asyncio.create_subprocess_exec",
-            new_callable=AsyncMock,
-        ) as mock_exec:
-            mock_process = MagicMock()
-            mock_process.stdout = None
-            mock_process.stderr = None
-            mock_exec.return_value = mock_process
-
-            await t.start()
-
-            # Initial prompt is queued as a pending message, not passed via -p
-            call_args = mock_exec.call_args[0]
-            assert "-p" not in call_args
-            assert len(t._pending_messages) == 1
-            msg = t._pending_messages[0]
-            assert msg["type"] == "user"
-            assert msg["message"]["content"] == "Break down ticket TK-123."
-
-    @pytest.mark.asyncio
-    async def test_spawn_without_initial_prompt_no_pending(self, transport):
+    async def test_spawn_queues_no_message(self, transport):
         with patch(
             "skuld.transports.sdk_websocket.asyncio.create_subprocess_exec",
             new_callable=AsyncMock,

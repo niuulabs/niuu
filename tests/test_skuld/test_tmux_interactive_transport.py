@@ -1868,22 +1868,20 @@ async def test_pasted_content_wrapped_prompt_still_correlates(tmp_path: Path) ->
 
 
 @pytest.mark.asyncio
-async def test_initial_prompt_without_ids_still_captures_the_native_session(
+async def test_a_message_without_ids_still_captures_the_native_session(
     tmp_path: Path,
 ) -> None:
     """Regression from a Work runner session (gtc-web-sdk, 30 Sep 2026): a session
-    started with an initial prompt and never messaged again. The initial prompt is
+    started with an initial prompt and never messaged again. A message
     pasted without a msg_id/request_id, so the matched correlation looked like "no
     match", the native id was never captured, every AskUserQuestion failed
     ``ControlRecoveryError("This question has no verifiable native tool identity")``,
     and a terminal answer could not retire the card (awaiting_input stuck)."""
     native = "5d3a6d7c-1f3b-4f7e-9d0e-2b1a4c6e8f00"
-    transport = FakeTmuxInteractiveTransport(
-        str(tmp_path), sdk_port=8081, initial_prompt="Review the GTC web SDK."
-    )
+    transport = FakeTmuxInteractiveTransport(str(tmp_path), sdk_port=8081)
     events = await _collect_events(transport)
     await transport.start()
-    await transport.send_message("Review the GTC web SDK.")  # as the startup seed does
+    await transport.send_message("Review the GTC web SDK.")
     await transport.handle_claude_hook(
         {
             "hook_event_name": "UserPromptSubmit",
@@ -2090,19 +2088,6 @@ async def test_turn_end_resolves_stale_prompt(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_initial_prompt_waits_for_repl_ready_then_delivers(tmp_path: Path) -> None:
-    # The seed prompt must land only once the REPL prompt has rendered — pasting it
-    # into a still-booting Claude made it parse as a slash command (/You...).
-    transport = FakeTmuxInteractiveTransport(str(tmp_path), initial_prompt="seed prompt here")
-    transport.capture_stdout = "Claude Code v2\n❯ "  # readiness marker present
-    await transport.start()
-    await transport.stop()
-    assert any("seed prompt here" in buf for buf in transport.loaded_buffers), (
-        "the seed prompt must be delivered after the REPL prompt rendered"
-    )
-
-
-@pytest.mark.asyncio
 async def test_user_message_waits_for_repl_ready_before_pasting(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -2135,18 +2120,15 @@ async def test_user_message_waits_for_repl_ready_before_pasting(
 
 
 @pytest.mark.asyncio
-async def test_initial_prompt_is_not_sent_if_repl_never_signals(
-    tmp_path: Path, monkeypatch
-) -> None:
+async def test_a_repl_that_never_signals_fails_the_start(tmp_path: Path, monkeypatch) -> None:
     # A bounded failure is preferable to pasting a task into an unrecognized menu.
     monkeypatch.setenv("SKULD__TMUX_REPL_READY_TIMEOUT_SECONDS", "0.2")
-    transport = FakeTmuxInteractiveTransport(str(tmp_path), initial_prompt="seed prompt")
+    transport = FakeTmuxInteractiveTransport(str(tmp_path))
     transport.capture_stdout = "still booting, no prompt yet"  # no readiness marker
     with pytest.raises(RuntimeError, match="not ready for input"):
         await transport.start()
     await transport.stop()
     assert not transport.loaded_buffers
-    assert not transport._initial_prompt_sent
 
 
 # ───────────────────────── steering pending→active correlation ─────────────

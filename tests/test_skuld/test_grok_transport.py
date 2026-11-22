@@ -63,14 +63,12 @@ class TestGrokACPTransport:
             skip_permissions=False,
             agent_teams=True,
             system_prompt="You are helpful.",
-            initial_prompt="Start by exploring the repo.",
             acp_prompt_timeout_s=600.0,
         )
         assert t._model == "grok-4.5"  # a REAL id passes through untouched
         assert t._requested_session_id == "sess-xyz"
         assert t._grok_bin_override == "/custom/grok"
         assert t._system_prompt == "You are helpful."
-        assert t._initial_prompt == "Start by exploring the repo."
         assert t._prompt_timeout == 600.0
 
     def test_tool_map_parity(self):
@@ -756,46 +754,3 @@ class TestGrokACPTransport:
         # The session/new call should have included _meta resumeHint
         # We can't easily assert the exact write without parsing, but session_id is set
         assert t.session_id == "resumed-42"
-
-    @pytest.mark.asyncio
-    async def test_start_dispatches_seeded_initial_prompt(self, tmp_path):
-        # Forge auto-start seeds the task via initial_prompt; start() must dispatch
-        # it as the first turn (session/prompt), not just log it.
-        queue: asyncio.Queue = asyncio.Queue()
-        await queue.put(b'{"jsonrpc":"2.0","id":1,"result":{}}\n')
-        await queue.put(b'{"jsonrpc":"2.0","id":2,"result":{"sessionId":"s1"}}\n')
-        await queue.put(b'{"jsonrpc":"2.0","id":3,"result":{"stopReason":"end_turn"}}\n')
-
-        async def fake_readline():
-            return await queue.get()
-
-        mock_stdout = MagicMock()
-        mock_stdout.readline = fake_readline
-
-        mock_stdin = AsyncMock()
-        mock_stdin.write = MagicMock()
-        mock_stdin.drain = AsyncMock()
-
-        mock_process = MagicMock()
-        mock_process.stdout = mock_stdout
-        mock_process.stderr = None
-        mock_process.stdin = mock_stdin
-        mock_process.returncode = None
-        mock_process.wait = AsyncMock(return_value=0)
-        mock_process.communicate = AsyncMock(return_value=(b"", b""))
-
-        t = GrokACPTransport(str(tmp_path), model="grok-build", initial_prompt="do the task")
-        with patch(
-            "skuld.transports.grok.asyncio.create_subprocess_exec",
-            new_callable=AsyncMock,
-        ) as mock_exec:
-            mock_exec.return_value = mock_process
-            await t.start()
-            assert t._initial_dispatch_task is not None
-            await asyncio.wait_for(t._initial_dispatch_task, timeout=5)
-
-        writes = b"".join(c.args[0] for c in mock_stdin.write.call_args_list)
-        assert b"session/prompt" in writes
-        assert b"do the task" in writes
-
-        await t.stop()

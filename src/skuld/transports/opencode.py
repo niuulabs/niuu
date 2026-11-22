@@ -53,7 +53,6 @@ class OpenCodeHttpTransport(CLITransport):
         model: str = "",
         skip_permissions: bool = False,
         system_prompt: str = "",
-        initial_prompt: str = "",
         opencode_port: int = 0,
         **_kwargs: object,
     ) -> None:
@@ -62,7 +61,6 @@ class OpenCodeHttpTransport(CLITransport):
         self._model = model
         self._skip_permissions = skip_permissions
         self._system_prompt = system_prompt
-        self._initial_prompt = initial_prompt
         self._opencode_port = opencode_port or _pick_free_port()
 
         self._process: asyncio.subprocess.Process | None = None
@@ -91,9 +89,6 @@ class OpenCodeHttpTransport(CLITransport):
         await self._spawn_server()
         await self._connect()
         await self._create_session()
-
-        if self._initial_prompt:
-            await self.send_message(self._initial_prompt)
 
     async def stop(self) -> None:
         self._alive = False

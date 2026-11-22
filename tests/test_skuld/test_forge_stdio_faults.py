@@ -7,7 +7,7 @@ import pytest
 
 from skuld.transports.grok import GrokACPTransport
 from skuld.transports.muse import MuseMSPTransport
-from tests.test_skuld.test_muse_transport import SID, _FakeHost, _started_transport
+from tests.test_skuld.test_muse_transport import _FakeHost
 
 
 @pytest.mark.parametrize("engine", ["grok", "muse"])
@@ -23,18 +23,6 @@ async def test_failed_spawn_clears_starting_state(tmp_path, engine, failure):
     assert transport._starting is False
     assert transport._process is None
     assert not transport.is_alive
-
-
-async def test_muse_resume_does_not_resend_the_original_initial_prompt(tmp_path):
-    with patch.object(MuseMSPTransport, "send_message", new_callable=AsyncMock) as send:
-        transport, host, _ = await _started_transport(
-            tmp_path, resume_session_id=SID, initial_prompt="already executed task"
-        )
-        try:
-            await asyncio.sleep(0)
-            send.assert_not_awaited()
-        finally:
-            await transport.stop()
 
 
 async def test_grok_eof_releases_handshake_rpc_immediately(tmp_path):

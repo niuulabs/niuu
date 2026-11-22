@@ -157,7 +157,7 @@ async def test_blocking_freeform_question_normalizes_nullable_options(tmp_path):
 
 
 async def test_restart_after_disconnect_resumes_history_and_reaps_old_process(tmp_path):
-    transport = _make_transport(tmp_path, initial_prompt="Original review request")
+    transport = _make_transport(tmp_path)
     transport._thread_id = "original-thread"
     transport._alive = False
     old_process = MagicMock()

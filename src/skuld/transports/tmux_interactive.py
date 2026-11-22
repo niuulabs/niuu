@@ -303,7 +303,6 @@ class TmuxInteractiveTransport(CLITransport):
         claude_permission_mode: str = DEFAULT_CLAUDE_PERMISSION_MODE,
         agent_teams: bool = False,
         system_prompt: str = "",
-        initial_prompt: str = "",
         mcp_servers: list[dict] | None = None,
         sdk_port: int | None = None,
         resume_session_id: str = "",
@@ -351,7 +350,6 @@ class TmuxInteractiveTransport(CLITransport):
         self._claude_permission_mode = resolve_claude_permission_mode(claude_permission_mode)
         self._agent_teams = agent_teams and not bounded
         self._system_prompt = system_prompt
-        self._initial_prompt = initial_prompt
         self._raw_mcp_servers = list(mcp_servers or [])
         self._mcp_config = build_claude_mcp_config(mcp_servers or [])
         self._sdk_port = sdk_port
@@ -509,7 +507,6 @@ class TmuxInteractiveTransport(CLITransport):
         self._alive = False
         self._startup_ready = False
         self._reset_workspace_trust_state()
-        self._initial_prompt_sent = False
         self._lifecycle_lock = asyncio.Lock()
         self._send_lock = asyncio.Lock()
         # In-flight post-Enter submit-confirm loops (fire-and-forget; cancelled on stop()).
@@ -649,23 +646,13 @@ class TmuxInteractiveTransport(CLITransport):
 
     async def start(self) -> None:
         await self._ensure_started()
-        # Monitor the first page even when the session has no seed prompt.
+        # Monitor the first page before any message is sent.
         # Share the input lock with chat/discovery so startup keys cannot interleave.
         async with self._send_lock:
             if not self._startup_ready:
-                ready = await self._wait_for_repl_ready(allow_pending_question=True)
-                if not ready:
-                    # Let the client finish attaching so it can answer the existing
-                    # hook-backed question. A seed remains unsent until startup retries.
-                    return
-
-        if self._initial_prompt and not self._initial_prompt_sent:
-            self._initial_prompt_sent = True
-            try:
-                await self.send_message(self._initial_prompt)
-            except Exception:
-                self._initial_prompt_sent = False
-                raise
+                # A pending question is not a failure: the client finishes attaching so it
+                # can answer the existing hook-backed question.
+                await self._wait_for_repl_ready(allow_pending_question=True)
 
     async def _capture_pane_text(self, pane_id: str | None = None) -> str:
         target = self._target_pane(pane_id)

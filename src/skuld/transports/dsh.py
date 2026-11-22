@@ -584,4 +584,6 @@ class DshJsonRpcTransport(CLITransport):
             cli_websocket=False,
             session_resume=False,
             interrupt=False,
+            # ``send_message`` waits for the runtime to go idle.
+            send_runs_turn=True,
         )

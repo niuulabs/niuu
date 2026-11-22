@@ -379,7 +379,6 @@ class CodexWebSocketTransport(CLITransport):
         multi_agent_enabled: bool | None = None,
         read_only_mcp_only: bool = False,
         system_prompt: str = "",
-        initial_prompt: str = "",
         codex_port: int = 0,
         codex_receive_max_bytes: int = _DEFAULT_MAX_WS_MESSAGE_BYTES,
         live_frame_max_bytes: int = 900 * 1024,
@@ -427,7 +426,6 @@ class CodexWebSocketTransport(CLITransport):
         self._multi_agent_enabled = multi_agent_enabled
         self._read_only_mcp_only = read_only_mcp_only
         self._system_prompt = system_prompt
-        self._initial_prompt = initial_prompt
         self._codex_port = codex_port or _pick_free_port()
         # Preserve the earlier constructor keyword while routing both names to
         # the actual native socket receive bound.
@@ -609,11 +607,6 @@ class CodexWebSocketTransport(CLITransport):
             ) from exc
 
         self._process_watch = asyncio.create_task(self._watch_app_server(self._process))
-
-        # On resume the prior thread's history is reloaded, so don't replay
-        # the initial prompt (it was already part of that conversation).
-        if self._initial_prompt and not self._resume_session_id:
-            await self.send_message(self._initial_prompt)
 
     async def _watch_app_server(self, process: asyncio.subprocess.Process | None) -> None:
         """Report an app-server that exits while serving (LEX-1699 for Codex).

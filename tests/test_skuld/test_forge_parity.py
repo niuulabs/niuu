@@ -429,7 +429,7 @@ async def _make_persistent_session(tmp_path) -> tuple[ModeSession, MagicMock]:
     async def on_event(event: dict) -> None:
         events.append(event)
 
-    transport = PersistentSubprocessTransport(str(tmp_path), initial_prompt="")
+    transport = PersistentSubprocessTransport(str(tmp_path))
     transport.on_event(on_event)
 
     spawn = AsyncMock(return_value=proc)
@@ -479,7 +479,7 @@ def test_capabilities_self_consistent(mode: str) -> None:
     elif mode == PERSISTENT:
         from skuld.transports.persistent_subprocess import PersistentSubprocessTransport
 
-        caps = PersistentSubprocessTransport("/tmp", initial_prompt="").capabilities
+        caps = PersistentSubprocessTransport("/tmp").capabilities
     else:
         from skuld.transports.tmux_interactive import TmuxInteractiveTransport
 
@@ -508,7 +508,7 @@ def test_capabilities_match_documented_per_mode(mode: str) -> None:
     elif mode == PERSISTENT:
         from skuld.transports.persistent_subprocess import PersistentSubprocessTransport
 
-        caps = PersistentSubprocessTransport("/tmp", initial_prompt="").capabilities
+        caps = PersistentSubprocessTransport("/tmp").capabilities
         assert caps.interrupt is False
         assert caps.steer is False
         assert caps.steering_mode == "none"

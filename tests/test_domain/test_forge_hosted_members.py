@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock
+from datetime import UTC, datetime
+from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
 import pytest
@@ -19,7 +20,7 @@ from volundr.domain.models import (
     SessionStatus,
     hosted_status,
 )
-from volundr.domain.ports import HostedUnitError
+from volundr.domain.ports import HostedUnitError, SessionContribution, SessionContributor
 from volundr.domain.services.forge import (
     DEFAULT_HOSTED_MEMBER_BASE_PORT,
     ForgeService,
@@ -878,6 +879,27 @@ class TestMemberSource:
         verified = [unit.app.tokens.verify(c.token) for c in credentials]
         assert [v.session_id for v in verified] == [str(coder.id), str(reviewer.id)]
         assert len({c.launch_id for c in credentials}) == 2
+
+    async def test_a_member_is_given_its_first_message_until_it_has_run_a_turn(self, unit: Unit):
+        root = await unit.root()
+        coder = await unit.member(root, "coder-1", initial_prompt="write the parser")
+        await unit.start(root)
+
+        async def prompt() -> str:
+            await unit.app.session_service.hosted_member_launches(root.id)
+            return recorder.await_args.args[1].initial_prompt
+
+        recorder = AsyncMock(return_value=SessionContribution())
+        unit.app.session_service._contributors = [
+            MagicMock(contribute=recorder, name="recorder", spec=SessionContributor)
+        ]
+        assert await prompt() == "write the parser"
+
+        stored = await unit.stored(coder)
+        await unit.app.sessions.update(
+            stored.model_copy(update={"last_work_at": datetime.now(UTC)})
+        )
+        assert await prompt() == ""
 
     async def test_one_member_can_be_asked_for_alone(self, unit: Unit):
         root = await unit.root()

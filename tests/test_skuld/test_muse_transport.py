@@ -328,7 +328,6 @@ class TestConstruction:
             skip_permissions=False,
             agent_teams=True,
             system_prompt="",
-            initial_prompt="do the thing",
             reasoning_effort="ultra",
             acp_prompt_timeout_s=12.0,
             sdk_port=8765,

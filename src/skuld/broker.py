@@ -117,6 +117,7 @@ from skuld.history_hydration import (
     merge_history_turns,
     read_durable_head,
 )
+from skuld.initial_prompt import InitialPromptMixin
 from skuld.mesh_follows import MESH_SUBSCRIPTION_FRAME, MeshFollowMixin
 from skuld.mesh_topics import MeshTopics, mesh_topics
 from skuld.peer_inbox import PEER_STATE_RPC_TYPE, PeerInboxMixin, PeerMessageUnconfirmedError
@@ -526,6 +527,7 @@ def _exit_own_process() -> None:
 class Broker(
     EffortControlMixin,
     ForgeSessionMixin,
+    InitialPromptMixin,
     TransportLifecycleMixin,
     WebSocketLifecycleMixin,
     EventLogMixin,
@@ -5013,6 +5015,8 @@ class Broker(
                 and not self._settings.workflow_steps.enabled
                 and not self._settings.peer_inbox.enabled
                 and not self._settings.voice_channel.enabled
+                # What became of the first message decides whether it is sent.
+                and not self._settings.session.initial_prompt
             )
             or not self.volundr_api_url
             or not self._settings.event_log_enabled

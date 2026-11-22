@@ -317,7 +317,6 @@ class SDKTransport(CLITransport):
         claude_permission_mode: str = DEFAULT_CLAUDE_PERMISSION_MODE,
         agent_teams: bool = False,
         system_prompt: str = "",
-        initial_prompt: str = "",
         mcp_servers: list[dict] | None = None,
         turn_timeout_s: float = _DEFAULT_TURN_TIMEOUT_S,
         resume_session_id: str | None = None,
@@ -362,13 +361,11 @@ class SDKTransport(CLITransport):
         self._claude_permission_mode = resolve_claude_permission_mode(claude_permission_mode)
         self._agent_teams = agent_teams and not bounded
         self._system_prompt = system_prompt
-        self._initial_prompt = initial_prompt
         self._resume_session_id = (resume_session_id or "").strip() or None
         self._ask_user_question_enabled = ask_user_question_enabled and not bounded
         self._raw_mcp_servers = list(mcp_servers or [])
         self._mcp_servers = build_sdk_mcp_servers(mcp_servers or [])
         self._turn_timeout_s = max(float(turn_timeout_s or 0.0), 0.0)
-        self._initial_prompt_sent = False
         self._send_lock = asyncio.Lock()
         self._client: ClaudeSDKClient | None = None
         self._connected = False
@@ -427,21 +424,9 @@ class SDKTransport(CLITransport):
         return self._turn_active
 
     async def start(self) -> None:
-        """Connect the SDK client and optionally send the initial prompt."""
+        """Connect the SDK client."""
         if not self.is_alive:
             await self._connect_client()
-        # On resume the prior conversation (including its initial prompt) is
-        # reloaded, so replaying the initial prompt would double-seed history.
-        if self._resume_session_id:
-            self._initial_prompt_sent = True
-        if not self._initial_prompt or self._initial_prompt_sent:
-            return
-        self._initial_prompt_sent = True
-        try:
-            await self.send_message(self._initial_prompt)
-        except Exception:
-            self._initial_prompt_sent = False
-            raise
 
     async def stop(self) -> None:
         """Disconnect the SDK client and unblock any pending turn."""

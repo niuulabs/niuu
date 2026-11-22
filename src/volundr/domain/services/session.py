@@ -104,6 +104,11 @@ from volundr.domain.session_connections import (
     with_resolved_connections,
     without_resolved_connections,
 )
+from volundr.domain.session_initial_prompt import (
+    initial_prompt_of,
+    with_initial_prompt,
+    without_initial_prompt,
+)
 from volundr.domain.session_launch_facts import LAUNCH_FACTS_KEY, without_launch_facts
 from volundr.domain.session_read_state import SessionReadState, SessionReadStateChange
 from volundr.domain.session_runtimes import SessionRuntimeOffer, requested_grants
@@ -1451,6 +1456,11 @@ class SessionService:
             session, principal, workload_config, launch_spec
         )
 
+        # A launch can end before the agent ever takes the first message, so the prompt is
+        # kept with the session and a start that brings none carries it again.
+        initial_prompt = initial_prompt or initial_prompt_of(session.workload_config)
+        workload_config = with_initial_prompt(workload_config, initial_prompt)
+
         # Set chat_endpoint eagerly — Flux/Gateway sessions know their public
         # route before the pod is ready; local mode falls back to the root proxy.
         # Refuse here, before the session flips to STARTING, so the caller
@@ -1921,14 +1931,18 @@ class SessionService:
             integration_connections=tuple(resolved_connections),
             resource_config=resource_config or {},
             system_prompt=system_prompt,
-            initial_prompt=initial_prompt,
+            # Work in the session's durable log means its first turn ran: the first message
+            # was answered, or the conversation went on without it. Either way it is over.
+            initial_prompt=initial_prompt if session.last_work_at is None else "",
             workload_type=workload_type,
             # Contributors never see the credential bookkeeping: an otherwise
             # empty workload config must still read as empty to them.
             # Nor the record of the previous launch's facts: a contributor reports what
             # this launch establishes and never reads what an earlier one did.
-            workload_config=without_resolved_connections(
-                without_launch_facts(without_forge_mcp(workload_config))
+            workload_config=without_initial_prompt(
+                without_resolved_connections(
+                    without_launch_facts(without_forge_mcp(workload_config))
+                )
             ),
             unit_members=await self._unit_member_contexts(session, principal),
         )
