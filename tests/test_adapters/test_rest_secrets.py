@@ -98,6 +98,11 @@ class TestMCPServerResponse:
         assert response.command == "npx"
         assert response.args == ["-y", "@linear/mcp-server"]
         assert response.description == "Linear"
+        assert response.version == ""
+
+    def test_a_programs_version_is_named(self):
+        cfg = MCPServerConfig(name="cad", program={"version": "0.46.0", "platforms": {}})
+        assert MCPServerResponse.from_config(cfg).version == "0.46.0"
 
 
 class TestSecretResponse:

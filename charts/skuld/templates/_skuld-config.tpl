@@ -82,6 +82,10 @@ unit (see skuld.memberValues). Every line is indented four spaces, to sit under 
       {{- end }}
 
     mcp_servers: {{ .Values.mcpServers | default list | toJson }}
+    programs:
+      cache_dir: {{ .Values.programs.cacheDir | default "" | quote }}
+      connect_timeout_seconds: {{ .Values.programs.connectTimeoutSeconds }}
+      read_timeout_seconds: {{ .Values.programs.readTimeoutSeconds }}
     transport: {{ .Values.broker.transport | default "sdk" | quote }}
     transport_adapter: {{ .Values.broker.transportAdapter | default "skuld.transports.sdk.SDKTransport" | quote }}
     cli_binary: {{ .Values.broker.cliBinary | default "claude" | quote }}

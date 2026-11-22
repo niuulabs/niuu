@@ -28,6 +28,7 @@ from volundr.domain.services.session import (
     SessionNotFoundError,
     SessionStateError,
 )
+from volundr.domain.services.session_mcp_servers import MCP_SERVERS_KEY
 from volundr.domain.session_broker import broker_base_url
 from volundr.domain.session_connections import without_resolved_connections
 from volundr.domain.workflow_session import (
@@ -251,6 +252,9 @@ class ForgeService:
             launch_spec=data.launch_spec,
             role=coordination.role if coordination is not None else None,
         )
+        mcp_servers = getattr(data, "mcp_servers", None)
+        if isinstance(mcp_servers, list) and mcp_servers:
+            self._session_service.check_mcp_servers(mcp_servers)
         hosted_by = getattr(data, "hosted_by", None)
         if isinstance(hosted_by, UUID):
             await self._require_open_unit(hosted_by, data, principal)
@@ -319,6 +323,9 @@ class ForgeService:
         orchestration = getattr(data, "workflow_orchestration", None)
         if isinstance(orchestration, str):
             workload_config[WORKFLOW_ORCHESTRATION_KEY] = orchestration
+        mcp_servers = getattr(data, "mcp_servers", None)
+        if isinstance(mcp_servers, list) and mcp_servers:
+            workload_config[MCP_SERVERS_KEY] = list(mcp_servers)
         if requested_grants:
             workload_config[FORGE_MCP_KEY] = {
                 GRANTS_KEY: [grant.value for grant in normalize_grants(requested_grants)]

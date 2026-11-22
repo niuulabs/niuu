@@ -60,6 +60,7 @@ from niuu.domain.presented_files import (
     PRESENTED_FILE_DEFAULT_MAX_BYTES,
     PRESENTED_FILE_DEFAULT_READ_CHUNK_BYTES,
 )
+from niuu.domain.session_program import SessionProgram
 from niuu.domain.tenancy import DEFAULT_PLATFORM_TENANT_ID
 from niuu.forge_mcp.models import ForgeMcpGrant
 from niuu.mesh.config import MeshSettings
@@ -512,7 +513,7 @@ class ResidentRuntimesConfig(BaseModel):
 
 
 class MCPServerEntry(BaseModel):
-    """Configuration for an available MCP server."""
+    """Configuration for an available MCP server, which sessions ask for by name."""
 
     name: str
     type: str = "stdio"
@@ -520,6 +521,40 @@ class MCPServerEntry(BaseModel):
     url: str | None = None
     args: list[str] = Field(default_factory=list)
     description: str = ""
+    program: SessionProgram | None = Field(
+        default=None,
+        description=(
+            "Pinned program the session installs when it starts and runs as this server's "
+            "command, instead of `command` or `url`. A session on a platform it has no "
+            "archive for does not start."
+        ),
+    )
+    env: dict[str, str] = Field(
+        default_factory=dict, description="Environment of the server's process; no secrets."
+    )
+    default_tools_approval_mode: Literal["auto", "prompt", "writes", "approve"] | None = Field(
+        default=None,
+        description="Codex's approval mode for the server's tools; unset keeps the harness's own.",
+    )
+    startup_timeout_sec: float | None = Field(
+        default=None,
+        gt=0,
+        description="How long the harness waits for the server to start; unset keeps its own.",
+    )
+    tool_timeout_sec: float | None = Field(
+        default=None,
+        gt=0,
+        description="How long the harness waits for one tool call; unset keeps its own.",
+    )
+
+    @model_validator(mode="after")
+    def _program_is_the_command(self) -> "MCPServerEntry":
+        if self.program is not None and (self.command or self.url or self.type != "stdio"):
+            raise ValueError(
+                f"mcp_servers entry {self.name!r}: a program is the server's stdio command, so "
+                "leave out command, url and type"
+            )
+        return self
 
 
 def _deep_merge_dicts(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:

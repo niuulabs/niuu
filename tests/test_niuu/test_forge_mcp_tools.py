@@ -594,6 +594,9 @@ class TestGrants:
                 "parent": {"instance_id": "node-a", "session_id": SELF},
             },
         }
+        tooled = await toolbox.call("create_session", {"name": "t", "mcp_servers": ["solidcraft"]})
+        assert not tooled.is_error
+        assert client.calls[-1][1]["mcp_servers"] == ["solidcraft"]
         local = await toolbox.call("create_session", {"name": "l", "local_path": "/srv/app"})
         assert not local.is_error
         assert client.calls[-1][1]["source"] == {"type": "local_mount", "local_path": "/srv/app"}

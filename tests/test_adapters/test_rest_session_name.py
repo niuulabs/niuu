@@ -63,3 +63,9 @@ class TestSessionNameValidation:
     def test_accepts_session_definition_alias(self):
         sc = SessionCreate(name="my-session", session_definition="skuldCodex")
         assert sc.definition == "skuldCodex"
+
+
+def test_mcp_servers_are_named_at_the_top_level_only():
+    assert SessionCreate(name="cad", mcp_servers=["solidcraft"]).mcp_servers == ["solidcraft"]
+    with pytest.raises(ValidationError, match="top-level mcp_servers field"):
+        SessionCreate(name="cad", workload_config={"mcp_servers": ["solidcraft"]})

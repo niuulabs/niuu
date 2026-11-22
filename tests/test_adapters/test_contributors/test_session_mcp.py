@@ -4,6 +4,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from volundr.adapters.outbound.config_mcp_servers import ConfigMCPServerProvider
 from volundr.adapters.outbound.contributors.session_mcp import (
     MimirMountConfigError,
     SessionMCPContributor,
@@ -12,8 +13,10 @@ from volundr.adapters.outbound.contributors.session_mcp import (
     _resolve_mimir_runtime,
     _string_list,
 )
+from volundr.config import MCPServerEntry
 from volundr.domain.models import GitSource, LaunchSpec, Session
 from volundr.domain.ports import SessionContext
+from volundr.domain.services.session_mcp_servers import UnknownMCPServerError
 
 
 @pytest.fixture
@@ -428,3 +431,41 @@ class TestWithTheMemoryGateway:
         )
 
         assert result.values == {}
+
+
+class TestServersAskedForByName:
+    @staticmethod
+    def _contributor(launch_spec_provider=None):
+        return SessionMCPContributor(
+            launch_spec_provider=launch_spec_provider,
+            mcp_server_provider=ConfigMCPServerProvider(
+                [MCPServerEntry(name="cad", command="cad", args=["mcp"])]
+            ),
+        )
+
+    async def test_the_session_gets_the_catalogue_server(self, session):
+        result = await self._contributor().contribute(
+            session, SessionContext(workload_config={"mcp_servers": ["cad"]})
+        )
+        assert result.values["mcpServers"] == [
+            {"name": "cad", "type": "stdio", "required": True, "command": "cad", "args": ["mcp"]}
+        ]
+
+    async def test_an_unknown_server_fails_the_launch(self, session):
+        with pytest.raises(UnknownMCPServerError):
+            await self._contributor().contribute(
+                session, SessionContext(workload_config={"mcp_servers": ["cda"]})
+            )
+
+    async def test_asking_for_one_keeps_the_launch_specs_mounts(self, session):
+        provider = MagicMock()
+        provider.get.return_value = LaunchSpec(
+            name="s",
+            workload_config={
+                "mimir": {"instances": [{"name": "shared", "url": "https://mimir.example/mcp"}]}
+            },
+        )
+        result = await self._contributor(provider).contribute(
+            session, SessionContext(launch_spec="s", workload_config={"mcp_servers": ["cad"]})
+        )
+        assert [s["name"] for s in result.values["mcpServers"]] == ["mimir-shared", "cad"]

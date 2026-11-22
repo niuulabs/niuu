@@ -47,6 +47,7 @@ class MCPServerResponse(BaseModel):
         description="Server description",
         examples=["Linear issue tracker MCP server"],
     )
+    version: str = Field(default="", description="Version of the pinned program it runs, if any")
 
     @classmethod
     def from_config(cls, cfg: MCPServerConfig) -> MCPServerResponse:
@@ -58,6 +59,7 @@ class MCPServerResponse(BaseModel):
             url=cfg.url,
             args=list(cfg.args),
             description=cfg.description,
+            version=str((cfg.program or {}).get("version", "")),
         )
 
 

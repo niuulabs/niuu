@@ -790,6 +790,30 @@ class WorkloadIdentityConfig(BaseModel):
         return value
 
 
+class ProgramsConfig(BaseModel):
+    """Where and how the pinned programs of this session's MCP servers are installed."""
+
+    cache_dir: str = Field(
+        default="",
+        description=(
+            "Where programs are unpacked, one directory per archive digest; empty uses "
+            "`.cache/niuu/programs` in the session's home, so sessions that share a home share it."
+        ),
+    )
+    connect_timeout_seconds: float = Field(
+        default=30.0,
+        gt=0,
+        allow_inf_nan=False,
+        description="How long to wait for an archive's server to answer before start fails.",
+    )
+    read_timeout_seconds: float = Field(
+        default=60.0,
+        gt=0,
+        allow_inf_nan=False,
+        description="How long a download may stand still before start fails.",
+    )
+
+
 class PreviewConfig(BaseModel):
     """Live preview: serve the session's own listening ports to its owner.
 
@@ -1932,6 +1956,7 @@ class SkuldSettings(BaseSettings):
     )
     acp_prompt_timeout_s: float = Field(default=300.0)  # ACP/MSP (Grok Build, Muse) turn timeout
     mcp_servers: list[dict[str, Any]] = Field(default_factory=list)
+    programs: ProgramsConfig = Field(default_factory=ProgramsConfig)
     forge_mcp: ForgeMcpConfig = Field(default_factory=ForgeMcpConfig)
     memory: MemoryConfig = Field(default_factory=MemoryConfig)
     voice_channel: VoiceConfig = Field(default_factory=VoiceConfig)
@@ -2097,6 +2122,13 @@ class SkuldSettings(BaseSettings):
         if self.home_dir or self.persistent_home_path:
             return False
         return Path(self.home_path).parent == Path(self.workspace_path).parent
+
+    @property
+    def programs_path(self) -> str:
+        """Where the programs of the session's MCP servers are installed."""
+        if self.programs.cache_dir:
+            return self.programs.cache_dir
+        return f"{self.home_path}/.cache/niuu/programs"
 
     @property
     def presented_files_path(self) -> str:

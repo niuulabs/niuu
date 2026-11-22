@@ -17,6 +17,7 @@ except ImportError:
     _catalog_started = None  # type: ignore[assignment]
     _catalog_failed = None  # type: ignore[assignment]
 
+from credentials.ports import MCPServerProvider
 from niuu.cap_telemetry import record_degraded
 from niuu.domain.model_runtime import normalize_model_vendor
 from niuu.domain.models import is_push_device
@@ -96,6 +97,7 @@ from volundr.domain.services.forge_session_launch import (
     with_forge_mcp,
     without_forge_mcp,
 )
+from volundr.domain.services.session_mcp_servers import catalogue_entries
 from volundr.domain.services.session_startup import SessionStartupRecorder
 from volundr.domain.session_changes import SessionChanges
 from volundr.domain.session_connections import (
@@ -206,6 +208,7 @@ class SessionService:
         validate_repos: bool = True,
         broadcaster: EventBroadcaster | None = None,
         launch_spec_provider: LaunchSpecProvider | None = None,
+        mcp_server_provider: MCPServerProvider | None = None,
         authorization: AuthorizationPort | None = None,
         contributors: list[SessionContributor] | None = None,
         provisioning_timeout: float = 300.0,
@@ -267,6 +270,7 @@ class SessionService:
         self._validate_repos = validate_repos
         self._broadcaster = broadcaster
         self._launch_spec_provider = launch_spec_provider
+        self._mcp_server_provider = mcp_server_provider
         self._authorization = authorization
         self._contributors = contributors or []
         self._provisioning_timeout = provisioning_timeout
@@ -2170,6 +2174,10 @@ class SessionService:
         if self._broadcaster is not None:
             await self._broadcaster.publish_session_updated(stored)
         return stored
+
+    def check_mcp_servers(self, names: Iterable[str]) -> None:
+        """Refuse a new session that asks for an MCP server the catalogue does not have."""
+        catalogue_entries(names, self._mcp_server_provider)
 
     def check_forge_mcp_grants(
         self,

@@ -43,6 +43,15 @@ session:
 # -- MCP server configurations supplied by session contributors. Use credential references, not tokens.
 mcpServers: []
 
+# Where the pinned programs of MCP servers (`program`) are installed.
+programs:
+  # -- Directory the programs are unpacked in; empty uses `.cache/niuu/programs` in the home
+  cacheDir: ""
+  # -- How long to wait for a program's archive server to answer before start fails
+  connectTimeoutSeconds: 30
+  # -- How long a program's download may stand still before start fails
+  readTimeoutSeconds: 60
+
 # Container image for the Skuld broker
 # Note: repository and tag are updated by CI/CD pipeline
 # Default values are for local development
