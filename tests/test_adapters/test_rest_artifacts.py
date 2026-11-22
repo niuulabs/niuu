@@ -143,7 +143,12 @@ async def test_a_node_serves_its_files_to_its_own_ui(env):
 
 
 @pytest.mark.parametrize(
-    "path", ["artifact-publications", "artifact-bursts", f"artifact-bursts/{uuid4()}"]
+    "path",
+    [
+        "artifact-publications",
+        "artifact-bursts",
+        "artifact-bursts/00000000-0000-0000-0000-000000000001",
+    ],
 )
 async def test_a_node_never_shows_its_files_as_another_forges(env, path):
     _, svc, repo = env
