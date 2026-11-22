@@ -202,6 +202,7 @@ from volundr.composition_builders import (  # noqa: F401
     _sign_forge_platform_events,
     _start_sleipnir_bus,
     _validate_remote_room_role_config,
+    create_integration_repository,
     create_oauth_client_registry,
     create_presented_file_store,
     create_project_memory,
@@ -1444,15 +1445,7 @@ def create_app(
                 ],
             )
             integration_registry = IntegrationRegistry(integration_definitions)
-            if settings.integrations.repository is not None:
-                repository_config = settings.integrations.repository
-                integration_repo = import_class(repository_config.adapter)(
-                    **resolve_secret_kwargs(
-                        repository_config.kwargs, repository_config.secret_kwargs_env
-                    )
-                )
-            else:
-                integration_repo = PostgresIntegrationRepository(integration_pool)
+            integration_repo = create_integration_repository(settings, integration_pool, pool)
             # Residents get the owner's credentials their profile declares, injected the
             # same way as a session's (OpenBao), bound to the resident's own identity.
             for controller in {id(c): c for c in [pod_manager, *resident_controllers]}.values():

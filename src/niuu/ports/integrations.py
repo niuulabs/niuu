@@ -11,6 +11,10 @@ from niuu.domain.models import IntegrationConnection, IntegrationType, Integrati
 class IntegrationRepository(ABC):
     """Port for integration connection persistence."""
 
+    #: Whether connections a project owns can be stored here. A store that answers for the
+    #: calling person alone cannot hold them.
+    holds_project_connections: bool = True
+
     @abstractmethod
     async def list_connections(
         self,
