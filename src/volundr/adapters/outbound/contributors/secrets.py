@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 from urllib.parse import urlsplit
 
+from credentials.ports import MCPServerProvider
 from niuu.domain.oauth_credentials import OAUTH_ENGINE, mcp_token_env, mcp_token_path
 from volundr.adapters.outbound.openshell_binaries import CLAUDE_CODE_BINARIES, CODEX_BINARIES
 from volundr.domain.models import (
@@ -25,6 +26,11 @@ from volundr.domain.ports import (
     SessionContext,
     SessionContribution,
     SessionContributor,
+)
+from volundr.domain.services.session_mcp_servers import (
+    catalogue_servers,
+    requested_mcp_servers,
+    token_file,
 )
 from volundr.domain.services.user_integration import git_token_path
 
@@ -163,9 +169,11 @@ class SecretInjectionContributor(SessionContributor):
         integration_registry: IntegrationRegistry | None = None,
         credential_store: CredentialStorePort | None = None,
         mount_strategies: SecretMountStrategyRegistry | None = None,
+        mcp_server_provider: MCPServerProvider | None = None,
         **_extra: object,
     ):
         self._secret_injection = secret_injection
+        self._mcp_server_provider = mcp_server_provider
         self._registry = integration_registry
         self._credential_store = credential_store
         self._mount_strategies = mount_strategies
@@ -309,7 +317,40 @@ class SecretInjectionContributor(SessionContributor):
                 ] = "token"
             mappings.append(mapping)
 
+        await self._add_tool_tokens(mappings, context, owner_id)
         return mappings
+
+    async def _add_tool_tokens(
+        self,
+        mappings: list[CredentialMapping],
+        context: SessionContext,
+        owner_id: str,
+    ) -> None:
+        """Render the token of every catalogue MCP server the session asks for that has one."""
+        requested = requested_mcp_servers(context.workload_config)
+        for server in catalogue_servers(requested, self._mcp_server_provider):
+            if not server.credential:
+                continue
+            remedy = (
+                f"MCP server {server.name!r} needs your credential {server.credential!r} with "
+                f"its token in the field {server.credential_key!r}. Store it under Settings → "
+                "Credentials, or start the session without this server"
+            )
+            if self._credential_store is None:
+                raise ValueError(f"{remedy} (this Forge has no credential store)")
+            stored = await self._credential_store.get("user", owner_id, server.credential)
+            if stored is None or server.credential_key not in stored.keys:
+                raise ValueError(remedy)
+            if stored.metadata.get("renewal_owner") == OAUTH_ENGINE:
+                raise ValueError(
+                    f"{remedy} (the stored one is a renewed OAuth grant, not a plain token)"
+                )
+            target = {token_file(server): server.credential_key}
+            attached = next((m for m in mappings if m.credential_name == stored.name), None)
+            if attached is not None:
+                attached.file_mappings.update(target)
+                continue
+            mappings.append(CredentialMapping(credential_name=stored.name, file_mappings=target))
 
     def _mimir_auth_refs(self, context: SessionContext) -> set[str]:
         mimir = context.workload_config.get("mimir")

@@ -13,6 +13,7 @@ from volundr.domain.services.session_mcp_servers import (
     UnknownMCPServerError,
     catalogue_entries,
     requested_mcp_servers,
+    token_file,
 )
 
 PROGRAM = {
@@ -103,3 +104,23 @@ def test_a_launch_spec_cannot_bring_its_own_program(model) -> None:
         model(name="mine", mcp_servers=[own])
     assert model(name="mine", mcp_servers=[{"name": "cad"}]).mcp_servers == [{"name": "cad"}]
     assert LaunchSpecUpdate(mcp_servers=None).mcp_servers is None
+
+
+def test_a_server_with_a_credential_reads_its_token_from_a_file() -> None:
+    parts = MCPServerEntry(name="parts", type="http", url="http://x/mcp", credential="parts")
+    servers = ConfigMCPServerProvider([parts])
+    assert catalogue_entries(["parts"], servers) == [
+        {
+            "name": "parts",
+            "type": "http",
+            "required": True,
+            "url": "http://x/mcp",
+            "credential_file": token_file(servers.get("parts")),
+        }
+    ]
+    assert token_file(servers.get("parts")).startswith("/run/secrets/mcp/")
+
+
+def test_a_credential_is_only_for_a_url() -> None:
+    with pytest.raises(ValidationError, match="credential is the token sent to a url"):
+        MCPServerEntry(name="parts", command="parts", credential="parts")

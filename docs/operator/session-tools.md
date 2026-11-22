@@ -32,6 +32,10 @@ mcpServers:
 - Archives are `tar`, `tar.gz`, `tar.xz`, `tar.bz2` or `zip`, over `https`. A `.dmg` is
   not: repackage its program as a tar and pin that.
 - `command` is the executable's path inside the archive.
+- `credential` (with `url`) names the credential each user stores for the server under
+  Settings → Credentials; its field `token` (or `credential_key`) is sent to `url` as a bearer
+  token. The token stays in the credential store: the config only names it. A launch spec
+  cannot attach such a server, and a session on OpenShell cannot have one.
 - To upgrade, change the version, URLs and digests. Sessions that start afterwards get it.
 
 `GET /api/v1/forge/mcp-servers` lists the catalogue, with each program's version.
@@ -66,6 +70,7 @@ The session does not start, and says why, when:
 - the platform it runs on has no archive;
 - the archive cannot be fetched, or its digest is not the pinned one;
 - the archive has no such `command`;
+- the session's owner has not stored the server's `credential`;
 - the harness takes no MCP servers (OpenCode, Muse, Pi, dsh, Claude remote control).
 
 A session whose network policy limits egress (OpenShell) must be allowed to reach the

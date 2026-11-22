@@ -7,6 +7,7 @@ from typing import Any
 
 from credentials.models import MCPServerConfig
 from credentials.ports import MCPServerProvider
+from niuu.domain.oauth_credentials import mcp_token_path
 
 #: Where a session's requested server names live in its workload config, so that a restart
 #: gives the session the same servers.
@@ -49,13 +50,25 @@ def catalogue_entries(
     names: Iterable[str], provider: MCPServerProvider | None
 ) -> list[dict[str, Any]]:
     """The session entries of *names*; an unknown name raises, naming what there is."""
-    return [_entry(name, provider) for name in names]
+    return [session_entry(server) for server in catalogue_servers(names, provider)]
 
 
-def _entry(name: str, provider: MCPServerProvider | None) -> dict[str, Any]:
+def catalogue_servers(
+    names: Iterable[str], provider: MCPServerProvider | None
+) -> list[MCPServerConfig]:
+    """The catalogue's servers called *names*; an unknown name raises, naming what there is."""
+    return [_server(name, provider) for name in names]
+
+
+def token_file(server: MCPServerConfig) -> str:
+    """Where a session finds the token it sends to *server* (``server.credential``)."""
+    return mcp_token_path(f"catalogue:{server.name}")
+
+
+def _server(name: str, provider: MCPServerProvider | None) -> MCPServerConfig:
     server = provider.get(name) if provider is not None else None
     if server is not None:
-        return session_entry(server)
+        return server
     known = ", ".join(sorted(s.name for s in provider.list())) if provider is not None else ""
     raise UnknownMCPServerError(
         f"MCP server {name!r} is not in this Forge's mcp_servers catalogue "
@@ -70,6 +83,8 @@ def session_entry(server: MCPServerConfig) -> dict[str, Any]:
         value = getattr(server, key)
         if value:
             entry[key] = value
+    if server.credential:
+        entry["credential_file"] = token_file(server)
     if server.args:
         entry["args"] = list(server.args)
     for key in ("default_tools_approval_mode", "startup_timeout_sec", "tool_timeout_sec"):
