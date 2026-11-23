@@ -3829,10 +3829,37 @@ class Settings(BaseSettings):
         default=50_000,
         gt=0,
         description=(
-            "Raw frames the durable turn-count fold holds while a session's log has no "
-            "assistant conversation.turn row to settle on (a pure raw-frame session), the same "
-            "bound as the full durable rebuild. A hit keeps the newest frames, undercounts the "
-            "older turns, and is logged and counted on ravn.cap.hits under this knob."
+            "Raw frames the durable turn-count fold and the shallow conversation fold hold "
+            "while a session's log has no assistant conversation.turn row to settle on (a pure "
+            "raw-frame session), the same bound as the full durable rebuild. A hit keeps the "
+            "newest frames, leaves out the older unsettled turns, and is logged and counted on "
+            "ravn.cap.hits under this knob."
+        ),
+    )
+    conversation_shallow_sessions: int = Field(
+        default=16,
+        gt=0,
+        description=(
+            "Sessions whose shallow (elided) durable transcript is kept in memory. Bounded by "
+            "Forge's memory; an evicted session is folded again from its log on its next read."
+        ),
+    )
+    conversation_turn_page_size: int = Field(
+        default=50,
+        gt=0,
+        description=(
+            "Durable conversation.turn rows decoded at a time while a conversation is folded. "
+            "Each carries its turn's whole tool output, so this bounds what one page holds; "
+            "it never limits what is read."
+        ),
+    )
+    conversation_rebuild_concurrency: int = Field(
+        default=1,
+        gt=0,
+        description=(
+            "Durable conversation reads that decode the event log at the same time, across all "
+            "sessions. Bounded by Forge's memory: each holds its decoded frames, and after a "
+            "restart every session asks at once. Others wait their turn; none is refused."
         ),
     )
     server_host: str = Field(

@@ -125,8 +125,8 @@ class PostgresEventSink(EventSink, SessionEventRepository):
         rows = await self._pool.fetch(
             """SELECT
                  (EXTRACT(EPOCH FROM timestamp)::bigint / $2) * $2 AS bucket,
-                 COALESCE(SUM(tokens_in), 0)::int AS tokens_in,
-                 COALESCE(SUM(tokens_out), 0)::int AS tokens_out,
+                 COALESCE(SUM(tokens_in), 0)::bigint AS tokens_in,
+                 COALESCE(SUM(tokens_out), 0)::bigint AS tokens_out,
                  COALESCE(SUM(cost), 0) AS cost
                FROM session_events
                WHERE session_id = $1

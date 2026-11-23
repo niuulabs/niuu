@@ -81,14 +81,15 @@ class PostgresStatsRepository(StatsRepository):
             )
 
             # Get token usage for today (UTC). Token rows are deleted with their
-            # session, so the session always attributes them.
+            # session, so the session always attributes them. SUM of a BIGINT is
+            # numeric, which reads as Decimal and is not JSON: token sums are cast back.
             token_stats = await conn.fetchrow(
                 f"""
                 SELECT
-                    COALESCE(SUM(t.tokens), 0) AS tokens_today,
-                    COALESCE(SUM(t.tokens) FILTER (WHERE t.provider = 'local'), 0)
+                    COALESCE(SUM(t.tokens), 0)::bigint AS tokens_today,
+                    COALESCE(SUM(t.tokens) FILTER (WHERE t.provider = 'local'), 0)::bigint
                         AS local_tokens,
-                    COALESCE(SUM(t.tokens) FILTER (WHERE t.provider = 'cloud'), 0)
+                    COALESCE(SUM(t.tokens) FILTER (WHERE t.provider = 'cloud'), 0)::bigint
                         AS cloud_tokens,
                     COALESCE(SUM(t.cost), 0) AS cost_today
                 FROM token_usage t
@@ -123,7 +124,7 @@ class PostgresStatsRepository(StatsRepository):
                     ORDER BY c.session_id, c.updated_at DESC
                 )
                 SELECT
-                    COALESCE(SUM(token_usage), 0) AS tokens_today,
+                    COALESCE(SUM(token_usage), 0)::bigint AS tokens_today,
                     COALESCE(SUM(cost), 0) AS cost_today
                 FROM latest_chronicles
                 WHERE session_id NOT IN (SELECT session_id FROM today_token_sessions)

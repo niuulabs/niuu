@@ -47,7 +47,7 @@ class TestSchemaDefinitions:
         assert "id UUID PRIMARY KEY" in TOKEN_USAGE_TABLE_SQL
         assert "session_id UUID NOT NULL" in TOKEN_USAGE_TABLE_SQL
         assert "recorded_at TIMESTAMP" in TOKEN_USAGE_TABLE_SQL
-        assert "tokens INTEGER NOT NULL" in TOKEN_USAGE_TABLE_SQL
+        assert "tokens BIGINT NOT NULL" in TOKEN_USAGE_TABLE_SQL
         assert "provider VARCHAR(20)" in TOKEN_USAGE_TABLE_SQL
         assert "model VARCHAR(100)" in TOKEN_USAGE_TABLE_SQL
         assert "cost NUMERIC" in TOKEN_USAGE_TABLE_SQL

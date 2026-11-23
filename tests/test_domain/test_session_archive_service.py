@@ -22,6 +22,7 @@ from volundr.domain.models import (
     SessionStatus,
     TimelineEventType,
 )
+from volundr.domain.ports import SessionEventLogRepository
 from volundr.domain.services import ChronicleService, SessionArchiveService, SessionService
 from volundr.domain.services.session_archive import SessionArchiveNotAvailableError
 
@@ -59,7 +60,7 @@ def chronicle_service(session_service):
     )
 
 
-class InMemorySessionEventLog:
+class InMemorySessionEventLog(SessionEventLogRepository):
     def __init__(self, entries: list[SessionLogEntry] | None = None):
         self._entries = sorted(entries or [], key=lambda entry: entry.seq)
 

@@ -5359,6 +5359,8 @@ def create_router(
             limit = min(limit or history_max_turns, history_max_turns)
             max_bytes = min(max_bytes or history_max_bytes, history_max_bytes)
         shallow = detail == SHALLOW_DETAIL
+        # A protocol-2 page elides its turns whatever `detail` says (prepare_history_page).
+        elided_page = shallow or history_protocol == 2
         timings: dict[str, float] = {}
 
         def _maybe_elide(payload: dict, fetch_ms: float | None = None) -> dict:
@@ -5674,7 +5676,7 @@ def create_router(
                                 try:
                                     durable = await (
                                         durable_transcripts.shallow(forge, session_id)
-                                        if shallow
+                                        if elided_page
                                         else durable_transcripts.full(forge, session_id)
                                     )
                                 except (RuntimeError, ValueError):
@@ -5741,9 +5743,9 @@ def create_router(
             # tail=N reads only the end of the log (bounded windows), so it is not cached.
             if tail:
                 return _maybe_elide(await forge.get_transcript(session_id, tail_turns=tail))
-            # Shallow reads (every client poll) come from the per-seq cache; a stopped session
-            # rebuilds once, not on every poll. Full reads are single-flight per session.
-            if shallow and turn_id is None:
+            # Reads that answer elided turns (every client poll) come from the incremental
+            # shallow fold, never from a rebuild of the whole log. Full reads share one rebuild.
+            if elided_page and turn_id is None:
                 return _maybe_elide(await durable_transcripts.shallow(forge, session_id))
             return _maybe_elide(await durable_transcripts.full(forge, session_id))
         except RuntimeError as e:

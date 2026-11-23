@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections import OrderedDict
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
@@ -15,10 +16,18 @@ from niuu.domain.transcript_rebuild import rebuild_turns
 from volundr.domain.models import LocalMountSource
 from volundr.domain.services.attachments_index import (
     FOLD_EXCLUDED_KINDS,
+    HISTORY_IMPORT_KIND,
+    TURN_ROW_KIND,
     AttachmentsFold,
     build_attachments_index,
 )
 from volundr.domain.services.durable_turn_tail import DurableTurnTail, TurnTailFold
+from volundr.domain.services.shallow_transcript import (
+    REBUILD_KINDS,
+    SETTLED_KINDS,
+    ElideTurn,
+    ShallowTranscriptFold,
+)
 from volundr.log_aggregate import aggregate_workspace_logs
 from volundr.session_archive import (
     ArchivePathError,
@@ -69,6 +78,9 @@ class SessionArchiveService:
         event_log_page_size: int = 5000,
         turn_tail_sessions: int = 256,
         turn_tail_max_pending: int = 50_000,
+        shallow_sessions: int = 16,
+        turn_page_size: int = 50,
+        rebuild_concurrency: int = 1,
     ) -> None:
         self._session_service = session_service
         self._storage = storage
@@ -94,6 +106,17 @@ class SessionArchiveService:
         self._turn_tail_sessions = turn_tail_sessions
         self._turn_tail_max_pending = turn_tail_max_pending
         self._turn_tail_locks: dict[str, asyncio.Lock] = {}
+        # session id -> incremental shallow transcript; LRU-bounded.
+        self._shallow_cache: OrderedDict[str, ShallowTranscriptFold] = OrderedDict()
+        self._shallow_sessions = shallow_sessions
+        self._shallow_locks: dict[str, asyncio.Lock] = {}
+        # A settled turn's row carries its whole tool output, so turn rows are paged apart
+        # from the much smaller raw frames.
+        self._turn_page_size = turn_page_size
+        # Everything that decodes a stretch of the event log holds a slot while it does: the
+        # decoded frames are what a Forge pod's memory goes to, and a restart makes every
+        # session ask at once.
+        self._rebuild_slots = asyncio.Semaphore(rebuild_concurrency)
 
     async def resolve_workspace_dir(self, session_id: UUID) -> Path:
         """Resolve the first accessible workspace path for a session."""
@@ -126,6 +149,34 @@ class SessionArchiveService:
         :meth:`_load_event_log_tail`). Other sources are single documents and are
         returned whole; the caller slices them.
         """
+        if tail_turns > 0:
+            return await self._resolve_transcript(
+                session_id, lambda: self._load_event_log_tail(session_id, tail_turns)
+            )
+        return await self._resolve_transcript(
+            session_id, lambda: self._load_event_log_transcript(session_id)
+        )
+
+    async def get_shallow_transcript(
+        self, session_id: UUID, *, elide_turn: ElideTurn
+    ) -> dict[str, Any]:
+        """Return the whole persisted transcript with each turn passed through ``elide_turn``.
+
+        The event log is folded incrementally (:class:`ShallowTranscriptFold`), so this is
+        the read for a client that pages or polls. Other sources are single documents,
+        returned as stored; the caller elides them. Every call must pass the same
+        ``elide_turn``: the fold keeps what it returned.
+        """
+        return await self._resolve_transcript(
+            session_id, lambda: self._load_shallow_transcript(session_id, elide_turn)
+        )
+
+    async def _resolve_transcript(
+        self,
+        session_id: UUID,
+        load_event_log: Callable[[], Awaitable[dict[str, Any] | None]],
+    ) -> dict[str, Any]:
+        """The archived transcript, else the event log's, else the workspace's."""
         session_id_str = str(session_id)
         _, candidates = await self._workspace_dir_candidates(session_id)
 
@@ -141,10 +192,7 @@ class SessionArchiveService:
         if _payload_has_turns(archived):
             return archived
 
-        if tail_turns > 0:
-            event_log_transcript = await self._load_event_log_tail(session_id, tail_turns)
-        else:
-            event_log_transcript = await self._load_event_log_transcript(session_id)
+        event_log_transcript = await load_event_log()
         if event_log_transcript is not None:
             return event_log_transcript
 
@@ -449,36 +497,68 @@ class SessionArchiveService:
                 if cached is not None
                 else TurnTailFold(max_pending=self._turn_tail_max_pending)
             )
-            was_truncated = fold.truncated
-            after = fold.resume_after
-            if fold.truncated:
-                # No boundary in the newest `max_pending` frames last time: read only that
-                # window again rather than the whole boundary-less log.
-                after = max(after, head - fold.max_pending)
-            pending: list = []
-            while True:
-                page = await self._event_log_repository.read_after(
-                    session_id, after_seq=after, limit=self._event_log_page_size
-                )
-                if not page:
-                    break
-                after = page[-1].seq
-                pending = await asyncio.to_thread(fold.settle, [*pending, *page])
-            summary = await asyncio.to_thread(fold.summary, pending, head)
-            if fold.truncated and not was_truncated:
-                record_cap_hit(
-                    "conversation_durable_fold_max_pending",
-                    f"session {sid}: the durable log has no assistant conversation.turn row "
-                    f"in more than {fold.max_pending} frames, so its oldest raw frames are "
-                    "not counted and the FAULT-C turn count undercounts; raise "
-                    "conversation_durable_fold_max_pending",
-                )
+            async with self._rebuild_slots:
+                summary = await self._refresh_turn_tail(session_id, fold, head)
             self._turn_tail_cache[sid] = (head, fold, summary)
             self._turn_tail_cache.move_to_end(sid)
             while len(self._turn_tail_cache) > self._turn_tail_sessions:
                 evicted, _ = self._turn_tail_cache.popitem(last=False)
                 self._turn_tail_locks.pop(evicted, None)
             return summary
+
+    async def _refresh_turn_tail(
+        self, session_id: UUID, fold: TurnTailFold, head: int
+    ) -> DurableTurnTail:
+        assert self._event_log_repository is not None
+        was_truncated = fold.truncated
+        if not fold.truncated:
+            await self._settle_turn_rows(session_id, fold)
+        after = fold.resume_after
+        if fold.truncated:
+            # No boundary in the newest `max_pending` frames last time: read only that
+            # window again rather than the whole boundary-less log.
+            after = max(after, head - fold.max_pending)
+        pending: list = []
+        while True:
+            page = await self._event_log_repository.read_after(
+                session_id, after_seq=after, limit=self._event_log_page_size
+            )
+            if not page:
+                break
+            after = page[-1].seq
+            pending = await asyncio.to_thread(fold.settle, [*pending, *page])
+        summary = await asyncio.to_thread(fold.summary, pending, head)
+        if fold.truncated and not was_truncated:
+            record_cap_hit(
+                "conversation_durable_fold_max_pending",
+                f"session {session_id}: the durable log has no assistant conversation.turn row "
+                f"in more than {fold.max_pending} frames, so its oldest raw frames are "
+                "not counted and the FAULT-C turn count undercounts; raise "
+                "conversation_durable_fold_max_pending",
+            )
+        return summary
+
+    async def _settle_turn_rows(self, session_id: UUID, fold: TurnTailFold) -> None:
+        """Settle ``fold`` up to the newest assistant turn row, reading turn rows only.
+
+        The raw frames before that row are never reduced, so decoding them would be waste
+        (a cold fold of a long session). A history import settles from its raw frames, so
+        a log that holds an unsettled one is left to the raw read.
+        """
+        assert self._event_log_repository is not None
+        after = fold.resume_after
+        pending: list = []
+        while True:
+            page = await self._event_log_repository.read_after_kinds(
+                session_id,
+                after_seq=after,
+                limit=self._turn_page_size,
+                kinds=frozenset({TURN_ROW_KIND, HISTORY_IMPORT_KIND}),
+            )
+            if not page or any(row.kind == HISTORY_IMPORT_KIND for row in page):
+                return
+            after = page[-1].seq
+            pending = await asyncio.to_thread(fold.settle, [*pending, *page])
 
     async def _transcript_attachments(self, session_id: UUID) -> dict[str, Any]:
         """Sessions with no durable log: index the stored archive/workspace transcript."""
@@ -522,7 +602,11 @@ class SessionArchiveService:
         """
         if self._event_log_repository is None:
             return None
+        async with self._rebuild_slots:
+            return await self._rebuild_event_log(session_id, max_frames)
 
+    async def _rebuild_event_log(self, session_id: UUID, max_frames: int) -> dict[str, Any] | None:
+        assert self._event_log_repository is not None
         after_seq = 0
         try:
             latest = await self._event_log_repository.latest_seq(session_id)
@@ -589,7 +673,12 @@ class SessionArchiveService:
         latest = await self._event_log_repository.latest_seq(session_id)
         if latest <= 0:
             return None  # no durable frames: the same answer as the full rebuild
+        async with self._rebuild_slots:
+            return await self._rebuild_event_log_tail(session_id, tail_turns, max_frames, latest)
 
+    async def _rebuild_event_log_tail(
+        self, session_id: UUID, tail_turns: int, max_frames: int, latest: int
+    ) -> dict[str, Any] | None:
         entries: list = []
         low = latest  # frames with seq in (low, latest] are loaded
         window = min(self._tail_initial_frames, max_frames)
@@ -612,6 +701,105 @@ class SessionArchiveService:
             "last_activity": "",
             "history_tail": True,
         }
+
+    async def _load_shallow_transcript(
+        self, session_id: UUID, elide_turn: ElideTurn
+    ) -> dict[str, Any] | None:
+        """The event log's whole transcript, elided; ``None`` when it holds no turn."""
+        if self._event_log_repository is None:
+            return None
+        sid = str(session_id)
+        lock = self._shallow_locks.setdefault(sid, asyncio.Lock())
+        async with lock:
+            head = await self._event_log_repository.latest_seq(session_id)
+            if head <= 0:
+                return None
+            fold = self._shallow_cache.get(sid) or ShallowTranscriptFold(sid, elide_turn)
+            # Kept only once this read completes: a cancelled one may leave its worker
+            # thread still folding, and the next read must not share that fold.
+            self._shallow_cache.pop(sid, None)
+            async with self._rebuild_slots:
+                turns = await self._refresh_shallow(session_id, fold, head)
+            self._shallow_cache[sid] = fold
+            self._shallow_cache.move_to_end(sid)
+            while len(self._shallow_cache) > self._shallow_sessions:
+                evicted, _ = self._shallow_cache.popitem(last=False)
+                self._shallow_locks.pop(evicted, None)
+        if turns is None:
+            return await self._load_event_log_transcript(session_id)
+        if not turns:
+            return None  # the same answer as the full rebuild
+        return {
+            "turns": turns,
+            "projection_revision": projection_revision(turns),
+            "is_active": False,
+            "last_activity": "",
+        }
+
+    async def _refresh_shallow(
+        self, session_id: UUID, fold: ShallowTranscriptFold, head: int
+    ) -> list[dict[str, Any]] | None:
+        """Fold the log up to ``head``; ``None`` when only the whole log answers exactly."""
+        await self._settle_shallow(session_id, fold, head)
+        if fold.needs_whole_log:
+            return None
+        after = fold.resume_after
+        if head - after > self._turn_tail_max_pending:
+            after = head - self._turn_tail_max_pending
+            if not fold.truncated:
+                fold.truncated = True
+                record_cap_hit(
+                    "conversation_durable_fold_max_pending",
+                    f"session {session_id}: the durable log has no assistant conversation.turn "
+                    f"row in the last {head - fold.resume_after} frames, so only its newest "
+                    f"{self._turn_tail_max_pending} raw frames are shown and older unsettled "
+                    "work is missing from the conversation; raise "
+                    "conversation_durable_fold_max_pending",
+                )
+        tail = await self._read_kinds_range(session_id, after, head, REBUILD_KINDS)
+        return await asyncio.to_thread(fold.turns, tail)
+
+    async def _settle_shallow(
+        self, session_id: UUID, fold: ShallowTranscriptFold, head: int
+    ) -> None:
+        assert self._event_log_repository is not None
+        while fold.scanned_to < head:
+            page = await self._event_log_repository.read_after_kinds(
+                session_id,
+                after_seq=fold.scanned_to,
+                limit=self._turn_page_size,
+                kinds=SETTLED_KINDS,
+            )
+            # Nothing past `head`, so the settled rows and the live tail are one snapshot.
+            page = [row for row in page if row.seq <= head]
+            if not page:
+                return
+            for marker in [row for row in page if row.kind == HISTORY_IMPORT_KIND]:
+                history = await self._read_kinds_range(
+                    session_id, fold.import_after, marker.seq - 1, REBUILD_KINDS
+                )
+                await asyncio.to_thread(fold.absorb_import, history, marker.seq)
+                page = [row for row in page if row.seq > marker.seq]
+            await asyncio.to_thread(fold.settle, page)
+
+    async def _read_kinds_range(
+        self, session_id: UUID, after_seq: int, upto_seq: int, kinds: frozenset[str]
+    ) -> list:
+        """Durable frames of ``kinds`` with ``after_seq < seq <= upto_seq``, ordered by seq."""
+        assert self._event_log_repository is not None
+        out: list = []
+        while after_seq < upto_seq:
+            page = await self._event_log_repository.read_after_kinds(
+                session_id,
+                after_seq=after_seq,
+                limit=min(self._event_log_page_size, upto_seq - after_seq),
+                kinds=kinds,
+            )
+            if not page:
+                return out
+            out.extend(row for row in page if row.seq <= upto_seq)
+            after_seq = page[-1].seq
+        return out
 
     async def _read_seq_range(self, session_id: UUID, after_seq: int, upto_seq: int) -> list:
         """Durable frames with ``after_seq < seq <= upto_seq``, ordered by seq."""

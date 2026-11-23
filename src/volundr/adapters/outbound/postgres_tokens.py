@@ -59,7 +59,7 @@ class PostgresTokenTracker(TokenTracker):
         async with self._pool.acquire() as conn:
             result = await conn.fetchval(
                 """
-                SELECT COALESCE(SUM(tokens), 0)
+                SELECT COALESCE(SUM(tokens), 0)::bigint
                 FROM token_usage
                 WHERE session_id = $1
                 """,
