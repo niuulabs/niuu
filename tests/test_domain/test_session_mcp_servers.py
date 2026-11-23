@@ -10,10 +10,13 @@ from volundr.adapters.outbound.config_mcp_servers import ConfigMCPServerProvider
 from volundr.config import MCPServerEntry
 from volundr.domain.services.session import SessionService
 from volundr.domain.services.session_mcp_servers import (
+    MCPServerHostError,
     UnknownMCPServerError,
     catalogue_entries,
+    catalogue_servers,
     requested_mcp_servers,
     token_file,
+    with_server_host_tags,
 )
 
 PROGRAM = {
@@ -124,3 +127,62 @@ def test_a_server_with_a_credential_reads_its_token_from_a_file() -> None:
 def test_a_credential_is_only_for_a_url() -> None:
     with pytest.raises(ValidationError, match="credential is the token sent to a url"):
         MCPServerEntry(name="parts", command="parts", credential="parts")
+
+
+def hosted() -> ConfigMCPServerProvider:
+    return ConfigMCPServerProvider(
+        [
+            MCPServerEntry(name="blender", command="uv", host_tags=["blender", "gpu", "gpu"]),
+            MCPServerEntry(name="docs", type="http", url="https://docs.example/mcp"),
+        ]
+    )
+
+
+def test_host_tags_are_tags() -> None:
+    assert hosted().get("blender").host_tags == ("blender", "gpu")
+    with pytest.raises(ValidationError, match="no whitespace"):
+        MCPServerEntry(name="blender", command="uv", host_tags=["gpu box"])
+
+
+@pytest.mark.parametrize(
+    ("selector", "placed"),
+    [
+        (None, {"tags": ["blender", "gpu"], "match": "all"}),
+        ({"tags": ["site:hnoss"]}, {"tags": ["blender", "gpu", "site:hnoss"], "match": "all"}),
+        ({"tags": ["gpu"], "match": "any"}, {"tags": ["blender", "gpu"], "match": "all"}),
+    ],
+)
+def test_a_server_only_some_hosts_have_places_the_session_there(selector, placed) -> None:
+    config = {"mcp_servers": ["blender"]}
+    if selector is not None:
+        config["host_selector"] = selector
+    servers = catalogue_servers(["blender", "docs"], hosted())
+    assert with_server_host_tags(config, servers) == {
+        "mcp_servers": ["blender"],
+        "host_selector": placed,
+    }
+
+
+def test_servers_any_host_has_leave_the_placement_alone() -> None:
+    config = {"host_selector": {"tags": ["a", "b"], "match": "any"}}
+    assert with_server_host_tags(config, catalogue_servers(["docs"], hosted())) is config
+
+
+def test_an_any_selector_cannot_take_a_servers_host_tags() -> None:
+    config = {"host_selector": {"tags": ["a", "b"], "match": "any"}}
+    with pytest.raises(MCPServerHostError, match="target the hosts with match all"):
+        with_server_host_tags(config, catalogue_servers(["blender"], hosted()))
+
+
+@pytest.mark.parametrize("resolver", [None, object()])
+def test_a_forge_without_a_compute_pool_refuses_a_hosted_server(resolver) -> None:
+    service = SessionService.__new__(SessionService)
+    service._mcp_server_provider = hosted()
+    service._execution_resolver = resolver
+    assert service.with_mcp_server_hosts(["docs"], {}) == {}
+    if resolver is None:
+        with pytest.raises(MCPServerHostError, match="no compute pool"):
+            service.with_mcp_server_hosts(["blender"], {})
+    else:
+        placed = service.with_mcp_server_hosts(["blender"], {})
+        assert placed["host_selector"] == {"tags": ["blender", "gpu"], "match": "all"}

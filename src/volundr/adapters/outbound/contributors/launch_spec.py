@@ -17,7 +17,11 @@ from volundr.domain.ports import (
     SessionContribution,
     SessionContributor,
 )
-from volundr.domain.services.session_mcp_servers import catalogue_entries, refuse_own_programs
+from volundr.domain.services.session_mcp_servers import (
+    catalogue_entries,
+    catalogue_servers,
+    refuse_own_programs,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -70,7 +74,15 @@ class LaunchSpecContributor(SessionContributor):
         refuse_own_programs([server])
         if server.get("command") or server.get("url"):
             return server
-        entry = catalogue_entries([str(server.get("name") or "")], self._mcp_server_provider)[0]
+        name = str(server.get("name") or "")
+        [catalogued] = catalogue_servers([name], self._mcp_server_provider)
+        if catalogued.host_tags:
+            raise ValueError(
+                f"MCP server {name!r} runs only on hosts tagged {list(catalogued.host_tags)}, "
+                "which a launch spec cannot place a session on; ask for it with mcp_servers "
+                "on create"
+            )
+        entry = catalogue_entries([name], self._mcp_server_provider)[0]
         if "credential_file" in entry:
             raise ValueError(
                 f"MCP server {entry['name']!r} sends its session owner's stored credential, "

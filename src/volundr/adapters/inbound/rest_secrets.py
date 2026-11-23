@@ -56,6 +56,10 @@ class MCPServerResponse(BaseModel):
         default="",
         description="The credential its user must have stored for it, by name; empty for none",
     )
+    host_tags: list[str] = Field(
+        default_factory=list,
+        description="Tags a session's host must carry for it; a session asking for it lands there",
+    )
 
     @classmethod
     def from_config(cls, cfg: MCPServerConfig) -> MCPServerResponse:
@@ -69,6 +73,7 @@ class MCPServerResponse(BaseModel):
             description=cfg.description,
             version=str((cfg.program or {}).get("version", "")),
             credential=cfg.credential,
+            host_tags=list(cfg.host_tags),
         )
 
 

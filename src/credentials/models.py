@@ -26,10 +26,14 @@ class MCPServerConfig:
     default_tools_approval_mode: str | None = None
     startup_timeout_sec: float | None = None
     tool_timeout_sec: float | None = None
+    #: Tags the machine of a session with this server must carry.
+    host_tags: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if not isinstance(self.args, tuple):
             object.__setattr__(self, "args", tuple(self.args))
+        if not isinstance(self.host_tags, tuple):
+            object.__setattr__(self, "host_tags", tuple(self.host_tags))
 
 
 class MountType(StrEnum):

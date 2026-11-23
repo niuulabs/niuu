@@ -8,6 +8,7 @@ from typing import Any
 from credentials.models import MCPServerConfig
 from credentials.ports import MCPServerProvider
 from niuu.domain.oauth_credentials import mcp_token_path
+from volundr.domain.session_runtimes import HOST_SELECTOR_KEY
 
 #: Where a session's requested server names live in its workload config, so that a restart
 #: gives the session the same servers.
@@ -30,6 +31,39 @@ def refuse_own_programs(servers: Iterable[dict[str, Any]]) -> None:
                 f"MCP server {server.get('name')!r} brings its own program. Only this Forge's "
                 "mcp_servers catalogue may name one; give the server's catalogue name alone"
             )
+
+
+class MCPServerHostError(ValueError):
+    """A session asks for a server whose host tags its placement cannot satisfy."""
+
+
+def with_server_host_tags(
+    workload_config: dict[str, Any], servers: Iterable[MCPServerConfig]
+) -> dict[str, Any]:
+    """*workload_config* whose host selector also needs every host tag of *servers*.
+
+    The tags join the selector the launch brought (``all`` with its own tags); an ``any``
+    selector of several tags cannot take them and is refused, as is a malformed one.
+    """
+    needed = sorted({tag for server in servers for tag in server.host_tags})
+    if not needed:
+        return workload_config
+    users = ", ".join(sorted(server.name for server in servers if server.host_tags))
+    raw = workload_config.get(HOST_SELECTOR_KEY)
+    if raw is None:
+        raw = {}
+    if not isinstance(raw, dict):
+        raise MCPServerHostError(f'{HOST_SELECTOR_KEY} must be {{"tags": [...], "match": ...}}')
+    tags = list(raw.get("tags") or [])
+    if raw.get("match", "all") == "any" and len(tags) > 1:
+        raise MCPServerHostError(
+            f"MCP servers {users} run only on hosts tagged {needed}, which a host selector "
+            f"that matches any of {tags} cannot add; target the hosts with match all"
+        )
+    return {
+        **workload_config,
+        HOST_SELECTOR_KEY: {"tags": sorted({*tags, *needed}), "match": "all"},
+    }
 
 
 class UnknownMCPServerError(ValueError):

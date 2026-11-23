@@ -255,6 +255,7 @@ class ForgeService:
         mcp_servers = getattr(data, "mcp_servers", None)
         if isinstance(mcp_servers, list) and mcp_servers:
             self._session_service.check_mcp_servers(mcp_servers)
+            self._session_service.with_mcp_server_hosts(mcp_servers, data.workload_config or {})
         hosted_by = getattr(data, "hosted_by", None)
         if isinstance(hosted_by, UUID):
             await self._require_open_unit(hosted_by, data, principal)
@@ -326,6 +327,10 @@ class ForgeService:
         mcp_servers = getattr(data, "mcp_servers", None)
         if isinstance(mcp_servers, list) and mcp_servers:
             workload_config[MCP_SERVERS_KEY] = list(mcp_servers)
+            # A tool only some hosts have puts the session on one of them.
+            workload_config = self._session_service.with_mcp_server_hosts(
+                mcp_servers, workload_config
+            )
         if requested_grants:
             workload_config[FORGE_MCP_KEY] = {
                 GRANTS_KEY: [grant.value for grant in normalize_grants(requested_grants)]

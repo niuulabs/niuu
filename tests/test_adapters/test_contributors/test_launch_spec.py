@@ -194,3 +194,19 @@ async def test_a_server_with_a_credential_cannot_come_from_a_launch_spec(session
     )
     with pytest.raises(ValueError, match="ask for it with mcp_servers on create"):
         await contributor.contribute(session, SessionContext(launch_spec="s"))
+
+
+@pytest.mark.asyncio
+async def test_a_server_only_some_hosts_have_cannot_come_from_a_launch_spec(
+    session: Session,
+) -> None:
+    provider = MagicMock()
+    provider.get.return_value = LaunchSpec(name="s", mcp_servers=[{"name": "blender"}])
+    contributor = LaunchSpecContributor(
+        launch_spec_provider=provider,
+        mcp_server_provider=ConfigMCPServerProvider(
+            [MCPServerEntry(name="blender", command="uv", host_tags=["blender"])]
+        ),
+    )
+    with pytest.raises(ValueError, match="runs only on hosts tagged"):
+        await contributor.contribute(session, SessionContext(launch_spec="s"))

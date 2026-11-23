@@ -467,6 +467,10 @@ async def test_a_sessions_mcp_servers_are_checked_first_and_kept_for_its_restart
     created = SimpleNamespace(id=uuid4())
     session_service.create_session.return_value = created
     session_service.start_session.return_value = created
+    session_service.with_mcp_server_hosts.side_effect = lambda names, config: {
+        **config,
+        "host_selector": {"tags": ["cad"], "match": "all"},
+    }
     forge = ForgeService(
         session_service,
         session_participant_service=make_session_participant_service(session_service),
@@ -496,10 +500,19 @@ async def test_a_sessions_mcp_servers_are_checked_first_and_kept_for_its_restart
 
     session_service.check_mcp_servers.assert_called_once_with(["solidcraft"])
     started = session_service.start_session.await_args.kwargs
-    assert started["workload_config"] == {"mcp_servers": ["solidcraft"]}
+    assert started["workload_config"] == {
+        "mcp_servers": ["solidcraft"],
+        "host_selector": {"tags": ["cad"], "match": "all"},
+    }
 
     session_service.create_session.reset_mock()
     session_service.check_mcp_servers.side_effect = ValueError("not in this Forge's catalogue")
     with pytest.raises(ValueError, match="catalogue"):
+        await forge.create_and_start_session(data)
+    session_service.create_session.assert_not_awaited()
+
+    session_service.check_mcp_servers.side_effect = None
+    session_service.with_mcp_server_hosts.side_effect = ValueError("no compute pool")
+    with pytest.raises(ValueError, match="no compute pool"):
         await forge.create_and_start_session(data)
     session_service.create_session.assert_not_awaited()

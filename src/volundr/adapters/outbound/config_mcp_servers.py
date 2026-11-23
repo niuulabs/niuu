@@ -27,6 +27,7 @@ class ConfigMCPServerProvider(MCPServerProvider):
                 default_tools_approval_mode=cfg.default_tools_approval_mode,
                 startup_timeout_sec=cfg.startup_timeout_sec,
                 tool_timeout_sec=cfg.tool_timeout_sec,
+                host_tags=tuple(cfg.host_tags),
             )
 
     def list(self) -> list[MCPServerConfig]:

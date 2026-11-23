@@ -97,7 +97,12 @@ from volundr.domain.services.forge_session_launch import (
     with_forge_mcp,
     without_forge_mcp,
 )
-from volundr.domain.services.session_mcp_servers import catalogue_entries
+from volundr.domain.services.session_mcp_servers import (
+    MCPServerHostError,
+    catalogue_entries,
+    catalogue_servers,
+    with_server_host_tags,
+)
 from volundr.domain.services.session_startup import SessionStartupRecorder
 from volundr.domain.session_changes import SessionChanges
 from volundr.domain.session_connections import (
@@ -2178,6 +2183,24 @@ class SessionService:
     def check_mcp_servers(self, names: Iterable[str]) -> None:
         """Refuse a new session that asks for an MCP server the catalogue does not have."""
         catalogue_entries(names, self._mcp_server_provider)
+
+    def with_mcp_server_hosts(self, names: Iterable[str], workload_config: dict) -> dict:
+        """*workload_config* placed on a host that has every server in *names*.
+
+        Raises:
+            MCPServerHostError: when a server needs host tags this Forge cannot place by
+                (no compute pool) or the launch's own host selector cannot take.
+        """
+        servers = catalogue_servers(names, self._mcp_server_provider)
+        placed = with_server_host_tags(workload_config, servers)
+        if placed is not workload_config and self._execution_resolver is None:
+            needing = ", ".join(sorted(s.name for s in servers if s.host_tags))
+            raise MCPServerHostError(
+                f"MCP servers {needing} run only on tagged hosts, and this Forge has no "
+                "compute pool to place a session on one; take them out of its mcp_servers "
+                "catalogue or ask for them on a Forge whose hosts have them"
+            )
+        return placed
 
     def check_forge_mcp_grants(
         self,

@@ -67,6 +67,7 @@ from niuu.mesh.config import MeshSettings
 from personas.config import PersonaSourceConfig
 from skuld.tool_result_preview import PREVIEW_EDGE_LIMIT, PREVIEW_MAX_EDGE, PREVIEW_MIN_EDGE
 from volundr.compute.config import ComputeConfig
+from volundr.domain.compute import validate_tag
 from volundr.domain.mcp_hosts import normalize_internal_host_pattern
 from volundr.domain.model_gateway import MODEL_GATEWAY_TOKEN_ENV
 from volundr.domain.models import (
@@ -532,6 +533,15 @@ class MCPServerEntry(BaseModel):
     env: dict[str, str] = Field(
         default_factory=dict, description="Environment of the server's process; no secrets."
     )
+    host_tags: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Tags the machine of a session with this server must carry, for a tool only some "
+            "of this Forge's hosts have (Blender on the host that has it installed). A session "
+            "that asks for the server is placed only on such a host; with none, or on a Forge "
+            "without a compute pool, it is refused. A launch spec cannot attach such a server."
+        ),
+    )
     credential: str = Field(
         default="",
         description=(
@@ -566,6 +576,13 @@ class MCPServerEntry(BaseModel):
                 "leave out command, url and type"
             )
         return self
+
+    @field_validator("host_tags")
+    @classmethod
+    def _host_tags_are_tags(cls, value: list[str]) -> list[str]:
+        for tag in value:
+            validate_tag(tag)
+        return sorted(set(value))
 
     @model_validator(mode="after")
     def _credential_is_for_a_url(self) -> "MCPServerEntry":

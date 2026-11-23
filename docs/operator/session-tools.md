@@ -38,7 +38,30 @@ mcpServers:
   cannot attach such a server, and a session on OpenShell cannot have one.
 - To upgrade, change the version, URLs and digests. Sessions that start afterwards get it.
 
-`GET /api/v1/forge/mcp-servers` lists the catalogue, with each program's version.
+### A tool only some hosts have
+
+A tool may need what only some of a Forge's hosts have installed, such as Blender on one
+GPU host. `host_tags` names the tags such a host carries:
+
+```yaml
+mcpServers:
+  - name: blender
+    description: "Blender, headless, on the Blender host"
+    command: uv
+    args: ["tool", "run", "--from", "git+https://projects.blender.org/lab/blender_mcp.git@<commit>#subdirectory=mcp", "blender-mcp"]
+    env:
+      BLENDER_PATH: /opt/blender/blender
+    host_tags: [blender]
+```
+
+A session that asks for it is placed only on a host with all of those tags: they join the
+session's `host_selector` (`match: all`, with any tags the launch brought). Session create
+is refused when no host of the pool carries them, when the launch's selector matches `any`
+of several tags, and on a Forge without a compute pool. A launch spec cannot attach such a
+server; ask for it with `mcp_servers` on create.
+
+`GET /api/v1/forge/mcp-servers` lists the catalogue, with each program's version and
+`host_tags`.
 
 Only this list may name a program. A user's launch spec that brings its own is refused, so
 which tools a Forge installs is its operator's decision. What an agent itself downloads
