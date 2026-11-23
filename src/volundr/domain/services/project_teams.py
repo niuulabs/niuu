@@ -8,6 +8,12 @@ home through the Guild and nothing is decided here.
 A Forge without a Guild is every project's home and publishes nothing. One whose Guild
 cannot be reached keeps working from what it has: a change at the home is kept and
 published when the team is next read, a copy stays as it was last copied, and both say so.
+
+A project created here under an id the Guild already holds for another Forge is created as
+that Forge's copy. One that was registered here on its own before (Ting adds a run's project
+to each Forge it runs on) becomes a copy when the Guild refuses its team for another Forge's,
+unless it has members, team integrations or routes that the home lacks: those are named, and
+nothing is changed until someone adds them at the home or removes them here.
 """
 
 from __future__ import annotations
@@ -160,14 +166,90 @@ class ProjectTeamService:
             return state
         if not changed and self._failed_lately(project_id):
             return state
-        if await self._projects.repository.get(project_id) is None:
+        project = await self._projects.repository.get(project_id)
+        if project is None:
             return state
         try:
             reply = await self._guild.publish(project_id, self._instance_id, bearer)
         except TeamGuildError as exc:
+            if exc.home_instance_id and exc.home_instance_id != self._instance_id:
+                return await self._become_copy(project, exc.home_instance_id, bearer, exc)
             return await self._failed(project_id, "publish", exc)
         self._failed_at.pop(project_id, None)
         return await self._sync.published(project_id, reply.version, self._now())
+
+    async def _become_copy(
+        self, project: ForgeProject, home_id: str, bearer: str, refused: TeamGuildError
+    ) -> ProjectTeamSync:
+        """Hold the project as a copy of the Forge the Guild says is its home.
+
+        Only when nothing here would be lost: a member, team integration or route that the
+        home lacks is named instead, and the project stays as it is.
+        """
+        project_id = project.id
+        copy = project.model_copy(update={"home_instance_id": home_id})
+        try:
+            record = await self._record(project_id, copy, bearer, fresh=True)
+        except TeamGuildError as exc:
+            return await self._failed(project_id, "adopt", exc)
+        if isinstance(record, str):
+            return await self._failed(
+                project_id,
+                "adopt",
+                TeamGuildError(
+                    f"{refused} The Guild has no team of Forge {home_id} for you to copy "
+                    f"({record}), so this Forge still holds the project as its own."
+                ),
+            )
+        lost = _only_here(await self.team(project), record.team)
+        if lost:
+            return await self._failed(
+                project_id,
+                "adopt",
+                ProjectConflictError(
+                    f"{refused} This Forge also has {', '.join(lost)}, which Forge {home_id} "
+                    "does not. Add them there or remove them here, and this Forge then holds "
+                    "the project as a copy of that Forge's."
+                ),
+            )
+        try:
+            await self._apply(copy, record, force=True)
+        except ProjectConflictError as exc:
+            return await self._failed(project_id, "adopt", exc)
+        await self._projects.repository.update(
+            copy.model_copy(update={"revision": project.revision + 1, "updated_at": self._now()}),
+            project.revision,
+        )
+        self._failed_at.pop(project_id, None)
+        return await self._sync.get(project_id)
+
+    # --- a project new here --------------------------------------------------
+
+    async def home_of_new(self, project_id: UUID, bearer: str) -> str:
+        """The Forge the Guild holds a project of this id for, when that is another one.
+
+        Empty when there is no Guild, the Guild holds no team of it for the caller, or the
+        home is this Forge. Raises ``TeamGuildError`` when the Guild cannot be asked: a
+        project created here then could be a second home.
+        """
+        if self._guild is None:
+            return ""
+        try:
+            record = await self._guild.record(project_id, bearer)
+        except TeamNotVisibleError:
+            return ""
+        return "" if record.home_instance_id == self._instance_id else record.home_instance_id
+
+    async def created(self, project: ForgeProject, bearer: str) -> None:
+        """Share a project just created here: a copy takes its team, a home publishes it.
+
+        A failure is recorded on the project, as for any read."""
+        if self._guild is None:
+            return
+        if self.is_copy(project):
+            await self.refresh_for_read(project, bearer)
+            return
+        await self.publish_pending(project.id, bearer, changed=True)
 
     # --- on a copy ---------------------------------------------------------
 
@@ -273,7 +355,11 @@ class ProjectTeamService:
         except TeamNotVisibleError:
             return HIDDEN
 
-    async def _apply(self, project: ForgeProject, record: ProjectTeamRecord) -> tuple[str, int]:
+    async def _apply(
+        self, project: ForgeProject, record: ProjectTeamRecord, *, force: bool = False
+    ) -> tuple[str, int]:
+        """Take the record's team. ``force`` takes it whatever version this Forge holds: a
+        Forge that held the project as its own counted versions of its own."""
         team = record.team
         if record.home_instance_id != project.home_instance_id:
             raise ProjectConflictError(
@@ -287,7 +373,7 @@ class ProjectTeamService:
                 "was not taken"
             )
         state = await self._sync.get(project.id)
-        if state.synced_at is not None and state.version >= team.version:
+        if not force and state.synced_at is not None and state.version >= team.version:
             await self._sync.copied(project.id, state.version, self._now())
             return CURRENT, state.version
         # Connections first: a route only ever points at one that is already here.
@@ -349,6 +435,33 @@ class ProjectTeamService:
         record_degraded(f"project_team.{what}", message)
         self._failed_at[project_id] = self._now()
         return await self._sync.failed(project_id, str(exc))
+
+
+def _only_here(held: ProjectTeam, home: ProjectTeam) -> list[str]:
+    """What this Forge's team has that the home's lacks, as the people asked to fix it read."""
+    roles = {member.user_id: member.role for member in home.members}
+    lost = [
+        f"member {member.user_id} as {member.role}"
+        for member in held.members
+        if roles.get(member.user_id) != member.role
+    ]
+    connections = {connection.id for connection in home.connections}
+    lost += [
+        f"team integration {connection.slug or connection.integration_type} ({connection.id})"
+        for connection in held.connections
+        if connection.id not in connections
+    ]
+    routes = {_route_key(route) for route in home.routes}
+    lost += [
+        f"route of {route.event} to {route.channel or route.deliver_to}"
+        for route in held.routes
+        if _route_key(route) not in routes
+    ]
+    return lost
+
+
+def _route_key(route: TeamRouteSetting) -> tuple[str, UUID, str, str, bool]:
+    return (route.event, route.connection_id, route.deliver_to, route.channel, route.enabled)
 
 
 def _from_member(member: ProjectMember) -> TeamMember:

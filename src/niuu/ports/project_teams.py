@@ -9,7 +9,13 @@ from niuu.domain.project_team import ProjectTeamRecord
 
 
 class ProjectTeamHomeConflictError(RuntimeError):
-    """Another Forge already publishes this project's team; it is never taken over."""
+    """Another Forge already publishes this project's team; it is never taken over.
+
+    ``home_instance_id`` is the Forge that does."""
+
+    def __init__(self, message: str, *, home_instance_id: str) -> None:
+        super().__init__(message)
+        self.home_instance_id = home_instance_id
 
 
 class ProjectTeamRecords(ABC):

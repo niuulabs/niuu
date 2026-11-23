@@ -170,11 +170,16 @@ class TeamGuildError(RuntimeError):
     """The Guild could not answer, or refused; the message names the remedy.
 
     ``route_missing`` is a Guild, or a home Forge, from before project teams.
+    ``home_instance_id`` names the project's home when the Guild refused a publication
+    because this Forge is not it.
     """
 
-    def __init__(self, message: str, *, route_missing: bool = False) -> None:
+    def __init__(
+        self, message: str, *, route_missing: bool = False, home_instance_id: str = ""
+    ) -> None:
         super().__init__(message)
         self.route_missing = route_missing
+        self.home_instance_id = home_instance_id
 
 
 class TeamNotVisibleError(TeamGuildError):

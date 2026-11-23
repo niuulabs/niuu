@@ -64,7 +64,8 @@ class PostgresProjectTeamRecords(ProjectTeamRecords):
         if kept.home_instance_id != record.home_instance_id:
             raise ProjectTeamHomeConflictError(
                 f"The team of project {record.team.project_id} is published by Forge "
-                f"{kept.home_instance_id}, not {record.home_instance_id}"
+                f"{kept.home_instance_id}, not {record.home_instance_id}",
+                home_instance_id=kept.home_instance_id,
             )
         return kept
 

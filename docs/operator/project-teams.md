@@ -35,8 +35,8 @@ credential store they share. A cluster with a store of its own shows the connect
 | Another cluster | It copies the team when the project is next read or launched there. |
 
 Every failed exchange is logged at error and counted under `degraded` on `GET /health`:
-`project_team.publish`, `project_team.copy`, `guild.project_team.copy` and
-`guild.project_team.home`. `GET /api/v1/forge/projects/{id}/team` on a Forge says whether it is
+`project_team.publish`, `project_team.copy`, `project_team.adopt`, `guild.project_team.copy`
+and `guild.project_team.home`. `GET /api/v1/forge/projects/{id}/team` on a Forge says whether it is
 the home, the version it holds and the last error.
 
 ## Requirements
@@ -67,5 +67,25 @@ the home, the version it holds and the last error.
 - The use log of team integrations: each cluster shows the uses made there.
 - Names and emails: a member who never signed in on a cluster is shown there by user id.
 
-When a project was registered separately on two Forges, the one that had it first is the home,
-and the other's publication is refused with that Forge's name.
+## A project on a second cluster
+
+A cluster can come to have a project in three ways:
+
+- **Through the Guild**, when someone launches into the project there: it is a copy of the
+  home from the start.
+- **Created there under the same id** (Ting does this on each cluster a run of the project
+  runs on): the Forge asks the Guild first, and when the Guild holds the project for another
+  Forge it is created as that Forge's copy and takes the team at once. When the Guild cannot be
+  asked, nothing is created and the request fails with *Nothing was created* (503), so a second
+  home is never made blind.
+- **Registered there on its own** before this, or created at the same moment: the Forge that
+  had the project first is the home. The other one's next publication is refused, the Guild
+  names the home (the `Niuu-Project-Home` header), and the Forge becomes its copy.
+
+It becomes a copy only when nothing would be lost. A member, a team integration or a route that
+the home does not have is named on its project page, for example *This Forge also has member
+cara as viewer, which Forge valhalla does not*, and nothing changes until someone adds it at
+the home or removes it there. These refusals are counted as `project_team.adopt`.
+
+A new project is published as it is created, so the Guild knows its home before any other
+cluster has it.

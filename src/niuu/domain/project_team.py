@@ -79,6 +79,11 @@ class ProjectTeam(_TeamModel):
         return any(member.user_id == user_id for member in self.members)
 
 
+#: The header of a Guild's refusal to take a team from a Forge that is not the project's
+#: home: the Forge that is. The refused Forge may then hold the project as its copy.
+PROJECT_HOME_HEADER = "Niuu-Project-Home"
+
+
 class ProjectTeamRecord(_TeamModel):
     """The team a Guild holds for a project, and the one Forge it takes it from."""
 
