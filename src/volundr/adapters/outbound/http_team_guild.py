@@ -9,7 +9,7 @@ import httpx
 from pydantic import ValidationError
 
 from niuu.adapters.inbound.remote_urls import build_remote_url
-from niuu.domain.project_team import ProjectTeamRecord
+from niuu.domain.project_team import PROJECT_HOME_HEADER, ProjectTeamRecord
 from volundr.domain.project_ports import (
     TeamGuild,
     TeamGuildError,
@@ -135,7 +135,13 @@ class HttpTeamGuild(TeamGuild):
             message = f"{message}: {detail}"
         if response.status_code == 404 and detail != ROUTE_MISSING_DETAIL:
             raise TeamNotVisibleError(message)
-        raise TeamGuildError(message, route_missing=response.status_code in (404, 405))
+        raise TeamGuildError(
+            message,
+            route_missing=response.status_code in (404, 405),
+            home_instance_id=(
+                response.headers.get(PROJECT_HOME_HEADER, "") if response.status_code == 409 else ""
+            ),
+        )
 
 
 def _reply(response: httpx.Response) -> TeamGuildReply:

@@ -11,7 +11,12 @@ from niuu.domain.guild_membership import GuildMembership
 from niuu.domain.services.token_scope import FORGE_SESSION_LIFECYCLE_SCOPE, require_scope
 from volundr.adapters.inbound.rest_guild import require_own_instance
 from volundr.adapters.inbound.rest_project_results import project_result
-from volundr.adapters.inbound.rest_project_team import ProjectTeamRoute
+from volundr.adapters.inbound.rest_project_team import (
+    ProjectTeamRoute,
+    bearer_of,
+    team_service,
+)
+from volundr.domain.project_ports import TeamGuildError
 from volundr.domain.projects import (
     PROJECT_BRIEF_MAX_CHARS,
     ForgeProject,
@@ -170,7 +175,25 @@ def create_projects_router(
         # idempotent; a repository and checkout can be attached later.
         principal = await principal_for_request(request)
         require_own_instance(guild_membership, data.instance_id)
-        return await project_result(service.register(data.to_project(), principal))
+        project = data.to_project()
+        teams = team_service(request)
+        bearer = bearer_of(request)
+        if teams is not None and "id" in data.model_fields_set and not project.home_instance_id:
+            # A project another Forge already has is that Forge's: this one holds a copy.
+            try:
+                home = await teams.home_of_new(project.id, bearer)
+            except TeamGuildError as exc:
+                raise HTTPException(
+                    503,
+                    f"Nothing was created. The Guild could not say whether another Forge "
+                    f"already has project {project.id}: {exc}",
+                ) from exc
+            if home:
+                project = project.model_copy(update={"home_instance_id": home})
+        created = await project_result(service.register(project, principal))
+        if teams is not None:
+            await teams.created(created, bearer)
+        return created
 
     @router.post("/discover")
     async def discover_project(request: Request, data: ProjectCheckout) -> ForgeProject:

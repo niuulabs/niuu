@@ -12,7 +12,9 @@ The Guild never takes a team from a request body. It reads it from the Forge tha
 is the project's home, with the caller's own login, so that Forge's checks decide what the
 caller may see. The first publication fixes which Forge is the home: the one that has had
 the project longest, when several registered it on their own. A Forge that is one person's
-alone is never one, because its owner decides what it answers.
+alone is never one, because its owner decides what it answers. A refused publication names
+the home in the ``Niuu-Project-Home`` header, so the refused Forge can hold the project as
+a copy of it.
 """
 
 from __future__ import annotations
@@ -32,6 +34,7 @@ from niuu.adapters.inbound.auth import extract_principal
 from niuu.cap_telemetry import record_degraded
 from niuu.domain.models import InstanceVisibility, Principal, RegisteredInstance
 from niuu.domain.project_team import (
+    PROJECT_HOME_HEADER,
     ProjectTeam,
     ProjectTeamRecord,
     TeamMembership,
@@ -149,7 +152,7 @@ def add_project_team_routes(
         try:
             kept = await records.put(ProjectTeamRecord(home_instance_id=home.id, team=team))
         except ProjectTeamHomeConflictError as exc:
-            raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
+            raise _not_the_home(str(exc), exc.home_instance_id) from exc
         return PublishedTeam(
             home_instance_id=home.id,
             version=kept.team.version,
@@ -232,10 +235,10 @@ def add_project_team_routes(
             earlier = await _registered(request, forge, project_id)
             if earlier is None or registered is None or earlier >= registered:
                 continue
-            raise HTTPException(
-                status.HTTP_409_CONFLICT,
+            raise _not_the_home(
                 f"Forge {forge.name} registered project {project_id} before {home.name} and is "
                 "its home; publish its team from there",
+                forge.id,
             )
 
     async def _registered(
@@ -280,6 +283,13 @@ def add_project_team_routes(
             return state
         detail = payload.get("detail") if isinstance(payload, dict) else None
         return _not_copied(forge, project_id, str(detail or f"HTTP {response.status_code}"))
+
+
+def _not_the_home(message: str, home_instance_id: str) -> HTTPException:
+    """A refusal that names the Forge that is the home, for the refused one to copy it."""
+    return HTTPException(
+        status.HTTP_409_CONFLICT, message, headers={PROJECT_HOME_HEADER: home_instance_id}
+    )
 
 
 def _not_copied(forge: RegisteredInstance, project_id: UUID, reason: str) -> str:

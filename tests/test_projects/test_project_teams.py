@@ -10,7 +10,7 @@ from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 from urllib.parse import parse_qs, urlparse
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import httpx
 import pytest
@@ -28,7 +28,7 @@ from niuu.domain.models import (
     SecretType,
     project_owner_id,
 )
-from niuu.domain.project_team import ProjectTeam, ProjectTeamRecord
+from niuu.domain.project_team import ProjectTeam, ProjectTeamRecord, TeamMember
 from niuu.ports.identity import IdentityPort
 from niuu.ports.project_teams import ProjectTeamHomeConflictError, ProjectTeamRecords
 from tests.conftest import (
@@ -105,7 +105,10 @@ class MemoryRecords(ProjectTeamRecords):
     async def put(self, record):
         held = self.rows.get(record.team.project_id)
         if held is not None and held.home_instance_id != record.home_instance_id:
-            raise ProjectTeamHomeConflictError(f"published by Forge {held.home_instance_id}")
+            raise ProjectTeamHomeConflictError(
+                f"published by Forge {held.home_instance_id}",
+                home_instance_id=held.home_instance_id,
+            )
         if held is None or held.team.version <= record.team.version:
             self.rows[record.team.project_id] = record
         return self.rows[record.team.project_id]
@@ -787,6 +790,7 @@ async def test_another_forge_cannot_take_over_a_projects_team(world):
     taken = await publish(world, "cara", "noatun")
     assert taken.status_code == 409
     assert "valhalla" in taken.json()["detail"]
+    assert taken.headers["Niuu-Project-Home"] == "valhalla"
     assert world.records.rows[world.project.id].home_instance_id == "valhalla"
     assert await world.valhalla.roles(world.project) == {"alice": "owner", "bob": "contributor"}
 
@@ -799,9 +803,205 @@ async def test_a_project_registered_on_two_forges_is_the_earlier_ones(world):
     refused = await publish(world, instance="noatun")
     assert refused.status_code == 409
     assert "Instance valhalla registered" in refused.json()["detail"]
+    assert refused.headers["Niuu-Project-Home"] == "valhalla"
     world.cut_off("noatun.test")
     assert (await publish(world)).status_code == 200
     assert world.records.rows[world.project.id].home_instance_id == "valhalla"
+
+
+# --- a project that is on another Forge too ----------------------------------------
+
+
+async def register_on_its_own(world, forge, who="alice"):
+    """What Ting does on each Forge a run of the project runs on: a project of its own."""
+    await forge.projects.register(
+        ForgeProject(id=world.project.id, name=world.project.name),
+        await NameIsTheToken().validate_token(who),
+    )
+
+
+async def team_view(forge, world, who="alice"):
+    return (await forge.call("GET", f"{world.path}/team", who)).json()
+
+
+async def test_a_second_registration_of_a_project_becomes_a_copy_of_its_home(world):
+    await register_on_its_own(world, world.noatun)
+    assert (await team_view(world.noatun, world))["home"] is True
+
+    # The next read there publishes; the Guild says Valhalla had it first.
+    await world.noatun.call("GET", f"{world.path}/members", "alice")
+
+    view = await team_view(world.noatun, world)
+    assert (view["home"], view["home_instance_id"], view["sync"]["error"]) == (
+        False,
+        "valhalla",
+        "",
+    )
+    assert await world.noatun.roles(world.project) == {"alice": "owner", "bob": "contributor"}
+    # From now on a change there is made at the home.
+    added = await world.noatun.call(
+        "POST", f"{world.path}/members", "alice", json={"user_id": "cara", "role": "viewer"}
+    )
+    assert added.status_code == 201
+    assert "cara" in await world.valhalla.roles(world.project)
+
+
+async def test_a_copy_is_taken_after_the_home_published_too(world):
+    await world.valhalla.call("GET", f"{world.path}/members", "alice")
+    await register_on_its_own(world, world.noatun)
+
+    await world.noatun.call("GET", f"{world.path}/members", "alice")
+
+    assert (await team_view(world.noatun, world))["home_instance_id"] == "valhalla"
+    assert await world.noatun.roles(world.project) == {"alice": "owner", "bob": "contributor"}
+
+
+async def test_a_registration_with_more_than_the_home_has_stays_and_says_what(world):
+    await register_on_its_own(world, world.noatun)
+    await world.noatun.projects.member_service.add(
+        world.project.id,
+        await NameIsTheToken().validate_token("alice"),
+        user_id="cara",
+        role=ProjectRole.VIEWER,
+    )
+
+    await world.noatun.call("GET", f"{world.path}/members", "alice")
+
+    view = await team_view(world.noatun, world)
+    assert view["home"] is True
+    assert "member cara as viewer, which Forge valhalla does not" in view["sync"]["error"]
+    assert "Add them there or remove them here" in view["sync"]["error"]
+    assert await world.noatun.roles(world.project) == {"alice": "owner", "cara": "viewer"}
+    assert world.records.rows[world.project.id].home_instance_id == "valhalla"
+
+
+async def test_a_registration_with_its_own_integration_stays_and_names_it(world):
+    await register_on_its_own(world, world.noatun)
+    project = await world.noatun.projects.repository.get(world.project.id)
+    await world.noatun.service.save(
+        project,
+        SLACK,
+        connected_by="alice",
+        credential={"access_token": "xoxb-noatun"},
+        config={"channel": "#n"},
+        secret_type=SecretType.OAUTH_TOKEN,
+        metadata={},
+    )
+    connection = (await world.noatun.connections(world.project))[0]
+    await route_errors(world, connection, forge=world.noatun)
+
+    view = await team_view(world.noatun, world)
+    assert view["home"] is True
+    assert f"team integration {connection.slug} ({connection.id})" in view["sync"]["error"]
+    assert "route of errors to #pay" in view["sync"]["error"]
+    assert await world.noatun.connections(world.project) == [connection]
+
+
+async def test_a_registration_the_guild_holds_no_team_of_for_the_caller_stays(world):
+    # Cara's project of the same id: the Guild holds Valhalla's team, which is not hers.
+    await world.valhalla.call("GET", f"{world.path}/members", "alice")
+    await register_on_its_own(world, world.noatun, who="cara")
+
+    await world.noatun.call("GET", f"{world.path}/members", "cara")
+
+    view = await team_view(world.noatun, world, who="cara")
+    assert view["home"] is True
+    assert "still holds the project as its own" in view["sync"]["error"]
+    assert await world.noatun.roles(world.project) == {"cara": "owner"}
+
+
+async def test_a_copy_is_taken_from_the_guilds_record_while_the_home_is_away(world):
+    await register_on_its_own(world, world.noatun)
+    await world.valhalla.call("GET", f"{world.path}/members", "alice")
+    # Valhalla is away: the Guild still has its record, but cannot ask it for anything newer.
+    world.cut_off("valhalla.test")
+
+    await world.noatun.call("GET", f"{world.path}/members", "alice")
+
+    assert (await team_view(world.noatun, world))["home_instance_id"] == "valhalla"
+    assert await world.noatun.roles(world.project) == {"alice": "owner", "bob": "contributor"}
+
+
+async def create(forge, who="alice", **body):
+    return await forge.call("POST", "/projects", who, json={"name": "Payments", **body})
+
+
+async def test_a_project_created_under_an_id_another_forge_has_is_its_copy(world):
+    await world.valhalla.call("GET", f"{world.path}/members", "alice")
+
+    made = await create(world.noatun, id=str(world.project.id))
+
+    assert made.status_code == 201, made.text
+    assert made.json()["home_instance_id"] == "valhalla"
+    assert await world.noatun.roles(world.project) == {"alice": "owner", "bob": "contributor"}
+    assert (await world.noatun.sync.get(world.project.id)).error == ""
+
+
+async def test_a_new_project_is_published_as_it_is_created(world):
+    made = await create(world.noatun)
+
+    assert made.status_code == 201
+    kept = world.records.rows[UUID(made.json()["id"])]
+    assert kept.home_instance_id == "noatun"
+    assert [member.user_id for member in kept.team.members] == ["alice"]
+
+
+async def test_an_id_the_guild_has_not_heard_of_is_created_as_a_project_of_its_own(world):
+    made = await create(world.noatun, id=str(uuid4()))
+
+    assert made.status_code == 201
+    assert made.json()["home_instance_id"] == ""
+
+
+async def test_with_the_guild_away_no_project_is_created_under_a_given_id(world):
+    world.cut_off("guild.test")
+
+    refused = await create(world.noatun, id=str(world.project.id))
+
+    assert refused.status_code == 503
+    assert refused.json()["detail"].startswith("Nothing was created.")
+    assert await world.noatun.projects.repository.get(world.project.id) is None
+    # Without an id nothing can be anyone else's, so a new project is made and kept for later.
+    assert (await create(world.noatun)).status_code == 201
+
+
+async def refused_by_the_guild(world, record):
+    """Noatun's own registration, and a Guild that refuses it for Valhalla's home."""
+    await register_on_its_own(world, world.noatun)
+    guild = AsyncMock(spec=HttpTeamGuild)
+    guild.publish.side_effect = TeamGuildError("not the home", home_instance_id="valhalla")
+    guild.record.side_effect = [record] if isinstance(record, ProjectTeamRecord) else record
+    world.noatun.teams._guild = guild
+    return await world.noatun.teams.publish_pending(world.project.id, "alice", changed=True)
+
+
+async def test_a_registration_is_kept_when_the_guild_cannot_hand_over_the_homes_team(world):
+    state = await refused_by_the_guild(world, TeamGuildError("The Guild could not be reached"))
+
+    assert state.error == "The Guild could not be reached"
+    assert (await world.noatun.projects.repository.get(world.project.id)).home_instance_id == ""
+
+
+async def test_a_registration_is_kept_when_the_homes_team_is_another_orgs(world):
+    at = datetime(2026, 11, 22, tzinfo=UTC)
+    alice = TeamMember(user_id="alice", role="owner", created_at=at, updated_at=at)
+    other = ProjectTeamRecord(
+        home_instance_id="valhalla",
+        team=ProjectTeam(project_id=world.project.id, tenant_id="else", version=1, members=[alice]),
+    )
+
+    state = await refused_by_the_guild(world, other)
+
+    assert "another org's or project's" in state.error
+    assert (await world.noatun.projects.repository.get(world.project.id)).home_instance_id == ""
+    assert await world.noatun.roles(world.project) == {"alice": "owner"}
+
+
+async def test_a_forge_without_a_guild_creates_projects_as_before():
+    lone = Forge("lone", MemoryCredentialStore(), linked=False)
+    project_id = str(uuid4())
+    made = await lone.call("POST", "/projects", "alice", json={"id": project_id, "name": "Pay"})
+    assert (made.status_code, made.json()["home_instance_id"]) == (201, "")
 
 
 async def test_someone_on_the_team_can_launch_on_a_copy_another_person_made(world):
