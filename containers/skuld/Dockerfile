@@ -1,4 +1,4 @@
-FROM ubuntu:26.04@sha256:6a06111c3b0a8600feadb270aec771dc239bf407b25625f93f44ab00e11f4d3c AS builder
+FROM ubuntu:26.04@sha256:d66b366dac61b575bee2aef07e9c26e8070096fbe84a3d4d3eb0da069b5d76db AS builder
 
 ARG TARGETARCH
 
@@ -64,7 +64,7 @@ RUN uv build --wheel --out-dir /dist
 # checksum-verified source with Go 1.27.4, which satisfies its `toolchain go1.27.4`
 # (GO-2026-6859), to keep the version pinned and the toolchain current.
 # ---------------------------------------------------------------------------
-FROM --platform=$BUILDPLATFORM golang:1.27.4-alpine3.23@sha256:146e3b9c7c1e2ec3d3f5348c8a686151a75e1976e50efac9fc022ebe446a9a82 AS gh-build
+FROM --platform=$BUILDPLATFORM golang:1.27.4-alpine3.23@sha256:f70850ef6ce341e8b6427f677049145d63c0b7ce002d4d7e3d464828b1b96dcd AS gh-build
 ARG TARGETARCH
 WORKDIR /src
 RUN wget -q https://github.com/cli/cli/archive/refs/tags/v2.104.0.tar.gz -O /tmp/gh.tar.gz \
@@ -81,7 +81,7 @@ RUN wget -q https://github.com/cli/cli/archive/refs/tags/v2.104.0.tar.gz -O /tmp
 # against sum.golang.org. Return to the release .deb once one is built with a
 # patched Go.
 # ---------------------------------------------------------------------------
-FROM --platform=$BUILDPLATFORM golang:1.27.4-alpine3.23@sha256:146e3b9c7c1e2ec3d3f5348c8a686151a75e1976e50efac9fc022ebe446a9a82 AS glab-build
+FROM --platform=$BUILDPLATFORM golang:1.27.4-alpine3.23@sha256:f70850ef6ce341e8b6427f677049145d63c0b7ce002d4d7e3d464828b1b96dcd AS glab-build
 ARG TARGETARCH
 ARG GLAB_VERSION=1.128.0
 RUN cd "$(go mod download -json gitlab.com/gitlab-org/cli@v${GLAB_VERSION} | sed -n 's/.*"Dir": "\(.*\)".*/\1/p')" \
@@ -92,7 +92,7 @@ RUN cd "$(go mod download -json gitlab.com/gitlab-org/cli@v${GLAB_VERSION} | sed
 # ---------------------------------------------------------------------------
 # Runtime — Node.js stays (needed for claude-code/codex CLI at runtime)
 # ---------------------------------------------------------------------------
-FROM ubuntu:26.04@sha256:6a06111c3b0a8600feadb270aec771dc239bf407b25625f93f44ab00e11f4d3c
+FROM ubuntu:26.04@sha256:d66b366dac61b575bee2aef07e9c26e8070096fbe84a3d4d3eb0da069b5d76db
 
 
 LABEL org.opencontainers.image.title="skuld"

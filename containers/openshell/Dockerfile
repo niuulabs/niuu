@@ -4,7 +4,7 @@ COPY containers/python-security/ /security/
 RUN apt-get update && apt-get install -y --no-install-recommends patch \
     && python /security/build.py /patched-stdlib
 
-FROM ghcr.io/astral-sh/uv:0.13.8@sha256:5cc1805e2426484abca4ad46ea783bab281fdb225fd82d8ce6d66a81254bac85 AS uv
+FROM ghcr.io/astral-sh/uv:0.13.9@sha256:d3b601f0c7b118bc1753febf7c41cc80981df678445e0254284eecf84db79a7d AS uv
 
 # The sandbox base ships gh v2.102.0, built with Go 1.27.1 and golang.org/x/net
 # v0.58.0 (GO-2026-6603/6604/6611/6612). gh v2.104.0 requires x/net v0.60.0 or later,
@@ -12,7 +12,7 @@ FROM ghcr.io/astral-sh/uv:0.13.8@sha256:5cc1805e2426484abca4ad46ea783bab281fdb22
 # go.opentelemetry.io/otel v1.47.0 (GHSA-q7gw-24fr-5p69), so no module override
 # is needed. Replace the base's gh with v2.104.0 built from the checksum-verified
 # source with Go 1.27.4, which satisfies its `toolchain go1.27.4` (GO-2026-6859).
-FROM --platform=$BUILDPLATFORM golang:1.27.4-alpine3.23@sha256:146e3b9c7c1e2ec3d3f5348c8a686151a75e1976e50efac9fc022ebe446a9a82 AS gh-build
+FROM --platform=$BUILDPLATFORM golang:1.27.4-alpine3.23@sha256:f70850ef6ce341e8b6427f677049145d63c0b7ce002d4d7e3d464828b1b96dcd AS gh-build
 ARG TARGETARCH
 WORKDIR /src
 RUN wget -q https://github.com/cli/cli/archive/refs/tags/v2.104.0.tar.gz -O /tmp/gh.tar.gz \
