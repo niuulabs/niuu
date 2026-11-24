@@ -33,6 +33,7 @@ from stat import S_ISREG
 from typing import Any
 
 from niuu.build_info import build_info
+from niuu.cap_telemetry import record_degraded
 from niuu.domain.reasoning import MODEL_EFFORTS, preferred_effort, validate_effort
 from niuu.ports.cli import CLITransport, TransportCapabilities
 from skuld.agent_usage import AgentUsageTracker
@@ -69,6 +70,10 @@ workflow."""
 # Default capability text for a transport built without broker SessionTools (harnesses).
 _PRESENT_FILE_INSTRUCTION = PRESENT_FILE_INSTRUCTION
 _HOOK_SETTINGS_FILE = "claude-hooks.settings.json"
+# The main pane's conversation (native id + transcript), saved beside the per-session
+# runtime dirs so a Claude started again after a crash resumes it (see
+# ``_save_conversation``).
+_CONVERSATION_STATE_SUFFIX = ".conversation.json"
 
 _BUILT_IN_SLASH_COMMANDS = [
     {"name": "/agents", "description": "Manage agent teams and subagents"},
@@ -515,6 +520,18 @@ class TmuxInteractiveTransport(CLITransport):
         )
         self._socket_dir = base_socket_dir
         self._runtime_root = Path(self.workspace_dir) / ".skuld" / "tmux-interactive"
+        # Outside the runtime dir on purpose: stop() and the socket sweep remove that dir,
+        # and the saved conversation must outlive both. A container killed for memory, a
+        # broker restart or a session restart then resumes the conversation instead of
+        # opening an empty Claude (atlas engine, 2026-11-24: four OOM kills, four lost
+        # conversations). A resume id from the launch (an imported session) wins.
+        self._conversation_state_path = (
+            self._runtime_root / f"{self._session_name}{_CONVERSATION_STATE_SUFFIX}"
+        )
+        self._conversation_transcript_path: str | None = None
+        self._saved_conversation: tuple[str, str | None] | None = None
+        if self._resume_session_id is None:
+            self._restore_saved_conversation()
         self._sweep_task: asyncio.Task[None] | None = None
         self._emit_raw_terminal_output = self._bool_env("SKULD__TMUX_EMIT_RAW_OUTPUT", False)
         self._hook_events_enabled = self._bool_env(
@@ -1630,6 +1647,9 @@ class TmuxInteractiveTransport(CLITransport):
                 native = payload.get("session_id")
                 if isinstance(native, str) and native.strip():
                     self._claude_native_session_id = native.strip()
+                    self._save_conversation(
+                        self._claude_native_session_id, payload.get("transcript_path")
+                    )
             self._schedule_native_usage(payload)
             event: dict[str, Any] = {
                 "type": "terminal_prompt_submitted",
@@ -3832,7 +3852,65 @@ class TmuxInteractiveTransport(CLITransport):
         except TypeError:
             return str(value)
 
+    def _restore_saved_conversation(self) -> None:
+        """Load the conversation an earlier Claude of this session was having, if any.
+
+        No file is the steady state of a session that has not talked yet. A file that
+        cannot be read as one conversation is corrupt state and raises, naming the file.
+        """
+        path = self._conversation_state_path
+        if not path.exists():
+            return
+        try:
+            saved = json.loads(path.read_text(encoding="utf-8"))
+            native = str(uuid.UUID(str(saved["session_id"])))
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            raise RuntimeError(
+                f"saved Claude conversation {path} cannot be read ({exc}); fix or delete it "
+                "to start this session's Claude in a new conversation"
+            ) from exc
+        transcript = saved.get("transcript_path")
+        self._claude_native_session_id = native
+        self._conversation_transcript_path = transcript if isinstance(transcript, str) else None
+        self._saved_conversation = (native, self._conversation_transcript_path)
+        logger.info("tmux: session %s resumes Claude conversation %s", self._session_name, native)
+
+    def _save_conversation(self, native: str, transcript_path: object) -> None:
+        """Remember the main pane's conversation so a later Claude can resume it."""
+        transcript = transcript_path if isinstance(transcript_path, str) else None
+        if (native, transcript) == self._saved_conversation:
+            return
+        self._conversation_state_path.parent.mkdir(parents=True, exist_ok=True)
+        write_private_file(
+            self._conversation_state_path,
+            json.dumps({"session_id": native, "transcript_path": transcript}),
+        )
+        self._conversation_transcript_path = transcript
+        self._saved_conversation = (native, transcript)
+
+    def _drop_vanished_conversation(self) -> None:
+        """Start a new conversation when the saved one's transcript no longer exists.
+
+        Claude deletes old transcripts itself (``cleanupPeriodDays``), and ``--resume``
+        of a missing one exits the pane, so the session could never start again. Starting
+        fresh loses nothing that still exists; it is counted and logged as degraded.
+        """
+        transcript = self._conversation_transcript_path
+        if transcript is None or Path(transcript).exists():
+            return
+        record_degraded(
+            "skuld.tmux.resume",
+            f"session {self._session_name}: Claude conversation "
+            f"{self._claude_native_session_id} has no transcript at {transcript}; "
+            "starting a new conversation",
+        )
+        self._claude_native_session_id = None
+        self._conversation_transcript_path = None
+        self._saved_conversation = None
+        self._conversation_state_path.unlink(missing_ok=True)
+
     async def _create_session(self) -> None:
+        self._drop_vanished_conversation()
         env = self._spawn_env()
         self._prepare_claude_config(env)
         self._write_hook_settings()
@@ -3875,11 +3953,13 @@ class TmuxInteractiveTransport(CLITransport):
             cmd.extend(["--model", self._model])
         if self._reasoning_effort:
             cmd.extend(["--effort", self._reasoning_effort])
-        if self._resume_session_id:
+        resume = self._claude_native_session_id or self._resume_session_id
+        if resume:
             # Resume-aware restart: a fresh tmux launching ``claude --resume <id>`` replays the
             # prior conversation while re-writing the CURRENT broker port into the hook settings
-            # (start() never resurrects an old tmux, so there is no stale-port baking).
-            cmd.extend(["--resume", self._resume_session_id])
+            # (start() never resurrects an old tmux, so there is no stale-port baking). The
+            # captured id comes first: it is the conversation this pane is having now.
+            cmd.extend(["--resume", resume])
         if self._skip_permissions:
             cmd.extend(["--permission-mode", self._claude_permission_mode])
         if self._tool_policy is not None:

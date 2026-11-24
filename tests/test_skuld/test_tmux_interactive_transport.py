@@ -1818,6 +1818,117 @@ async def test_correlated_prompt_captures_claude_native_session_id(tmp_path: Pat
     await transport.stop()
 
 
+_NATIVE_ID = "502f0634-1dc7-4bdb-9520-68f80c008cca"
+
+
+async def _capture_conversation(transport: FakeTmuxInteractiveTransport, transcript: Path) -> None:
+    await transport.send_message("do the thing", msg_id="m-1")
+    await transport.handle_claude_hook(
+        {
+            "hook_event_name": "UserPromptSubmit",
+            "prompt": "do the thing",
+            "session_id": _NATIVE_ID,
+            "transcript_path": str(transcript),
+        }
+    )
+
+
+def _launched_argv(transport: FakeTmuxInteractiveTransport) -> tuple[str, ...]:
+    new_session = next(args for args, _ in transport.commands if args[0] == "new-session")
+    return new_session[new_session.index("--") + 1 :]
+
+
+@pytest.mark.asyncio
+async def test_claude_started_after_a_crash_resumes_the_captured_conversation(
+    tmp_path: Path,
+) -> None:
+    """Atlas engine, 2026-11-24: the container was OOM-killed four times and each new
+    Claude opened an empty conversation, because only the launch's resume id was ever
+    resumed. The captured conversation is saved and the next transport resumes it."""
+    transcript = tmp_path / "conversation.jsonl"
+    transcript.write_text("{}\n", encoding="utf-8")
+    first = FakeTmuxInteractiveTransport(str(tmp_path), sdk_port=8081)
+    await _collect_events(first)
+    await first.start()
+    await _capture_conversation(first, transcript)
+    await first.stop()
+
+    after_crash = FakeTmuxInteractiveTransport(str(tmp_path), sdk_port=8082)
+    assert after_crash.session_id == _NATIVE_ID
+    await _collect_events(after_crash)
+    await after_crash.start()
+    argv = _launched_argv(after_crash)
+    assert argv[argv.index("--resume") + 1] == _NATIVE_ID
+    await after_crash.stop()
+
+
+@pytest.mark.asyncio
+async def test_restart_in_the_same_broker_resumes_the_captured_conversation(
+    tmp_path: Path,
+) -> None:
+    transport = FakeTmuxInteractiveTransport(str(tmp_path), sdk_port=8081)
+    await _collect_events(transport)
+    await transport.start()
+    await _capture_conversation(transport, tmp_path / "conversation.jsonl")
+
+    argv = transport._interactive_argv()
+    assert argv[argv.index("--resume") + 1] == _NATIVE_ID
+
+    # The same conversation on the next prompt is not written again.
+    state = transport._conversation_state_path
+    state.write_text(json.dumps({"session_id": "marker"}), encoding="utf-8")
+    transport._save_conversation(_NATIVE_ID, str(tmp_path / "conversation.jsonl"))
+    assert json.loads(state.read_text(encoding="utf-8")) == {"session_id": "marker"}
+    await transport.stop()
+
+
+def test_launch_resume_id_wins_over_a_saved_conversation(tmp_path: Path) -> None:
+    state = tmp_path / ".skuld" / "tmux-interactive" / "skuld-test-session.conversation.json"
+    state.parent.mkdir(parents=True)
+    state.write_text(json.dumps({"session_id": _NATIVE_ID}), encoding="utf-8")
+    imported = "7f1f0c55-0000-4000-8000-000000000001"
+
+    transport = FakeTmuxInteractiveTransport(str(tmp_path), resume_session_id=imported)
+
+    argv = transport._interactive_argv()
+    assert argv[argv.index("--resume") + 1] == imported
+
+
+@pytest.mark.asyncio
+async def test_saved_conversation_without_its_transcript_starts_fresh_and_is_degraded(
+    tmp_path: Path,
+) -> None:
+    """Claude deletes old transcripts itself; ``--resume`` of a missing one exits the
+    pane, so the session starts a new conversation and says so loudly."""
+    from niuu import cap_telemetry
+
+    cap_telemetry.reset_cap_hits()
+    first = FakeTmuxInteractiveTransport(str(tmp_path), sdk_port=8081)
+    await _collect_events(first)
+    await first.start()
+    await _capture_conversation(first, tmp_path / "gone.jsonl")
+    await first.stop()
+
+    after = FakeTmuxInteractiveTransport(str(tmp_path), sdk_port=8082)
+    await _collect_events(after)
+    await after.start()
+
+    assert "--resume" not in _launched_argv(after)
+    assert after.session_id is None
+    assert cap_telemetry.degraded_counts()["skuld.tmux.resume"] == 1
+    assert not after._conversation_state_path.exists()
+    await after.stop()
+
+
+def test_unreadable_saved_conversation_raises_naming_the_file(tmp_path: Path) -> None:
+    state = tmp_path / ".skuld" / "tmux-interactive" / "skuld-test-session.conversation.json"
+    state.parent.mkdir(parents=True)
+    state.write_text("{not json", encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="conversation.json cannot be read"):
+        FakeTmuxInteractiveTransport(str(tmp_path))
+
+
 @pytest.mark.asyncio
 async def test_pasted_content_wrapped_prompt_still_correlates(tmp_path: Path) -> None:
     """Regression from a live valhalla session (Smidja/Dvalin, skuld image
