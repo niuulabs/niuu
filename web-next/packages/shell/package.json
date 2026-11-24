@@ -40,7 +40,7 @@
   "devDependencies": {
     "@tanstack/react-router": "^1.170.46",
     "@types/react": "^19.3.0",
-    "autoprefixer": "^10.6.2",
+    "autoprefixer": "^10.7.0",
     "postcss": "^8.5.33",
     "postcss-import": "^17.0.1",
     "react": "^19.3.1",
