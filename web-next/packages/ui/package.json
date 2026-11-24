@@ -39,7 +39,7 @@
     "clsx": "^2.1.1",
     "dompurify": "^3",
     "katex": "^0.19",
-    "lucide-react": "^1.72.0",
+    "lucide-react": "^1.77.0",
     "mermaid": "^12",
     "react-markdown": "^10",
     "rehype-katex": "^7",
@@ -51,7 +51,7 @@
   "devDependencies": {
     "@niuulabs/design-tokens": "workspace:*",
     "@types/react": "^19.3.0",
-    "autoprefixer": "^10.6.2",
+    "autoprefixer": "^10.7.0",
     "postcss": "^8.5.33",
     "postcss-import": "^17.0.1",
     "react": "^19.3.1",
