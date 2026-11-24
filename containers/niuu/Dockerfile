@@ -11,7 +11,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends patch \
 # Go 1.26.10 (GO-2026-6859, fixed in 1.26.11 and 1.27.4). Build the release with
 # Go 1.27.4, klauspost/compress v1.20.4 and otel v1.47.0 (the versions gh v2.104.0
 # ships) until upstream moves past them.
-FROM --platform=$BUILDPLATFORM golang:1.27.4-alpine3.23@sha256:146e3b9c7c1e2ec3d3f5348c8a686151a75e1976e50efac9fc022ebe446a9a82 AS compose-build
+FROM --platform=$BUILDPLATFORM golang:1.27.4-alpine3.23@sha256:f70850ef6ce341e8b6427f677049145d63c0b7ce002d4d7e3d464828b1b96dcd AS compose-build
 ARG TARGETARCH
 WORKDIR /src
 RUN wget -q https://github.com/docker/compose/archive/refs/tags/v5.7.1.tar.gz -O /tmp/compose.tar.gz \
@@ -28,7 +28,7 @@ RUN wget -q https://github.com/docker/compose/archive/refs/tags/v5.7.1.tar.gz -O
 # v0.60.0 or later, so no module override is needed. Build it from the
 # checksum-verified source with Go 1.27.4, which satisfies its `toolchain go1.27.4`
 # (GO-2026-6859), to keep the version pinned and the toolchain current.
-FROM --platform=$BUILDPLATFORM golang:1.27.4-alpine3.23@sha256:146e3b9c7c1e2ec3d3f5348c8a686151a75e1976e50efac9fc022ebe446a9a82 AS gh-build
+FROM --platform=$BUILDPLATFORM golang:1.27.4-alpine3.23@sha256:f70850ef6ce341e8b6427f677049145d63c0b7ce002d4d7e3d464828b1b96dcd AS gh-build
 ARG TARGETARCH
 WORKDIR /src
 RUN wget -q https://github.com/cli/cli/archive/refs/tags/v2.104.0.tar.gz -O /tmp/gh.tar.gz \
@@ -40,7 +40,7 @@ RUN wget -q https://github.com/cli/cli/archive/refs/tags/v2.104.0.tar.gz -O /tmp
 
 # BuildKit keeps the native wheel in its existing per-platform CI cache.
 # Only the installed Python environment reaches the final image.
-FROM rust:1.100.0-slim-trixie@sha256:e9d95b74296f7126a83ae3d041aeaba1ff4c478f13abc5cc034fcf7c131c3d4a AS rust-toolchain
+FROM rust:1.100.0-slim-trixie@sha256:6f14b2b4b278ec0d50aa1d69541c304ce0f95e0f6268487aa9924af1c2e9aebe AS rust-toolchain
 
 FROM python:3.14-slim-trixie@sha256:9aaa474097d094040649f2162a627c0049b408f52138d980916788d80f04802f AS python-build
 
