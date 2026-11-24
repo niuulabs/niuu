@@ -21,6 +21,7 @@ import shutil
 import signal
 import tempfile
 import time
+import unicodedata
 import uuid
 from collections import OrderedDict, deque
 from collections.abc import Callable
@@ -173,6 +174,46 @@ _SLASH_COMMAND_ROW_RE = re.compile(r"^(/\S+)\s{2,}(.+?)\s*$")
 # the tmux test harness (tests/support/forge/tmux_page.py) imports this so it
 # parses menus exactly the way the shipped transport does.
 _MENU_ROW_RE = re.compile(r"^\s*[❯>\s]*([1-9])[.)]\s+(.+?)\s*$")
+
+
+def _display_columns(line: str) -> list[int]:
+    """The terminal column each character of ``line`` starts at (wide glyphs take two)."""
+    columns: list[int] = []
+    column = 0
+    for char in line:
+        columns.append(column)
+        column += 2 if unicodedata.east_asian_width(char) in ("W", "F") else 1
+    return columns
+
+
+def _without_side_panel(screen: str) -> str:
+    """Claude's own column of a captured pane, without a side panel drawn beside it.
+
+    Claude Code can open a full-height panel to the right of the conversation (its
+    diff view: "50 files changed", the file list), separated by a "│" in the same
+    terminal column on every row. tmux captures both as one line per row, so a
+    question's text and every menu label end in the panel's text and no longer
+    match the question they belong to. A divider is a column past the first that
+    holds "│" on every row; a screen with any row that does not (a blank row, a
+    row without the border) has no panel and is returned unchanged.
+    """
+    lines = screen.splitlines()
+    if not lines:
+        return screen
+    shared: set[int] | None = None
+    for line in lines:
+        columns = _display_columns(line)
+        bars = {columns[i] for i, char in enumerate(line) if char == "│" and columns[i] > 0}
+        shared = bars if shared is None else shared & bars
+        if not shared:
+            return screen
+    divider = min(shared)
+    cropped = []
+    for line in lines:
+        columns = _display_columns(line)
+        cut = next(i for i, column in enumerate(columns) if column == divider)
+        cropped.append(line[:cut].rstrip())
+    return "\n".join(cropped)
 
 
 def _fold_label(label: str) -> str:
@@ -660,7 +701,7 @@ class TmuxInteractiveTransport(CLITransport):
             result = await self._run_tmux("capture-pane", "-t", target, "-p")
         except Exception:  # pragma: no cover - capture is best-effort
             return ""
-        return result.stdout or ""
+        return _without_side_panel(result.stdout or "")
 
     def _repl_looks_ready(self, text: str) -> bool:
         if self._workspace_trust_pending(text):
@@ -3354,7 +3395,7 @@ class TmuxInteractiveTransport(CLITransport):
 
     async def _capture_question_screen(self, *, pane_id: str | None = None) -> str:
         capture = await self._run_tmux("capture-pane", "-t", self._target_pane(pane_id), "-p")
-        lines = _ANSI_RE.sub("", capture.stdout).splitlines()
+        lines = _without_side_panel(_ANSI_RE.sub("", capture.stdout)).splitlines()
         starts = [i for i, line in enumerate(lines) if "☐" in line or "☒" in line]
         return "\n".join(lines[starts[-1] :]) if starts else ""
 
@@ -3367,6 +3408,13 @@ class TmuxInteractiveTransport(CLITransport):
             if predicate(screen):
                 return screen
             if time.monotonic() >= deadline:
+                # The refusal reaches only the answering client; the screen it was
+                # judged on is the one thing that explains it, so it goes to the log.
+                logger.error(
+                    "Claude question menu did not match within %.1fs; screen read:\n%s",
+                    self._menu_render_wait_s,
+                    screen or "(no question header on screen)",
+                )
                 raise ValueError("The live Claude menu does not match the pending question state")
             await asyncio.sleep(self._menu_poll_step_s)
 
@@ -3614,7 +3662,7 @@ class TmuxInteractiveTransport(CLITransport):
         except Exception:  # pragma: no cover - capture is best-effort
             return []
         out: list[tuple[int, str]] = []
-        for line in result.stdout.splitlines():
+        for line in _without_side_panel(result.stdout).splitlines():
             match = _MENU_ROW_RE.match(line)
             if match:
                 digit = int(match.group(1))
