@@ -1,0 +1,40 @@
+ ☐ Belt
+
+Which belt should the shifter carry?
+
+  1. Leather
+     A leather belt.
+  2. Canvas
+     A canvas belt.
+❯ 3. Type something.
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  4. Chat about this
+
+Enter to select · ↑/↓ to navigate · ctrl+g to edit in VS Code · Esc to cancel
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

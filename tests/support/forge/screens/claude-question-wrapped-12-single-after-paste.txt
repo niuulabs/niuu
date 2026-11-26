@@ -1,0 +1,40 @@
+ ☐ Belt
+
+Which belt should the shifter carry?
+
+  1. Leather
+     A leather belt.
+  2. Canvas
+     A canvas belt.
+❯ 3. A plain flat leather belt, double-ply, laced with rawhide at the joint, wide enough to cover the whole face of the tight pulley and the loose pulley beside it on the countershaft, as the
+     catalogue shows.
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  4. Chat about this
+
+Enter to select · ↑/↓ to navigate · ctrl+g to edit in VS Code · Esc to cancel
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

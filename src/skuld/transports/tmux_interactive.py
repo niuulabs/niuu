@@ -221,6 +221,15 @@ def _without_side_panel(screen: str) -> str:
     return "\n".join(cropped)
 
 
+def _same_words(shown: str | None, text: str) -> bool:
+    """Whether a screen shows ``text``, word for word.
+
+    Claude wraps long text at spaces, so the screen cannot tell one space from
+    several. The exact text is proven afterwards by Claude's own tool result.
+    """
+    return shown is not None and shown.split() == text.split()
+
+
 def _fold_label(label: str) -> str:
     """A menu label for comparison: trimmed, case-folded, typographic apostrophes plain.
 
@@ -3389,7 +3398,11 @@ class TmuxInteractiveTransport(CLITransport):
         if not plan["multi"]:
             return actual == values[0]
         if isinstance(actual, str):
-            if actual == ", ".join(values):
+            # Claude writes a checkbox page's typed answer in double quotes, both on
+            # its review page and in the answer it records; a single-select one bare.
+            custom = plan.get("custom")
+            shown = [f'"{value}"' if value == custom else value for value in values]
+            if actual == ", ".join(shown):
                 return True
             if any(", " in value for value in values):
                 return False  # A lossy delimiter cannot prove a different ordering.
@@ -3518,7 +3531,11 @@ class TmuxInteractiveTransport(CLITransport):
             and all(
                 TmuxInteractiveTransport._question_answer_matches(
                     observed[normalize(p["text"])],
-                    {**p, "values": [normalize(value) for value in p["values"]]},
+                    {
+                        **p,
+                        "values": [normalize(value) for value in p["values"]],
+                        "custom": None if p.get("custom") is None else normalize(p["custom"]),
+                    },
                 )
                 for p in plans
             )
@@ -3547,10 +3564,7 @@ class TmuxInteractiveTransport(CLITransport):
             return (
                 self._question_page_matches(screen, plan)
                 and "ctrl+g to edit" in screen
-                and any(
-                    re.match(rf"^\s*❯\s+{digit}\.\s+(?:\[[ ✔xX]\]\s+)?{re.escape(text)}\s*$", line)
-                    for line in screen.splitlines()
-                )
+                and _same_words(self._row_text(screen, digit, focused=True), text)
             )
 
         await self._wait_question_screen(
@@ -3564,12 +3578,44 @@ class TmuxInteractiveTransport(CLITransport):
             await self._send_key("Enter", pane_id=pane_id)
 
     @staticmethod
-    def _checkbox_values(screen: str) -> dict[str, tuple[int, bool]]:
+    def _row_text(screen: str, digit: int, *, focused: bool = False) -> str | None:
+        """Menu row ``digit``'s text, with the lines Claude wrapped it onto joined.
+
+        A long typed answer wraps: its later lines start in the column where the
+        row's text starts (after "❯ 5. " or "❯ 5. [✔] "). The last such row on
+        screen is the live menu's. Use it only for a row without a description:
+        an option's description is indented to that column too.
+        """
+        lines = screen.splitlines()
+        marker = "❯" if focused else "[❯>]?"
+        row = re.compile(rf"^\s*{marker}\s*{digit}[.)]\s+(?:\[[ ✔xX]\]\s+)?")
+        found = [(i, m.end()) for i, line in enumerate(lines) if (m := row.match(line))]
+        if not found:
+            return None
+        index, start = found[-1]
+        parts = [lines[index][start:].strip()]
+        for line in lines[index + 1 :]:
+            indent = len(line) - len(line.lstrip(" "))
+            if not line.strip() or indent != start or _MENU_ROW_RE.match(line):
+                break
+            parts.append(line.strip())
+        return " ".join(parts)
+
+    @staticmethod
+    def _checkbox_values(
+        screen: str, declared: list[str] | None = None
+    ) -> dict[str, tuple[int, bool]]:
+        """Checkbox rows by label. With ``declared``, a row that is none of the declared
+        options (the typed answer) is read whole, wrapped lines joined."""
         result = {}
         for digit, label in TmuxInteractiveTransport._menu_rows(screen):
             match = re.match(r"^\[([ ✔xX])\]\s+(.+)$", label)
-            if match:
-                result[match.group(2)] = (digit, match.group(1) != " ")
+            if not match:
+                continue
+            text = match.group(2)
+            if declared is not None and text not in declared:
+                text = TmuxInteractiveTransport._row_text(screen, digit) or text
+            result[text] = (digit, match.group(1) != " ")
         return result
 
     async def _drive_checkbox_page(
@@ -3601,11 +3647,15 @@ class TmuxInteractiveTransport(CLITransport):
                 lambda s: self._question_page_matches(s, plan), pane_id=pane_id
             )
             checked = {
-                label for label, (_, selected) in self._checkbox_values(screen).items() if selected
+                " ".join(label.split())
+                for label, (_, selected) in self._checkbox_values(screen, plan["labels"]).items()
+                if selected
             }
-            if checked != expected:
+            if checked != {" ".join(value.split()) for value in expected}:
                 raise ValueError("The native checkbox selections differ from the requested answers")
-            if any(re.match(r"^\s*❯\s+Submit\s*$", line) for line in screen.splitlines()):
+            # The last question's page ends in "Submit"; an earlier one's in "Next".
+            # Enter on either leaves this page with its selections as they are.
+            if any(re.match(r"^\s*❯\s+(?:Submit|Next)\s*$", line) for line in screen.splitlines()):
                 await self._send_key("Enter", pane_id=pane_id)
                 return
             focus = next(

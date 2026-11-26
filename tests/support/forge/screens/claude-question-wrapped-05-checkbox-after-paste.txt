@@ -1,0 +1,38 @@
+←  ☒ Pieces  ☐ Stokk  ✔ Submit  →
+
+Which line shaft pieces should I model first?
+
+  1. [ ] Countershaft + shifter
+         Two small hangers, tight and loose pulleys and a shifter fork.
+  2. [ ] Wood split pulleys
+         Built-up wood split pulleys in three sizes.
+  3. [ ] Coupling + collars
+         Bolted flange coupling and safety collars.
+❯ 4. [✔] The ones I want are: hanger style belt tightener, counter-weighted belt tightener, bolted flange couplings, plain mule stand, shaft collars, steel rim split pulleys of different sizes,
+         extension wall brackets, pillow blocks of different sizes, the belt repair bench.
+     Next
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  5. Chat about this
+
+Enter to select · Tab/Arrow keys to navigate · ctrl+g to edit in VS Code · Esc to cancel
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

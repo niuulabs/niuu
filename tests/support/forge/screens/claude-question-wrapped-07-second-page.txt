@@ -1,0 +1,38 @@
+←  ☒ Pieces  ☐ Stokk  ✔ Submit  →
+
+Where should they live in Stokk?
+
+❯ 1. New design per item
+     Each piece as its own design.
+  2. One 'Line Shaft Set' design
+     A single design holding all the pieces.
+  3. Type something.
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  4. Chat about this
+
+Enter to select · Tab/Arrow keys to navigate · Esc to cancel
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

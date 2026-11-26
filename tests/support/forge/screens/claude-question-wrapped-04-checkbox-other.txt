@@ -1,0 +1,38 @@
+←  ☐ Pieces  ☐ Stokk  ✔ Submit  →
+
+Which line shaft pieces should I model first?
+
+  1. [ ] Countershaft + shifter
+         Two small hangers, tight and loose pulleys and a shifter fork.
+  2. [ ] Wood split pulleys
+         Built-up wood split pulleys in three sizes.
+  3. [ ] Coupling + collars
+         Bolted flange coupling and safety collars.
+❯ 4. [ ] Type something
+     Next
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  5. Chat about this
+
+Enter to select · Tab/Arrow keys to navigate · ctrl+g to edit in VS Code · Esc to cancel
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
