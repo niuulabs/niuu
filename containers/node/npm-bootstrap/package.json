@@ -2,10 +2,10 @@
   "name": "npm-bootstrap",
   "private": true,
   "dependencies": {
-    "npm": "11.21.2",
+    "npm": "11.21.3",
     "@isaacs/nonrecursive-glob-match": "1.1.0",
     "glob": "14.0.6",
-    "minimatch": "11.0.8",
+    "minimatch": "11.0.9",
     "path-scurry": "3.0.0"
   }
 }
