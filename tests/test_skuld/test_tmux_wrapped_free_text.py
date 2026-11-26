@@ -145,14 +145,17 @@ def test_a_wrapped_row_is_read_whole_and_an_option_without_its_description():
     after_paste = wrapped("05-checkbox-after-paste")
     assert TmuxInteractiveTransport._row_text(after_paste, 4, focused=True) == CUSTOM
     assert TmuxInteractiveTransport._row_text(after_paste, 1, focused=True) is None
-    labels = [option["label"] for option in FORM[0]["options"]]
-    rows = TmuxInteractiveTransport._checkbox_values(after_paste, labels)
-    assert rows == {
+    plan = {
+        "text": FORM[0]["question"],
+        "labels": [option["label"] for option in FORM[0]["options"]],
+        "multi": True,
+    }
+    assert TmuxInteractiveTransport._page_options(after_paste, plan) == {
         "Countershaft + shifter": (1, False),
         "Wood split pulleys": (2, False),
         "Coupling + collars": (3, False),
-        CUSTOM: (4, True),
     }
+    assert TmuxInteractiveTransport._ticked_answers(after_paste, plan) == {CUSTOM}
 
 
 def test_different_typed_text_does_not_pass_for_the_wrapped_answer():

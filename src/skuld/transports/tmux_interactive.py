@@ -221,6 +221,27 @@ def _without_side_panel(screen: str) -> str:
     return "\n".join(cropped)
 
 
+# Box-drawing characters Claude draws around and beside a question's own text:
+# its "│" gutter, a preview's frame, a side panel's border, separators.
+_BOX_CHARS = frozenset("│┃┌┐└┘├┤┬┴┼─━╭╮╰╯")
+
+
+def _own_text(line: str) -> str:
+    """A question line's own text, its indentation and focus marker kept.
+
+    A leading "│" is the question's gutter; from the next box-drawing character
+    on, the line holds what Claude draws beside the question (a preview box, a
+    panel), which is not part of it.
+    """
+    body = line.lstrip(" ")
+    indent = line[: len(line) - len(body)]
+    if body.startswith("│"):
+        body = body[1:]
+        indent += " "
+    cut = next((i for i, char in enumerate(body) if char in _BOX_CHARS), len(body))
+    return (indent + body[:cut]).rstrip()
+
+
 def _same_words(shown: str | None, text: str) -> bool:
     """Whether a screen shows ``text``, word for word.
 
@@ -3361,6 +3382,13 @@ class TmuxInteractiveTransport(CLITransport):
                     raise ValueError(
                         "The requested answer is not a declared Claude question option"
                     )
+            if custom is not None and any(
+                isinstance(option, dict) and option.get("preview") for option in options
+            ):
+                raise ValueError(
+                    "This Claude question shows previews, and Claude offers no typed answer "
+                    "beside them; choose one of its options"
+                )
             if len(set(mapped)) != len(mapped):
                 raise ValueError("Duplicate Claude option selections")
             if multi and custom in labels:
@@ -3452,43 +3480,65 @@ class TmuxInteractiveTransport(CLITransport):
             await asyncio.sleep(self._menu_poll_step_s)
 
     @staticmethod
-    def _strip_question_border(line: str) -> str:
-        """Claude Code v2.1.x prefixes the active tab's question text with a dim
-        "│ " gutter — the left border of that question's panel in a multi-question
-        AskUserQuestion (tabs across the top, one per question, plus a Submit tab).
-        It carries no content, but it defeats the exact-text comparison in
-        `_question_page_matches` below unless it's stripped first. A no-op on the
-        older, non-tabbed single-question rendering (and on any other row)."""
-        stripped = line.strip()
-        if stripped.startswith("│"):
-            stripped = stripped[1:].strip()
-        return stripped
+    def _page_options(
+        screen: str, plan: dict[str, Any]
+    ) -> dict[str, tuple[int, bool | None]] | None:
+        """The page's declared options by label, as (digit, ticked), or None when
+        the screen is not this question's page.
+
+        Claude numbers a question's options in the order they were declared, so
+        option i is row i + 1; the position is what the digit key presses. The
+        row's text only has to begin with its label's words: beside a preview,
+        a label wraps in a narrow column ("Mill drive bay" / "(Recommended)").
+        ``ticked`` is None on a single-select page.
+        """
+        own = "\n".join(_own_text(line) for line in screen.splitlines())
+        rows = dict(TmuxInteractiveTransport._menu_rows(own))
+        found: dict[str, tuple[int, bool | None]] = {}
+        for index, label in enumerate(plan["labels"]):
+            text = rows.get(index + 1)
+            if text is None:
+                return None
+            box = re.match(r"^\[([ ✔xX])\]\s+(.*)$", text)
+            if plan["multi"] != (box is not None):
+                return None
+            shown = (box.group(2) if box else text).split()
+            if not shown or label.split()[: len(shown)] != shown:
+                return None
+            found[label] = (index + 1, box.group(1) != " " if box else None)
+        return found
 
     @staticmethod
     def _question_page_matches(screen: str, plan: dict[str, Any]) -> bool:
+        """Whether the screen is this question's page: safe to press its keys.
+
+        What it guards against is pressing a digit into another screen, where
+        the same key means something else: another question, a permission
+        prompt ("1" allows), the chat box. So the page must show this question's
+        words above its options and every declared option at its position. How
+        Claude lays that out (a gutter, wrapping, a preview box or panel beside
+        it) does not matter; exactly what Claude recorded is proven afterwards
+        from its own tool result.
+        """
         if not screen or "Review your answers" in screen:
             return False
-        # Only the active widget is inspected; matching words in scrollback or
-        # an earlier page cannot authorize another key.
-        lines = screen.splitlines()
+        # Only the active widget is inspected (the capture starts at its tab
+        # line); words in scrollback or on an earlier page authorize nothing.
+        lines = [_own_text(line) for line in screen.splitlines()]
         first_row = next(
             (i for i, line in enumerate(lines) if _MENU_ROW_RE.match(line)), len(lines)
         )
-        body = " ".join(
-            TmuxInteractiveTransport._strip_question_border(line) for line in lines[1:first_row]
-        )
-        if " ".join(plan["text"].split()) != " ".join(body.split()):
+        above = " ".join(" ".join(lines[:first_row]).split())
+        if " ".join(plan["text"].split()) not in above:
             return False
-        rows = TmuxInteractiveTransport._menu_rows(screen)
-        labels = []
-        for _, label in rows:
-            checkbox = re.match(r"^\[([ ✔xX])\]\s+(.+)$", label)
-            if plan["multi"] and checkbox:
-                label = checkbox.group(2)
-            elif plan["multi"] and label != "Chat about this":
-                return False
-            labels.append(label)
-        return all(label in labels for label in plan["labels"])
+        return TmuxInteractiveTransport._page_options(screen, plan) is not None
+
+    @staticmethod
+    def _has_previews(plan: dict[str, Any]) -> bool:
+        """Claude draws a question whose options carry previews as a list beside a
+        preview box. There a digit only moves the focus; Enter chooses."""
+        options = plan["question"].get("options") or []
+        return any(isinstance(option, dict) and option.get("preview") for option in options)
 
     @staticmethod
     def _question_review_matches(screen: str, plans: list[dict[str, Any]]) -> bool:
@@ -3545,17 +3595,30 @@ class TmuxInteractiveTransport(CLITransport):
         screen = await self._wait_question_screen(
             lambda s: self._question_page_matches(s, plan), pane_id=pane_id
         )
-        rows = self._menu_rows(screen)
         if plan["multi"]:
             await self._drive_checkbox_page(plan, screen, pane_id=pane_id)
             return
-        target = "Type something." if plan["custom"] is not None else plan["values"][0]
-        digit = self._match_menu_digit(target, rows)
-        if digit is None:
-            raise ValueError("The requested answer does not match the live Claude menu")
-        await self._send_key(str(digit), pane_id=pane_id)
         if plan["custom"] is not None:
+            # The typed-answer row follows the declared options.
+            digit = len(plan["labels"]) + 1
+            if not _same_words(self._row_text(screen, digit), "Type something."):
+                raise ValueError("The live Claude menu has no row for a typed answer")
+            await self._send_key(str(digit), pane_id=pane_id)
             await self._enter_question_text(plan, digit, pane_id=pane_id)
+            return
+        digit = plan["labels"].index(plan["values"][0]) + 1
+        await self._send_key(str(digit), pane_id=pane_id)
+        if self._has_previews(plan):
+            # Beside a preview, the digit only moved the focus to the option (and
+            # showed its preview). Choose it once the focus is seen on it.
+            await self._wait_question_screen(
+                lambda s: (
+                    self._question_page_matches(s, plan)
+                    and self._row_text(s, digit, focused=True) is not None
+                ),
+                pane_id=pane_id,
+            )
+            await self._send_key("Enter", pane_id=pane_id)
 
     async def _enter_question_text(
         self, plan: dict[str, Any], digit: int, *, pane_id: str | None
@@ -3602,41 +3665,38 @@ class TmuxInteractiveTransport(CLITransport):
         return " ".join(parts)
 
     @staticmethod
-    def _checkbox_values(
-        screen: str, declared: list[str] | None = None
-    ) -> dict[str, tuple[int, bool]]:
-        """Checkbox rows by label. With ``declared``, a row that is none of the declared
-        options (the typed answer) is read whole, wrapped lines joined."""
-        result = {}
-        for digit, label in TmuxInteractiveTransport._menu_rows(screen):
-            match = re.match(r"^\[([ ✔xX])\]\s+(.+)$", label)
-            if not match:
-                continue
-            text = match.group(2)
-            if declared is not None and text not in declared:
-                text = TmuxInteractiveTransport._row_text(screen, digit) or text
-            result[text] = (digit, match.group(1) != " ")
-        return result
+    def _ticked_answers(screen: str, plan: dict[str, Any]) -> set[str]:
+        """What a checkbox page has ticked, whitespace-normalized: its declared
+        options by position, and the typed-answer row after them read whole."""
+        options = TmuxInteractiveTransport._page_options(screen, plan) or {}
+        ticked = {" ".join(label.split()) for label, (_, on) in options.items() if on}
+        digit = len(plan["labels"]) + 1
+        row = dict(TmuxInteractiveTransport._menu_rows(screen)).get(digit, "")
+        text = TmuxInteractiveTransport._row_text(screen, digit)
+        if row.startswith(("[✔]", "[x]", "[X]")) and text:
+            ticked.add(" ".join(text.split()))
+        return ticked
 
     async def _drive_checkbox_page(
         self, plan: dict[str, Any], screen: str, *, pane_id: str | None
     ) -> None:
         expected = set(plan["values"])
         for label in plan["labels"]:
-            rows = self._checkbox_values(screen)
-            digit, checked = rows[label]
+            digit, checked = (self._page_options(screen, plan) or {})[label]
             if checked != (label in expected):
                 await self._send_key(str(digit), pane_id=pane_id)
                 screen = await self._wait_question_screen(
                     lambda s: (
                         self._question_page_matches(s, plan)
-                        and self._checkbox_values(s).get(label) == (digit, label in expected)
+                        and (self._page_options(s, plan) or {}).get(label)
+                        == (digit, label in expected)
                     ),
                     pane_id=pane_id,
                 )
         if plan["custom"] is not None:
-            digit = self._checkbox_values(screen).get("Type something", (None, False))[0]
-            if digit is None:
+            # The typed-answer row follows the declared options.
+            digit = len(plan["labels"]) + 1
+            if not _same_words(self._row_text(screen, digit), "Type something"):
                 raise ValueError("The native checkbox menu has no custom answer row")
             await self._focus_checkbox_other(plan, digit, screen, pane_id=pane_id)
             await self._enter_question_text(plan, digit, pane_id=pane_id)
@@ -3646,11 +3706,7 @@ class TmuxInteractiveTransport(CLITransport):
             screen = await self._wait_question_screen(
                 lambda s: self._question_page_matches(s, plan), pane_id=pane_id
             )
-            checked = {
-                " ".join(label.split())
-                for label, (_, selected) in self._checkbox_values(screen, plan["labels"]).items()
-                if selected
-            }
+            checked = self._ticked_answers(screen, plan)
             if checked != {" ".join(value.split()) for value in expected}:
                 raise ValueError("The native checkbox selections differ from the requested answers")
             # The last question's page ends in "Submit"; an earlier one's in "Next".
