@@ -64,6 +64,9 @@ BUILTIN_PRICING: dict[str, ModelPricing] = {
     ),
     # OpenAI ─────────────────────────────────────────────────────────────────
     # OpenAI bills no cache writes; cached input reads are 90% off.
+    "gpt-6.2-astra": ModelPricing(
+        input_per_million=8.00, output_per_million=40.00, cache_read_per_million=0.40
+    ),
     "gpt-6-astra": ModelPricing(
         input_per_million=10.00, output_per_million=50.00, cache_read_per_million=1.00
     ),

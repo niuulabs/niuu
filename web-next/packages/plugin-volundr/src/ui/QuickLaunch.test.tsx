@@ -152,6 +152,23 @@ describe('QuickLaunch', () => {
       ),
     );
   });
+  it('offers GPT-6.2 Astra for Codex at extra-high effort', async () => {
+    const { startSession } = setup();
+    await ready();
+    fireEvent.click(screen.getByRole('button', { name: /Codex.*OpenAI/ }));
+    fireEvent.change(screen.getByLabelText('Model'), { target: { value: 'gpt-6.2-astra' } });
+    fireEvent.change(screen.getByLabelText('Effort'), { target: { value: 'xhigh' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Launch Codex' }));
+    await waitFor(() =>
+      expect(startSession).toHaveBeenCalledWith(
+        expect.objectContaining({
+          definition: 'skuldCodex',
+          model: 'gpt-6.2-astra',
+          workloadConfig: { reasoningEffort: 'xhigh' },
+        }),
+      ),
+    );
+  });
   it('keeps folders on their owning hosts and uses a remembered per-host folder', async () => {
     localStorage.setItem('niuu.forge.launch.folder.spark', '/home/xteo/review');
     setup();

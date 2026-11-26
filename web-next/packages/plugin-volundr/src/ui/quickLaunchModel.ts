@@ -20,6 +20,7 @@ export const FORGE_STANDARDS = [
     definition: 'skuldCodex',
     models: [
       { id: 'gpt-6-astra', name: 'GPT-6 Astra' },
+      { id: 'gpt-6.2-astra', name: 'GPT-6.2 Astra' },
       { id: 'gpt-6-sol', name: 'GPT-6 Sol' },
     ],
   },

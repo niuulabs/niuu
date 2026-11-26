@@ -277,6 +277,26 @@ def _default_models() -> list[ManagedModelConfig]:
         # (released 2026-09-22, Codex CLI 0.157.0+) join it; GPT-5.6 Sol and Terra stay
         # listed because running sessions and saved launch specs still name them.
         ManagedModelConfig(
+            # GPT-6.2 Astra (released 2026-11-17, Codex CLI 0.170.0+) is listed beside
+            # GPT-6 Astra, which stays the default Codex model.
+            id="gpt-6.2-astra",
+            name="GPT-6.2 Astra",
+            vendor="openai",
+            provider=ManagedModelProvider.CLOUD,
+            tier=ManagedModelTier.FRONTIER,
+            color="#065F46",
+            description=(
+                "OpenAI GPT-6.2 Astra — OpenAI's most capable model for complex coding "
+                "and professional work, at 20% below GPT-6 Astra; defaults to Ultra "
+                "reasoning. Needs Codex CLI 0.170.0 or newer."
+            ),
+            # GPT-6.2 Astra is $8 in / $40 out per 1M tokens; use the output rate.
+            cost_per_million_tokens=40.0,
+            session_definition="skuldCodex",
+            supports_tools=True,
+            supports_thinking=True,
+        ),
+        ManagedModelConfig(
             id="gpt-6-astra",
             name="GPT-6 Astra",
             vendor="openai",

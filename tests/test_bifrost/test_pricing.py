@@ -34,6 +34,9 @@ class TestBuiltinPricing:
         )
         assert BUILTIN_PRICING["gpt-6-luna"].output_per_million == 0.50
         assert BUILTIN_PRICING["gpt-6-astra"].input_per_million == 10.00
+        assert BUILTIN_PRICING["gpt-6.2-astra"] == ModelPricing(
+            input_per_million=8.00, output_per_million=40.00, cache_read_per_million=0.40
+        )
 
     def test_ollama_free(self):
         pricing = BUILTIN_PRICING["llama3.1:8b"]

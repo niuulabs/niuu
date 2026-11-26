@@ -16,6 +16,7 @@ from skuld.transports.codex_ws import (
     _codex_effort_for_model,
     _CodexApproval,
     _model_supports_ultra,
+    _normalize_codex_effort,
     _pick_free_port,
     _rpc_notification,
     _rpc_request,
@@ -3702,6 +3703,14 @@ class TestReasoningEffort:
         assert _model_supports_ultra("gpt-6-astra") is True
         assert _model_supports_ultra("GPT-6-Astra") is True
         assert _codex_effort_for_model("gpt-6-astra") == "ultra"
+
+    def test_effort_helpers_recognize_gpt_6_2_astra(self) -> None:
+        # Codex 0.170.0's bundled metadata lists low..max plus ultra for GPT-6.2 Astra,
+        # so a Forge session may ask for high, xhigh or ultra.
+        assert _model_supports_ultra("gpt-6.2-astra") is True
+        assert _codex_effort_for_model("gpt-6.2-astra") == "ultra"
+        for effort in ("high", "xhigh", "ultra"):
+            assert _normalize_codex_effort(effort, "gpt-6.2-astra") == effort
 
     def test_effort_helpers_recognize_gpt_6_sol_not_luna(self) -> None:
         # Codex 0.157.0 lists ultra for GPT-6 Sol; GPT-6 Luna tops out at max.

@@ -16,6 +16,7 @@ MODEL_EFFORTS: dict[str, tuple[str, ...]] = {
     "claude-opus-5": CLAUDE_EFFORTS,
     "claude-opus-4-8": CLAUDE_EFFORTS,
     "claude-sonnet-5": CLAUDE_EFFORTS,
+    "gpt-6.2-astra": CODEX_EFFORTS,
     "gpt-6-astra": CODEX_EFFORTS,
     "gpt-6-sol": CODEX_EFFORTS,
     "gpt-6-luna": CLAUDE_EFFORTS,

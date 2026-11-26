@@ -119,6 +119,7 @@ class TestBifrostConfig:
         assert sol.session_definition == "skuldCodex"
         openai_ids = [m.id for m in models if m.session_definition == "skuldCodex"]
         assert openai_ids == [
+            "gpt-6.2-astra",
             "gpt-6-astra",
             "gpt-6-sol",
             "gpt-6-luna",
@@ -143,6 +144,15 @@ class TestBifrostConfig:
         assert luna.tier == ManagedModelTier.BALANCED
         assert luna.effort_levels == ["low", "medium", "high", "xhigh", "max"]
         assert sol.default_effort == luna.default_effort == "xhigh"
+
+    def test_gpt_6_2_astra_offers_high_xhigh_and_ultra(self):
+        from bifrost.config import _default_models
+
+        astra = next(m for m in _default_models() if m.id == "gpt-6.2-astra")
+        assert astra.name == "GPT-6.2 Astra"
+        assert astra.session_definition == "skuldCodex"
+        assert astra.effort_levels == ["low", "medium", "high", "xhigh", "max", "ultra"]
+        assert astra.default_effort == "xhigh"
 
     def test_grok_models_resolve_to_skuld_grok_definition(self):
         # Regression: every Grok model must be registered in the managed-model
